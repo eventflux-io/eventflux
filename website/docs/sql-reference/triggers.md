@@ -275,8 +275,8 @@ CREATE TRIGGER DailyCleanup AT CRON '0 0 2 * * *';
 Triggers can also be created using the Rust API:
 
 ```rust
-use eventflux_rust::query_api::definition::TriggerDefinition;
-use eventflux_rust::query_api::expression::constant::TimeUtil;
+use eventflux::query_api::definition::TriggerDefinition;
+use eventflux::query_api::expression::constant::TimeUtil;
 
 // Start trigger
 let start_trigger = TriggerDefinition::id("StartTrigger".to_string())

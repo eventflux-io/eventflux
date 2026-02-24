@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/input/stream/state/logical_post_state_processor.rs
+// src/core/query/input/stream/state/logical_post_state_processor.rs
 // LogicalPostStateProcessor for handling AND/OR pattern match results
 
 use crate::core::event::complex_event::ComplexEvent;

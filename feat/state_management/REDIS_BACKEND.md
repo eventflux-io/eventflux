@@ -15,7 +15,7 @@ EventFlux provides enterprise-grade Redis-based state persistence that integrate
 
 ```bash
 # Docker Compose
-cd eventflux_rust
+cd eventflux
 docker compose up -d
 
 # Or locally
@@ -26,8 +26,8 @@ redis-server
 ### Configure Backend
 
 ```rust
-use eventflux_rust::core::persistence::RedisPersistenceStore;
-use eventflux_rust::core::distributed::RedisConfig;
+use eventflux::core::persistence::RedisPersistenceStore;
+use eventflux::core::distributed::RedisConfig;
 
 let config = RedisConfig {
     url: "redis://localhost:6379".to_string(),
@@ -140,7 +140,7 @@ This ensures aggregation state restoration is atomic and thread-safe.
 For single-node or testing:
 
 ```rust
-use eventflux_rust::core::distributed::state_backend::InMemoryBackend;
+use eventflux::core::distributed::state_backend::InMemoryBackend;
 
 let backend = InMemoryBackend::new();
 ```
@@ -155,7 +155,7 @@ Features:
 For distributed deployments:
 
 ```rust
-use eventflux_rust::core::distributed::state_backend::{RedisBackend, RedisConfig};
+use eventflux::core::distributed::state_backend::{RedisBackend, RedisConfig};
 
 let mut backend = RedisBackend::new();
 backend.initialize().await?;
@@ -174,7 +174,7 @@ backend.shutdown().await?;
 ### Distributed Configuration
 
 ```rust
-use eventflux_rust::core::distributed::{
+use eventflux::core::distributed::{
     DistributedConfig, StateBackendConfig, StateBackendImplementation
 };
 

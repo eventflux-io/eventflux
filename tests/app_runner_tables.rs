@@ -14,13 +14,13 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::persistence::data_source::{DataSource, DataSourceConfig};
-use eventflux_rust::query_api::execution::query::output::stream::UpdateSet;
-use eventflux_rust::query_api::expression::condition::compare::Operator as CompareOp;
-use eventflux_rust::query_api::expression::{Expression, Variable};
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::persistence::data_source::{DataSource, DataSourceConfig};
+use eventflux::query_api::execution::query::output::stream::UpdateSet;
+use eventflux::query_api::expression::condition::compare::Operator as CompareOp;
+use eventflux::query_api::expression::{Expression, Variable};
 use rusqlite::Connection;
 use std::any::Any;
 use std::sync::{Arc, Mutex};
@@ -42,7 +42,7 @@ impl DataSource for SqliteDataSource {
     }
     fn init(
         &mut self,
-        _ctx: &Arc<eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext>,
+        _ctx: &Arc<eventflux::core::config::eventflux_app_context::EventFluxAppContext>,
         _id: &str,
         _cfg: DataSourceConfig,
     ) -> Result<(), String> {
@@ -181,7 +181,7 @@ async fn stream_table_join_basic() {
     let runner = AppRunner::new(query, "Out").await;
     let th = runner.runtime().get_table_input_handler("R").unwrap();
     th.add(vec![
-        eventflux_rust::core::event::event::Event::new_with_data(
+        eventflux::core::event::event::Event::new_with_data(
             0,
             vec![AttributeValue::Int(1), AttributeValue::String("A".into())],
         ),
@@ -224,7 +224,7 @@ async fn stream_table_join_jdbc() {
     let runner = AppRunner::new_with_manager(manager, query, "Out").await;
     let th = runner.runtime().get_table_input_handler("J2").unwrap();
     th.add(vec![
-        eventflux_rust::core::event::event::Event::new_with_data(
+        eventflux::core::event::event::Event::new_with_data(
             0,
             vec![AttributeValue::Int(2), AttributeValue::String("B".into())],
         ),
@@ -359,7 +359,7 @@ async fn test_table_on_left_stream_on_right_join() {
     // Add data to table
     let th = runner.runtime().get_table_input_handler("T").unwrap();
     th.add(vec![
-        eventflux_rust::core::event::event::Event::new_with_data(
+        eventflux::core::event::event::Event::new_with_data(
             0,
             vec![
                 AttributeValue::Int(42),
@@ -412,7 +412,7 @@ async fn test_multiple_tables_in_query() {
     // Add user data
     let user_handler = runner.runtime().get_table_input_handler("users").unwrap();
     user_handler.add(vec![
-        eventflux_rust::core::event::event::Event::new_with_data(
+        eventflux::core::event::event::Event::new_with_data(
             0,
             vec![
                 AttributeValue::Int(100),
@@ -427,7 +427,7 @@ async fn test_multiple_tables_in_query() {
         .get_table_input_handler("products")
         .unwrap();
     product_handler.add(vec![
-        eventflux_rust::core::event::event::Event::new_with_data(
+        eventflux::core::event::event::Event::new_with_data(
             0,
             vec![
                 AttributeValue::Int(200),
@@ -469,7 +469,7 @@ async fn test_table_join_no_match() {
     // Add table data with id=1
     let th = runner.runtime().get_table_input_handler("T").unwrap();
     th.add(vec![
-        eventflux_rust::core::event::event::Event::new_with_data(
+        eventflux::core::event::event::Event::new_with_data(
             0,
             vec![
                 AttributeValue::Int(1),
@@ -511,7 +511,7 @@ async fn test_table_join_multiple_matches() {
     // Add multiple table rows with same category
     let th = runner.runtime().get_table_input_handler("T").unwrap();
     th.add(vec![
-        eventflux_rust::core::event::event::Event::new_with_data(
+        eventflux::core::event::event::Event::new_with_data(
             0,
             vec![
                 AttributeValue::Int(5),
@@ -561,7 +561,7 @@ async fn test_stream_table_join_with_qualified_names() {
         .get_table_input_handler("user_profiles")
         .unwrap();
     th.add(vec![
-        eventflux_rust::core::event::event::Event::new_with_data(
+        eventflux::core::event::event::Event::new_with_data(
             0,
             vec![
                 AttributeValue::Int(123),

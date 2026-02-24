@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/executor/variable_expression_executor.rs
+// src/core/executor/variable_expression_executor.rs
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
 use crate::core::event::stream::stream_event::StreamEvent;

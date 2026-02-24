@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/input/stream/state/receiver/mod.rs
+// src/core/query/input/stream/state/receiver/mod.rs
 // Stream receivers for Pattern and Sequence processing
 
 pub mod pattern_stream_receiver;

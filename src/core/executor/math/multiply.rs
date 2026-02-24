@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/executor/math/multiply.rs
+// src/core/executor/math/multiply.rs
 use super::common::CoerceNumeric; // Use CoerceNumeric from common.rs
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;

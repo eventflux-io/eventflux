@@ -30,7 +30,7 @@
 ///
 /// # Example
 /// ```ignore
-/// use eventflux_rust::core::query::input::stream::state::TimerWheel;
+/// use eventflux::core::query::input::stream::state::TimerWheel;
 /// let mut wheel = TimerWheel::new(3600_000, 1000); // 1 hour, 1-second ticks
 /// wheel.set_start_time(0);
 /// wheel.schedule(state_handle, trigger_at_ms);

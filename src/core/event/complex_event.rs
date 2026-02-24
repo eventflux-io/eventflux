@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/event/complex_event.rs
+// src/core/event/complex_event.rs
 // Corresponds to io.eventflux.core.event.ComplexEvent (interface)
 use super::value::AttributeValue;
 use serde::{Deserialize, Serialize};

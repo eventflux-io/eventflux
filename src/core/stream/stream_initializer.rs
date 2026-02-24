@@ -139,8 +139,8 @@ impl std::fmt::Debug for InitializedStream {
 /// # Example
 ///
 /// ```rust,ignore
-/// use eventflux_rust::core::stream::stream_initializer::initialize_stream;
-/// use eventflux_rust::core::config::stream_config::StreamTypeConfig;
+/// use eventflux::core::stream::stream_initializer::initialize_stream;
+/// use eventflux::core::config::stream_config::StreamTypeConfig;
 ///
 /// let context = EventFluxContext::new();
 /// let stream_config = StreamTypeConfig::new(
@@ -396,8 +396,8 @@ fn initialize_sink_stream_internal(
 /// # Example
 ///
 /// ```rust,ignore
-/// use eventflux_rust::core::stream::stream_initializer::initialize_table;
-/// use eventflux_rust::core::config::stream_config::TableTypeConfig;
+/// use eventflux::core::stream::stream_initializer::initialize_table;
+/// use eventflux::core::config::stream_config::TableTypeConfig;
 ///
 /// let context = EventFluxContext::new();
 /// let table_config = TableTypeConfig::new(

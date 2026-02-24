@@ -18,8 +18,8 @@
 //!
 //! # Usage
 //! ```rust,no_run
-//! use eventflux_rust::core::util::compression::{GLOBAL_COMPRESSION_ENGINE, CompressionHints, CompressionEngine};
-//! use eventflux_rust::core::persistence::state_holder::CompressionType;
+//! use eventflux::core::util::compression::{GLOBAL_COMPRESSION_ENGINE, CompressionHints, CompressionEngine};
+//! use eventflux::core::persistence::state_holder::CompressionType;
 //!
 //! let data = b"some data to compress";
 //! let hints = CompressionHints::default();
@@ -28,7 +28,7 @@
 //! let compressed = GLOBAL_COMPRESSION_ENGINE.compress(data, algorithm.clone())?;
 //! let decompressed = GLOBAL_COMPRESSION_ENGINE.decompress(&compressed, algorithm)?;
 //! assert_eq!(data, decompressed.as_slice());
-//! # Ok::<(), eventflux_rust::core::persistence::state_holder::StateError>(())
+//! # Ok::<(), eventflux::core::persistence::state_holder::StateError>(())
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};

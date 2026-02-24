@@ -14,7 +14,7 @@ EventFlux can be installed from source or added as a dependency to your Rust pro
 - **Cargo** (comes with Rust)
 
 MSRV is enforced via `Cargo.toml` (`package.rust-version`) and CI. If you don’t want to install Rust locally, use the
-official Docker image (`ghcr.io/eventflux-io/engine:latest`).
+official Docker image (`ghcr.io/eventflux-io/eventflux:latest`).
 
 :::tip Verify Rust Installation
 ```bash
@@ -28,8 +28,8 @@ cargo --version
 Clone and build the repository:
 
 ```bash
-git clone https://github.com/eventflux-io/engine.git
-cd engine
+git clone https://github.com/eventflux-io/eventflux.git
+cd eventflux
 cargo build --release
 ```
 
@@ -55,14 +55,14 @@ Add EventFlux to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-eventflux = { git = "https://github.com/eventflux-io/engine.git" }
+eventflux = { git = "https://github.com/eventflux-io/eventflux.git" }
 ```
 
 Or with a specific revision:
 
 ```toml
 [dependencies]
-eventflux = { git = "https://github.com/eventflux-io/engine.git", rev = "main" }
+eventflux = { git = "https://github.com/eventflux-io/eventflux.git", rev = "main" }
 ```
 
 ## Project Structure
@@ -85,7 +85,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eventflux = { git = "https://github.com/eventflux-io/engine.git" }
+eventflux = { git = "https://github.com/eventflux-io/eventflux.git" }
 ```
 
 ## Verify Installation

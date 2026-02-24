@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/executor/function/default_function_executor.rs
+// src/core/executor/function/default_function_executor.rs
 // Implements default(value, defaultValue) - returns defaultValue if value is null
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/output/mod.rs
+// src/core/query/output/mod.rs
 
 // This module is for components related to query output processing in the core engine,
 // like output callbacks, specific output processors (e.g., for INSERT INTO, DELETE, UPDATE),

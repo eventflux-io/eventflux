@@ -7,15 +7,15 @@
 //! could be optimized with RwLock or lock-free structures.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::event::Event;
-use eventflux_rust::core::query::processor::Processor;
-use eventflux_rust::core::stream::{JunctionConfig, StreamJunction, StreamJunctionFactory};
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::definition::StreamDefinition;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::event::Event;
+use eventflux::core::query::processor::Processor;
+use eventflux::core::stream::{JunctionConfig, StreamJunction, StreamJunctionFactory};
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::definition::StreamDefinition;
+use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -35,7 +35,7 @@ impl BenchProcessor {
 impl Processor for BenchProcessor {
     fn process(
         &self,
-        _chunk: Option<Box<dyn eventflux_rust::core::event::complex_event::ComplexEvent>>,
+        _chunk: Option<Box<dyn eventflux::core::event::complex_event::ComplexEvent>>,
     ) {
         // Minimal processing - just consume the event
     }
@@ -48,7 +48,7 @@ impl Processor for BenchProcessor {
 
     fn clone_processor(
         &self,
-        _c: &Arc<eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext>,
+        _c: &Arc<eventflux::core::config::eventflux_query_context::EventFluxQueryContext>,
     ) -> Box<dyn Processor> {
         Box::new(BenchProcessor::new(self.name.clone()))
     }
@@ -66,9 +66,9 @@ impl Processor for BenchProcessor {
 
     fn get_eventflux_query_context(
         &self,
-    ) -> Arc<eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext> {
+    ) -> Arc<eventflux::core::config::eventflux_query_context::EventFluxQueryContext> {
         Arc::new(
-            eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext::new(
+            eventflux::core::config::eventflux_query_context::EventFluxQueryContext::new(
                 self.get_eventflux_app_context(),
                 "BenchQuery".to_string(),
                 None,
@@ -76,8 +76,8 @@ impl Processor for BenchProcessor {
         )
     }
 
-    fn get_processing_mode(&self) -> eventflux_rust::core::query::processor::ProcessingMode {
-        eventflux_rust::core::query::processor::ProcessingMode::DEFAULT
+    fn get_processing_mode(&self) -> eventflux::core::query::processor::ProcessingMode {
+        eventflux::core::query::processor::ProcessingMode::DEFAULT
     }
 
     fn is_stateful(&self) -> bool {
@@ -115,7 +115,7 @@ fn create_junction(subscriber_count: usize, is_async: bool) -> Arc<Mutex<StreamJ
     junction
         .lock()
         .unwrap()
-        .set_on_error_action(eventflux_rust::core::stream::stream_junction::OnErrorAction::DROP);
+        .set_on_error_action(eventflux::core::stream::stream_junction::OnErrorAction::DROP);
 
     junction
 }

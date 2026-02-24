@@ -10,17 +10,17 @@
 //! This fills the testing gap between unit tests (which manually construct StateEvents)
 //! and actual pattern query execution.
 
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::event::state::state_event::StateEvent;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::executor::collection_aggregation_executor::{
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::event::state::state_event::StateEvent;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::executor::collection_aggregation_executor::{
     CollectionAvgExecutor, CollectionCountExecutor, CollectionMinMaxExecutor,
     CollectionStdDevExecutor, CollectionSumExecutor,
 };
-use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-use eventflux_rust::core::util::eventflux_constants::BEFORE_WINDOW_DATA_INDEX;
-use eventflux_rust::query_api::definition::attribute::Type as ApiAttributeType;
+use eventflux::core::executor::expression_executor::ExpressionExecutor;
+use eventflux::core::util::eventflux_constants::BEFORE_WINDOW_DATA_INDEX;
+use eventflux::query_api::definition::attribute::Type as ApiAttributeType;
 use std::sync::{Arc, Mutex};
 
 // ============================================================================
@@ -949,22 +949,22 @@ mod edge_cases {
 
 mod end_to_end_processor_tests {
     use super::*;
-    use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-    use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-    use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-    use eventflux_rust::core::event::state::MetaStateEvent;
-    use eventflux_rust::core::event::state::StateEventCloner;
-    use eventflux_rust::core::event::state::StateEventFactory;
-    use eventflux_rust::core::event::stream::MetaStreamEvent;
-    use eventflux_rust::core::event::stream::StreamEventCloner;
-    use eventflux_rust::core::event::stream::StreamEventFactory;
-    use eventflux_rust::core::query::input::stream::state::count_post_state_processor::CountPostStateProcessor;
-    use eventflux_rust::core::query::input::stream::state::count_pre_state_processor::CountPreStateProcessor;
-    use eventflux_rust::core::query::input::stream::state::post_state_processor::PostStateProcessor;
-    use eventflux_rust::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
-    use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StateType;
-    use eventflux_rust::query_api::definition::stream_definition::StreamDefinition;
-    use eventflux_rust::query_api::EventFluxApp;
+    use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+    use eventflux::core::config::eventflux_context::EventFluxContext;
+    use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+    use eventflux::core::event::state::MetaStateEvent;
+    use eventflux::core::event::state::StateEventCloner;
+    use eventflux::core::event::state::StateEventFactory;
+    use eventflux::core::event::stream::MetaStreamEvent;
+    use eventflux::core::event::stream::StreamEventCloner;
+    use eventflux::core::event::stream::StreamEventFactory;
+    use eventflux::core::query::input::stream::state::count_post_state_processor::CountPostStateProcessor;
+    use eventflux::core::query::input::stream::state::count_pre_state_processor::CountPreStateProcessor;
+    use eventflux::core::query::input::stream::state::post_state_processor::PostStateProcessor;
+    use eventflux::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
+    use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
+    use eventflux::query_api::definition::stream_definition::StreamDefinition;
+    use eventflux::query_api::EventFluxApp;
 
     /// CapturingPreStateProcessor - captures StateEvents via add_state()
     /// This is wired as next_state_pre_processor to capture pattern output
@@ -1048,10 +1048,10 @@ mod end_to_end_processor_tests {
 
         fn get_shared_state(
             &self,
-        ) -> Arc<eventflux_rust::core::query::input::stream::state::shared_processor_state::ProcessorSharedState>
+        ) -> Arc<eventflux::core::query::input::stream::state::shared_processor_state::ProcessorSharedState>
         {
             Arc::new(
-                eventflux_rust::core::query::input::stream::state::shared_processor_state::ProcessorSharedState::new(),
+                eventflux::core::query::input::stream::state::shared_processor_state::ProcessorSharedState::new(),
             )
         }
 

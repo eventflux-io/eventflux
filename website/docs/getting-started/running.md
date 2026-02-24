@@ -112,7 +112,7 @@ For embedding EventFlux in your Rust applications, use the Rust API.
 ### Basic Example
 
 ```rust
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
+use eventflux::core::eventflux_manager::EventFluxManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -170,8 +170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### With RabbitMQ Source and Log Sink
 
 ```rust
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::stream::output::LogStreamCallback;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::stream::output::LogStreamCallback;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -230,12 +230,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 For complete programmatic control, build the application using the API:
 
 ```rust
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::definition::{
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::definition::{
     Attribute, StreamDefinition
 };
-use eventflux_rust::query_api::execution::{
+use eventflux::query_api::execution::{
     Query, QueryInput, QueryOutput, Selector
 };
 use std::sync::Arc;
@@ -309,8 +309,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### With Configuration File
 
 ```rust
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::config::ConfigManager;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::config::ConfigManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -344,13 +344,13 @@ The easiest way to run EventFlux is using the pre-built Docker image from GitHub
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/eventflux-io/engine:latest
+docker pull ghcr.io/eventflux-io/eventflux:latest
 
 # Run with your query file
 docker run --rm \
   -v $(pwd)/my_query.eventflux:/app/query.eventflux:ro \
   --network host \
-  ghcr.io/eventflux-io/engine:latest /app/query.eventflux
+  ghcr.io/eventflux-io/eventflux:latest /app/query.eventflux
 ```
 
 **No Rust toolchain required!** Just Docker Desktop and your `.eventflux` query file.
@@ -394,7 +394,7 @@ EOF
 docker run --rm \
   -v $(pwd)/my_app.eventflux:/app/query.eventflux:ro \
   --network host \
-  ghcr.io/eventflux-io/engine:latest /app/query.eventflux
+  ghcr.io/eventflux-io/eventflux:latest /app/query.eventflux
 ```
 
 #### Available Tags
@@ -407,13 +407,13 @@ docker run --rm \
 ### Building Your Own Image (Optional)
 
 If you’re reading this on the website and just want to run EventFlux, prefer the pre-built image:
-`ghcr.io/eventflux-io/engine:latest`.
+`ghcr.io/eventflux-io/eventflux:latest`.
 
 Building locally is mainly for contributors who are modifying the engine (or testing a fork/PR). The repository already
 includes a production-ready `Dockerfile` at the repo root. Build it with any local tag:
 
 ```bash
-docker build -t eventflux-engine:local .
+docker build -t eventflux:local .
 ```
 
 ### Running with Docker
@@ -423,14 +423,14 @@ docker build -t eventflux-engine:local .
 docker run --rm \
   -v $(pwd)/examples:/app/queries:ro \
   --network host \
-  eventflux-engine:local /app/queries/rabbitmq_to_log.eventflux
+  eventflux:local /app/queries/rabbitmq_to_log.eventflux
 
 # With file-based persistence
 docker run --rm \
   -v $(pwd)/examples:/app/queries:ro \
   -v $(pwd)/data:/app/data \
   --network host \
-  eventflux-engine:local /app/queries/rabbitmq.eventflux \
+  eventflux:local /app/queries/rabbitmq.eventflux \
     --set eventflux.persistence.type=file \
     --set eventflux.persistence.path=/app/data/snapshots
 
@@ -439,7 +439,7 @@ docker run --rm \
   -v $(pwd)/examples:/app/queries:ro \
   -v $(pwd)/data:/app/data \
   --network host \
-  eventflux-engine:local /app/queries/rabbitmq.eventflux \
+  eventflux:local /app/queries/rabbitmq.eventflux \
     --set eventflux.persistence.type=sqlite \
     --set eventflux.persistence.path=/app/data/eventflux.db
 ```
@@ -450,8 +450,8 @@ The repository includes a full `docker-compose.yml` with RabbitMQ, Redis, and Ev
 
 ```bash
 # Clone the repository
-git clone https://github.com/eventflux-io/engine.git
-cd engine
+git clone https://github.com/eventflux-io/eventflux.git
+cd eventflux
 
 # Start backing services (RabbitMQ + Redis)
 docker compose up -d rabbitmq redis
@@ -464,7 +464,7 @@ docker compose --profile tools up -d redis-commander
 
 # Run EventFlux (CLI-style container that executes a query file)
 # By default the repo wires `eventflux` to run `examples/rabbitmq_to_log_docker.eventflux`.
-docker compose --profile engine run --rm --no-deps eventflux /app/queries/rabbitmq_to_log_docker.eventflux
+docker compose --profile eventflux run --rm --no-deps eventflux /app/queries/rabbitmq_to_log_docker.eventflux
 
 # View EventFlux logs
 docker compose logs -f rabbitmq redis
@@ -489,7 +489,7 @@ services:
       retries: 5
 
   eventflux:
-    image: ghcr.io/eventflux-io/engine:latest
+    image: ghcr.io/eventflux-io/eventflux:latest
     depends_on:
       rabbitmq:
         condition: service_healthy

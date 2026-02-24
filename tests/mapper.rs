@@ -4,11 +4,11 @@
 mod common;
 use common::AppRunner;
 
-use eventflux_rust::core::event::event::Event;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::exception::EventFluxError;
-use eventflux_rust::core::stream::input::mapper::SourceMapper;
-use eventflux_rust::core::stream::output::mapper::SinkMapper;
+use eventflux::core::event::event::Event;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::exception::EventFluxError;
+use eventflux::core::stream::input::mapper::SourceMapper;
+use eventflux::core::stream::output::mapper::SinkMapper;
 
 #[derive(Debug, Clone)]
 struct CsvSourceMapper;

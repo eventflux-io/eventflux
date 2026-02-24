@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::{
+use eventflux::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_context::EventFluxContext,
     eventflux_query_context::EventFluxQueryContext,
 };
-use eventflux_rust::core::event::complex_event::{ComplexEvent, ComplexEventType};
-use eventflux_rust::core::event::stream::meta_stream_event::MetaStreamEvent;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::util::parser::{parse_expression, ExpressionParserContext};
-use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::expression::{variable::Variable, Expression};
+use eventflux::core::event::complex_event::{ComplexEvent, ComplexEventType};
+use eventflux::core::event::stream::meta_stream_event::MetaStreamEvent;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::util::parser::{parse_expression, ExpressionParserContext};
+use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::expression::{variable::Variable, Expression};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -85,7 +85,7 @@ fn test_window_variable_resolution() {
     );
     let mut win_meta = MetaStreamEvent::new_for_single_input(Arc::clone(&win_def));
     win_meta.event_type =
-        eventflux_rust::core::event::stream::meta_stream_event::MetaStreamEventType::WINDOW;
+        eventflux::core::event::stream::meta_stream_event::MetaStreamEventType::WINDOW;
     ctx.window_meta_map
         .insert("Win".to_string(), Arc::new(win_meta));
 
@@ -103,7 +103,7 @@ fn test_aggregation_variable_resolution() {
     );
     let mut agg_meta = MetaStreamEvent::new_for_single_input(Arc::clone(&agg_def));
     agg_meta.event_type =
-        eventflux_rust::core::event::stream::meta_stream_event::MetaStreamEventType::AGGREGATE;
+        eventflux::core::event::stream::meta_stream_event::MetaStreamEventType::AGGREGATE;
     ctx.aggregation_meta_map
         .insert("Agg".to_string(), Arc::new(agg_meta));
 

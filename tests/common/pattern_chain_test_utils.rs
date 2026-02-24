@@ -5,20 +5,20 @@
 //! Provides shared helpers, mock objects, and utilities to eliminate code duplication
 //! across Phase 2b test files.
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::event::state::state_event::StateEvent;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::query::input::stream::state::pattern_chain_builder::{
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::event::state::state_event::StateEvent;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::query::input::stream::state::pattern_chain_builder::{
     PatternChainBuilder, PatternStepConfig, ProcessorChain,
 };
-use eventflux_rust::core::query::input::stream::state::post_state_processor::PostStateProcessor;
-use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StateType;
-use eventflux_rust::query_api::definition::attribute::Type as AttributeType;
-use eventflux_rust::query_api::definition::stream_definition::StreamDefinition;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
+use eventflux::core::query::input::stream::state::post_state_processor::PostStateProcessor;
+use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
+use eventflux::query_api::definition::attribute::Type as AttributeType;
+use eventflux::query_api::definition::stream_definition::StreamDefinition;
+use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::{Arc, Mutex};
 
 /// Create test contexts for pattern chain tests
@@ -229,7 +229,7 @@ impl PostStateProcessor for CollectorPostProcessor {
 
     fn set_next_state_pre_processor(
         &mut self,
-        next_state_pre_processor: Arc<Mutex<dyn eventflux_rust::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>,
+        next_state_pre_processor: Arc<Mutex<dyn eventflux::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>,
     ) {
         self.original
             .lock()
@@ -239,7 +239,7 @@ impl PostStateProcessor for CollectorPostProcessor {
 
     fn set_next_every_state_pre_processor(
         &mut self,
-        next_every_state_pre_processor: Arc<Mutex<dyn eventflux_rust::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>,
+        next_every_state_pre_processor: Arc<Mutex<dyn eventflux::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>,
     ) {
         self.original
             .lock()
@@ -249,7 +249,7 @@ impl PostStateProcessor for CollectorPostProcessor {
 
     fn set_callback_pre_state_processor(
         &mut self,
-        callback_pre_state_processor: Arc<Mutex<dyn eventflux_rust::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>,
+        callback_pre_state_processor: Arc<Mutex<dyn eventflux::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>,
     ) {
         self.original
             .lock()
@@ -259,7 +259,7 @@ impl PostStateProcessor for CollectorPostProcessor {
 
     fn get_next_every_state_pre_processor(
         &self,
-    ) -> Option<Arc<Mutex<dyn eventflux_rust::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>>{
+    ) -> Option<Arc<Mutex<dyn eventflux::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>>{
         self.original
             .lock()
             .unwrap()
@@ -274,7 +274,7 @@ impl PostStateProcessor for CollectorPostProcessor {
         self.original.lock().unwrap().clear_processed_event();
     }
 
-    fn this_state_pre_processor(&self) -> Option<Arc<Mutex<dyn eventflux_rust::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>>{
+    fn this_state_pre_processor(&self) -> Option<Arc<Mutex<dyn eventflux::core::query::input::stream::state::pre_state_processor::PreStateProcessor>>>{
         self.original.lock().unwrap().this_state_pre_processor()
     }
 }

@@ -14,12 +14,12 @@ env:
   REGISTRY: ghcr.io
   # Always publish to the canonical org/repo image name.
   # (Forks can still run the workflow, but the job is skipped below.)
-  IMAGE_NAME: eventflux-io/engine
+  IMAGE_NAME: eventflux-io/eventflux
 
 jobs:
   build-and-push:
     # Only publish from the upstream repo (avoid forks pushing images).
-    if: ${{ github.repository == 'eventflux-io/engine' }}
+    if: ${{ github.repository == 'eventflux-io/eventflux' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

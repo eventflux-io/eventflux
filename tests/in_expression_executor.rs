@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::executor::condition::InExpressionExecutor;
-use eventflux_rust::core::executor::constant_expression_executor::ConstantExpressionExecutor;
-use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-use eventflux_rust::core::table::{InMemoryTable, Table};
-use eventflux_rust::query_api::definition::attribute::Type as ApiAttributeType;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::executor::condition::InExpressionExecutor;
+use eventflux::core::executor::constant_expression_executor::ConstantExpressionExecutor;
+use eventflux::core::executor::expression_executor::ExpressionExecutor;
+use eventflux::core::table::{InMemoryTable, Table};
+use eventflux::query_api::definition::attribute::Type as ApiAttributeType;
+use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::Arc;
 
 fn make_context_with_table() -> Arc<EventFluxAppContext> {

@@ -9,13 +9,13 @@
 mod common;
 
 use common::pattern_chain_test_utils::*;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::query::input::stream::state::pattern_chain_builder::{
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::query::input::stream::state::pattern_chain_builder::{
     PatternChainBuilder, PatternStepConfig, ProcessorChain,
 };
-use eventflux_rust::core::query::input::stream::state::post_state_processor::PostStateProcessor;
-use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StateType;
-use eventflux_rust::query_api::definition::stream_definition::StreamDefinition;
+use eventflux::core::query::input::stream::state::post_state_processor::PostStateProcessor;
+use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
+use eventflux::query_api::definition::stream_definition::StreamDefinition;
 use std::sync::{Arc, Mutex};
 
 // ============================================================================

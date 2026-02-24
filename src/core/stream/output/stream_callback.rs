@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/stream/output/stream_callback.rs
+// src/core/stream/output/stream_callback.rs
 // Corresponds to io.eventflux.core.stream.output.StreamCallback
 use crate::core::config::eventflux_app_context::EventFluxAppContext; // For setContext
 use crate::core::event::complex_event::ComplexEvent; // Trait

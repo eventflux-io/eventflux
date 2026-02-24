@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/input/stream/state/state_stream_runtime.rs
+// src/core/query/input/stream/state/state_stream_runtime.rs
 // StateStreamRuntime - manages InnerStateRuntime lifecycle
 
 use crate::core::query::input::stream::state::inner_state_runtime::InnerStateRuntime;

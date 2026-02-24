@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/util/type_system_tests.rs
+// src/core/util/type_system_tests.rs
 // Comprehensive tests for the type system implementation
 
 #[cfg(test)]

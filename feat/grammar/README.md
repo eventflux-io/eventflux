@@ -40,13 +40,13 @@ This directory contains the comprehensive SQL grammar documentation for EventFlu
 cat feat/grammar/GRAMMAR.md
 
 # Or on GitHub
-https://github.com/your-repo/eventflux_rust/blob/main/feat/grammar/GRAMMAR.md
+https://github.com/eventflux-io/eventflux/blob/main/feat/grammar/GRAMMAR.md
 ```
 
 ### Using SQL in Code
 
 ```rust
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
+use eventflux::core::eventflux_manager::EventFluxManager;
 
 let manager = EventFluxManager::new();
 

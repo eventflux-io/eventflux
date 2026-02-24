@@ -342,9 +342,9 @@ Patterns can be constructed programmatically using the Query API.
 ### Basic Sequence
 
 ```rust
-use eventflux_rust::query_api::execution::query::input::state::State;
-use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+use eventflux::query_api::execution::query::input::state::State;
+use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
 
 // Create stream references
 let a_si = SingleInputStream::new_basic("A".to_string(), false, false, None, Vec::new());
@@ -401,7 +401,7 @@ let every_pattern = State::every(inner_pattern);
 ### WITHIN Constraint
 
 ```rust
-use eventflux_rust::query_api::expression::constant::TimeUtil;
+use eventflux::query_api::expression::constant::TimeUtil;
 
 // Pattern with 10 second timeout
 let state_stream = StateInputStream::sequence_stream(pattern, Some(TimeUtil::sec(10)));

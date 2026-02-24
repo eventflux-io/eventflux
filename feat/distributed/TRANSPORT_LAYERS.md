@@ -18,7 +18,7 @@ Features:
 Configuration:
 
 ```rust
-use eventflux_rust::core::distributed::transport::{TcpTransport, TcpTransportConfig};
+use eventflux::core::distributed::transport::{TcpTransport, TcpTransportConfig};
 
 let config = TcpTransportConfig {
     connection_timeout_ms: 5000,
@@ -66,7 +66,7 @@ protoc --version
 Configuration:
 
 ```rust
-use eventflux_rust::core::distributed::grpc::simple_transport::{
+use eventflux::core::distributed::grpc::simple_transport::{
     SimpleGrpcTransport, SimpleGrpcConfig
 };
 

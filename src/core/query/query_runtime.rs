@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/query_runtime.rs
+// src/core/query/query_runtime.rs
 // Corresponds to io.eventflux.core.query.QueryRuntimeImpl
 use crate::core::config::eventflux_query_context::EventFluxQueryContext;
 use crate::core::query::processor::Processor; // The Processor trait

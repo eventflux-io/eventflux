@@ -9,8 +9,8 @@
 mod common;
 
 use common::pattern_chain_test_utils::*;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StateType;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 
 // Test 1: Simple single-step pattern first (A{1})
 #[test]

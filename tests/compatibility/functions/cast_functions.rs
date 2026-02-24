@@ -4,7 +4,7 @@
 // Reference: query/function/ConversionFunctionTestCase.java
 
 use crate::compatibility::common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 // ============================================================================
 // BASIC CAST OPERATIONS

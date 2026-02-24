@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/stream/input/mod.rs
+// src/core/stream/input/mod.rs
 
 pub mod input_distributor;
 pub mod input_entry_valve;

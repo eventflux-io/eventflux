@@ -7,13 +7,13 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-use eventflux_rust::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::executor::expression_executor::ExpressionExecutor;
+use eventflux::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::Arc;
 
 #[derive(Debug, Default)]
@@ -30,7 +30,7 @@ impl Clone for PlusOneFn {
 impl ExpressionExecutor for PlusOneFn {
     fn execute(
         &self,
-        event: Option<&dyn eventflux_rust::core::event::complex_event::ComplexEvent>,
+        event: Option<&dyn eventflux::core::event::complex_event::ComplexEvent>,
     ) -> Option<AttributeValue> {
         let v = self.arg.as_ref()?.execute(event)?;
         match v {

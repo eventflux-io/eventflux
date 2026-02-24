@@ -2,10 +2,10 @@
 
 // Integration test for gRPC transport in distributed mode
 
-use eventflux_rust::core::distributed::grpc::simple_transport::{
+use eventflux::core::distributed::grpc::simple_transport::{
     SimpleGrpcConfig, SimpleGrpcTransport,
 };
-use eventflux_rust::core::distributed::transport::{Message, MessageType};
+use eventflux::core::distributed::transport::{Message, MessageType};
 
 #[tokio::test]
 async fn test_simple_grpc_transport_creation() {
@@ -168,7 +168,7 @@ fn test_grpc_compression_settings() {
     // Should use Zstd compression when enabled
     assert_ne!(
         proto_msg_compressed.compression,
-        eventflux_rust::core::distributed::grpc::CompressionType::None as i32
+        eventflux::core::distributed::grpc::CompressionType::None as i32
     );
 
     // Test with compression disabled
@@ -181,6 +181,6 @@ fn test_grpc_compression_settings() {
     let proto_msg_uncompressed = transport_uncompressed.to_proto_message(&message);
     assert_eq!(
         proto_msg_uncompressed.compression,
-        eventflux_rust::core::distributed::grpc::CompressionType::None as i32
+        eventflux::core::distributed::grpc::CompressionType::None as i32
     );
 }

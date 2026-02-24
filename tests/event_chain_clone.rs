@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::event::complex_event::{clone_event_chain, ComplexEvent};
-use eventflux_rust::core::event::stream::{
+use eventflux::core::event::complex_event::{clone_event_chain, ComplexEvent};
+use eventflux::core::event::stream::{
     stream_event::StreamEvent, stream_event_cloner::StreamEventCloner,
     stream_event_factory::StreamEventFactory,
 };
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 #[test]
 fn test_clone_event_chain() {

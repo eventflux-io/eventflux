@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::config::{
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_context::EventFluxContext,
 };
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::event::event::Event;
-use eventflux_rust::core::event::stream::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::query::processor::Processor;
-use eventflux_rust::core::stream::stream_junction::StreamJunction;
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::definition::StreamDefinition;
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::event::event::Event;
+use eventflux::core::event::stream::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::query::processor::Processor;
+use eventflux::core::stream::stream_junction::StreamJunction;
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::definition::StreamDefinition;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -39,7 +39,7 @@ impl Processor for RecordingProcessor {
     fn set_next_processor(&mut self, _n: Option<Arc<Mutex<dyn Processor>>>) {}
     fn clone_processor(
         &self,
-        _c: &Arc<eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext>,
+        _c: &Arc<eventflux::core::config::eventflux_query_context::EventFluxQueryContext>,
     ) -> Box<dyn Processor> {
         Box::new(RecordingProcessor {
             events: Arc::clone(&self.events),
@@ -49,7 +49,7 @@ impl Processor for RecordingProcessor {
         Arc::new(EventFluxAppContext::new(
             Arc::new(EventFluxContext::new()),
             "T".to_string(),
-            Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+            Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
                 "T".to_string(),
             )),
             String::new(),
@@ -61,7 +61,7 @@ impl Processor for RecordingProcessor {
             Arc::new(EventFluxAppContext::new(
                 Arc::new(EventFluxContext::new()),
                 "T".to_string(),
-                Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+                Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
                     "T".to_string(),
                 )),
                 String::new(),
@@ -70,8 +70,8 @@ impl Processor for RecordingProcessor {
             None,
         ))
     }
-    fn get_processing_mode(&self) -> eventflux_rust::core::query::processor::ProcessingMode {
-        eventflux_rust::core::query::processor::ProcessingMode::DEFAULT
+    fn get_processing_mode(&self) -> eventflux::core::query::processor::ProcessingMode {
+        eventflux::core::query::processor::ProcessingMode::DEFAULT
     }
     fn is_stateful(&self) -> bool {
         false
@@ -86,7 +86,7 @@ fn setup_junction(
     Arc<Mutex<Vec<Vec<AttributeValue>>>>,
 ) {
     let eventflux_context = Arc::new(EventFluxContext::new());
-    let app = Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+    let app = Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
         "App".to_string(),
     ));
     let app_ctx = Arc::new(EventFluxAppContext::new(

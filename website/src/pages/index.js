@@ -50,7 +50,7 @@ function HeroSection() {
           </Link>
           <Link
             className="button button--secondary button--lg"
-            to="https://github.com/eventflux-io/engine"
+            to="https://github.com/eventflux-io/eventflux"
           >
             View on GitHub
           </Link>
@@ -372,7 +372,7 @@ function CTASection() {
             </Link>
             <Link
               className="button button--secondary button--lg"
-              to="https://github.com/eventflux-io/engine/discussions"
+              to="https://github.com/eventflux-io/eventflux/discussions"
             >
               Join the Discussion
             </Link>

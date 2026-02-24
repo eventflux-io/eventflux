@@ -6,7 +6,7 @@
 //! ConfigMaps, Secrets, and cloud-native patterns.
 
 #[cfg(feature = "kubernetes")]
-use eventflux_rust::core::config::{
+use eventflux::core::config::{
     loader::KubernetesConfigMapLoader, ApplicationConfig, ConfigManager, EventFluxConfig,
     PerformanceConfig, RuntimeMode,
 };

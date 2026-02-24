@@ -93,8 +93,8 @@ impl StreamDefinition {
     /// # Example
     ///
     /// ```
-    /// use eventflux_rust::query_api::definition::StreamDefinition;
-    /// use eventflux_rust::core::config::stream_config::{FlatConfig, PropertySource};
+    /// use eventflux::query_api::definition::StreamDefinition;
+    /// use eventflux::core::config::stream_config::{FlatConfig, PropertySource};
     ///
     /// let mut config = FlatConfig::new();
     /// config.set("extension", "timer", PropertySource::SqlWith);

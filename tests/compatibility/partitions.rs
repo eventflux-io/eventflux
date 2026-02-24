@@ -4,7 +4,7 @@
 // Reference: PartitionTestCase.java from the reference implementation
 
 use super::common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 // ============================================================================
 // BASIC PARTITION TESTS

@@ -9,13 +9,13 @@
 //! Events: A(1) → A(2) → B(3)
 //! Expected: 2 matches (A1-B3 AND A2-B3)
 
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::query::input::stream::state::pattern_chain_builder::{
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::query::input::stream::state::pattern_chain_builder::{
     PatternChainBuilder, PatternStepConfig,
 };
-use eventflux_rust::core::query::input::stream::state::post_state_processor::PostStateProcessor;
-use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StateType;
+use eventflux::core::query::input::stream::state::post_state_processor::PostStateProcessor;
+use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 use std::sync::{Arc, Mutex};
 
 mod common;

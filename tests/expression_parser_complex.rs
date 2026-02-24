@@ -3,22 +3,22 @@
 // NOTE: Some tests at the end of this file use old EventFluxQL syntax and are disabled for M1.
 // Tests using programmatic API (not parser) remain enabled and passing.
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::event::stream::meta_stream_event::MetaStreamEvent;
-use eventflux_rust::core::util::parser::QueryParser;
-use eventflux_rust::core::util::parser::{parse_expression, ExpressionParserContext};
-use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::execution::query::input::state::{State, StateElement};
-use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-use eventflux_rust::query_api::execution::query::input::stream::{
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::event::stream::meta_stream_event::MetaStreamEvent;
+use eventflux::core::util::parser::QueryParser;
+use eventflux::core::util::parser::{parse_expression, ExpressionParserContext};
+use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::execution::query::input::state::{State, StateElement};
+use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+use eventflux::query_api::execution::query::input::stream::{
     InputStream, JoinType, SingleInputStream,
 };
-use eventflux_rust::query_api::execution::query::Query;
-use eventflux_rust::query_api::expression::condition::compare::Operator as CompareOp;
-use eventflux_rust::query_api::expression::{Expression, Variable};
+use eventflux::query_api::execution::query::Query;
+use eventflux::query_api::expression::condition::compare::Operator as CompareOp;
+use eventflux::query_api::expression::{Expression, Variable};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -112,7 +112,7 @@ fn test_compare_type_coercion_int_double() {
     let result = exec.execute(None);
     assert_eq!(
         result,
-        Some(eventflux_rust::core::event::value::AttributeValue::Bool(
+        Some(eventflux::core::event::value::AttributeValue::Bool(
             true
         ))
     );
@@ -155,7 +155,7 @@ fn test_variable_not_found_error() {
 
 #[test]
 fn test_table_variable_resolution() {
-    use eventflux_rust::query_api::definition::TableDefinition;
+    use eventflux::query_api::definition::TableDefinition;
     let table = TableDefinition::new("T".to_string()).attribute("val".to_string(), AttrType::INT);
     let stream_equiv = Arc::new(
         StreamDefinition::new("T".to_string()).attribute("val".to_string(), AttrType::INT),
@@ -190,10 +190,10 @@ fn test_table_variable_resolution() {
 
 #[test]
 fn test_custom_udf_plus_one() {
-    use eventflux_rust::core::event::value::AttributeValue;
-    use eventflux_rust::core::eventflux_manager::EventFluxManager;
-    use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-    use eventflux_rust::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
+    use eventflux::core::event::value::AttributeValue;
+    use eventflux::core::eventflux_manager::EventFluxManager;
+    use eventflux::core::executor::expression_executor::ExpressionExecutor;
+    use eventflux::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
     #[derive(Debug, Default)]
     struct PlusOneFn {
         arg: Option<Box<dyn ExpressionExecutor>>,
@@ -208,7 +208,7 @@ fn test_custom_udf_plus_one() {
     impl ExpressionExecutor for PlusOneFn {
         fn execute(
             &self,
-            event: Option<&dyn eventflux_rust::core::event::complex_event::ComplexEvent>,
+            event: Option<&dyn eventflux::core::event::complex_event::ComplexEvent>,
         ) -> Option<AttributeValue> {
             let v = self.arg.as_ref()?.execute(event)?;
             match v {
@@ -305,14 +305,14 @@ fn test_join_query_parsing() {
         None,
         None,
     );
-    let mut selector = eventflux_rust::query_api::execution::query::selection::Selector::new();
+    let mut selector = eventflux::query_api::execution::query::selection::Selector::new();
     let insert_action =
-        eventflux_rust::query_api::execution::query::output::output_stream::InsertIntoStreamAction {
+        eventflux::query_api::execution::query::output::output_stream::InsertIntoStreamAction {
             target_id: "Out".to_string(),
             is_inner_stream: false,
             is_fault_stream: false,
         };
-    let out_stream = eventflux_rust::query_api::execution::query::output::output_stream::OutputStream::new(eventflux_rust::query_api::execution::query::output::output_stream::OutputStreamAction::InsertInto(insert_action), None);
+    let out_stream = eventflux::query_api::execution::query::output::output_stream::OutputStream::new(eventflux::query_api::execution::query::output::output_stream::OutputStreamAction::InsertInto(insert_action), None);
     let query = Query::query()
         .from(input)
         .select(selector)
@@ -323,7 +323,7 @@ fn test_join_query_parsing() {
     junctions.insert(
         "S1".to_string(),
         Arc::new(std::sync::Mutex::new(
-            eventflux_rust::core::stream::stream_junction::StreamJunction::new(
+            eventflux::core::stream::stream_junction::StreamJunction::new(
                 "S1".to_string(),
                 Arc::clone(&left_def),
                 Arc::clone(&app_ctx),
@@ -337,7 +337,7 @@ fn test_join_query_parsing() {
     junctions.insert(
         "S2".to_string(),
         Arc::new(std::sync::Mutex::new(
-            eventflux_rust::core::stream::stream_junction::StreamJunction::new(
+            eventflux::core::stream::stream_junction::StreamJunction::new(
                 "S2".to_string(),
                 Arc::clone(&right_def),
                 Arc::clone(&app_ctx),
@@ -351,7 +351,7 @@ fn test_join_query_parsing() {
     junctions.insert(
         "Out".to_string(),
         Arc::new(std::sync::Mutex::new(
-            eventflux_rust::core::stream::stream_junction::StreamJunction::new(
+            eventflux::core::stream::stream_junction::StreamJunction::new(
                 "Out".to_string(),
                 Arc::new(StreamDefinition::new("Out".to_string())),
                 Arc::clone(&app_ctx),
@@ -417,14 +417,14 @@ fn test_pattern_query_parsing() {
     let next = State::next(StateElement::Stream(sse1), StateElement::Stream(sse2));
     let state_stream = StateInputStream::sequence_stream(next, None);
     let input = InputStream::State(Box::new(state_stream));
-    let mut selector = eventflux_rust::query_api::execution::query::selection::Selector::new();
+    let mut selector = eventflux::query_api::execution::query::selection::Selector::new();
     let insert_action =
-        eventflux_rust::query_api::execution::query::output::output_stream::InsertIntoStreamAction {
+        eventflux::query_api::execution::query::output::output_stream::InsertIntoStreamAction {
             target_id: "Out".to_string(),
             is_inner_stream: false,
             is_fault_stream: false,
         };
-    let out_stream = eventflux_rust::query_api::execution::query::output::output_stream::OutputStream::new(eventflux_rust::query_api::execution::query::output::output_stream::OutputStreamAction::InsertInto(insert_action), None);
+    let out_stream = eventflux::query_api::execution::query::output::output_stream::OutputStream::new(eventflux::query_api::execution::query::output::output_stream::OutputStreamAction::InsertInto(insert_action), None);
     let query = Query::query()
         .from(input)
         .select(selector)
@@ -435,7 +435,7 @@ fn test_pattern_query_parsing() {
     junctions.insert(
         "A".to_string(),
         Arc::new(std::sync::Mutex::new(
-            eventflux_rust::core::stream::stream_junction::StreamJunction::new(
+            eventflux::core::stream::stream_junction::StreamJunction::new(
                 "A".to_string(),
                 Arc::clone(&a_def),
                 Arc::clone(&app_ctx),
@@ -449,7 +449,7 @@ fn test_pattern_query_parsing() {
     junctions.insert(
         "B".to_string(),
         Arc::new(std::sync::Mutex::new(
-            eventflux_rust::core::stream::stream_junction::StreamJunction::new(
+            eventflux::core::stream::stream_junction::StreamJunction::new(
                 "B".to_string(),
                 Arc::clone(&b_def),
                 Arc::clone(&app_ctx),
@@ -463,7 +463,7 @@ fn test_pattern_query_parsing() {
     junctions.insert(
         "Out".to_string(),
         Arc::new(std::sync::Mutex::new(
-            eventflux_rust::core::stream::stream_junction::StreamJunction::new(
+            eventflux::core::stream::stream_junction::StreamJunction::new(
                 "Out".to_string(),
                 Arc::new(StreamDefinition::new("Out".to_string())),
                 Arc::clone(&app_ctx),
@@ -488,8 +488,8 @@ fn test_pattern_query_parsing() {
 
 #[test]
 fn test_table_in_expression_query() {
-    use eventflux_rust::core::table::{InMemoryTable, Table};
-    use eventflux_rust::query_api::definition::TableDefinition;
+    use eventflux::core::table::{InMemoryTable, Table};
+    use eventflux::query_api::definition::TableDefinition;
 
     let s_def = Arc::new(
         StreamDefinition::new("S".to_string()).attribute("val".to_string(), AttrType::INT),
@@ -503,14 +503,14 @@ fn test_table_in_expression_query() {
     );
     let filtered = s_si.filter(filter);
     let input = InputStream::Single(filtered);
-    let selector = eventflux_rust::query_api::execution::query::selection::Selector::new();
+    let selector = eventflux::query_api::execution::query::selection::Selector::new();
     let insert_action =
-        eventflux_rust::query_api::execution::query::output::output_stream::InsertIntoStreamAction {
+        eventflux::query_api::execution::query::output::output_stream::InsertIntoStreamAction {
             target_id: "Out".to_string(),
             is_inner_stream: false,
             is_fault_stream: false,
         };
-    let out_stream = eventflux_rust::query_api::execution::query::output::output_stream::OutputStream::new(eventflux_rust::query_api::execution::query::output::output_stream::OutputStreamAction::InsertInto(insert_action), None);
+    let out_stream = eventflux::query_api::execution::query::output::output_stream::OutputStream::new(eventflux::query_api::execution::query::output::output_stream::OutputStreamAction::InsertInto(insert_action), None);
     let query = Query::query()
         .from(input)
         .select(selector)
@@ -525,7 +525,7 @@ fn test_table_in_expression_query() {
     junctions.insert(
         "S".to_string(),
         Arc::new(std::sync::Mutex::new(
-            eventflux_rust::core::stream::stream_junction::StreamJunction::new(
+            eventflux::core::stream::stream_junction::StreamJunction::new(
                 "S".to_string(),
                 Arc::clone(&s_def),
                 Arc::clone(&app_ctx),
@@ -539,7 +539,7 @@ fn test_table_in_expression_query() {
     junctions.insert(
         "Out".to_string(),
         Arc::new(std::sync::Mutex::new(
-            eventflux_rust::core::stream::stream_junction::StreamJunction::new(
+            eventflux::core::stream::stream_junction::StreamJunction::new(
                 "Out".to_string(),
                 Arc::new(StreamDefinition::new("Out".to_string())),
                 Arc::clone(&app_ctx),
@@ -571,7 +571,7 @@ fn test_table_in_expression_query() {
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn test_app_runner_join_via_app_runner() {
     use common::AppRunner;
-    use eventflux_rust::core::event::value::AttributeValue;
+    use eventflux::core::event::value::AttributeValue;
 
     let app = "\
         define stream L (id int);\n\
@@ -591,18 +591,18 @@ async fn test_app_runner_join_via_app_runner() {
 #[tokio::test]
 async fn test_app_runner_table_in_lookup() {
     use common::AppRunner;
-    use eventflux_rust::core::event::value::AttributeValue;
-    use eventflux_rust::query_api::definition::{StreamDefinition, TableDefinition};
-    use eventflux_rust::query_api::execution::execution_element::ExecutionElement;
-    use eventflux_rust::query_api::execution::query::input::stream::InputStream as ApiInputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::SingleInputStream;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::core::event::value::AttributeValue;
+    use eventflux::query_api::definition::{StreamDefinition, TableDefinition};
+    use eventflux::query_api::execution::execution_element::ExecutionElement;
+    use eventflux::query_api::execution::query::input::stream::InputStream as ApiInputStream;
+    use eventflux::query_api::execution::query::input::stream::SingleInputStream;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::Selector;
-    use eventflux_rust::query_api::execution::query::{OutputAttribute, Query};
+    use eventflux::query_api::execution::query::selection::Selector;
+    use eventflux::query_api::execution::query::{OutputAttribute, Query};
 
-    use eventflux_rust::core::config::stream_config::{FlatConfig, PropertySource};
+    use eventflux::core::config::stream_config::{FlatConfig, PropertySource};
 
     let s_def = StreamDefinition::new("S".to_string()).attribute("val".to_string(), AttrType::INT);
 
@@ -683,10 +683,10 @@ async fn test_app_runner_table_in_lookup() {
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn test_app_runner_custom_udf() {
     use common::AppRunner;
-    use eventflux_rust::core::event::value::AttributeValue;
-    use eventflux_rust::core::eventflux_manager::EventFluxManager;
-    use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-    use eventflux_rust::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
+    use eventflux::core::event::value::AttributeValue;
+    use eventflux::core::eventflux_manager::EventFluxManager;
+    use eventflux::core::executor::expression_executor::ExpressionExecutor;
+    use eventflux::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
 
     #[derive(Debug, Default)]
     struct PlusOneFn {
@@ -702,7 +702,7 @@ async fn test_app_runner_custom_udf() {
     impl ExpressionExecutor for PlusOneFn {
         fn execute(
             &self,
-            event: Option<&dyn eventflux_rust::core::event::complex_event::ComplexEvent>,
+            event: Option<&dyn eventflux::core::event::complex_event::ComplexEvent>,
         ) -> Option<AttributeValue> {
             let v = self.arg.as_ref()?.execute(event)?;
             match v {
@@ -710,13 +710,13 @@ async fn test_app_runner_custom_udf() {
                 _ => None,
             }
         }
-        fn get_return_type(&self) -> eventflux_rust::query_api::definition::attribute::Type {
-            eventflux_rust::query_api::definition::attribute::Type::INT
+        fn get_return_type(&self) -> eventflux::query_api::definition::attribute::Type {
+            eventflux::query_api::definition::attribute::Type::INT
         }
         fn clone_executor(
             &self,
             _ctx: &std::sync::Arc<
-                eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext,
+                eventflux::core::config::eventflux_app_context::EventFluxAppContext,
             >,
         ) -> Box<dyn ExpressionExecutor> {
             Box::new(self.clone())
@@ -728,7 +728,7 @@ async fn test_app_runner_custom_udf() {
             &mut self,
             args: &Vec<Box<dyn ExpressionExecutor>>,
             ctx: &std::sync::Arc<
-                eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext,
+                eventflux::core::config::eventflux_app_context::EventFluxAppContext,
             >,
         ) -> Result<(), String> {
             if args.len() != 1 {
@@ -768,7 +768,7 @@ async fn test_app_runner_custom_udf() {
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn app_runner_join_variable_resolution() {
     use common::AppRunner;
-    use eventflux_rust::core::event::value::AttributeValue;
+    use eventflux::core::event::value::AttributeValue;
 
     let app = "\
         define stream L (id int);\n\
@@ -793,7 +793,7 @@ async fn app_runner_join_variable_resolution() {
 #[ignore = "Pattern syntax not part of M1"]
 async fn app_runner_pattern_variable_resolution() {
     use common::AppRunner;
-    use eventflux_rust::core::event::value::AttributeValue;
+    use eventflux::core::event::value::AttributeValue;
 
     let app = "\
         define stream A (val int);\n\

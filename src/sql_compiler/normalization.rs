@@ -21,7 +21,7 @@ static CREATE_STREAM_RE: Lazy<Regex> =
 /// # Examples
 ///
 /// ```
-/// use eventflux_rust::sql_compiler::normalization::normalize_stream_syntax;
+/// use eventflux::sql_compiler::normalization::normalize_stream_syntax;
 ///
 /// assert_eq!(
 ///     normalize_stream_syntax("CREATE STREAM MyStream (x INT)"),

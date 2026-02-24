@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/input/stream/state/stream_post_state_processor.rs
+// src/core/query/input/stream/state/stream_post_state_processor.rs
 // StreamPostStateProcessor implementation for handling successful pattern matches
 
 use crate::core::event::complex_event::ComplexEvent;

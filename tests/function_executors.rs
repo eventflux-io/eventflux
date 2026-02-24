@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::executor::constant_expression_executor::ConstantExpressionExecutor;
-use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-use eventflux_rust::core::executor::function::{
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::executor::constant_expression_executor::ConstantExpressionExecutor;
+use eventflux::core::executor::expression_executor::ExpressionExecutor;
+use eventflux::core::executor::function::{
     CoalesceFunctionExecutor, InstanceOfStringExpressionExecutor, UuidFunctionExecutor,
 };
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::definition::attribute::Type as AttrType;
 
 #[test]
 fn test_coalesce_function() {

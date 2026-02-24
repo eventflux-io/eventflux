@@ -6,12 +6,12 @@
 //! These tests verify that patterns parsed from SQL correctly produce
 //! StateInputStream structures that can be used by the pattern runtime.
 
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::definition::StreamDefinition;
-use eventflux_rust::query_api::execution::query::input::state::StateElement;
-use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::Type as StateType;
-use eventflux_rust::sql_compiler::{SqlCatalog, SqlConverter};
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::definition::StreamDefinition;
+use eventflux::query_api::execution::query::input::state::StateElement;
+use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+use eventflux::query_api::execution::query::input::stream::state_input_stream::Type as StateType;
+use eventflux::sql_compiler::{SqlCatalog, SqlConverter};
 use sqlparser::ast::{Ident, ObjectName, ObjectNamePart, PatternExpression, PatternMode};
 
 fn setup_catalog() -> SqlCatalog {
@@ -554,8 +554,8 @@ fn test_e2e_pattern_vs_sequence_mode() {
 
 #[test]
 fn test_e2e_array_access_numeric_index() {
-    use eventflux_rust::query_api::expression::expression::Expression;
-    use eventflux_rust::query_api::expression::indexed_variable::EventIndex;
+    use eventflux::query_api::expression::expression::Expression;
+    use eventflux::query_api::expression::indexed_variable::EventIndex;
     use sqlparser::ast::{AccessExpr, Expr as SqlExpr, Subscript};
 
     let catalog = setup_catalog();
@@ -594,8 +594,8 @@ fn test_e2e_array_access_numeric_index() {
 
 #[test]
 fn test_e2e_array_access_last_index() {
-    use eventflux_rust::query_api::expression::expression::Expression;
-    use eventflux_rust::query_api::expression::indexed_variable::EventIndex;
+    use eventflux::query_api::expression::expression::Expression;
+    use eventflux::query_api::expression::indexed_variable::EventIndex;
     use sqlparser::ast::{AccessExpr, Expr as SqlExpr, Subscript};
 
     let catalog = setup_catalog();
@@ -938,8 +938,8 @@ fn test_e2e_trading_signal_with_every() {
 
 #[test]
 fn test_e2e_indexed_access_in_brute_force_pattern() {
-    use eventflux_rust::query_api::expression::expression::Expression;
-    use eventflux_rust::query_api::expression::indexed_variable::EventIndex;
+    use eventflux::query_api::expression::expression::Expression;
+    use eventflux::query_api::expression::indexed_variable::EventIndex;
     use sqlparser::ast::{AccessExpr, Expr as SqlExpr, Subscript};
 
     let catalog = setup_security_catalog();
@@ -1007,8 +1007,8 @@ fn test_e2e_indexed_access_in_brute_force_pattern() {
 
 #[test]
 fn test_e2e_indexed_access_in_trading_pattern() {
-    use eventflux_rust::query_api::expression::expression::Expression;
-    use eventflux_rust::query_api::expression::indexed_variable::EventIndex;
+    use eventflux::query_api::expression::expression::Expression;
+    use eventflux::query_api::expression::indexed_variable::EventIndex;
     use sqlparser::ast::{AccessExpr, Expr as SqlExpr, Subscript};
 
     let catalog = setup_trading_catalog();

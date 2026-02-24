@@ -296,7 +296,7 @@ use tracing_subscriber::layer::SubscriberExt;
 
 // Initialize tracer
 let tracer = opentelemetry_jaeger::new_agent_pipeline()
-    .with_service_name("eventflux-rust")
+    .with_service_name("eventflux")
     .install_simple()?;
 
 // Instrument query execution
@@ -634,7 +634,7 @@ Query Execution (root span)
 ### Span Attributes
 
 **Standard Attributes**:
-- `service.name`: "eventflux-rust"
+- `service.name`: "eventflux"
 - `service.version`: "0.2.0"
 - `deployment.environment`: "production" | "staging" | "dev"
 

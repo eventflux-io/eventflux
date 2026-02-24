@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::event::{value::AttributeValue, Event};
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::persistence::{
+use eventflux::core::event::{value::AttributeValue, Event};
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::persistence::{
     InMemoryPersistenceStore, PersistenceStore, SnapshotService,
 };
-use eventflux_rust::core::stream::output::stream_callback::StreamCallback;
-use eventflux_rust::core::util::{event_from_bytes, event_to_bytes};
-use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::execution::{
+use eventflux::core::stream::output::stream_callback::StreamCallback;
+use eventflux::core::util::{event_from_bytes, event_to_bytes};
+use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::execution::{
     query::{
         input::stream::{single_input_stream::SingleInputStream, InputStream},
         output::output_stream::{InsertIntoStreamAction, OutputStream, OutputStreamAction},
@@ -85,7 +85,7 @@ async fn test_runtime_persist_restore() {
         .window(
             None,
             "length".to_string(),
-            vec![eventflux_rust::query_api::expression::Expression::value_int(2)],
+            vec![eventflux::query_api::expression::Expression::value_int(2)],
         );
     let input = InputStream::Single(si);
     let selector = Selector::new();

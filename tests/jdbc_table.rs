@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::persistence::data_source::{DataSource, DataSourceConfig};
-use eventflux_rust::core::table::{
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::persistence::data_source::{DataSource, DataSourceConfig};
+use eventflux::core::table::{
     InMemoryCompiledCondition, InMemoryCompiledUpdateSet, JdbcTable, Table,
 };
 use rusqlite::Connection;

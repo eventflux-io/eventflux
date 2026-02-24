@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/processor/stream/window/time_window_state_holder.rs
+// src/core/query/processor/stream/window/time_window_state_holder.rs
 
 //! Enhanced StateHolder implementation for TimeWindowProcessor
 //!

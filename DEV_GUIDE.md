@@ -22,7 +22,7 @@ This guide covers building, testing, running, and contributing to EventFlux.
 - Protocol Buffer Compiler (for gRPC features)
 
 MSRV is enforced via `Cargo.toml` (`package.rust-version`) and CI. If you don’t want to install Rust locally, use the
-official Docker image (`ghcr.io/eventflux-io/engine:latest`) for running `.eventflux` queries.
+official Docker image (`ghcr.io/eventflux-io/eventflux:latest`) for running `.eventflux` queries.
 
 ```bash
 # Install protoc (required for gRPC transport)
@@ -181,7 +181,7 @@ cargo bench
 ## Project Structure
 
 ```
-eventflux-engine/
+eventflux/
 ├── src/
 │   ├── core/                    # Runtime execution engine
 │   │   ├── ai/                  # AI/LLM integration (planned)
@@ -314,9 +314,9 @@ See [ASYNC_STREAMS_GUIDE.md](ASYNC_STREAMS_GUIDE.md) for details.
 ### Registering Tables
 
 ```rust
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::table::{InMemoryTable, Table};
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::table::{InMemoryTable, Table};
+use eventflux::core::event::value::AttributeValue;
 use std::sync::Arc;
 
 let manager = EventFluxManager::new();
@@ -329,7 +329,7 @@ ctx.add_table("MyTable".to_string(), table);
 ### Registering User-Defined Functions
 
 ```rust
-use eventflux_rust::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
+use eventflux::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
 
 #[derive(Debug, Clone)]
 struct CounterFn;
@@ -353,7 +353,7 @@ manager.add_scalar_function_factory("counter".to_string(), Box::new(CounterFn));
 ### Registering Windows and Aggregators
 
 ```rust
-use eventflux_rust::core::extension::{WindowProcessorFactory, AttributeAggregatorFactory};
+use eventflux::core::extension::{WindowProcessorFactory, AttributeAggregatorFactory};
 
 let manager = EventFluxManager::new();
 manager.add_window_factory("myWindow".to_string(), Box::new(MyWindowFactory));
@@ -458,8 +458,8 @@ docker compose down
 ### Redis Configuration
 
 ```rust
-use eventflux_rust::core::persistence::RedisPersistenceStore;
-use eventflux_rust::core::distributed::RedisConfig;
+use eventflux::core::persistence::RedisPersistenceStore;
+use eventflux::core::distributed::RedisConfig;
 
 let config = RedisConfig {
     url: "redis://localhost:6379".to_string(),

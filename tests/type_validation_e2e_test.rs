@@ -3,7 +3,7 @@
 // These tests match the Java Siddhi reference implementation exactly.
 // They test validation at SQL parse/compile time.
 
-use eventflux_rust::sql_compiler::parse;
+use eventflux::sql_compiler::parse;
 
 // ============================================================================
 // 1.1 Boolean Comparison Type Validation

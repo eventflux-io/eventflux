@@ -44,7 +44,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use eventflux_rust::core::config::element_config_resolver::ElementConfigResolver;
+//! use eventflux::core::config::element_config_resolver::ElementConfigResolver;
 //!
 //! let resolver = ElementConfigResolver::new(yaml_config.as_ref());
 //! let resolved = resolver.resolve_all(

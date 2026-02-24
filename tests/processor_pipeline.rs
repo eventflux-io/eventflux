@@ -3,7 +3,7 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 #[tokio::test]
 async fn test_processor_pipeline() {
@@ -22,16 +22,16 @@ async fn test_processor_pipeline() {
 
 #[tokio::test]
 async fn test_order_by_limit_offset() {
-    use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-    use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+    use eventflux::query_api::eventflux_app::EventFluxApp;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::order_by_attribute::Order;
-    use eventflux_rust::query_api::execution::query::selection::Selector;
-    use eventflux_rust::query_api::execution::query::{input::InputStream, Query};
-    use eventflux_rust::query_api::execution::ExecutionElement;
-    use eventflux_rust::query_api::expression::{constant::Constant, variable::Variable};
+    use eventflux::query_api::execution::query::selection::order_by_attribute::Order;
+    use eventflux::query_api::execution::query::selection::Selector;
+    use eventflux::query_api::execution::query::{input::InputStream, Query};
+    use eventflux::query_api::execution::ExecutionElement;
+    use eventflux::query_api::expression::{constant::Constant, variable::Variable};
 
     let mut app = EventFluxApp::new("App".to_string());
     app.add_stream_definition(
@@ -78,16 +78,16 @@ async fn test_order_by_limit_offset() {
 
 #[tokio::test]
 async fn test_group_by_order_by() {
-    use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-    use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+    use eventflux::query_api::eventflux_app::EventFluxApp;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::order_by_attribute::Order;
-    use eventflux_rust::query_api::execution::query::selection::Selector;
-    use eventflux_rust::query_api::execution::query::{input::InputStream, Query};
-    use eventflux_rust::query_api::execution::ExecutionElement;
-    use eventflux_rust::query_api::expression::variable::Variable;
+    use eventflux::query_api::execution::query::selection::order_by_attribute::Order;
+    use eventflux::query_api::execution::query::selection::Selector;
+    use eventflux::query_api::execution::query::{input::InputStream, Query};
+    use eventflux::query_api::execution::ExecutionElement;
+    use eventflux::query_api::expression::variable::Variable;
 
     let mut app = EventFluxApp::new("App2".to_string());
     app.add_stream_definition(

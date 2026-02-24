@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/event/state/state_event_cloner.rs
+// src/core/event/state/state_event_cloner.rs
 // Simplified port of io.eventflux.core.event.state.StateEventCloner
 use super::{
     meta_state_event::MetaStateEvent, state_event::StateEvent,

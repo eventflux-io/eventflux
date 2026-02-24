@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/input/stream/state/receiver/sequence_stream_receiver.rs
+// src/core/query/input/stream/state/receiver/sequence_stream_receiver.rs
 // SequenceStreamReceiver for stabilizing sequence processor state
 
 use crate::core::query::input::stream::state::pre_state_processor::PreStateProcessor;

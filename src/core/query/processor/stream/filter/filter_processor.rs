@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/processor/stream/filter/filter_processor.rs
+// src/core/query/processor/stream/filter/filter_processor.rs
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::eventflux_query_context::EventFluxQueryContext; // For clone_processor
 use crate::core::event::complex_event::ComplexEvent; // Trait

@@ -10,7 +10,7 @@
 
 services:
   eventflux:
-    image: ghcr.io/eventflux-io/engine:latest
+    image: ghcr.io/eventflux-io/eventflux:latest
     container_name: eventflux-crypto-demo
     command: ["/app/query.eventflux"]
     volumes:

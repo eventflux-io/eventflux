@@ -48,7 +48,7 @@ impl ErrorStrategy {
     ///
     /// # Examples
     /// ```
-    /// use eventflux_rust::core::error::ErrorStrategy;
+    /// use eventflux::core::error::ErrorStrategy;
     ///
     /// assert_eq!(ErrorStrategy::from_str("drop").unwrap(), ErrorStrategy::Drop);
     /// assert_eq!(ErrorStrategy::from_str("RETRY").unwrap(), ErrorStrategy::Retry);

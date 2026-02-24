@@ -47,8 +47,8 @@
 //! ## Usage Example
 //!
 //! ```rust,ignore
-//! use eventflux_rust::core::error::*;
-//! use eventflux_rust::core::config::FlatConfig;
+//! use eventflux::core::error::*;
+//! use eventflux::core::config::FlatConfig;
 //!
 //! // Parse error configuration
 //! let mut config = FlatConfig::new();

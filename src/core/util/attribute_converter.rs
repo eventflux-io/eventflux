@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/util/attribute_converter.rs
+// src/core/util/attribute_converter.rs
 // Utility helpers for converting between arbitrary values and AttributeValue
 // according to the desired Attribute::Type.  This is a comprehensive port of
 // io.eventflux.core.util.AttributeConverter with Java-compatible behavior.

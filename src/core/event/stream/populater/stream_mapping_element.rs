@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/event/stream/populater/stream_mapping_element.rs
+// src/core/event/stream/populater/stream_mapping_element.rs
 #[derive(Debug, Clone)]
 pub struct StreamMappingElement {
     pub from_position: usize,

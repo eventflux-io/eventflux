@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/event/value.rs
+// src/core/event/value.rs
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any::Any;
 use std::fmt;

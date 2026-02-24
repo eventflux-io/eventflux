@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/event/stream/stream_event_cloner.rs
+// src/core/event/stream/stream_event_cloner.rs
 // Utility for cloning StreamEvents similar to io.eventflux.core.event.stream.StreamEventCloner
 
 use super::{

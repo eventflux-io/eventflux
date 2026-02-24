@@ -3,9 +3,9 @@
 // Integration tests for SQL compiler
 // Tests end-to-end flow: SQL → Runtime → Event Processing → Output
 
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::stream::output::stream_callback::StreamCallback;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::stream::output::stream_callback::StreamCallback;
 use std::sync::{Arc, Mutex};
 
 /// Test callback that collects events
@@ -31,7 +31,7 @@ impl TestCallback {
 }
 
 impl StreamCallback for TestCallback {
-    fn receive_events(&self, events: &[eventflux_rust::core::event::event::Event]) {
+    fn receive_events(&self, events: &[eventflux::core::event::event::Event]) {
         let mut collected = self.events.lock().unwrap();
         for event in events {
             collected.push(event.data.clone());

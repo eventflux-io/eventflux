@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/util/parser/mod.rs
+// src/core/util/parser/mod.rs
 
 pub mod eventflux_app_parser; // Added
 pub mod expression_parser;

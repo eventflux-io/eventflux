@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/processor/mod.rs
+// src/core/query/processor/mod.rs
 // This file now acts as the module root for the `processor` directory.
 // Its content is based on the old `processor.rs` file.
 

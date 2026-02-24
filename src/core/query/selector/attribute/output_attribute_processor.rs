@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/selector/attribute/output_attribute_processor.rs
+// src/core/query/selector/attribute/output_attribute_processor.rs
 // Corresponds to io.eventflux.core.query.selector.attribute.processor.AttributeProcessor
 use crate::core::config::eventflux_app_context::EventFluxAppContext; // For cloning executor
 use crate::core::event::complex_event::ComplexEvent; // Trait

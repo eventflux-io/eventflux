@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/processor/stream/window/changelog_helpers.rs
+// src/core/query/processor/stream/window/changelog_helpers.rs
 
 //! Common helpers for applying changelog operations to window state holders
 //!

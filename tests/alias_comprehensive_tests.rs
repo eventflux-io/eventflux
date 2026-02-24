@@ -6,7 +6,7 @@
 mod common;
 
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 // ============================================================================
 // STREAM JOIN ALIAS TESTS

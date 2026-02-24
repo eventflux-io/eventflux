@@ -212,7 +212,7 @@ static ENV_VAR_REGEX: Lazy<Regex> =
 /// # Examples
 ///
 /// ```
-/// use eventflux_rust::core::config::toml_config::substitute_env_vars;
+/// use eventflux::core::config::toml_config::substitute_env_vars;
 ///
 /// std::env::set_var("KAFKA_BROKER", "kafka:9092");
 ///

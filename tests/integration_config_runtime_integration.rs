@@ -5,16 +5,16 @@
 //! Tests the complete flow from YAML configuration loading to runtime component behavior
 //! verification, ensuring that configuration values are properly applied to processors.
 
-use eventflux_rust::core::config::types::application_config::{DefinitionConfig, WindowConfig};
-use eventflux_rust::core::config::types::*;
-use eventflux_rust::core::config::{
+use eventflux::core::config::types::application_config::{DefinitionConfig, WindowConfig};
+use eventflux::core::config::types::*;
+use eventflux::core::config::{
     ApplicationConfig, ConfigManager, ConfigValue, EventFluxConfig, ProcessorConfigReader,
     RuntimeMode,
 };
-use eventflux_rust::core::event::{Event, StreamEvent};
-use eventflux_rust::core::eventflux_manager::EventFluxManager as Manager;
-use eventflux_rust::core::stream::output::stream_callback::StreamCallback;
-use eventflux_rust::core::EventFluxManager;
+use eventflux::core::event::{Event, StreamEvent};
+use eventflux::core::eventflux_manager::EventFluxManager as Manager;
+use eventflux::core::stream::output::stream_callback::StreamCallback;
+use eventflux::core::EventFluxManager;
 use serial_test::serial;
 use std::collections::HashMap;
 use std::io::Write;

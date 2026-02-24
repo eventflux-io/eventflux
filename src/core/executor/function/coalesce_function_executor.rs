@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/executor/function/coalesce_function_executor.rs
+// src/core/executor/function/coalesce_function_executor.rs
 // Corresponds to io.eventflux.core.executor.function.CoalesceFunctionExecutor
 use crate::core::event::complex_event::ComplexEvent; // Trait
 use crate::core::event::value::AttributeValue;

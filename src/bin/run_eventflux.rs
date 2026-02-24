@@ -8,17 +8,17 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use eventflux_rust::core::config::types::global_config::PersistenceBackendType;
-use eventflux_rust::core::config::{
+use eventflux::core::config::types::global_config::PersistenceBackendType;
+use eventflux::core::config::{
     apply_config_overrides, ConfigManager, EventFluxConfig, GlobalPersistenceConfig,
 };
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::persistence::{
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::persistence::{
     FilePersistenceStore, PersistenceStore, SqlitePersistenceStore,
 };
 
 #[derive(Parser, Debug)]
-#[command(about = "Run a EventFluxQL file", author, version)]
+#[command(about = "Run an EventFluxQL file", author, version)]
 struct Cli {
     /// EventFluxQL file to execute
     eventflux_file: PathBuf,

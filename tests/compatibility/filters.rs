@@ -4,7 +4,7 @@
 // Reference: query/FilterTestCase1.java, query/FilterTestCase2.java
 
 use super::common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 // ============================================================================
 // BASIC COMPARISON OPERATORS

@@ -529,7 +529,7 @@ docker run -e RABBITMQ_HOST=prod-rabbitmq \
            -e PERSISTENCE_PATH=/data/eventflux.db \
            -v ./config:/app/config \
            -v ./data:/data \
-           eventflux-engine /app/queries/app.eventflux \
+           eventflux:local /app/queries/app.eventflux \
            --config /app/config/eventflux.yaml
 ```
 

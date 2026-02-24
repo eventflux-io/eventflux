@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/eventflux_manager.rs
+// src/core/eventflux_manager.rs
 use crate::core::config::eventflux_context::EventFluxContext;
 use crate::core::eventflux_app_runtime::EventFluxAppRuntime;
 use crate::query_api::eventflux_app::EventFluxApp as ApiEventFluxApp;

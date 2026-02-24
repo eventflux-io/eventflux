@@ -12,13 +12,13 @@
 // 1.9 Every Keyword with Table Prevention
 // 1.10 Every Keyword with Aggregation Prevention (infrastructure ready)
 
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::executor::condition::compare_expression_executor::CompareExpressionExecutor;
-use eventflux_rust::core::executor::condition::not_expression_executor::NotExpressionExecutor;
-use eventflux_rust::core::executor::constant_expression_executor::ConstantExpressionExecutor;
-use eventflux_rust::query_api::definition::attribute::Type as AttributeType;
-use eventflux_rust::query_api::expression::condition::CompareOperator;
-use eventflux_rust::sql_compiler::parse;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::executor::condition::compare_expression_executor::CompareExpressionExecutor;
+use eventflux::core::executor::condition::not_expression_executor::NotExpressionExecutor;
+use eventflux::core::executor::constant_expression_executor::ConstantExpressionExecutor;
+use eventflux::query_api::definition::attribute::Type as AttributeType;
+use eventflux::query_api::expression::condition::CompareOperator;
+use eventflux::sql_compiler::parse;
 
 // ============================================================================
 // 1.1 Boolean Comparison Type Validation

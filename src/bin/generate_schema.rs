@@ -18,7 +18,7 @@
 //!
 //! Output is written to: `studio/webview/src/schemas/eventflux-schema.json`
 
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;

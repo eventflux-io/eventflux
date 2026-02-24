@@ -3,9 +3,9 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::query_api::definition::TriggerDefinition;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::expression::constant::TimeUtil;
+use eventflux::query_api::definition::TriggerDefinition;
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::expression::constant::TimeUtil;
 use std::thread::sleep;
 use std::time::Duration;
 

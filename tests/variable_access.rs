@@ -7,8 +7,8 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::query_api::aggregation::time_period::Duration;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::query_api::aggregation::time_period::Duration;
 
 #[tokio::test]
 #[ignore = "Old EventFluxQL syntax not part of M1"]

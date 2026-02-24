@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::sync::{Arc, Mutex};
-use eventflux_rust::core::config::{eventflux_app_context::EventFluxAppContext, eventflux_query_context::EventFluxQueryContext};
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::extension::WindowProcessorFactory;
-use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-use eventflux_rust::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
-use eventflux_rust::core::query::processor::{CommonProcessorMeta, ProcessingMode, Processor};
-use eventflux_rust::core::query::processor::stream::window::WindowProcessor;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::execution::query::input::handler::WindowHandler;
+use eventflux::core::config::{eventflux_app_context::EventFluxAppContext, eventflux_query_context::EventFluxQueryContext};
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::extension::WindowProcessorFactory;
+use eventflux::core::executor::expression_executor::ExpressionExecutor;
+use eventflux::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
+use eventflux::core::query::processor::{CommonProcessorMeta, ProcessingMode, Processor};
+use eventflux::core::query::processor::stream::window::WindowProcessor;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::execution::query::input::handler::WindowHandler;
 
 #[derive(Debug)]
 struct DynWindowProcessor {
@@ -59,7 +59,7 @@ impl WindowProcessor for DynWindowProcessor {}
 struct DynWindowFactory;
 impl WindowProcessorFactory for DynWindowFactory {
     fn name(&self) -> &'static str { "dynWindow" }
-    fn create(&self, _h: &WindowHandler, app: Arc<EventFluxAppContext>, q: Arc<EventFluxQueryContext>, _parse_ctx: &eventflux_rust::core::util::parser::expression_parser::ExpressionParserContext) -> Result<Arc<Mutex<dyn Processor>>, String> {
+    fn create(&self, _h: &WindowHandler, app: Arc<EventFluxAppContext>, q: Arc<EventFluxQueryContext>, _parse_ctx: &eventflux::core::util::parser::expression_parser::ExpressionParserContext) -> Result<Arc<Mutex<dyn Processor>>, String> {
         Ok(Arc::new(Mutex::new(DynWindowProcessor { meta: CommonProcessorMeta::new(app, q) })))
     }
     fn clone_box(&self) -> Box<dyn WindowProcessorFactory> { Box::new(self.clone()) }

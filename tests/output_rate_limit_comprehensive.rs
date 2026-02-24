@@ -8,8 +8,8 @@
 mod common;
 
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::persistence::{InMemoryPersistenceStore, PersistenceStore};
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::persistence::{InMemoryPersistenceStore, PersistenceStore};
 use std::sync::Arc;
 
 // ============================================================================
@@ -705,7 +705,7 @@ async fn test_state_persistence_last_behavior() {
 /// This test verifies the SQL parser correctly rejects invalid syntax
 #[test]
 fn test_parser_rejects_snapshot_with_events() {
-    use eventflux_rust::sql_compiler;
+    use eventflux::sql_compiler;
 
     // SNAPSHOT mode is only valid with time units, not EVENTS
     let sql = r#"
@@ -724,7 +724,7 @@ fn test_parser_rejects_snapshot_with_events() {
 /// Test: Converter rejects zero event count
 #[test]
 fn test_converter_rejects_zero_events() {
-    use eventflux_rust::sql_compiler;
+    use eventflux::sql_compiler;
 
     let sql = r#"
         CREATE STREAM Input (value INT);
@@ -741,7 +741,7 @@ fn test_converter_rejects_zero_events() {
 /// Test: Converter rejects zero time duration
 #[test]
 fn test_converter_rejects_zero_time() {
-    use eventflux_rust::sql_compiler;
+    use eventflux::sql_compiler;
 
     let sql = r#"
         CREATE STREAM Input (value INT);

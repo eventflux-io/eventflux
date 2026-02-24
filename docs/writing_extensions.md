@@ -10,8 +10,8 @@ A table extension implements the `Table` trait and provides a corresponding
 `TableFactory`.  The factory is registered under a unique name:
 
 ```rust
-use eventflux_rust::core::extension::TableFactory;
-use eventflux_rust::core::table::Table;
+use eventflux::core::extension::TableFactory;
+use eventflux::core::table::Table;
 
 pub struct MyTable;
 impl Table for MyTable { /* ... */ }
@@ -24,7 +24,7 @@ impl TableFactory for MyTableFactory {
         &self,
         name: String,
         props: std::collections::HashMap<String, String>,
-        ctx: std::sync::Arc<eventflux_rust::core::config::eventflux_context::EventFluxContext>,
+        ctx: std::sync::Arc<eventflux::core::config::eventflux_context::EventFluxContext>,
     ) -> Result<std::sync::Arc<dyn Table>, String> {
         Ok(std::sync::Arc::new(MyTable))
     }
@@ -73,7 +73,7 @@ can register any number of factories.  Only the callbacks required by your
 extension need to be implemented.  A minimal crate might look like:
 
 ```rust
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
+use eventflux::core::eventflux_manager::EventFluxManager;
 
 #[no_mangle]
 pub extern "C" fn register_functions(manager: &EventFluxManager) {

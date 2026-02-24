@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/window/window_runtime.rs
+// src/core/window/window_runtime.rs
 
 use crate::core::query::processor::Processor;
 use crate::query_api::definition::WindowDefinition;

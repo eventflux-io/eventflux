@@ -1,6 +1,6 @@
 // Test to verify JOIN validation and error handling
 
-use eventflux_rust::sql_compiler::parse;
+use eventflux::sql_compiler::parse;
 
 #[test]
 fn test_join_using_clause_error() {

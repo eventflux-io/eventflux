@@ -8,10 +8,10 @@
 #   docker compose down                   # Stop all services
 #
 #   # Run the engine (CLI-style container) on-demand:
-#   docker compose --profile engine run --rm --no-deps eventflux /app/queries/<file>.eventflux
+#   docker compose --profile eventflux run --rm --no-deps eventflux /app/queries/<file>.eventflux
 #
 # Services:
-#   - eventflux: The EventFlux engine (run-on-demand via `--profile engine`)
+#   - eventflux: The EventFlux engine (run-on-demand via `--profile eventflux`)
 #   - rabbitmq:  Message broker for source/sink connectors
 #   - redis:     State persistence backend
 #
@@ -94,12 +94,12 @@ services:
     # This is a CLI-style workload (it runs a query file). It's disabled by
     # default so `docker compose up -d` starts only the backing services.
     # Run it explicitly with:
-    #   docker compose --profile engine run --rm --no-deps eventflux /app/queries/<file>.eventflux
-    profiles: ["engine"]
+    #   docker compose --profile eventflux run --rm --no-deps eventflux /app/queries/<file>.eventflux
+    profiles: ["eventflux"]
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: eventflux-engine
+    container_name: eventflux
     depends_on:
       rabbitmq:
         condition: service_healthy

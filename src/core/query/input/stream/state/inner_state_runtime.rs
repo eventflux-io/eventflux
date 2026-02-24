@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/input/stream/state/inner_state_runtime.rs
+// src/core/query/input/stream/state/inner_state_runtime.rs
 // InnerStateRuntime trait for managing PreStateProcessor lifecycle
 
 use crate::core::query::input::stream::state::post_state_processor::PostStateProcessor;

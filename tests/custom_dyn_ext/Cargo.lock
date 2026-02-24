@@ -777,7 +777,7 @@ dependencies = [
 name = "custom_dyn_ext"
 version = "0.1.0"
 dependencies = [
- "eventflux_rust",
+ "eventflux",
 ]
 
 [[package]]
@@ -1009,7 +1009,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "eventflux_rust"
+name = "eventflux"
 version = "0.1.0"
 dependencies = [
  "async-trait",

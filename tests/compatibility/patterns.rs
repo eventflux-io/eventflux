@@ -4,7 +4,7 @@
 // Reference: query/pattern/EveryPatternTestCase.java, LogicalPatternTestCase.java, WithinPatternTestCase.java
 
 use super::common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 // ============================================================================
 // SIMPLE SEQUENCE PATTERNS (FOLLOWED-BY)

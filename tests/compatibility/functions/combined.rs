@@ -4,7 +4,7 @@
 // Tests that combine multiple function types
 
 use crate::compatibility::common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 // ============================================================================
 // FUNCTION COMBINATIONS

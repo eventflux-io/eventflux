@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::event::event::Event;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::persistence::data_source::{DataSource, DataSourceConfig};
-use eventflux_rust::core::query::output::InsertIntoTableProcessor;
-use eventflux_rust::core::query::processor::Processor;
-use eventflux_rust::core::stream::input::table_input_handler::TableInputHandler;
-use eventflux_rust::core::table::JdbcTable;
-use eventflux_rust::core::table::{InMemoryCompiledCondition, InMemoryTable, Table};
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::event::event::Event;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::persistence::data_source::{DataSource, DataSourceConfig};
+use eventflux::core::query::output::InsertIntoTableProcessor;
+use eventflux::core::query::processor::Processor;
+use eventflux::core::stream::input::table_input_handler::TableInputHandler;
+use eventflux::core::table::JdbcTable;
+use eventflux::core::table::{InMemoryCompiledCondition, InMemoryTable, Table};
 use rusqlite::Connection;
 use std::any::Any;
 use std::sync::Arc;
@@ -70,7 +70,7 @@ fn test_table_input_handler_add() {
     let ctx = Arc::new(EventFluxAppContext::new(
         Arc::new(EventFluxContext::default()),
         "app".to_string(),
-        Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+        Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
             "app".to_string(),
         )),
         String::new(),
@@ -95,7 +95,7 @@ fn test_insert_into_table_processor() {
     let app_ctx = Arc::new(EventFluxAppContext::new(
         Arc::new(EventFluxContext::default()),
         "app".to_string(),
-        Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+        Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
             "app".to_string(),
         )),
         String::new(),
@@ -128,7 +128,7 @@ fn test_table_input_handler_update_delete_find() {
     let ctx = Arc::new(EventFluxAppContext::new(
         Arc::new(EventFluxContext::default()),
         "app".to_string(),
-        Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+        Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
             "app".to_string(),
         )),
         String::new(),
@@ -188,7 +188,7 @@ fn test_table_input_handler_jdbc() {
     let app_ctx = Arc::new(EventFluxAppContext::new(
         Arc::clone(&ctx),
         "app".to_string(),
-        Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+        Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
             "app".to_string(),
         )),
         String::new(),

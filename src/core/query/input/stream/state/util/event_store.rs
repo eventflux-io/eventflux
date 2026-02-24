@@ -41,8 +41,8 @@ pub type EventId = u64;
 ///
 /// # Example
 /// ```no_run
-/// # use eventflux_rust::core::query::input::stream::state::EventStore;
-/// # use eventflux_rust::core::event::stream::StreamEvent;
+/// # use eventflux::core::query::input::stream::state::EventStore;
+/// # use eventflux::core::event::stream::StreamEvent;
 /// // Production usage with memory limit
 /// let store = EventStore::with_memory_limit(1_000_000_000); // 1GB max
 /// # let stream_event = StreamEvent::new(0, 0, 0, 0);
@@ -91,7 +91,7 @@ impl EventStore {
     ///
     /// # Example
     /// ```
-    /// # use eventflux_rust::core::query::input::stream::state::EventStore;
+    /// # use eventflux::core::query::input::stream::state::EventStore;
     /// // 1GB memory limit for production safety
     /// let store = EventStore::with_memory_limit(1_000_000_000);
     /// ```

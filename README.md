@@ -1,8 +1,8 @@
 # EventFlux
 
-[![Build](https://github.com/eventflux-io/engine/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/eventflux-io/engine/actions/workflows/docker-publish.yml)
-[![Rust](https://github.com/eventflux-io/engine/actions/workflows/rust.yml/badge.svg)](https://github.com/eventflux-io/engine/actions/workflows/rust.yml)
-[![GHCR](https://img.shields.io/badge/ghcr.io-eventflux--io%2Fengine-green)](https://ghcr.io/eventflux-io/engine)
+[![Build](https://github.com/eventflux-io/eventflux/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/eventflux-io/eventflux/actions/workflows/docker-publish.yml)
+[![Rust](https://github.com/eventflux-io/eventflux/actions/workflows/rust.yml/badge.svg)](https://github.com/eventflux-io/eventflux/actions/workflows/rust.yml)
+[![GHCR](https://img.shields.io/badge/ghcr.io-eventflux--io%2Feventflux-green)](https://ghcr.io/eventflux-io/eventflux)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-green.svg)](LICENSE-APACHE)
 
 Stream processing engine built in Rust. Write SQL, process events, skip the infrastructure headache.
@@ -25,11 +25,11 @@ EventFlux runs as a single binary. No cluster. No JVM. No YAML manifests. Just S
 
 ```bash
 # Docker
-docker run -v ./app.sql:/app.sql ghcr.io/eventflux-io/engine /app.sql
+docker run -v ./app.sql:/app.sql ghcr.io/eventflux-io/eventflux /app.sql
 
 # Or build from source
-git clone https://github.com/eventflux-io/engine.git
-cd engine
+git clone https://github.com/eventflux-io/eventflux.git
+cd eventflux
 cargo build --release
 ./target/release/run_eventflux app.sql
 ```

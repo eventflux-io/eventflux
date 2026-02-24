@@ -138,8 +138,8 @@ import DocCardList from '@theme/DocCardList';
 
 ## Community
 
-- **GitHub**: [eventflux-io/engine](https://github.com/eventflux-io/engine)
-- **Discussions**: [GitHub Discussions](https://github.com/eventflux-io/engine/discussions)
+- **GitHub**: [eventflux-io/eventflux](https://github.com/eventflux-io/eventflux)
+- **Discussions**: [GitHub Discussions](https://github.com/eventflux-io/eventflux/discussions)
 - **Discord**: Join our community chat
 
 :::caution Work in Progress

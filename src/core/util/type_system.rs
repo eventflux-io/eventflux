@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/util/type_system.rs
+// src/core/util/type_system.rs
 // Comprehensive type system for EventFlux Rust implementing Java-compatible type conversion behavior
 
 use crate::core::event::value::AttributeValue;

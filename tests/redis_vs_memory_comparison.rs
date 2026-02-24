@@ -10,9 +10,9 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::distributed::RedisConfig;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::persistence::{
+use eventflux::core::distributed::RedisConfig;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::persistence::{
     InMemoryPersistenceStore, PersistenceStore, RedisPersistenceStore,
 };
 use std::sync::Arc;

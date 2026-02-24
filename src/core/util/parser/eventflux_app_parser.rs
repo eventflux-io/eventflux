@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/util/parser/eventflux_app_parser.rs
+// src/core/util/parser/eventflux_app_parser.rs
 // Corresponds to io.eventflux.core.util.parser.EventFluxAppParser
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex}; // Added Mutex // If QueryParser needs table_map etc. from builder

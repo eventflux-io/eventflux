@@ -4,14 +4,14 @@
 # Multi-stage build following OCI and Docker best practices
 #
 # Build (local tag is arbitrary):
-#   docker build -t eventflux-engine:local .
+#   docker build -t eventflux:local .
 #
 # Run (executes a `.eventflux` file; this is a CLI container, not a web service):
 #   docker run --rm -v $(pwd)/query.eventflux:/app/query.eventflux:ro \
-#     --network host eventflux-engine:local /app/query.eventflux
+#     --network host eventflux:local /app/query.eventflux
 #
 # Official pre-built image:
-#   ghcr.io/eventflux-io/engine:latest
+#   ghcr.io/eventflux-io/eventflux:latest
 #
 # ==============================================================================
 
@@ -80,7 +80,7 @@ FROM debian:${DEBIAN_VERSION}-slim AS runtime
 LABEL org.opencontainers.image.title="EventFlux Engine" \
       org.opencontainers.image.description="High-performance Complex Event Processing engine for real-time streaming analytics" \
       org.opencontainers.image.vendor="EventFlux" \
-      org.opencontainers.image.source="https://github.com/eventflux-io/engine" \
+      org.opencontainers.image.source="https://github.com/eventflux-io/eventflux" \
       org.opencontainers.image.documentation="https://eventflux.io/docs" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
@@ -129,14 +129,14 @@ STOPSIGNAL SIGTERM
 #    docker run --rm \
 #      -v $(pwd)/my_query.eventflux:/app/query.eventflux:ro \
 #      --network host \
-#      ghcr.io/eventflux-io/engine:latest /app/query.eventflux
+#      ghcr.io/eventflux-io/eventflux:latest /app/query.eventflux
 #
 # 2. Run with persistence:
 #    docker run --rm \
 #      -v $(pwd)/queries:/app/queries:ro \
 #      -v $(pwd)/data:/app/data \
 #      --network host \
-#      ghcr.io/eventflux-io/engine:latest /app/queries/app.eventflux \
+#      ghcr.io/eventflux-io/eventflux:latest /app/queries/app.eventflux \
 #        --persistence-dir /app/data/snapshots
 #
 # 3. Run with config file:
@@ -144,12 +144,12 @@ STOPSIGNAL SIGTERM
 #      -v $(pwd)/queries:/app/queries:ro \
 #      -v $(pwd)/config:/app/config:ro \
 #      --network host \
-#      ghcr.io/eventflux-io/engine:latest /app/queries/app.eventflux \
+#      ghcr.io/eventflux-io/eventflux:latest /app/queries/app.eventflux \
 #        --config /app/config/eventflux.yaml
 #
 # 4. Debug with shell access:
 #    docker run --rm -it \
 #      --entrypoint /bin/sh \
-#      ghcr.io/eventflux-io/engine:latest
+#      ghcr.io/eventflux-io/eventflux:latest
 #
 # ==============================================================================

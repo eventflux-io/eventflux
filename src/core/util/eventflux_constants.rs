@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/util/eventflux_constants.rs
+// src/core/util/eventflux_constants.rs
 
 //! Constants used inside the EventFlux core implementation.  These mirror the
 //! values found in the Java `io.eventflux.core.util.EventFluxConstants` class that are

@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::config::types::EventFluxConfig;
-use eventflux_rust::query_api::definition::attribute::Type as ApiAttributeType;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::config::types::EventFluxConfig;
+use eventflux::query_api::definition::attribute::Type as ApiAttributeType;
+use eventflux::query_api::eventflux_app::EventFluxApp;
 
 fn test_app_context() -> EventFluxAppContext {
     EventFluxAppContext::new_with_config(

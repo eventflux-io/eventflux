@@ -6,7 +6,7 @@
 //! with custom rules, enterprise validation patterns, and detailed reporting.
 
 use async_trait::async_trait;
-use eventflux_rust::core::config::{
+use eventflux::core::config::{
     monitoring::MonitoringConfig,
     validation_api::{
         create_default_validator, create_development_validator, create_production_validator,
@@ -230,7 +230,7 @@ impl ValidationRule for CustomValidationRule {
         &self,
         config: &EventFluxConfig,
         report: &mut ValidationReport,
-    ) -> eventflux_rust::core::config::ConfigResult<()> {
+    ) -> eventflux::core::config::ConfigResult<()> {
         // Custom validation logic
         if config.eventflux.runtime.performance.thread_pool_size > 100 {
             report.add_warning(
@@ -372,7 +372,7 @@ async fn test_security_validation_rule() {
     assert!(report.is_valid);
 
     // Test with distributed mode but no security config
-    config.eventflux.runtime.mode = eventflux_rust::core::config::types::RuntimeMode::Distributed;
+    config.eventflux.runtime.mode = eventflux::core::config::types::RuntimeMode::Distributed;
     config.eventflux.security = None;
     let mut report2 = ValidationReport::new();
     rule.validate(&config, &mut report2).await.unwrap();
@@ -614,7 +614,7 @@ async fn test_validation_timeout() {
             &self,
             _config: &EventFluxConfig,
             _report: &mut ValidationReport,
-        ) -> eventflux_rust::core::config::ConfigResult<()> {
+        ) -> eventflux::core::config::ConfigResult<()> {
             // Simulate slow validation
             tokio::time::sleep(Duration::from_millis(100)).await;
             Ok(())
@@ -646,7 +646,7 @@ async fn test_comprehensive_validation_scenario() {
     // Create a configuration with multiple issues
     config.eventflux.runtime.performance.thread_pool_size = 0; // Schema error
     config.eventflux.runtime.performance.event_buffer_size = 100; // Performance warning -> error in strict mode
-    config.eventflux.runtime.mode = eventflux_rust::core::config::types::RuntimeMode::Distributed;
+    config.eventflux.runtime.mode = eventflux::core::config::types::RuntimeMode::Distributed;
     config.eventflux.security = None; // Security error
     config.eventflux.monitoring = None; // Security warning -> error in strict mode
 
@@ -697,7 +697,7 @@ async fn test_validation_rule_priority() {
             &self,
             _config: &EventFluxConfig,
             report: &mut ValidationReport,
-        ) -> eventflux_rust::core::config::ConfigResult<()> {
+        ) -> eventflux::core::config::ConfigResult<()> {
             report.add_info(ValidationInfo::new(
                 "HIGH_PRIORITY_EXECUTED".to_string(),
                 "High priority rule executed".to_string(),
@@ -730,7 +730,7 @@ async fn test_validation_rule_priority() {
             &self,
             _config: &EventFluxConfig,
             report: &mut ValidationReport,
-        ) -> eventflux_rust::core::config::ConfigResult<()> {
+        ) -> eventflux::core::config::ConfigResult<()> {
             report.add_info(ValidationInfo::new(
                 "LOW_PRIORITY_EXECUTED".to_string(),
                 "Low priority rule executed".to_string(),

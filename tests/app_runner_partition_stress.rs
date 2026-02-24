@@ -3,8 +3,8 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
 use std::thread;
 use std::time::Duration;
 

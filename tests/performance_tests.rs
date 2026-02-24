@@ -7,17 +7,17 @@
 
 #![cfg(feature = "perf-tests")]
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::event::event::Event;
-use eventflux_rust::core::event::stream::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::query::processor::Processor;
-use eventflux_rust::core::stream::stream_junction::StreamJunction;
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::definition::StreamDefinition;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::event::event::Event;
+use eventflux::core::event::stream::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::query::processor::Processor;
+use eventflux::core::stream::stream_junction::StreamJunction;
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::definition::StreamDefinition;
+use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::{Arc, Mutex};
 
 // Test processor that records events
@@ -62,7 +62,7 @@ impl Processor for TestProcessor {
 
     fn clone_processor(
         &self,
-        _c: &Arc<eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext>,
+        _c: &Arc<eventflux::core::config::eventflux_query_context::EventFluxQueryContext>,
     ) -> Box<dyn Processor> {
         Box::new(TestProcessor::new(self.name.clone()))
     }
@@ -78,9 +78,9 @@ impl Processor for TestProcessor {
 
     fn get_eventflux_query_context(
         &self,
-    ) -> Arc<eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext> {
+    ) -> Arc<eventflux::core::config::eventflux_query_context::EventFluxQueryContext> {
         Arc::new(
-            eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext::new(
+            eventflux::core::config::eventflux_query_context::EventFluxQueryContext::new(
                 self.get_eventflux_app_context(),
                 "TestQuery".to_string(),
                 None,
@@ -88,8 +88,8 @@ impl Processor for TestProcessor {
         )
     }
 
-    fn get_processing_mode(&self) -> eventflux_rust::core::query::processor::ProcessingMode {
-        eventflux_rust::core::query::processor::ProcessingMode::DEFAULT
+    fn get_processing_mode(&self) -> eventflux::core::query::processor::ProcessingMode {
+        eventflux::core::query::processor::ProcessingMode::DEFAULT
     }
 
     fn is_stateful(&self) -> bool {

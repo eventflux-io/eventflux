@@ -4,7 +4,7 @@
 // Reference: query/selector/attribute/aggregator/*.java, GroupByTestCase.java
 
 use super::common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 // ============================================================================
 // BASIC AGGREGATION TESTS

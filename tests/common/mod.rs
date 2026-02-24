@@ -2,14 +2,14 @@
 
 pub mod pattern_chain_test_utils;
 
-use eventflux_rust::core::config::{ConfigManager, EventFluxConfig};
-use eventflux_rust::core::event::event::Event;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_app_runtime::EventFluxAppRuntime;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::persistence::PersistenceStore;
-use eventflux_rust::core::stream::input::table_input_handler::TableInputHandler;
-use eventflux_rust::core::stream::output::stream_callback::StreamCallback;
+use eventflux::core::config::{ConfigManager, EventFluxConfig};
+use eventflux::core::event::event::Event;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_app_runtime::EventFluxAppRuntime;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::persistence::PersistenceStore;
+use eventflux::core::stream::input::table_input_handler::TableInputHandler;
+use eventflux::core::stream::output::stream_callback::StreamCallback;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -100,7 +100,7 @@ impl AppRunner {
     /// let runner = AppRunner::new_from_api(app, "Out").await;
     /// ```
     pub async fn new_from_api(
-        app: eventflux_rust::query_api::eventflux_app::EventFluxApp,
+        app: eventflux::query_api::eventflux_app::EventFluxApp,
         out_stream: &str,
     ) -> Self {
         let manager = EventFluxManager::new();
@@ -180,7 +180,7 @@ impl AppRunner {
     /// ```
     pub async fn new_from_api_with_config(
         config: EventFluxConfig,
-        app: eventflux_rust::query_api::eventflux_app::EventFluxApp,
+        app: eventflux::query_api::eventflux_app::EventFluxApp,
         out_stream: &str,
     ) -> Self {
         let manager = EventFluxManager::new_with_config(config);
@@ -246,7 +246,7 @@ impl AppRunner {
     /// ```
     pub async fn new_from_api_with_config_manager(
         config_manager: ConfigManager,
-        app: eventflux_rust::query_api::eventflux_app::EventFluxApp,
+        app: eventflux::query_api::eventflux_app::EventFluxApp,
         out_stream: &str,
     ) -> Self {
         let manager = EventFluxManager::new_with_config_manager(config_manager);
@@ -334,7 +334,7 @@ impl AppRunner {
     /// ```
     pub async fn new_from_api_with_yaml<P: AsRef<Path>>(
         yaml_path: P,
-        app: eventflux_rust::query_api::eventflux_app::EventFluxApp,
+        app: eventflux::query_api::eventflux_app::EventFluxApp,
         out_stream: &str,
     ) -> Result<Self, String> {
         let config_manager = ConfigManager::from_file(yaml_path.as_ref().to_path_buf());
@@ -409,7 +409,7 @@ impl AppRunner {
     /// let runner = AppRunner::new_from_api_with_store(app, "Out", store).await;
     /// ```
     pub async fn new_from_api_with_store(
-        app: eventflux_rust::query_api::eventflux_app::EventFluxApp,
+        app: eventflux::query_api::eventflux_app::EventFluxApp,
         out_stream: &str,
         store: Arc<dyn PersistenceStore>,
     ) -> Self {
@@ -557,7 +557,7 @@ impl AppRunner {
     /// ```
     pub async fn new_from_api_with_manager(
         manager: EventFluxManager,
-        app: eventflux_rust::query_api::eventflux_app::EventFluxApp,
+        app: eventflux::query_api::eventflux_app::EventFluxApp,
         out_stream: &str,
     ) -> Self {
         let runtime = manager
@@ -728,8 +728,8 @@ impl AppRunner {
     pub fn get_aggregation_data(
         &self,
         agg_id: &str,
-        within: Option<eventflux_rust::query_api::aggregation::Within>,
-        per: Option<eventflux_rust::query_api::aggregation::time_period::Duration>,
+        within: Option<eventflux::query_api::aggregation::Within>,
+        per: Option<eventflux::query_api::aggregation::time_period::Duration>,
     ) -> Vec<Vec<AttributeValue>> {
         self.runtime.query_aggregation(agg_id, within, per)
     }

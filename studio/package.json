@@ -7,7 +7,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/eventflux-io/engine"
+    "url": "https://github.com/eventflux-io/eventflux"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -104,15 +104,15 @@
           "default": true,
           "description": "Snap elements to grid when dragging"
         },
-        "eventflux.engine.host": {
+        "eventflux.host": {
           "type": "string",
           "default": "localhost",
-          "description": "EventFlux engine host for live execution"
+          "description": "EventFlux host for live execution"
         },
-        "eventflux.engine.port": {
+        "eventflux.port": {
           "type": "number",
           "default": 9090,
-          "description": "EventFlux engine port for live execution"
+          "description": "EventFlux port for live execution"
         }
       }
     }

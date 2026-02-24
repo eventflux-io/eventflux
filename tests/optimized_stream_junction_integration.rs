@@ -5,20 +5,20 @@
 //! Tests the crossbeam pipeline-based StreamJunction implementation
 //! for correctness, performance, and compatibility with existing code.
 
-use eventflux_rust::core::config::{
+use eventflux::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_context::EventFluxContext,
     eventflux_query_context::EventFluxQueryContext,
 };
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::event::event::Event;
-use eventflux_rust::core::event::stream::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::query::processor::{ProcessingMode, Processor};
-use eventflux_rust::core::stream::{
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::event::event::Event;
+use eventflux::core::event::stream::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::query::processor::{ProcessingMode, Processor};
+use eventflux::core::stream::{
     BackpressureStrategy, JunctionBenchmark, JunctionConfig, StreamJunction, StreamJunctionFactory,
 };
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::definition::StreamDefinition;
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::definition::StreamDefinition;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
@@ -93,7 +93,7 @@ impl Processor for PerformanceTestProcessor {
         Arc::new(EventFluxAppContext::new(
             Arc::new(EventFluxContext::new()),
             "TestApp".to_string(),
-            Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+            Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
                 "TestApp".to_string(),
             )),
             String::new(),
@@ -119,7 +119,7 @@ impl Processor for PerformanceTestProcessor {
 
 fn setup_test_context() -> (Arc<EventFluxAppContext>, Arc<StreamDefinition>) {
     let eventflux_context = Arc::new(EventFluxContext::new());
-    let app = Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+    let app = Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
         "TestApp".to_string(),
     ));
     let mut app_ctx = EventFluxAppContext::new(
@@ -129,7 +129,7 @@ fn setup_test_context() -> (Arc<EventFluxAppContext>, Arc<StreamDefinition>) {
         String::new(),
     );
     app_ctx.root_metrics_level =
-        eventflux_rust::core::config::eventflux_app_context::MetricsLevelPlaceholder::BASIC;
+        eventflux::core::config::eventflux_app_context::MetricsLevelPlaceholder::BASIC;
 
     let stream_def = Arc::new(
         StreamDefinition::new("PerfTestStream".to_string())
@@ -288,7 +288,7 @@ fn test_synchronous_mode_ordering_guarantee() {
             Arc::new(EventFluxAppContext::new(
                 Arc::new(EventFluxContext::new()),
                 "TestApp".to_string(),
-                Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+                Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
                     "TestApp".to_string(),
                 )),
                 String::new(),
@@ -512,7 +512,7 @@ impl Processor for SlowTestProcessor {
         Arc::new(EventFluxAppContext::new(
             Arc::new(EventFluxContext::new()),
             "TestApp".to_string(),
-            Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+            Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
                 "TestApp".to_string(),
             )),
             String::new(),

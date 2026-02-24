@@ -5,7 +5,7 @@
 //! These tests demonstrate how the monitoring configuration system works with
 //! health checks, metrics collection, alerting, and observability features.
 
-use eventflux_rust::core::config::{
+use eventflux::core::config::{
     monitoring::{
         AlertRule, AlertingConfig, CheckResult, CustomMetric, EndpointConfig, HealthCheck,
         HealthCheckConfig, HealthCheckType, HealthState, HealthStatus, LoggingConfig, MetricType,

@@ -2197,7 +2197,7 @@ Last Updated: 2025-10-06
 
 ## 📋 **AUDIT METHODOLOGY & FINDINGS**
 
-**Audit Approach**: Comprehensive line-by-line comparison of Java (`modules/eventflux-core/`) and Rust (`eventflux_rust/`) implementations
+**Audit Approach**: Comprehensive line-by-line comparison of Java (`modules/eventflux-core/`) and Rust (`eventflux/`) implementations
 
 **Key Findings**:
 

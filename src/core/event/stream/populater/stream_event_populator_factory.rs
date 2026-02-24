@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/event/stream/populater/stream_event_populator_factory.rs
+// src/core/event/stream/populater/stream_event_populator_factory.rs
 use super::{SelectiveComplexEventPopulater, StreamMappingElement};
 use crate::core::event::stream::meta_stream_event::MetaStreamEvent;
 use crate::core::util::eventflux_constants::{

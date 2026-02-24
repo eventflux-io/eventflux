@@ -59,7 +59,7 @@ Consumes messages from a RabbitMQ queue and delivers them to the EventFlux pipel
 ### Usage Example
 
 ```rust
-use eventflux_rust::core::stream::input::source::rabbitmq_source::RabbitMQSource;
+use eventflux::core::stream::input::source::rabbitmq_source::RabbitMQSource;
 use std::collections::HashMap;
 
 let mut config = HashMap::new();
@@ -73,8 +73,8 @@ let source = RabbitMQSource::from_properties(&config, None, "EventStream")?;
 ### Factory
 
 ```rust
-use eventflux_rust::core::stream::input::source::rabbitmq_source::RabbitMQSourceFactory;
-use eventflux_rust::core::extension::SourceFactory;
+use eventflux::core::stream::input::source::rabbitmq_source::RabbitMQSourceFactory;
+use eventflux::core::extension::SourceFactory;
 
 let factory = RabbitMQSourceFactory;
 let source = factory.create_initialized(&config)?;
@@ -103,8 +103,8 @@ Publishes formatted event data to a RabbitMQ exchange.
 ### Usage Example
 
 ```rust
-use eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
-use eventflux_rust::core::stream::output::sink::Sink;
+use eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
+use eventflux::core::stream::output::sink::Sink;
 use std::collections::HashMap;
 
 let mut config = HashMap::new();
@@ -128,8 +128,8 @@ sink.stop();
 ### Factory
 
 ```rust
-use eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSinkFactory;
-use eventflux_rust::core::extension::SinkFactory;
+use eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSinkFactory;
+use eventflux::core::extension::SinkFactory;
 
 let factory = RabbitMQSinkFactory;
 let sink = factory.create_initialized(&config)?;

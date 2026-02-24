@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::event::event::Event as CoreEvent;
-use eventflux_rust::core::event::value::AttributeValue as CoreAttributeValue;
-use eventflux_rust::core::eventflux_app_runtime::EventFluxAppRuntime;
-use eventflux_rust::core::stream::output::stream_callback::StreamCallback;
-use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-use eventflux_rust::query_api::eventflux_app::EventFluxApp as ApiEventFluxApp;
-use eventflux_rust::query_api::execution::query::input::state::{State, StateElement};
-use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-use eventflux_rust::query_api::execution::query::output::output_stream::{
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::event::event::Event as CoreEvent;
+use eventflux::core::event::value::AttributeValue as CoreAttributeValue;
+use eventflux::core::eventflux_app_runtime::EventFluxAppRuntime;
+use eventflux::core::stream::output::stream_callback::StreamCallback;
+use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+use eventflux::query_api::eventflux_app::EventFluxApp as ApiEventFluxApp;
+use eventflux::query_api::execution::query::input::state::{State, StateElement};
+use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+use eventflux::query_api::execution::query::output::output_stream::{
     InsertIntoStreamAction, OutputStream, OutputStreamAction,
 };
-use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-use eventflux_rust::query_api::execution::query::Query;
-use eventflux_rust::query_api::execution::ExecutionElement;
-use eventflux_rust::query_api::expression::Expression;
+use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+use eventflux::query_api::execution::query::Query;
+use eventflux::query_api::execution::ExecutionElement;
+use eventflux::query_api::expression::Expression;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -76,14 +76,14 @@ fn test_sequence_runtime_processing() {
         OutputAttribute::new(
             Some("aval".to_string()),
             Expression::Variable(
-                eventflux_rust::query_api::expression::variable::Variable::new("val".to_string())
+                eventflux::query_api::expression::variable::Variable::new("val".to_string())
                     .of_stream("AStream".to_string()),
             ),
         ),
         OutputAttribute::new(
             Some("bval".to_string()),
             Expression::Variable(
-                eventflux_rust::query_api::expression::variable::Variable::new("val".to_string())
+                eventflux::query_api::expression::variable::Variable::new("val".to_string())
                     .of_stream("BStream".to_string()),
             ),
         ),
@@ -189,14 +189,14 @@ fn test_every_sequence() {
         OutputAttribute::new(
             Some("aval".to_string()),
             Expression::Variable(
-                eventflux_rust::query_api::expression::variable::Variable::new("val".to_string())
+                eventflux::query_api::expression::variable::Variable::new("val".to_string())
                     .of_stream("AStream".to_string()),
             ),
         ),
         OutputAttribute::new(
             Some("bval".to_string()),
             Expression::Variable(
-                eventflux_rust::query_api::expression::variable::Variable::new("val".to_string())
+                eventflux::query_api::expression::variable::Variable::new("val".to_string())
                     .of_stream("BStream".to_string()),
             ),
         ),
@@ -292,14 +292,14 @@ fn test_logical_and_pattern() {
         OutputAttribute::new(
             Some("aval".to_string()),
             Expression::Variable(
-                eventflux_rust::query_api::expression::variable::Variable::new("val".to_string())
+                eventflux::query_api::expression::variable::Variable::new("val".to_string())
                     .of_stream("AStream".to_string()),
             ),
         ),
         OutputAttribute::new(
             Some("bval".to_string()),
             Expression::Variable(
-                eventflux_rust::query_api::expression::variable::Variable::new("val".to_string())
+                eventflux::query_api::expression::variable::Variable::new("val".to_string())
                     .of_stream("BStream".to_string()),
             ),
         ),

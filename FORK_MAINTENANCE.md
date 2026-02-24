@@ -113,7 +113,7 @@ pub use self::query::{
 
 5. **Test**
    ```bash
-   cd ../../  # Back to eventflux-engine root
+   cd ../../  # Back to eventflux root
    cargo clean
    cargo test
    ```

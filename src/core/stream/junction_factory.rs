@@ -69,7 +69,7 @@ impl JunctionConfig {
     ///
     /// # Example
     /// ```
-    /// use eventflux_rust::core::stream::JunctionConfig;
+    /// use eventflux::core::stream::JunctionConfig;
     ///
     /// // Default: Synchronous processing (guaranteed ordering)
     /// let sync_config = JunctionConfig::new("stream".to_string());

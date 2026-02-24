@@ -9,8 +9,8 @@
 mod common;
 
 use common::pattern_chain_test_utils::*;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StateType;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 
 // ============================================================================
 // PHASE 2b.3 TESTS: Pattern Mode (StateType::Pattern)

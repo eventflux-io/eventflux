@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/persistence/incremental/write_ahead_log.rs
+// src/core/persistence/incremental/write_ahead_log.rs
 
 //! Write-Ahead Log Implementation
 //!

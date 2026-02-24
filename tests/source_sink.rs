@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::query::output::callback_processor::CallbackProcessor;
-use eventflux_rust::core::stream::input::input_handler::InputHandler;
-use eventflux_rust::core::stream::input::mapper::PassthroughMapper as SourcePassthroughMapper;
-use eventflux_rust::core::stream::input::source::SourceCallbackAdapter;
-use eventflux_rust::core::stream::output::mapper::PassthroughMapper as SinkPassthroughMapper;
-use eventflux_rust::core::stream::output::sink::{LogSink, SinkCallbackAdapter};
-use eventflux_rust::core::stream::output::StreamCallback;
-use eventflux_rust::core::stream::{Source, StreamJunction, TimerSource};
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::definition::stream_definition::StreamDefinition;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::query::output::callback_processor::CallbackProcessor;
+use eventflux::core::stream::input::input_handler::InputHandler;
+use eventflux::core::stream::input::mapper::PassthroughMapper as SourcePassthroughMapper;
+use eventflux::core::stream::input::source::SourceCallbackAdapter;
+use eventflux::core::stream::output::mapper::PassthroughMapper as SinkPassthroughMapper;
+use eventflux::core::stream::output::sink::{LogSink, SinkCallbackAdapter};
+use eventflux::core::stream::output::StreamCallback;
+use eventflux::core::stream::{Source, StreamJunction, TimerSource};
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::definition::stream_definition::StreamDefinition;
+use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

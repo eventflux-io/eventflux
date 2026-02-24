@@ -2,20 +2,20 @@
 
 #[path = "common/mod.rs"]
 mod common;
-use eventflux_rust::core::aggregation::IncrementalExecutor;
-use eventflux_rust::core::config::{
+use eventflux::core::aggregation::IncrementalExecutor;
+use eventflux::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_context::EventFluxContext,
     eventflux_query_context::EventFluxQueryContext,
 };
-use eventflux_rust::core::event::stream::meta_stream_event::MetaStreamEvent;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::table::InMemoryTable;
-use eventflux_rust::core::util::parser::{parse_expression, ExpressionParserContext};
-use eventflux_rust::query_api::aggregation::time_period::Duration as TimeDuration;
-use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::expression::{variable::Variable, Expression};
+use eventflux::core::event::stream::meta_stream_event::MetaStreamEvent;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::table::InMemoryTable;
+use eventflux::core::util::parser::{parse_expression, ExpressionParserContext};
+use eventflux::query_api::aggregation::time_period::Duration as TimeDuration;
+use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::expression::{variable::Variable, Expression};
 use std::collections::HashMap;
 use std::sync::Arc;
 

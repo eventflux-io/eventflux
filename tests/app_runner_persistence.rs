@@ -3,8 +3,8 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::persistence::{InMemoryPersistenceStore, PersistenceStore};
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::persistence::{InMemoryPersistenceStore, PersistenceStore};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -55,8 +55,8 @@ async fn length_window_restore_state() {
 // See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
 #[tokio::test]
 async fn persist_shutdown_restore_state() {
-    use eventflux_rust::core::config::ConfigManager;
-    use eventflux_rust::core::eventflux_manager::EventFluxManager;
+    use eventflux::core::config::ConfigManager;
+    use eventflux::core::eventflux_manager::EventFluxManager;
 
     let store: Arc<dyn PersistenceStore> = Arc::new(InMemoryPersistenceStore::new());
 

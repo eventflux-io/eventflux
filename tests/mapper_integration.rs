@@ -9,8 +9,8 @@
 //! - Validation
 //! - End-to-end JSON and CSV workflows
 
-use eventflux_rust::core::event::{AttributeValue, Event};
-use eventflux_rust::core::stream::mapper::{
+use eventflux::core::event::{AttributeValue, Event};
+use eventflux::core::stream::mapper::{
     factory::{
         JsonSinkMapperFactory, JsonSourceMapperFactory, MapperFactoryRegistry, SinkMapperFactory,
         SourceMapperFactory,

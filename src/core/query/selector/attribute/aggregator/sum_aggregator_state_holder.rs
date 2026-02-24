@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/selector/attribute/aggregator/sum_aggregator_state_holder.rs
+// src/core/query/selector/attribute/aggregator/sum_aggregator_state_holder.rs
 
 //! Enhanced StateHolder implementation for SumAttributeAggregatorExecutor
 //!

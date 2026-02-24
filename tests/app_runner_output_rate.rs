@@ -3,21 +3,21 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::persistence::{InMemoryPersistenceStore, PersistenceStore};
-use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::execution::query::input::InputStream;
-use eventflux_rust::query_api::execution::query::output::output_stream::{
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::persistence::{InMemoryPersistenceStore, PersistenceStore};
+use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::execution::query::input::InputStream;
+use eventflux::query_api::execution::query::output::output_stream::{
     InsertIntoStreamAction, OutputStream, OutputStreamAction,
 };
-use eventflux_rust::query_api::execution::query::output::ratelimit::{
+use eventflux::query_api::execution::query::output::ratelimit::{
     OutputRate, OutputRateBehavior,
 };
-use eventflux_rust::query_api::execution::query::selection::Selector;
-use eventflux_rust::query_api::execution::query::Query;
-use eventflux_rust::query_api::execution::ExecutionElement;
-use eventflux_rust::query_api::expression::{constant::Constant, variable::Variable};
+use eventflux::query_api::execution::query::selection::Selector;
+use eventflux::query_api::execution::query::Query;
+use eventflux::query_api::execution::ExecutionElement;
+use eventflux::query_api::expression::{constant::Constant, variable::Variable};
 use std::sync::Arc;
 
 fn make_app() -> EventFluxApp {

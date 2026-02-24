@@ -7,9 +7,9 @@
 //!
 //! SQL WITH → StreamDefinition.with_config → StreamTypeConfig → Factory.create_initialized()
 
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::extension::{CsvSinkMapperFactory, LogSinkFactory, TimerSourceFactory};
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::extension::{CsvSinkMapperFactory, LogSinkFactory, TimerSourceFactory};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -323,7 +323,7 @@ async fn test_sql_with_unregistered_extension() {
 /// loading and SQL-defined streams.
 #[tokio::test]
 async fn test_sql_with_priority_over_yaml() {
-    use eventflux_rust::core::config::ConfigManager;
+    use eventflux::core::config::ConfigManager;
 
     // Load YAML configuration from test fixture
     let config_manager = ConfigManager::from_file("tests/fixtures/timer-config.yaml");
@@ -457,9 +457,9 @@ async fn test_sql_with_empty_clause() {
 /// properties from SQL WITH configuration
 #[tokio::test]
 async fn test_sql_with_properties_reach_factory() {
-    use eventflux_rust::core::exception::EventFluxError;
-    use eventflux_rust::core::extension::SourceFactory;
-    use eventflux_rust::core::stream::input::source::Source;
+    use eventflux::core::exception::EventFluxError;
+    use eventflux::core::extension::SourceFactory;
+    use eventflux::core::stream::input::source::Source;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -501,7 +501,7 @@ async fn test_sql_with_properties_reach_factory() {
 
             // Return a simple timer source
             Ok(Box::new(
-                eventflux_rust::core::stream::input::source::timer_source::TimerSource::new(1000),
+                eventflux::core::stream::input::source::timer_source::TimerSource::new(1000),
             ))
         }
 

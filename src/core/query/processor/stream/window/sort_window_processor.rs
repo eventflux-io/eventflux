@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/processor/stream/window/sort_window_processor.rs
+// src/core/query/processor/stream/window/sort_window_processor.rs
 // Rust implementation of EventFlux SortWindowProcessor
 
 use crate::core::config::{

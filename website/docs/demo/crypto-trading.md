@@ -163,7 +163,7 @@ Create `docker-compose.yml` with this content:
 ```yaml title="docker-compose.yml"
 services:
   eventflux:
-    image: ghcr.io/eventflux-io/engine:latest
+    image: ghcr.io/eventflux-io/eventflux:latest
     container_name: eventflux-crypto-demo
     command: ["/app/query.eventflux"]
     volumes:
@@ -356,7 +356,7 @@ docker compose up
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/eventflux-io/engine:latest
+docker pull ghcr.io/eventflux-io/eventflux:latest
 
 # Check for errors
 docker compose logs

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/event/stream/operation.rs
+// src/core/event/stream/operation.rs
 // Corresponds to io.eventflux.core.event.stream.Operation
 #[derive(Debug)]
 pub struct Operation {

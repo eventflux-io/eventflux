@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/persistence/mod.rs
+// src/core/persistence/mod.rs
 
 pub mod data_source;
 pub mod persistence_store; // For PersistenceStore traits

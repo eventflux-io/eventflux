@@ -180,8 +180,8 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
             gridSize: config.get('studio.gridSize', 20),
             snapToGrid: config.get('studio.snapToGrid', true),
             autoSave: config.get('studio.autoSave', true),
-            engineHost: config.get('engine.host', 'localhost'),
-            enginePort: config.get('engine.port', 9090),
+            engineHost: config.get('host', 'localhost'),
+            enginePort: config.get('port', 9090),
           },
         });
         break;

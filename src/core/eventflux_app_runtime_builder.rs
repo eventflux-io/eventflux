@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/eventflux_app_runtime_builder.rs
+// src/core/eventflux_app_runtime_builder.rs
 use crate::core::aggregation::AggregationRuntime;
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::ApplicationConfig;

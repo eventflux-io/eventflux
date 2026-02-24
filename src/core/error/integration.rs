@@ -200,7 +200,7 @@ impl ErrorIntegrationHelper {
 ///
 /// # Example
 /// ```
-/// use eventflux_rust::core::error::integration::extract_error_properties;
+/// use eventflux::core::error::integration::extract_error_properties;
 /// use std::collections::HashMap;
 ///
 /// let mut all_props = HashMap::new();

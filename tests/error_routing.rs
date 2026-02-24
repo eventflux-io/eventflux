@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::config::{
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::config::{
     eventflux_app_context::{EventFluxAppContext, MetricsLevelPlaceholder},
     eventflux_context::EventFluxContext,
 };
-use eventflux_rust::core::event::event::Event;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::query::processor::Processor;
-use eventflux_rust::core::stream::output::InMemoryErrorStore;
-use eventflux_rust::core::stream::stream_junction::{OnErrorAction, StreamJunction};
-use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+use eventflux::core::event::event::Event;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::query::processor::Processor;
+use eventflux::core::stream::output::InMemoryErrorStore;
+use eventflux::core::stream::stream_junction::{OnErrorAction, StreamJunction};
+use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -21,13 +21,13 @@ struct RecordingProcessor {
 impl Processor for RecordingProcessor {
     fn process(
         &self,
-        mut chunk: Option<Box<dyn eventflux_rust::core::event::complex_event::ComplexEvent>>,
+        mut chunk: Option<Box<dyn eventflux::core::event::complex_event::ComplexEvent>>,
     ) {
         while let Some(mut ce) = chunk {
             chunk = ce.set_next(None);
             if let Some(se) = ce
                 .as_any()
-                .downcast_ref::<eventflux_rust::core::event::stream::StreamEvent>()
+                .downcast_ref::<eventflux::core::event::stream::StreamEvent>()
             {
                 self.events
                     .lock()
@@ -42,7 +42,7 @@ impl Processor for RecordingProcessor {
     fn set_next_processor(&mut self, _n: Option<Arc<Mutex<dyn Processor>>>) {}
     fn clone_processor(
         &self,
-        _c: &Arc<eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext>,
+        _c: &Arc<eventflux::core::config::eventflux_query_context::EventFluxQueryContext>,
     ) -> Box<dyn Processor> {
         Box::new(RecordingProcessor {
             events: Arc::clone(&self.events),
@@ -52,7 +52,7 @@ impl Processor for RecordingProcessor {
         Arc::new(EventFluxAppContext::new(
             Arc::new(EventFluxContext::new()),
             "T".to_string(),
-            Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+            Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
                 "T".to_string(),
             )),
             String::new(),
@@ -64,7 +64,7 @@ impl Processor for RecordingProcessor {
             Arc::new(EventFluxAppContext::new(
                 Arc::new(EventFluxContext::new()),
                 "T".to_string(),
-                Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+                Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
                     "T".to_string(),
                 )),
                 String::new(),
@@ -73,8 +73,8 @@ impl Processor for RecordingProcessor {
             None,
         ))
     }
-    fn get_processing_mode(&self) -> eventflux_rust::core::query::processor::ProcessingMode {
-        eventflux_rust::core::query::processor::ProcessingMode::DEFAULT
+    fn get_processing_mode(&self) -> eventflux::core::query::processor::ProcessingMode {
+        eventflux::core::query::processor::ProcessingMode::DEFAULT
     }
     fn is_stateful(&self) -> bool {
         false
@@ -84,7 +84,7 @@ impl Processor for RecordingProcessor {
 #[test]
 fn test_fault_stream_routing() {
     let eventflux_context = Arc::new(EventFluxContext::new());
-    let app = Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+    let app = Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
         "App".to_string(),
     ));
     let mut app_ctx = EventFluxAppContext::new(
@@ -138,7 +138,7 @@ fn test_error_store_routing() {
     let error_store = Arc::new(InMemoryErrorStore::new());
     eventflux_context.set_error_store(error_store.clone());
     let eventflux_context = Arc::new(eventflux_context);
-    let app = Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+    let app = Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
         "App".to_string(),
     ));
     let app_ctx = EventFluxAppContext::new(

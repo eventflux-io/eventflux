@@ -15,12 +15,12 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use eventflux_rust::core::exception::EventFluxError;
-use eventflux_rust::core::extension::{SinkFactory, SourceFactory};
-use eventflux_rust::core::stream::input::source::rabbitmq_source::RabbitMQSourceFactory;
-use eventflux_rust::core::stream::input::source::{Source, SourceCallback};
-use eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSinkFactory;
-use eventflux_rust::core::stream::output::sink::Sink;
+use eventflux::core::exception::EventFluxError;
+use eventflux::core::extension::{SinkFactory, SourceFactory};
+use eventflux::core::stream::input::source::rabbitmq_source::RabbitMQSourceFactory;
+use eventflux::core::stream::input::source::{Source, SourceCallback};
+use eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSinkFactory;
+use eventflux::core::stream::output::sink::Sink;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -217,7 +217,7 @@ async fn cleanup_test_infrastructure(
 #[test]
 #[ignore = "Requires RabbitMQ broker - run with --ignored"]
 fn test_rabbitmq_source_validate_connectivity() {
-    use eventflux_rust::core::stream::input::source::rabbitmq_source::RabbitMQSource;
+    use eventflux::core::stream::input::source::rabbitmq_source::RabbitMQSource;
 
     // First, create the queue using lapin directly
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -309,7 +309,7 @@ fn test_rabbitmq_source_validate_connectivity() {
 #[test]
 #[ignore = "Requires RabbitMQ broker - run with --ignored"]
 fn test_rabbitmq_sink_validate_connectivity() {
-    use eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
+    use eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -399,7 +399,7 @@ fn test_rabbitmq_sink_validate_connectivity() {
 #[test]
 #[ignore = "Requires RabbitMQ broker - run with --ignored"]
 fn test_rabbitmq_sink_publish_and_verify() {
-    use eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
+    use eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -532,7 +532,7 @@ fn test_rabbitmq_sink_publish_and_verify() {
 #[test]
 #[ignore = "Requires RabbitMQ broker - run with --ignored"]
 fn test_rabbitmq_source_consume_and_verify() {
-    use eventflux_rust::core::stream::input::source::rabbitmq_source::RabbitMQSource;
+    use eventflux::core::stream::input::source::rabbitmq_source::RabbitMQSource;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -627,8 +627,8 @@ fn test_rabbitmq_source_consume_and_verify() {
 #[test]
 #[ignore = "Requires RabbitMQ broker - run with --ignored"]
 fn test_rabbitmq_roundtrip_source_to_sink() {
-    use eventflux_rust::core::stream::input::source::rabbitmq_source::RabbitMQSource;
-    use eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
+    use eventflux::core::stream::input::source::rabbitmq_source::RabbitMQSource;
+    use eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -700,7 +700,7 @@ fn test_rabbitmq_roundtrip_source_to_sink() {
     // Create a callback that forwards to sink (simulating EventFlux pipeline)
     #[derive(Debug)]
     struct ForwardToSinkCallback {
-        sink: Arc<eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSink>,
+        sink: Arc<eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSink>,
         forwarded_count: Arc<Mutex<usize>>,
     }
 
@@ -875,8 +875,8 @@ fn test_rabbitmq_roundtrip_source_to_sink() {
 #[test]
 #[ignore = "Requires RabbitMQ broker - run with --ignored"]
 fn test_e2e_rabbitmq_filter_and_case_processing() {
-    use eventflux_rust::core::stream::input::source::rabbitmq_source::RabbitMQSource;
-    use eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
+    use eventflux::core::stream::input::source::rabbitmq_source::RabbitMQSource;
+    use eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
     use serde_json::{json, Value};
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1334,8 +1334,8 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
 #[ignore = "Requires RabbitMQ broker - run with --ignored"]
 fn test_e2e_query_based_rabbitmq_processing() {
     use crate::common::AppRunner;
-    use eventflux_rust::core::event::value::AttributeValue;
-    use eventflux_rust::core::eventflux_manager::EventFluxManager;
+    use eventflux::core::event::value::AttributeValue;
+    use eventflux::core::eventflux_manager::EventFluxManager;
     use serde_json::{json, Value};
 
     // Create a separate runtime for setup/verification (NOT for EventFlux)
@@ -1647,8 +1647,8 @@ fn test_e2e_query_based_rabbitmq_processing() {
 /// Test error handling when broker is unreachable
 #[test]
 fn test_rabbitmq_unreachable_broker() {
-    use eventflux_rust::core::stream::input::source::rabbitmq_source::RabbitMQSource;
-    use eventflux_rust::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
+    use eventflux::core::stream::input::source::rabbitmq_source::RabbitMQSource;
+    use eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSink;
 
     // Test source with unreachable broker
     let mut source_config = HashMap::new();

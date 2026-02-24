@@ -8,7 +8,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use eventflux_rust::core::config::{EventFluxConfig, apply_config_overrides};
+//! use eventflux::core::config::{EventFluxConfig, apply_config_overrides};
 //!
 //! let mut config = EventFluxConfig::default();
 //! let overrides = vec![

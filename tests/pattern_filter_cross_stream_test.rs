@@ -3,16 +3,16 @@
 // tests/pattern_filter_cross_stream_test.rs
 // Tests for pattern filter conditions with cross-stream references
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::event::state::state_event::StateEvent;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
-use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StateType;
-use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StreamPreStateProcessor;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::event::state::state_event::StateEvent;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
+use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
+use eventflux::core::query::input::stream::state::stream_pre_state_processor::StreamPreStateProcessor;
+use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::Arc;
 
 fn create_test_context() -> (Arc<EventFluxAppContext>, Arc<EventFluxQueryContext>) {

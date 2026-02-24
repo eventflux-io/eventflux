@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/event/stream/meta_stream_event.rs
+// src/core/event/stream/meta_stream_event.rs
 // Simplified for initial ExpressionParser - focuses on a single input stream.
 // The full MetaStreamEvent in Java handles multiple input definitions, output defs, etc.
 use crate::query_api::definition::{

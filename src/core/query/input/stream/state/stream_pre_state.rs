@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/input/stream/state/stream_pre_state.rs
+// src/core/query/input/stream/state/stream_pre_state.rs
 // Three-list state management for pattern processing
 
 use crate::core::event::complex_event::ComplexEvent;

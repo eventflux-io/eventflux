@@ -185,8 +185,8 @@ WHERE P.price > 100 AND S.signal = 'BUY';
 ### Creating Async Streams Programmatically
 
 ```rust
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::stream::junction_factory::{JunctionConfig, BackpressureStrategy};
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::stream::junction_factory::{JunctionConfig, BackpressureStrategy};
 
 let manager = EventFluxManager::new();
 
@@ -217,9 +217,9 @@ let config = JunctionConfig::new("MyAsyncStream".to_string())
 ### Advanced Rust API Configuration
 
 ```rust
-use eventflux_rust::core::stream::optimized_stream_junction::OptimizedStreamJunction;
-use eventflux_rust::core::util::pipeline::{EventPipeline, PipelineConfig};
-use eventflux_rust::core::util::pipeline::backpressure::BackpressureStrategy;
+use eventflux::core::stream::optimized_stream_junction::OptimizedStreamJunction;
+use eventflux::core::util::pipeline::{EventPipeline, PipelineConfig};
+use eventflux::core::util::pipeline::backpressure::BackpressureStrategy;
 
 // Create high-performance pipeline configuration
 let pipeline_config = PipelineConfig::new()
@@ -244,7 +244,7 @@ let junction_config = JunctionConfig::new("HighPerfStream".to_string())
 ### Monitoring and Metrics
 
 ```rust
-use eventflux_rust::core::util::pipeline::metrics::PipelineMetrics;
+use eventflux::core::util::pipeline::metrics::PipelineMetrics;
 
 // Access pipeline metrics
 let app_runtime = manager.create_eventflux_app_runtime_from_string(eventflux_app)?;
@@ -260,7 +260,7 @@ if let Some(junction) = app_runtime.stream_junction_map.get("HighThroughputStrea
 ### Custom Backpressure Strategies
 
 ```rust
-use eventflux_rust::core::util::pipeline::backpressure::BackpressureStrategy;
+use eventflux::core::util::pipeline::backpressure::BackpressureStrategy;
 
 // Configure different backpressure strategies based on use case
 

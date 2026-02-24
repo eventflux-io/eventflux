@@ -297,7 +297,7 @@ BOOLEAN/BOOL    → AttributeType::BOOL
 **Complete Expression Type Inference**:
 
 ```rust
-use eventflux_rust::sql_compiler::type_inference::{
+use eventflux::sql_compiler::type_inference::{
     TypeInferenceEngine,
     TypeContext,
 };
@@ -326,7 +326,7 @@ assert_eq!(result_type, AttributeType::DOUBLE);
 **Compile-Time Type Validation**:
 
 ```rust
-use eventflux_rust::sql_compiler::validation::TypeValidator;
+use eventflux::sql_compiler::validation::TypeValidator;
 
 let validator = TypeValidator::new(catalog);
 

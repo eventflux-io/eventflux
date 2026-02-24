@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::util::parser::{parse_expression, ExpressionParserContext};
-use eventflux_rust::query_api::definition::attribute::Type as ApiAttributeType;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::expression::Expression;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::util::parser::{parse_expression, ExpressionParserContext};
+use eventflux::query_api::definition::attribute::Type as ApiAttributeType;
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::expression::Expression;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-use eventflux_rust::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::executor::expression_executor::ExpressionExecutor;
+use eventflux::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
 
 #[derive(Debug)]
 struct StatefulCountFunction {

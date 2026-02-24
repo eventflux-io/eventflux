@@ -3,7 +3,7 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -15,8 +15,8 @@ use std::time::Duration;
 // See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
 #[tokio::test]
 async fn async_junction_concurrent_dispatch() {
-    use eventflux_rust::core::config::ConfigManager;
-    use eventflux_rust::core::eventflux_manager::EventFluxManager;
+    use eventflux::core::config::ConfigManager;
+    use eventflux::core::eventflux_manager::EventFluxManager;
 
     // MIGRATED: Use YAML configuration for global async mode
     let config_manager = ConfigManager::from_file("tests/fixtures/app-async-enabled.yaml");

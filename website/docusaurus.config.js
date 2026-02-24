@@ -11,7 +11,7 @@ const config = {
   baseUrl: '/',
 
   organizationName: 'eventflux-io',
-  projectName: 'engine',
+  projectName: 'eventflux',
 
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
@@ -60,7 +60,7 @@ const config = {
       ({
         docs: {
           sidebarPath: './sidebars.js',
-          editUrl: 'https://github.com/eventflux-io/engine/tree/main/website/',
+          editUrl: 'https://github.com/eventflux-io/eventflux/tree/main/website/',
         },
         blog: {
           showReadingTime: true,
@@ -68,7 +68,7 @@ const config = {
             type: ['rss', 'atom'],
             xslt: true,
           },
-          editUrl: 'https://github.com/eventflux-io/engine/tree/main/website/',
+          editUrl: 'https://github.com/eventflux-io/eventflux/tree/main/website/',
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -83,7 +83,7 @@ const config = {
       announcementBar: {
         id: 'star_us',
         content:
-          'If you find EventFlux useful, give us a <a target="_blank" rel="noopener noreferrer" href="https://github.com/eventflux-io/engine">star on GitHub</a>!',
+          'If you find EventFlux useful, give us a <a target="_blank" rel="noopener noreferrer" href="https://github.com/eventflux-io/eventflux">star on GitHub</a>!',
         backgroundColor: '#C97C5D',
         textColor: '#FFFFFF',
         isCloseable: true,
@@ -122,7 +122,7 @@ const config = {
           },
           { to: '/blog', label: 'Blog', position: 'left' },
           {
-            href: 'https://github.com/eventflux-io/engine',
+            href: 'https://github.com/eventflux-io/eventflux',
             label: 'GitHub',
             position: 'right',
           },
@@ -157,7 +157,7 @@ const config = {
             items: [
               {
                 label: 'GitHub Discussions',
-                href: 'https://github.com/eventflux-io/engine/discussions',
+                href: 'https://github.com/eventflux-io/eventflux/discussions',
               },
               {
                 label: 'Discord',
@@ -178,7 +178,7 @@ const config = {
               },
               {
                 label: 'GitHub',
-                href: 'https://github.com/eventflux-io/engine',
+                href: 'https://github.com/eventflux-io/eventflux',
               },
               {
                 label: 'Architecture',

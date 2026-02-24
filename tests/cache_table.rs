@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::table::{
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::table::{
     CacheTable, InMemoryCompiledCondition, InMemoryCompiledUpdateSet, Table,
 };
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::persistence::data_source::{DataSource, DataSourceConfig};
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::persistence::data_source::{DataSource, DataSourceConfig};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

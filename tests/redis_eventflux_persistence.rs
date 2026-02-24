@@ -20,11 +20,11 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::config::ConfigManager;
-use eventflux_rust::core::distributed::RedisConfig;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::persistence::{PersistenceStore, RedisPersistenceStore};
+use eventflux::core::config::ConfigManager;
+use eventflux::core::distributed::RedisConfig;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::persistence::{PersistenceStore, RedisPersistenceStore};
 use std::sync::Arc;
 
 /// Test helper to create Redis persistence store

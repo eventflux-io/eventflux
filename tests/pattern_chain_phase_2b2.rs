@@ -9,8 +9,8 @@
 mod common;
 
 use common::pattern_chain_test_utils::*;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::query::input::stream::state::stream_pre_state_processor::StateType;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 
 // Alias for three-step tests (same as build_pattern_chain)
 use common::pattern_chain_test_utils::build_pattern_chain as build_three_step_chain;

@@ -14,14 +14,14 @@ Add EventFlux to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-eventflux = { git = "https://github.com/eventflux-io/engine.git" }
+eventflux = { git = "https://github.com/eventflux-io/eventflux.git" }
 ```
 
 Or install from source:
 
 ```bash
-git clone https://github.com/eventflux-io/engine.git
-cd engine
+git clone https://github.com/eventflux-io/eventflux.git
+cd eventflux
 cargo build --release
 ```
 

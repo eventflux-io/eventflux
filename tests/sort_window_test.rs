@@ -6,7 +6,7 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 #[tokio::test]
 async fn test_basic_sort_window() {

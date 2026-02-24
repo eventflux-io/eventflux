@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/tests/distributed_redis_state.rs
+// eventflux/tests/distributed_redis_state.rs
 
 //! Redis State Backend Integration Tests
 //!
@@ -8,7 +8,7 @@
 //! state management. Tests include connection pooling, state operations,
 //! checkpoint/restore functionality, and error handling.
 
-use eventflux_rust::core::distributed::{
+use eventflux::core::distributed::{
     DistributedError, RedisBackend, RedisConfig, StateBackend,
 };
 use std::time::Duration;

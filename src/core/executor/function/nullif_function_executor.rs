@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/executor/function/nullif_function_executor.rs
+// src/core/executor/function/nullif_function_executor.rs
 // NULLIF(a, b) returns NULL if a = b, otherwise returns a
 
 use crate::core::event::complex_event::ComplexEvent;

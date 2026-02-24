@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::eventflux_app_context::EventFluxAppContext;
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::config::eventflux_query_context::EventFluxQueryContext;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::util::parser::{parse_expression, ExpressionParserContext};
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::expression::Expression;
+use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::config::eventflux_query_context::EventFluxQueryContext;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::util::parser::{parse_expression, ExpressionParserContext};
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::expression::Expression;
 use std::collections::HashMap;
 use std::sync::Arc;
 

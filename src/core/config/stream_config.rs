@@ -16,7 +16,7 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use eventflux_rust::core::config::stream_config::*;
+//! use eventflux::core::config::stream_config::*;
 //!
 //! // Create configuration from SQL WITH clause
 //! let mut config = FlatConfig::new();
@@ -387,7 +387,7 @@ impl StreamTypeConfig {
 /// # Example
 ///
 /// ```rust,ignore
-/// use eventflux_rust::core::config::stream_config::*;
+/// use eventflux::core::config::stream_config::*;
 ///
 /// // Create table configuration from TOML/SQL
 /// let mut config = FlatConfig::new();

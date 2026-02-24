@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/query/input/stream/state/logical_pre_state_processor.rs
+// src/core/query/input/stream/state/logical_pre_state_processor.rs
 // LogicalPreStateProcessor for AND/OR pattern matching
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;

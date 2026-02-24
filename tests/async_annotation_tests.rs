@@ -17,9 +17,9 @@
 // - Async configuration with SQL queries
 
 // Tests for async stream configuration via SQL WITH and YAML
-use eventflux_rust::core::config::eventflux_context::EventFluxContext;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::query_api::definition::attribute::Type as AttributeType;
+use eventflux::core::config::eventflux_context::EventFluxContext;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::query_api::definition::attribute::Type as AttributeType;
 
 #[tokio::test]
 async fn test_async_with_sql_basic() {
@@ -116,7 +116,7 @@ async fn test_async_with_sql_minimal() {
 
 #[tokio::test]
 async fn test_async_via_yaml_config() {
-    use eventflux_rust::core::config::ConfigManager;
+    use eventflux::core::config::ConfigManager;
 
     // MIGRATED: @config(async='true') replaced with YAML configuration
     let config_manager = ConfigManager::from_file("tests/fixtures/app-async-enabled.yaml");
@@ -145,7 +145,7 @@ async fn test_async_via_yaml_config() {
 
 #[tokio::test]
 async fn test_app_level_async_via_yaml() {
-    use eventflux_rust::core::config::ConfigManager;
+    use eventflux::core::config::ConfigManager;
 
     // MIGRATED: @app(async='true') replaced with YAML configuration
     let config_manager = ConfigManager::from_file("tests/fixtures/app-async-enabled.yaml");

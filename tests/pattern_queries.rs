@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eventflux_rust::core::config::{
+use eventflux::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_context::EventFluxContext,
 };
-use eventflux_rust::core::stream::stream_junction::StreamJunction;
-use eventflux_rust::core::util::parser::QueryParser;
-use eventflux_rust::query_api::definition::attribute::Type as AttrType;
-use eventflux_rust::query_api::definition::StreamDefinition;
-use eventflux_rust::query_api::execution::query::input::state::{State, StateElement};
-use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-use eventflux_rust::query_api::execution::query::output::output_stream::{
+use eventflux::core::stream::stream_junction::StreamJunction;
+use eventflux::core::util::parser::QueryParser;
+use eventflux::query_api::definition::attribute::Type as AttrType;
+use eventflux::query_api::definition::StreamDefinition;
+use eventflux::query_api::execution::query::input::state::{State, StateElement};
+use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+use eventflux::query_api::execution::query::output::output_stream::{
     InsertIntoStreamAction, OutputStream, OutputStreamAction,
 };
-use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-use eventflux_rust::query_api::execution::query::Query;
-use eventflux_rust::query_api::expression::Expression;
+use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+use eventflux::query_api::execution::query::Query;
+use eventflux::query_api::expression::Expression;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -25,7 +25,7 @@ fn setup_context() -> (
     HashMap<String, Arc<Mutex<StreamJunction>>>,
 ) {
     let eventflux_context = Arc::new(EventFluxContext::new());
-    let app = Arc::new(eventflux_rust::query_api::eventflux_app::EventFluxApp::new(
+    let app = Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
         "TestApp".to_string(),
     ));
     let app_ctx = Arc::new(EventFluxAppContext::new(
@@ -103,14 +103,14 @@ fn build_sequence_query() -> Query {
         OutputAttribute::new(
             Some("aval".to_string()),
             Expression::Variable(
-                eventflux_rust::query_api::expression::variable::Variable::new("val".to_string())
+                eventflux::query_api::expression::variable::Variable::new("val".to_string())
                     .of_stream("AStream".to_string()),
             ),
         ),
         OutputAttribute::new(
             Some("bval".to_string()),
             Expression::Variable(
-                eventflux_rust::query_api::expression::variable::Variable::new("val".to_string())
+                eventflux::query_api::expression::variable::Variable::new("val".to_string())
                     .of_stream("BStream".to_string()),
             ),
         ),

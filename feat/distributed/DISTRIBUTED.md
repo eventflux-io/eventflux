@@ -368,7 +368,7 @@ spec:
     spec:
       containers:
       - name: eventflux
-        image: eventflux/eventflux-rust:latest
+        image: eventflux-io/eventflux:latest
         ports:
         - containerPort: 8080
           name: transport

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/executor/function/scalar_function_executor.rs
+// src/core/executor/function/scalar_function_executor.rs
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::executor::expression_executor::ExpressionExecutor;
 use std::sync::Arc;

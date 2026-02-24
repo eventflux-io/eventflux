@@ -2,10 +2,10 @@
 
 // Integration test for TCP transport in distributed mode
 
-use eventflux_rust::core::distributed::transport::{
+use eventflux::core::distributed::transport::{
     Message, MessageType, TcpTransport, Transport, TransportFactory,
 };
-use eventflux_rust::core::distributed::DistributedError;
+use eventflux::core::distributed::DistributedError;
 use std::sync::Arc;
 use tokio;
 
@@ -294,7 +294,7 @@ fn test_transport_factory_creation() {
     assert!(transport.is_ok());
 
     // Test creating with custom config
-    let config = eventflux_rust::core::distributed::transport::TcpTransportConfig {
+    let config = eventflux::core::distributed::transport::TcpTransportConfig {
         connection_timeout_ms: 10000,
         read_timeout_ms: 60000,
         write_timeout_ms: 60000,

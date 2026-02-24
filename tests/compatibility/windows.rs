@@ -4,7 +4,7 @@
 // Reference: query/window/*.java
 
 use super::common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 use std::thread::sleep;
 use std::time::Duration;
 

@@ -922,11 +922,11 @@ JOIN News ON Trades.symbol = News.symbol;
 
 ```rust
 // Old (LALRPOP parser - reference only)
-use eventflux_rust::sql_compiler::parse_sql_application;
+use eventflux::sql_compiler::parse_sql_application;
 let app = parse_sql_application("define stream ...").unwrap();
 
 // New (SQL parser - production)
-use eventflux_rust::sql_compiler::parse_sql_application;
+use eventflux::sql_compiler::parse_sql_application;
 let sql_app = parse_sql_application("CREATE STREAM ...").unwrap();
 let eventflux_app = sql_app.to_eventflux_app("MyApp".to_string());
 ```

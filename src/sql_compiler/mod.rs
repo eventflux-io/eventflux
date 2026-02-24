@@ -17,7 +17,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use eventflux_rust::sql_compiler::parse_sql_application;
+//! use eventflux::sql_compiler::parse_sql_application;
 //!
 //! let sql = r#"
 //!     CREATE STREAM StockStream (symbol STRING, price DOUBLE);

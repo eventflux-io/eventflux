@@ -2,34 +2,34 @@
 
 #[path = "common/mod.rs"]
 mod common;
-use eventflux_rust::core::config::{
+use eventflux::core::config::{
     eventflux_app_context::EventFluxAppContext,
     eventflux_query_context::EventFluxQueryContext,
     stream_config::{FlatConfig, PropertySource},
 };
-use eventflux_rust::core::event::complex_event::ComplexEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::eventflux_manager::EventFluxManager;
-use eventflux_rust::core::extension::{AttributeAggregatorFactory, WindowProcessorFactory};
-use eventflux_rust::core::query::processor::stream::window::WindowProcessor;
-use eventflux_rust::core::query::processor::{CommonProcessorMeta, ProcessingMode, Processor};
-use eventflux_rust::core::stream::stream_junction::StreamJunction;
-use eventflux_rust::core::util::parser::{
+use eventflux::core::event::complex_event::ComplexEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::extension::{AttributeAggregatorFactory, WindowProcessorFactory};
+use eventflux::core::query::processor::stream::window::WindowProcessor;
+use eventflux::core::query::processor::{CommonProcessorMeta, ProcessingMode, Processor};
+use eventflux::core::stream::stream_junction::StreamJunction;
+use eventflux::core::util::parser::{
     parse_expression, EventFluxAppParser, ExpressionParserContext, QueryParser,
 };
-use eventflux_rust::query_api::definition::{
+use eventflux::query_api::definition::{
     attribute::Type as AttrType, StreamDefinition, TableDefinition,
 };
-use eventflux_rust::query_api::eventflux_app::EventFluxApp;
-use eventflux_rust::query_api::execution::query::input::handler::WindowHandler;
-use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-use eventflux_rust::query_api::execution::query::output::output_stream::{
+use eventflux::query_api::eventflux_app::EventFluxApp;
+use eventflux::query_api::execution::query::input::handler::WindowHandler;
+use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+use eventflux::query_api::execution::query::output::output_stream::{
     InsertIntoStreamAction, OutputStream, OutputStreamAction,
 };
-use eventflux_rust::query_api::execution::query::selection::Selector;
-use eventflux_rust::query_api::execution::query::Query;
-use eventflux_rust::query_api::expression::Expression;
+use eventflux::query_api::execution::query::selection::Selector;
+use eventflux::query_api::execution::query::Query;
+use eventflux::query_api::expression::Expression;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -85,7 +85,7 @@ impl WindowProcessorFactory for DummyWindowFactory {
         _h: &WindowHandler,
         app: Arc<EventFluxAppContext>,
         q: Arc<EventFluxQueryContext>,
-        _parse_ctx: &eventflux_rust::core::util::parser::expression_parser::ExpressionParserContext,
+        _parse_ctx: &eventflux::core::util::parser::expression_parser::ExpressionParserContext,
     ) -> Result<Arc<Mutex<dyn Processor>>, String> {
         Ok(Arc::new(Mutex::new(DummyWindowProcessor {
             meta: CommonProcessorMeta::new(app, q),
@@ -107,7 +107,7 @@ impl AttributeAggregatorFactory for ConstAggFactory {
     fn create(
         &self,
     ) -> Box<
-        dyn eventflux_rust::core::query::selector::attribute::aggregator::AttributeAggregatorExecutor,
+        dyn eventflux::core::query::selector::attribute::aggregator::AttributeAggregatorExecutor,
     >{
         Box::new(ConstAggExec)
     }
@@ -115,8 +115,8 @@ impl AttributeAggregatorFactory for ConstAggFactory {
         Box::new(Self)
     }
 }
-use eventflux_rust::core::executor::expression_executor::ExpressionExecutor;
-use eventflux_rust::core::query::selector::attribute::aggregator::AttributeAggregatorExecutor;
+use eventflux::core::executor::expression_executor::ExpressionExecutor;
+use eventflux::core::query::selector::attribute::aggregator::AttributeAggregatorExecutor;
 impl AttributeAggregatorExecutor for ConstAggExec {
     fn init(
         &mut self,
@@ -174,7 +174,7 @@ fn make_ctx_with_manager(
     let stream_def =
         Arc::new(StreamDefinition::new("s".to_string()).attribute("v".to_string(), AttrType::INT));
     let meta =
-        eventflux_rust::core::event::stream::meta_stream_event::MetaStreamEvent::new_for_single_input(
+        eventflux::core::event::stream::meta_stream_event::MetaStreamEvent::new_for_single_input(
             Arc::clone(&stream_def),
         );
     let mut smap = HashMap::new();
@@ -269,7 +269,7 @@ fn test_register_window_factory() {
 
     // Create minimal ExpressionParserContext for the test
     let parse_ctx =
-        eventflux_rust::core::util::parser::expression_parser::ExpressionParserContext {
+        eventflux::core::util::parser::expression_parser::ExpressionParserContext {
             eventflux_app_context: Arc::clone(&app_ctx),
             eventflux_query_context: Arc::clone(&q_ctx),
             stream_meta_map: std::collections::HashMap::new(),
@@ -283,7 +283,7 @@ fn test_register_window_factory() {
             is_mutation_context: false,
         };
 
-    let res = eventflux_rust::core::query::processor::stream::window::create_window_processor(
+    let res = eventflux::core::query::processor::stream::window::create_window_processor(
         &handler, app_ctx, q_ctx, &parse_ctx,
     );
     assert!(res.is_ok());
@@ -362,7 +362,7 @@ fn test_table_factory_invoked() {
 
     #[derive(Debug, Clone)]
     struct RecordingFactory;
-    impl eventflux_rust::core::extension::TableFactory for RecordingFactory {
+    impl eventflux::core::extension::TableFactory for RecordingFactory {
         fn name(&self) -> &'static str {
             "rec"
         }
@@ -370,12 +370,12 @@ fn test_table_factory_invoked() {
             &self,
             _n: String,
             _p: HashMap<String, String>,
-            _c: Arc<eventflux_rust::core::config::eventflux_context::EventFluxContext>,
-        ) -> Result<Arc<dyn eventflux_rust::core::table::Table>, String> {
+            _c: Arc<eventflux::core::config::eventflux_context::EventFluxContext>,
+        ) -> Result<Arc<dyn eventflux::core::table::Table>, String> {
             CREATED.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::new(eventflux_rust::core::table::InMemoryTable::new()))
+            Ok(Arc::new(eventflux::core::table::InMemoryTable::new()))
         }
-        fn clone_box(&self) -> Box<dyn eventflux_rust::core::extension::TableFactory> {
+        fn clone_box(&self) -> Box<dyn eventflux::core::extension::TableFactory> {
             Box::new(self.clone())
         }
     }

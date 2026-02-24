@@ -27,7 +27,7 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use eventflux_rust::core::stream::mapper::factory::*;
+//! use eventflux::core::stream::mapper::factory::*;
 //! use std::collections::HashMap;
 //!
 //! let mut config = HashMap::new();

@@ -3,7 +3,7 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
+use eventflux::core::event::value::AttributeValue;
 
 // TODO: NOT PART OF M1 - Pattern/Sequence matching not in M1
 // This test uses pattern sequence syntax ("from A -> B") which is an advanced CEP feature.
@@ -65,18 +65,18 @@ async fn every_sequence() {
     );
 }
 
-use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-use eventflux_rust::query_api::execution::query::input::state::State;
-use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-use eventflux_rust::query_api::execution::query::output::output_stream::{
+use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+use eventflux::query_api::execution::query::input::state::State;
+use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+use eventflux::query_api::execution::query::output::output_stream::{
     InsertIntoStreamAction, OutputStream, OutputStreamAction,
 };
-use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-use eventflux_rust::query_api::execution::query::Query;
-use eventflux_rust::query_api::execution::ExecutionElement;
-use eventflux_rust::query_api::expression::{constant::TimeUtil, variable::Variable, Expression};
+use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+use eventflux::query_api::execution::query::Query;
+use eventflux::query_api::execution::ExecutionElement;
+use eventflux::query_api::expression::{constant::TimeUtil, variable::Variable, Expression};
 use std::sync::Arc;
 
 /// Test that zero-count patterns (A*, A?, A{0,n}) are rejected with a clear error.
@@ -85,7 +85,7 @@ use std::sync::Arc;
 #[tokio::test]
 #[should_panic(expected = "Zero-count patterns (A*, A?, A{0,n}) are not supported")]
 async fn kleene_star_pattern_rejected() {
-    let mut app = eventflux_rust::query_api::eventflux_app::EventFluxApp::new("Kleene".to_string());
+    let mut app = eventflux::query_api::eventflux_app::EventFluxApp::new("Kleene".to_string());
     let a_def = StreamDefinition::new("A".to_string()).attribute("val".to_string(), AttrType::INT);
     let b_def = StreamDefinition::new("B".to_string()).attribute("val".to_string(), AttrType::INT);
     let out_def = StreamDefinition::new("Out".to_string())
@@ -139,7 +139,7 @@ async fn kleene_star_pattern_rejected() {
 #[tokio::test]
 async fn sequence_with_timeout() {
     let mut app =
-        eventflux_rust::query_api::eventflux_app::EventFluxApp::new("Timeout".to_string());
+        eventflux::query_api::eventflux_app::EventFluxApp::new("Timeout".to_string());
     let a_def = StreamDefinition::new("A".to_string()).attribute("val".to_string(), AttrType::INT);
     let b_def = StreamDefinition::new("B".to_string()).attribute("val".to_string(), AttrType::INT);
     let out_def = StreamDefinition::new("Out".to_string())
@@ -196,18 +196,18 @@ async fn sequence_with_timeout() {
 
 #[tokio::test]
 async fn sequence_api() {
-    use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-    use eventflux_rust::query_api::execution::query::input::state::State;
-    use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+    use eventflux::query_api::execution::query::input::state::State;
+    use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+    use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+    use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-    use eventflux_rust::query_api::execution::query::Query;
-    use eventflux_rust::query_api::execution::ExecutionElement;
-    let mut app = eventflux_rust::query_api::eventflux_app::EventFluxApp::new("SeqAPI".to_string());
+    use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+    use eventflux::query_api::execution::query::Query;
+    use eventflux::query_api::execution::ExecutionElement;
+    let mut app = eventflux::query_api::eventflux_app::EventFluxApp::new("SeqAPI".to_string());
     let a_def = StreamDefinition::new("A".to_string()).attribute("val".to_string(), AttrType::INT);
     let b_def = StreamDefinition::new("B".to_string()).attribute("val".to_string(), AttrType::INT);
     let out_def = StreamDefinition::new("Out".to_string())
@@ -265,20 +265,20 @@ async fn sequence_api() {
 /// SELECT e1.val, e2.val
 #[tokio::test]
 async fn pattern_alias_two_streams() {
-    use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-    use eventflux_rust::query_api::execution::query::input::state::State;
-    use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+    use eventflux::query_api::execution::query::input::state::State;
+    use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+    use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+    use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-    use eventflux_rust::query_api::execution::query::Query;
-    use eventflux_rust::query_api::execution::ExecutionElement;
+    use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+    use eventflux::query_api::execution::query::Query;
+    use eventflux::query_api::execution::ExecutionElement;
 
     let mut app =
-        eventflux_rust::query_api::eventflux_app::EventFluxApp::new("AliasTest".to_string());
+        eventflux::query_api::eventflux_app::EventFluxApp::new("AliasTest".to_string());
     let a_def = StreamDefinition::new("StreamA".to_string())
         .attribute("price".to_string(), AttrType::DOUBLE)
         .attribute("symbol".to_string(), AttrType::STRING);
@@ -319,7 +319,7 @@ async fn pattern_alias_two_streams() {
         OutputAttribute::new(
             Some("change".to_string()),
             Expression::Subtract(Box::new(
-                eventflux_rust::query_api::expression::math::Subtract::new(
+                eventflux::query_api::expression::math::Subtract::new(
                     Expression::Variable(
                         Variable::new("price".to_string()).of_stream("e2".to_string()),
                     ),
@@ -374,20 +374,20 @@ async fn pattern_alias_two_streams() {
 /// SELECT e1.price, e2.price
 #[tokio::test]
 async fn pattern_alias_same_stream() {
-    use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-    use eventflux_rust::query_api::execution::query::input::state::State;
-    use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+    use eventflux::query_api::execution::query::input::state::State;
+    use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+    use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+    use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-    use eventflux_rust::query_api::execution::query::Query;
-    use eventflux_rust::query_api::execution::ExecutionElement;
+    use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+    use eventflux::query_api::execution::query::Query;
+    use eventflux::query_api::execution::ExecutionElement;
 
     let mut app =
-        eventflux_rust::query_api::eventflux_app::EventFluxApp::new("SameStreamAlias".to_string());
+        eventflux::query_api::eventflux_app::EventFluxApp::new("SameStreamAlias".to_string());
     let trades_def = StreamDefinition::new("RawTrades".to_string())
         .attribute("price".to_string(), AttrType::DOUBLE)
         .attribute("symbol".to_string(), AttrType::STRING);
@@ -470,20 +470,20 @@ async fn pattern_alias_same_stream() {
 /// completion logic needs work. The 2-element patterns work correctly.
 #[tokio::test]
 async fn n_element_pattern_three_streams() {
-    use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-    use eventflux_rust::query_api::execution::query::input::state::State;
-    use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+    use eventflux::query_api::execution::query::input::state::State;
+    use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+    use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+    use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-    use eventflux_rust::query_api::execution::query::Query;
-    use eventflux_rust::query_api::execution::ExecutionElement;
+    use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+    use eventflux::query_api::execution::query::Query;
+    use eventflux::query_api::execution::ExecutionElement;
 
     let mut app =
-        eventflux_rust::query_api::eventflux_app::EventFluxApp::new("NElementTest".to_string());
+        eventflux::query_api::eventflux_app::EventFluxApp::new("NElementTest".to_string());
     let a_def = StreamDefinition::new("A".to_string()).attribute("val".to_string(), AttrType::INT);
     let b_def = StreamDefinition::new("B".to_string()).attribute("val".to_string(), AttrType::INT);
     let c_def = StreamDefinition::new("C".to_string()).attribute("val".to_string(), AttrType::INT);
@@ -566,20 +566,20 @@ async fn n_element_pattern_three_streams() {
 /// Test 4-element N-element pattern: A -> B -> C -> D
 #[tokio::test]
 async fn n_element_pattern_four_streams() {
-    use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-    use eventflux_rust::query_api::execution::query::input::state::State;
-    use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+    use eventflux::query_api::execution::query::input::state::State;
+    use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+    use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+    use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-    use eventflux_rust::query_api::execution::query::Query;
-    use eventflux_rust::query_api::execution::ExecutionElement;
+    use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+    use eventflux::query_api::execution::query::Query;
+    use eventflux::query_api::execution::ExecutionElement;
 
     let mut app =
-        eventflux_rust::query_api::eventflux_app::EventFluxApp::new("FourElementTest".to_string());
+        eventflux::query_api::eventflux_app::EventFluxApp::new("FourElementTest".to_string());
     let a_def = StreamDefinition::new("A".to_string()).attribute("val".to_string(), AttrType::INT);
     let b_def = StreamDefinition::new("B".to_string()).attribute("val".to_string(), AttrType::INT);
     let c_def = StreamDefinition::new("C".to_string()).attribute("val".to_string(), AttrType::INT);
@@ -673,20 +673,20 @@ async fn n_element_pattern_four_streams() {
 /// Test 5-element N-element pattern: A -> B -> C -> D -> E
 #[tokio::test]
 async fn n_element_pattern_five_streams() {
-    use eventflux_rust::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
-    use eventflux_rust::query_api::execution::query::input::state::State;
-    use eventflux_rust::query_api::execution::query::input::stream::input_stream::InputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
-    use eventflux_rust::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
-    use eventflux_rust::query_api::execution::query::output::output_stream::{
+    use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
+    use eventflux::query_api::execution::query::input::state::State;
+    use eventflux::query_api::execution::query::input::stream::input_stream::InputStream;
+    use eventflux::query_api::execution::query::input::stream::single_input_stream::SingleInputStream;
+    use eventflux::query_api::execution::query::input::stream::state_input_stream::StateInputStream;
+    use eventflux::query_api::execution::query::output::output_stream::{
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
-    use eventflux_rust::query_api::execution::query::selection::{OutputAttribute, Selector};
-    use eventflux_rust::query_api::execution::query::Query;
-    use eventflux_rust::query_api::execution::ExecutionElement;
+    use eventflux::query_api::execution::query::selection::{OutputAttribute, Selector};
+    use eventflux::query_api::execution::query::Query;
+    use eventflux::query_api::execution::ExecutionElement;
 
     let mut app =
-        eventflux_rust::query_api::eventflux_app::EventFluxApp::new("FiveElementTest".to_string());
+        eventflux::query_api::eventflux_app::EventFluxApp::new("FiveElementTest".to_string());
     let a_def = StreamDefinition::new("A".to_string()).attribute("val".to_string(), AttrType::INT);
     let b_def = StreamDefinition::new("B".to_string()).attribute("val".to_string(), AttrType::INT);
     let c_def = StreamDefinition::new("C".to_string()).attribute("val".to_string(), AttrType::INT);

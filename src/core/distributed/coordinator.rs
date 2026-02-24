@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/distributed/coordinator.rs
+// src/core/distributed/coordinator.rs
 
 //! Distributed Coordinator Abstraction
 //!

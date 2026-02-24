@@ -29,12 +29,12 @@
 //!    - Source with fail strategy
 //!    - Error recovery after successful event
 
-use eventflux_rust::core::error::{
+use eventflux::core::error::{
     create_dlq_event, BackoffStrategy, DlqConfig, DlqFallbackStrategy, ErrorAction, ErrorConfig,
     ErrorHandler, ErrorStrategy, FailConfig, LogLevel, RetryConfig, SourceErrorContext,
 };
-use eventflux_rust::core::event::{AttributeValue, Event};
-use eventflux_rust::core::exception::EventFluxError;
+use eventflux::core::event::{AttributeValue, Event};
+use eventflux::core::exception::EventFluxError;
 use std::time::{Duration, Instant};
 
 // ============================================================================

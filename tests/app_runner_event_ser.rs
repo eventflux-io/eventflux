@@ -3,12 +3,12 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::complex_event::{clone_event_chain, ComplexEvent};
-use eventflux_rust::core::event::event::Event;
-use eventflux_rust::core::event::state::state_event::StateEvent;
-use eventflux_rust::core::event::stream::stream_event::StreamEvent;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::core::util::{from_bytes, to_bytes};
+use eventflux::core::event::complex_event::{clone_event_chain, ComplexEvent};
+use eventflux::core::event::event::Event;
+use eventflux::core::event::state::state_event::StateEvent;
+use eventflux::core::event::stream::stream_event::StreamEvent;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::core::util::{from_bytes, to_bytes};
 
 // TODO: NOT PART OF M1 SQL TESTING - Event serialization is core functionality but test uses old syntax
 // This test is for event serialization/deserialization which is core runtime functionality.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// eventflux_rust/src/core/util/mod.rs
+// src/core/util/mod.rs
 
 pub mod attribute_converter;
 pub mod compression; // High-performance shared compression utility

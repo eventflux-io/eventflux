@@ -3,8 +3,8 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::AppRunner;
-use eventflux_rust::core::event::value::AttributeValue;
-use eventflux_rust::query_api::aggregation::time_period::Duration;
+use eventflux::core::event::value::AttributeValue;
+use eventflux::query_api::aggregation::time_period::Duration;
 
 // TODO: NOT PART OF M1 - Requires DEFINE AGGREGATION syntax support in SQL compiler
 // This test uses "define aggregation" which is an advanced feature not included in M1.
@@ -65,8 +65,8 @@ async fn incremental_sum_single_bucket() {
 #[tokio::test]
 #[ignore = "Requires DEFINE AGGREGATION - Not part of M1"]
 async fn query_within_per() {
-    use eventflux_rust::query_api::aggregation::within::Within;
-    use eventflux_rust::query_api::expression::Expression;
+    use eventflux::query_api::aggregation::within::Within;
+    use eventflux::query_api::expression::Expression;
 
     let app = "\
         define stream In (value int);\n\
