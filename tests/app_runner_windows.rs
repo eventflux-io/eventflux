@@ -223,6 +223,81 @@ async fn lossy_counting_window() {
     );
 }
 
+#[tokio::test]
+async fn test_and_aggregator_length_batch() {
+    let app = "\
+        CREATE STREAM In (isFraud BOOL);\n\
+        CREATE STREAM Out (allFraud BOOL);\n\
+        INSERT INTO Out\n\
+        SELECT and(isFraud) as allFraud FROM In WINDOW('lengthBatch', 3);\n";
+    let runner = AppRunner::new(app, "Out").await;
+    // Batch 1: true, true, true → and = true
+    runner.send("In", vec![AttributeValue::Bool(true)]);
+    runner.send("In", vec![AttributeValue::Bool(true)]);
+    runner.send("In", vec![AttributeValue::Bool(true)]);
+    // Batch 2: true, false, true → and = false
+    runner.send("In", vec![AttributeValue::Bool(true)]);
+    runner.send("In", vec![AttributeValue::Bool(false)]);
+    runner.send("In", vec![AttributeValue::Bool(true)]);
+    let out = runner.shutdown();
+    // lengthBatch emits one output per event in the batch, all with the same aggregated value
+    assert!(out.contains(&vec![AttributeValue::Bool(true)]));
+    assert!(out.contains(&vec![AttributeValue::Bool(false)]));
+}
+
+#[tokio::test]
+async fn test_or_aggregator_length_batch() {
+    let app = "\
+        CREATE STREAM In (isFraud BOOL);\n\
+        CREATE STREAM Out (anyFraud BOOL);\n\
+        INSERT INTO Out\n\
+        SELECT or(isFraud) as anyFraud FROM In WINDOW('lengthBatch', 3);\n";
+    let runner = AppRunner::new(app, "Out").await;
+    // Batch 1: false, false, false → or = false
+    runner.send("In", vec![AttributeValue::Bool(false)]);
+    runner.send("In", vec![AttributeValue::Bool(false)]);
+    runner.send("In", vec![AttributeValue::Bool(false)]);
+    // Batch 2: false, true, false → or = true
+    runner.send("In", vec![AttributeValue::Bool(false)]);
+    runner.send("In", vec![AttributeValue::Bool(true)]);
+    runner.send("In", vec![AttributeValue::Bool(false)]);
+    let out = runner.shutdown();
+    assert!(out.contains(&vec![AttributeValue::Bool(false)]));
+    assert!(out.contains(&vec![AttributeValue::Bool(true)]));
+}
+
+#[tokio::test]
+async fn test_and_or_with_group_by() {
+    let app = "\
+        CREATE STREAM In (category INT, flag BOOL);\n\
+        CREATE STREAM Out (category INT, allTrue BOOL, anyTrue BOOL);\n\
+        INSERT INTO Out\n\
+        SELECT category, and(flag) as allTrue, or(flag) as anyTrue FROM In GROUP BY category;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    runner.send_batch(
+        "In",
+        vec![
+            vec![AttributeValue::Int(1), AttributeValue::Bool(true)],
+            vec![AttributeValue::Int(1), AttributeValue::Bool(false)],
+            vec![AttributeValue::Int(2), AttributeValue::Bool(true)],
+            vec![AttributeValue::Int(2), AttributeValue::Bool(true)],
+        ],
+    );
+    let out = runner.shutdown();
+    // Group 1: and(true, false) = false, or(true, false) = true
+    assert!(out.contains(&vec![
+        AttributeValue::Int(1),
+        AttributeValue::Bool(false),
+        AttributeValue::Bool(true),
+    ]));
+    // Group 2: and(true, true) = true, or(true, true) = true
+    assert!(out.contains(&vec![
+        AttributeValue::Int(2),
+        AttributeValue::Bool(true),
+        AttributeValue::Bool(true),
+    ]));
+}
+
 // TODO: NOT PART OF M1 - cron window SQL syntax not yet supported
 // See comment above for details.
 #[tokio::test]

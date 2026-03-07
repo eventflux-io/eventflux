@@ -15,7 +15,11 @@ use eventflux::query_api::expression::{variable::Variable, Expression};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-fn make_ctx(name: &str) -> ExpressionParserContext<'static> {
+fn make_ctx_with_attr(
+    name: &str,
+    attr_name: &str,
+    attr_type: AttrType,
+) -> ExpressionParserContext<'static> {
     let app_ctx = Arc::new(EventFluxAppContext::new(
         Arc::new(EventFluxContext::default()),
         "app".to_string(),
@@ -28,7 +32,7 @@ fn make_ctx(name: &str) -> ExpressionParserContext<'static> {
         None,
     ));
     let stream_def = Arc::new(
-        StreamDefinition::new("s".to_string()).attribute("price".to_string(), AttrType::INT),
+        StreamDefinition::new("s".to_string()).attribute(attr_name.to_string(), attr_type),
     );
     let meta = MetaStreamEvent::new_for_single_input(Arc::clone(&stream_def));
     let mut stream_map = HashMap::new();
@@ -51,6 +55,10 @@ fn make_ctx(name: &str) -> ExpressionParserContext<'static> {
         query_name: qn,
         is_mutation_context: false,
     }
+}
+
+fn make_ctx(name: &str) -> ExpressionParserContext<'static> {
+    make_ctx_with_attr(name, "price", AttrType::INT)
 }
 
 #[test]
@@ -111,4 +119,134 @@ fn test_aggregation_variable_resolution() {
     let expr = Expression::Variable(var);
     let exec = parse_expression(&expr, &ctx).unwrap();
     assert_eq!(exec.get_return_type(), AttrType::LONG);
+}
+
+fn make_bool_ctx(name: &str) -> ExpressionParserContext<'static> {
+    make_ctx_with_attr(name, "flag", AttrType::BOOL)
+}
+
+#[test]
+fn test_and_aggregator() {
+    let ctx = make_bool_ctx("andq");
+    let expr = Expression::function_no_ns(
+        "and".to_string(),
+        vec![Expression::Variable(Variable::new("flag".to_string()))],
+    );
+    let exec = parse_expression(&expr, &ctx).unwrap();
+
+    // Add true → true (all values are true)
+    let mut e1 = StreamEvent::new(0, 1, 0, 0);
+    e1.before_window_data[0] = AttributeValue::Bool(true);
+    assert_eq!(exec.execute(Some(&e1)), Some(AttributeValue::Bool(true)));
+
+    // Add true → still true
+    let mut e2 = StreamEvent::new(0, 1, 0, 0);
+    e2.before_window_data[0] = AttributeValue::Bool(true);
+    assert_eq!(exec.execute(Some(&e2)), Some(AttributeValue::Bool(true)));
+
+    // Add false → false (not all values are true)
+    let mut e3 = StreamEvent::new(0, 1, 0, 0);
+    e3.before_window_data[0] = AttributeValue::Bool(false);
+    assert_eq!(exec.execute(Some(&e3)), Some(AttributeValue::Bool(false)));
+
+    // Reset → false (empty window)
+    let mut reset = StreamEvent::new(0, 0, 0, 0);
+    reset.set_event_type(ComplexEventType::Reset);
+    assert_eq!(
+        exec.execute(Some(&reset)),
+        Some(AttributeValue::Bool(false))
+    );
+
+    // Add true after reset → true
+    let mut e4 = StreamEvent::new(0, 1, 0, 0);
+    e4.before_window_data[0] = AttributeValue::Bool(true);
+    assert_eq!(exec.execute(Some(&e4)), Some(AttributeValue::Bool(true)));
+}
+
+#[test]
+fn test_or_aggregator() {
+    let ctx = make_bool_ctx("orq");
+    let expr = Expression::function_no_ns(
+        "or".to_string(),
+        vec![Expression::Variable(Variable::new("flag".to_string()))],
+    );
+    let exec = parse_expression(&expr, &ctx).unwrap();
+
+    // Add false → false
+    let mut e1 = StreamEvent::new(0, 1, 0, 0);
+    e1.before_window_data[0] = AttributeValue::Bool(false);
+    assert_eq!(exec.execute(Some(&e1)), Some(AttributeValue::Bool(false)));
+
+    // Add false → still false
+    let mut e2 = StreamEvent::new(0, 1, 0, 0);
+    e2.before_window_data[0] = AttributeValue::Bool(false);
+    assert_eq!(exec.execute(Some(&e2)), Some(AttributeValue::Bool(false)));
+
+    // Add true → true
+    let mut e3 = StreamEvent::new(0, 1, 0, 0);
+    e3.before_window_data[0] = AttributeValue::Bool(true);
+    assert_eq!(exec.execute(Some(&e3)), Some(AttributeValue::Bool(true)));
+
+    // Reset → false
+    let mut reset = StreamEvent::new(0, 0, 0, 0);
+    reset.set_event_type(ComplexEventType::Reset);
+    assert_eq!(
+        exec.execute(Some(&reset)),
+        Some(AttributeValue::Bool(false))
+    );
+}
+
+#[test]
+fn test_and_aggregator_with_remove() {
+    let ctx = make_bool_ctx("and_rem");
+    let expr = Expression::function_no_ns(
+        "and".to_string(),
+        vec![Expression::Variable(Variable::new("flag".to_string()))],
+    );
+    let exec = parse_expression(&expr, &ctx).unwrap();
+
+    // Add true, true → true
+    let mut e1 = StreamEvent::new(0, 1, 0, 0);
+    e1.before_window_data[0] = AttributeValue::Bool(true);
+    exec.execute(Some(&e1));
+
+    let mut e2 = StreamEvent::new(0, 1, 0, 0);
+    e2.before_window_data[0] = AttributeValue::Bool(true);
+    assert_eq!(exec.execute(Some(&e2)), Some(AttributeValue::Bool(true)));
+
+    // Add false → false
+    let mut e3 = StreamEvent::new(0, 1, 0, 0);
+    e3.before_window_data[0] = AttributeValue::Bool(false);
+    assert_eq!(exec.execute(Some(&e3)), Some(AttributeValue::Bool(false)));
+
+    // Remove the false → back to true
+    let mut exp = StreamEvent::new(0, 1, 0, 0);
+    exp.before_window_data[0] = AttributeValue::Bool(false);
+    exp.set_event_type(ComplexEventType::Expired);
+    assert_eq!(exec.execute(Some(&exp)), Some(AttributeValue::Bool(true)));
+}
+
+#[test]
+fn test_or_aggregator_with_remove() {
+    let ctx = make_bool_ctx("or_rem");
+    let expr = Expression::function_no_ns(
+        "or".to_string(),
+        vec![Expression::Variable(Variable::new("flag".to_string()))],
+    );
+    let exec = parse_expression(&expr, &ctx).unwrap();
+
+    // Add false, true → true
+    let mut e1 = StreamEvent::new(0, 1, 0, 0);
+    e1.before_window_data[0] = AttributeValue::Bool(false);
+    exec.execute(Some(&e1));
+
+    let mut e2 = StreamEvent::new(0, 1, 0, 0);
+    e2.before_window_data[0] = AttributeValue::Bool(true);
+    assert_eq!(exec.execute(Some(&e2)), Some(AttributeValue::Bool(true)));
+
+    // Remove the true → back to false
+    let mut exp = StreamEvent::new(0, 1, 0, 0);
+    exp.before_window_data[0] = AttributeValue::Bool(true);
+    exp.set_event_type(ComplexEventType::Expired);
+    assert_eq!(exec.execute(Some(&exp)), Some(AttributeValue::Bool(false)));
 }
