@@ -52,6 +52,25 @@ GROUP BY symbol
 INSERT INTO PriceExtremes;
 ```
 
+### Boolean Aggregates
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `AND(attr)` | Logical AND across window (true if all true) | `AND(is_valid)` |
+| `OR(attr)` | Logical OR across window (true if any true) | `OR(is_fraud)` |
+
+```sql
+-- Check if all transactions in window are valid, or if any are fraudulent
+SELECT merchant_id,
+       AND(is_valid) AS all_valid,       -- true only if ALL are valid
+       OR(is_fraud) AS any_fraud,        -- true if ANY is fraudulent
+       COUNT(*) AS txn_count
+FROM Transactions
+WINDOW TUMBLING(1 min)
+GROUP BY merchant_id
+INSERT INTO MerchantHealth;
+```
+
 ### Distinct Aggregates
 
 | Function | Description | Example |

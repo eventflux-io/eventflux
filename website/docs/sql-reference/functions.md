@@ -361,6 +361,8 @@ See [Aggregations](/docs/sql-reference/aggregations) for detailed coverage.
 | `LAST(attr)` | Last/most recent value in window | Yes |
 | `STDDEV(attr)` | Standard deviation (Welford's algorithm) | Yes |
 | `VARIANCE(attr)` | Variance of values | Yes |
+| `AND(attr)` | Logical AND (true if all true) | Yes |
+| `OR(attr)` | Logical OR (true if any true) | Yes |
 | `MINFOREVER(attr)` | All-time minimum (never resets) | **No** |
 | `MAXFOREVER(attr)` | All-time maximum (never resets) | **No** |
 
