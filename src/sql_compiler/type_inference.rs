@@ -136,6 +136,25 @@ fn get_function_signature(name: &str) -> Option<&'static FunctionSignature> {
                 ))
             }
         }),
+        // Boolean aggregators
+        FunctionSignature::new("and", 1, |args| {
+            if args[0] == AttributeType::BOOL {
+                Ok(AttributeType::BOOL)
+            } else {
+                Err(TypeError::ConversionFailed(
+                    "AND aggregator requires boolean argument".into(),
+                ))
+            }
+        }),
+        FunctionSignature::new("or", 1, |args| {
+            if args[0] == AttributeType::BOOL {
+                Ok(AttributeType::BOOL)
+            } else {
+                Err(TypeError::ConversionFailed(
+                    "OR aggregator requires boolean argument".into(),
+                ))
+            }
+        }),
         // Math functions
         FunctionSignature::new("round", 1, |args| match args[0] {
             AttributeType::FLOAT | AttributeType::DOUBLE => Ok(AttributeType::DOUBLE),

@@ -403,11 +403,12 @@ impl EventFluxContext {
             SortWindowFactory, TimeBatchWindowFactory, TimeWindowFactory, UniqueWindowFactory,
         };
         use crate::core::query::selector::attribute::aggregator::{
-            AvgAttributeAggregatorFactory, CountAttributeAggregatorFactory,
-            DistinctCountAttributeAggregatorFactory, FirstAttributeAggregatorFactory,
-            LastAttributeAggregatorFactory, MaxAttributeAggregatorFactory,
-            MaxForeverAttributeAggregatorFactory, MinAttributeAggregatorFactory,
-            MinForeverAttributeAggregatorFactory, StdDevAttributeAggregatorFactory,
+            AndAttributeAggregatorFactory, AvgAttributeAggregatorFactory,
+            CountAttributeAggregatorFactory, DistinctCountAttributeAggregatorFactory,
+            FirstAttributeAggregatorFactory, LastAttributeAggregatorFactory,
+            MaxAttributeAggregatorFactory, MaxForeverAttributeAggregatorFactory,
+            MinAttributeAggregatorFactory, MinForeverAttributeAggregatorFactory,
+            OrAttributeAggregatorFactory, StdDevAttributeAggregatorFactory,
             SumAttributeAggregatorFactory,
         };
         use crate::core::stream::input::source::rabbitmq_source::RabbitMQSourceFactory;
@@ -488,6 +489,14 @@ impl EventFluxContext {
         self.add_attribute_aggregator_factory(
             "last".to_string(),
             Box::new(LastAttributeAggregatorFactory),
+        );
+        self.add_attribute_aggregator_factory(
+            "and".to_string(),
+            Box::new(AndAttributeAggregatorFactory),
+        );
+        self.add_attribute_aggregator_factory(
+            "or".to_string(),
+            Box::new(OrAttributeAggregatorFactory),
         );
 
         self.add_table_factory("inMemory".to_string(), Box::new(InMemoryTableFactory));
