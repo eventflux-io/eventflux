@@ -334,6 +334,69 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, Error> {
 }
 ```
 
+## Automatic Persistence on Shutdown and Restart
+
+When a persistence store is configured, EventFlux automatically manages state across runtime lifecycle transitions:
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Runtime
+    participant Store as Persistence Store
+
+    App->>Runtime: start()
+    Runtime->>Store: get_last_revision()
+    Store-->>Runtime: revision (if exists)
+    Runtime->>Runtime: auto-restore state
+    Note over Runtime: Windows, aggregators restored
+
+    App->>Runtime: send events...
+    Note over Runtime: State accumulates
+
+    App->>Runtime: shutdown()
+    Runtime->>Runtime: quiesce pipeline
+    Runtime->>Store: auto-persist state
+    Note over Runtime: State = Stopped
+
+    App->>Runtime: start()
+    Runtime->>Store: get_last_revision()
+    Store-->>Runtime: latest revision
+    Runtime->>Runtime: auto-restore state
+    Note over Runtime: Continues from where it left off
+```
+
+### Shutdown Sequence
+
+On `shutdown()`, the runtime follows a carefully ordered sequence to ensure a consistent snapshot:
+
+1. **Deactivate triggers** — Prevents new timer-based events from entering the pipeline
+2. **Stop sources** — Prevents new external events from entering
+3. **Flush queries** — Drains any in-flight events through the processing pipeline
+4. **Auto-persist** — Saves a snapshot of all state holders (windows, aggregators) to the persistence store
+5. **Stop sinks and scheduler** — Cleans up remaining resources
+6. **Transition to Stopped** — Runtime is now restartable
+
+### Start Sequence (Restart)
+
+On `start()` from a `Stopped` state, the runtime:
+
+1. **Check for persisted revision** — Looks up the last saved revision from the persistence store
+2. **Auto-restore** — Deserializes all state holders back to their saved state
+3. **Start components** — Sources, sinks, triggers, and partitions are reactivated
+4. **Transition to Running** — Runtime is processing events again
+
+If auto-restore fails (e.g., corrupted data), the runtime clears in-memory state and starts fresh rather than failing to start. Persisted revisions are preserved for debugging.
+
+### Clean Restart
+
+To discard all state and start fresh, call `clear_state()` between shutdown and start:
+
+```rust
+runtime.shutdown();
+runtime.clear_state();  // Removes persisted + in-memory state
+runtime.start()?;       // Starts with zero state
+```
+
 ## Best Practices
 
 :::tip State Management

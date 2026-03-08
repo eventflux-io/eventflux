@@ -230,6 +230,11 @@ impl StateHolder for DistinctCountAggregatorStateHolder {
 
         metadata
     }
+
+    fn reset_state(&self) {
+        self.map.lock().unwrap().clear();
+        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl CompressibleStateHolder for DistinctCountAggregatorStateHolder {

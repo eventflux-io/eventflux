@@ -158,6 +158,17 @@ impl SnapshotService {
         Ok(report)
     }
 
+    /// Reset all registered state holders to their initial (empty) values.
+    pub fn clear_state_holders(&self) {
+        let holders: Vec<_> = self.state_holders.lock().unwrap()
+            .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (id, holder) in holders {
+            holder.lock().unwrap().reset_state();
+            log::debug!("Reset state for component: {}", id);
+        }
+        *self.state.lock().unwrap() = Vec::new();
+    }
+
     /// Load the given revision from the store and set as current state.
     pub fn restore_revision(&self, revision: &str) -> Result<(), String> {
         let store = self

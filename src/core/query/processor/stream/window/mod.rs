@@ -1794,7 +1794,7 @@ impl CronWindowProcessor {
                     expired: Arc::clone(&self.expired),
                     next: self.meta.next_processor.as_ref().map(Arc::clone),
                 };
-                let _ = sched.schedule_cron(&self.cron, Arc::new(task), None);
+                let _ = sched.schedule_cron(&self.cron, Arc::new(task), None, None);
                 *self.scheduled.lock().unwrap() = true;
             }
         }

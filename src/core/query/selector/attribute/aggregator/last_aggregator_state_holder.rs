@@ -137,6 +137,11 @@ impl StateHolder for LastAggregatorStateHolder {
             .insert("aggregator_type".to_string(), "last".to_string());
         metadata
     }
+
+    fn reset_state(&self) {
+        *self.last_value.lock().unwrap() = None;
+        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl CompressibleStateHolder for LastAggregatorStateHolder {

@@ -675,10 +675,12 @@ impl EventFluxAppRuntime {
         use crate::core::exception::EventFluxError;
 
         // 1. State validation - idempotent start
+        let restarting;
         {
             let mut state = self.state.write().unwrap();
             match *state {
                 RuntimeState::Created | RuntimeState::Failed => {
+                    restarting = false;
                     *state = RuntimeState::Starting;
                 }
                 RuntimeState::Running => {
@@ -692,15 +694,40 @@ impl EventFluxAppRuntime {
                     return Ok(());
                 }
                 RuntimeState::Stopped => {
-                    return Err(EventFluxError::app_runtime(
-                        "Cannot restart a stopped runtime".to_string(),
-                    ));
+                    restarting = true;
+                    *state = RuntimeState::Starting;
                 }
                 _ => {
                     return Err(EventFluxError::app_runtime(format!(
                         "Cannot start runtime in state: {:?}",
                         *state
                     )));
+                }
+            }
+        }
+
+        // Auto-restore on restart only — on first start (Created), the user may have
+        // already called restore_revision() manually before start()
+        if restarting {
+            if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
+                if let Some(store) = &service.persistence_store {
+                    if let Some(revision) = store.get_last_revision(&self.name) {
+                        match self.restore_revision(&revision) {
+                            Ok(()) => {
+                                log::info!("Auto-restored state (revision: {})", revision)
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Auto-restore failed, clearing partial state and starting fresh: {}",
+                                    e
+                                );
+                                // Clear in-memory state only — preserve persisted revisions
+                                // so they remain available for debugging or manual recovery
+                                service.clear_state_holders();
+                                self.clear_select_processor_group_states();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -861,23 +888,53 @@ impl EventFluxAppRuntime {
     }
 
     pub fn shutdown(&self) {
-        // Stop all source and sink handlers first
+        // Guard: only shutdown if Running, Starting, or Failed
+        {
+            let mut state = self.state.write().unwrap();
+            match *state {
+                RuntimeState::Running | RuntimeState::Starting | RuntimeState::Failed => {
+                    *state = RuntimeState::Stopping;
+                }
+                _ => return, // Already stopped or not started
+            }
+        }
+
+        // Deactivate triggers and stop sources to fully quiesce the pipeline
+        for tr in &self.trigger_runtimes {
+            tr.shutdown();
+        }
         self.stop_all_sources();
+
+        // Flush remaining events through the pipeline so state is stable
+        for qr in &self.query_runtimes {
+            qr.flush();
+        }
+
+        // Auto-persist after pipeline is quiesced
+        if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
+            if service.persistence_store.is_some() {
+                match self.persist() {
+                    Ok(report) => {
+                        log::info!(
+                            "Auto-persisted on shutdown (revision: {})",
+                            report.revision
+                        )
+                    }
+                    Err(e) => log::warn!("Auto-persist on shutdown failed: {}", e),
+                }
+            }
+        }
+
         self.stop_all_sinks();
 
         if let Some(scheduler) = &self.scheduler {
             scheduler.shutdown();
         }
-        for tr in &self.trigger_runtimes {
-            tr.shutdown();
-        }
         for pr in &self.partition_runtimes {
             pr.shutdown();
         }
-        for qr in &self.query_runtimes {
-            qr.flush();
-        }
-        // Persisted revisions are retained after shutdown for potential restoration
+
+        *self.state.write().unwrap() = RuntimeState::Stopped;
         log::info!("EventFluxAppRuntime '{}' shutdown", self.name);
     }
 
@@ -950,6 +1007,36 @@ impl EventFluxAppRuntime {
             // No barrier configured, proceed with restoration (may have timing issues)
             service.restore_revision(revision)
         }
+    }
+
+    /// Clear all persisted and in-memory state.
+    ///
+    /// Call this between `shutdown()` and `start()` to ensure a clean restart
+    /// with no residual state from previous runs. Only works when the runtime
+    /// is in `Stopped` state.
+    pub fn clear_state(&self) {
+        {
+            let state = self.state.read().unwrap();
+            if !matches!(*state, RuntimeState::Stopped) {
+                log::warn!(
+                    "Cannot clear state while runtime '{}' is in {:?} state",
+                    self.name,
+                    *state
+                );
+                return;
+            }
+        }
+        if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
+            // Clear persisted revisions
+            if let Some(store) = &service.persistence_store {
+                store.clear_all_revisions(&self.name);
+            }
+            // Reset all registered state holders (window buffers, aggregator accumulators)
+            service.clear_state_holders();
+        }
+        // Clear in-memory group states (aggregator/window per-partition state)
+        self.clear_select_processor_group_states();
+        log::info!("Cleared all state for '{}'", self.name);
     }
 
     /// Clear group states in all SelectProcessors to ensure fresh state after restoration

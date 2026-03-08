@@ -23,7 +23,7 @@ fn test_periodic_scheduler() {
         count: Arc::new(Mutex::new(0)),
     };
     let count_arc = Arc::clone(&counter.count);
-    scheduler.schedule_periodic(50, Arc::new(counter), Some(3));
+    scheduler.schedule_periodic(50, Arc::new(counter), Some(3), None);
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(*count_arc.lock().unwrap(), 3);
 }
@@ -37,7 +37,7 @@ fn test_cron_scheduler() {
     };
     let count_arc = Arc::clone(&counter.count);
     scheduler
-        .schedule_cron("*/1 * * * * *", Arc::new(counter), Some(2))
+        .schedule_cron("*/1 * * * * *", Arc::new(counter), Some(2), None)
         .unwrap();
     std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(*count_arc.lock().unwrap(), 2);

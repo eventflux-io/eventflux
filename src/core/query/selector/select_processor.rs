@@ -165,6 +165,11 @@ impl StateHolder for OutputRateLimiterStateHolder {
             "OutputRateLimiter".to_string(),
         )
     }
+
+    fn reset_state(&self) {
+        self.buffer.lock().unwrap().clear();
+        *self.counter.lock().unwrap() = 0;
+    }
 }
 
 impl OutputRateLimiter {
