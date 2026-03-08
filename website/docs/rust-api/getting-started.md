@@ -262,6 +262,95 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Lifecycle Management
+
+EventFlux runtimes support full lifecycle control: start, shutdown, restart, and state management.
+
+### Shutdown and Restart
+
+A runtime can be restarted after shutdown. The same runtime instance transitions through `Created → Running → Stopped → Running` states:
+
+```rust
+let runtime = manager
+    .create_eventflux_app_runtime_from_string(query)
+    .await?;
+
+runtime.start()?;
+
+// Process events...
+runtime.send_event("Input", vec!["sensor-1".into(), 105.0.into()])?;
+
+// Shutdown (auto-persists state if persistence store is configured)
+runtime.shutdown();
+
+// Restart (auto-restores state if a persisted revision exists)
+runtime.start()?;
+
+// Continue processing — state (windows, aggregators) is preserved
+runtime.send_event("Input", vec!["sensor-2".into(), 110.0.into()])?;
+
+runtime.shutdown();
+```
+
+Key behaviors:
+- **`shutdown()`** is idempotent — calling it twice is safe (second call is a no-op)
+- **`start()`** is idempotent — calling it on a running runtime is a no-op
+- Callbacks registered before the first start are preserved across restarts
+
+### Auto-Persist and Auto-Restore
+
+When a persistence store is configured, the runtime automatically:
+- **Persists** all state (window buffers, aggregator accumulators) on `shutdown()`
+- **Restores** state from the last saved revision on `start()`
+
+```rust
+use eventflux::core::persistence::{InMemoryPersistenceStore, PersistenceStore};
+
+// Configure persistence store on the manager
+let store: Arc<dyn PersistenceStore> = Arc::new(InMemoryPersistenceStore::new());
+manager.set_persistence_store(Arc::clone(&store));
+
+let runtime = manager
+    .create_eventflux_app_runtime_from_string(query)
+    .await?;
+
+runtime.start()?;
+
+// Send events — aggregation state accumulates
+runtime.send_event("Input", vec![10.into()])?;
+runtime.send_event("Input", vec![20.into()])?;
+
+// Shutdown auto-persists: sum=30, window=[10, 20]
+runtime.shutdown();
+
+// Restart auto-restores: state is back to sum=30, window=[10, 20]
+runtime.start()?;
+
+// Next event builds on restored state
+runtime.send_event("Input", vec![5.into()])?;
+// Output: sum=35, window=[10, 20, 5]
+
+runtime.shutdown();
+```
+
+### Clear State
+
+Use `clear_state()` between `shutdown()` and `start()` to discard all accumulated state and start fresh:
+
+```rust
+runtime.shutdown();
+
+// Clear all persisted revisions and in-memory state
+runtime.clear_state();
+
+// Restart with clean state — no old aggregation values
+runtime.start()?;
+```
+
+:::note
+`clear_state()` only works when the runtime is in the `Stopped` state. It removes both persisted revisions from the store and in-memory state (window buffers, aggregator accumulators, per-partition group states).
+:::
+
 ## Next Steps
 
 - [Configuration](/docs/rust-api/configuration) - Customize runtime behavior

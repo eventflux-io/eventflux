@@ -565,6 +565,15 @@ impl StateHolder for LengthBatchWindowStateHolder {
 
         metadata
     }
+
+    fn reset_state(&self) {
+        self.buffer.lock().unwrap().clear();
+        self.expired.lock().unwrap().clear();
+        *self.reset_event.lock().unwrap() = None;
+        *self.last_checkpoint_id.lock().unwrap() = None;
+        self.change_log.lock().unwrap().clear();
+        *self.total_events_processed.lock().unwrap() = 0;
+    }
 }
 
 impl CompressibleStateHolder for LengthBatchWindowStateHolder {

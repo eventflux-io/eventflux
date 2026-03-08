@@ -161,7 +161,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Keep running until interrupted
     tokio::signal::ctrl_c().await?;
+
+    // Shutdown (auto-persists state if persistence is configured)
     runtime.shutdown();
+
+    // The runtime can be restarted after shutdown:
+    // runtime.start()?;        // auto-restores state
+    //
+    // Or for a clean restart with no old state:
+    // runtime.clear_state();   // clears persisted + in-memory state
+    // runtime.start()?;
 
     Ok(())
 }

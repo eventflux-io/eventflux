@@ -156,6 +156,11 @@ impl StateHolder for CountAggregatorStateHolder {
             .insert("current_count".to_string(), self.get_count().to_string());
         metadata
     }
+
+    fn reset_state(&self) {
+        *self.count.lock().unwrap() = 0;
+        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl CompressibleStateHolder for CountAggregatorStateHolder {

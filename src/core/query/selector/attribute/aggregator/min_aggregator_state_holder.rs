@@ -186,6 +186,11 @@ impl StateHolder for MinAggregatorStateHolder {
         }
         metadata
     }
+
+    fn reset_state(&self) {
+        *self.value.lock().unwrap() = None;
+        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl CompressibleStateHolder for MinAggregatorStateHolder {

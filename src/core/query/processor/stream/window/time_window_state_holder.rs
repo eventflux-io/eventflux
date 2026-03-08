@@ -361,6 +361,14 @@ impl StateHolder for TimeWindowStateHolder {
 
         metadata
     }
+
+    fn reset_state(&self) {
+        self.buffer.lock().unwrap().clear();
+        *self.last_checkpoint_id.lock().unwrap() = None;
+        self.change_log.lock().unwrap().clear();
+        *self.total_events_processed.lock().unwrap() = 0;
+        *self.window_start_time.lock().unwrap() = None;
+    }
 }
 
 impl CompressibleStateHolder for TimeWindowStateHolder {

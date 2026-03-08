@@ -210,6 +210,14 @@ impl StateHolder for StdDevAggregatorStateHolder {
             .insert("aggregator_type".to_string(), "stddev".to_string());
         metadata
     }
+
+    fn reset_state(&self) {
+        *self.mean.lock().unwrap() = 0.0;
+        *self.m2.lock().unwrap() = 0.0;
+        *self.sum.lock().unwrap() = 0.0;
+        *self.count.lock().unwrap() = 0;
+        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl CompressibleStateHolder for StdDevAggregatorStateHolder {

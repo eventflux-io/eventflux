@@ -24,6 +24,7 @@ use crate::core::util::executor_service::ExecutorService;
 use chrono::Utc;
 use cron::Schedule;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -62,6 +63,7 @@ impl Scheduler {
         period_ms: i64,
         target: Arc<dyn Schedulable>,
         limit: Option<usize>,
+        running: Option<Arc<AtomicBool>>,
     ) {
         self.executor.execute(move || {
             let mut next = SystemTime::now()
@@ -71,6 +73,11 @@ impl Scheduler {
                 + period_ms;
             let mut count = 0usize;
             loop {
+                if let Some(ref flag) = running {
+                    if !flag.load(Ordering::Acquire) {
+                        break;
+                    }
+                }
                 if let Some(lim) = limit {
                     if count >= lim {
                         break;
@@ -95,6 +102,7 @@ impl Scheduler {
         cron_expr: &str,
         target: Arc<dyn Schedulable>,
         limit: Option<usize>,
+        running: Option<Arc<AtomicBool>>,
     ) -> Result<(), String> {
         let schedule = Schedule::from_str(cron_expr).map_err(|e| e.to_string())?;
         self.executor.execute(move || {
@@ -104,6 +112,11 @@ impl Scheduler {
                 None => Box::new(iter),
             };
             for datetime in it {
+                if let Some(ref flag) = running {
+                    if !flag.load(Ordering::Acquire) {
+                        break;
+                    }
+                }
                 let ts = datetime.timestamp_millis();
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)

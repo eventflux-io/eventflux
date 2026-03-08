@@ -604,6 +604,16 @@ impl StateHolder for SessionWindowStateHolder {
 
         metadata
     }
+
+    fn reset_state(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.session_map.clear();
+        state.expired_event_chunk.clear();
+        *self.last_checkpoint_id.lock().unwrap() = None;
+        self.change_log.lock().unwrap().clear();
+        *self.total_sessions_processed.lock().unwrap() = 0;
+        *self.total_events_processed.lock().unwrap() = 0;
+    }
 }
 
 impl CompressibleStateHolder for SessionWindowStateHolder {

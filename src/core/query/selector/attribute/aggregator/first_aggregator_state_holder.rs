@@ -160,6 +160,11 @@ impl StateHolder for FirstAggregatorStateHolder {
             .insert("value_count".to_string(), values.len().to_string());
         metadata
     }
+
+    fn reset_state(&self) {
+        self.values.lock().unwrap().clear();
+        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl CompressibleStateHolder for FirstAggregatorStateHolder {

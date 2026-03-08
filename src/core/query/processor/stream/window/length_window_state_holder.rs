@@ -344,6 +344,13 @@ impl StateHolder for LengthWindowStateHolder {
 
         metadata
     }
+
+    fn reset_state(&self) {
+        self.buffer.lock().unwrap().clear();
+        *self.last_checkpoint_id.lock().unwrap() = None;
+        self.change_log.lock().unwrap().clear();
+        *self.total_events_processed.lock().unwrap() = 0;
+    }
 }
 
 impl CompressibleStateHolder for LengthWindowStateHolder {

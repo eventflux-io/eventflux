@@ -272,6 +272,15 @@ pub trait StateHolder: Send + Sync {
 
         self.deserialize_state(&snapshot)
     }
+
+    /// Reset all mutable state to initial (empty) values.
+    ///
+    /// Called during `clear_state()` to discard accumulated in-memory state
+    /// (window buffers, aggregator accumulators, etc.) so the runtime can
+    /// restart fresh.
+    fn reset_state(&self) {
+        // Default: no-op. Concrete state holders should override.
+    }
 }
 
 /// State management errors
