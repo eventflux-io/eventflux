@@ -1514,6 +1514,8 @@ impl SqlConverter {
             "stddev" => "stddev",
             "first" => "first",
             "last" => "last",
+            "and" => "and",
+            "or" => "or",
             // Math functions
             "round" => "round",
             "abs" => "abs",

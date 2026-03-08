@@ -215,7 +215,7 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for enterprise state management
+        // Initialize state holder for persistence
         let sum_arc = Arc::new(Mutex::new(0.0f64));
         let count_arc = Arc::new(Mutex::new(0u64));
         // Use deterministic component ID with unique aggregator index for state recovery compatibility
@@ -244,27 +244,28 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
 
     fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         if let Some(v) = data.as_ref().and_then(value_as_f64) {
-            // Update internal state with sync check for post-restoration scenarios
             let mut st = self.state.lock().unwrap();
 
-            // Sync internal state with shared state before processing (only for non-group aggregators)
-            if let (Some(ref shared_sum), Some(ref shared_count)) =
-                (&self.shared_sum, &self.shared_count)
-            {
-                let shared_sum_val = *shared_sum.lock().unwrap();
-                let shared_count_val = *shared_count.lock().unwrap();
-
-                // Only sync if there's a significant difference (indicating restoration happened)
-                if (st.sum - shared_sum_val).abs() > 0.0001 || st.count != shared_count_val {
-                    st.sum = shared_sum_val;
-                    st.count = shared_count_val;
+            // Sync from shared state only after restoration (cheap atomic check)
+            if let Some(ref holder) = self.state_holder {
+                if holder
+                    .base
+                    .restored
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let (Some(ref shared_sum), Some(ref shared_count)) =
+                        (&self.shared_sum, &self.shared_count)
+                    {
+                        st.sum = *shared_sum.lock().unwrap();
+                        st.count = *shared_count.lock().unwrap();
+                    }
                 }
             }
 
             st.sum += v;
             st.count += 1;
 
-            // Update shared state for persistence (only for non-group aggregators)
+            // Update shared state for persistence
             if let (Some(ref shared_sum), Some(ref shared_count)) =
                 (&self.shared_sum, &self.shared_count)
             {
@@ -272,36 +273,35 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
                 *shared_count.lock().unwrap() = st.count;
             }
 
-            // Record state change for incremental checkpointing
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_value_added(v);
             }
         }
         let st = self.state.lock().unwrap();
-        let result = match self.return_type {
+        match self.return_type {
             ApiAttributeType::LONG => Some(AttributeValue::Long(st.sum as i64)),
             ApiAttributeType::DOUBLE => Some(AttributeValue::Double(st.sum)),
             _ => None,
-        };
-        result
+        }
     }
 
     fn process_remove(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         if let Some(v) = data.as_ref().and_then(value_as_f64) {
-            // Update internal state with sync check for post-restoration scenarios
             let mut st = self.state.lock().unwrap();
 
-            // Sync internal state with shared state before processing (only for non-group aggregators)
-            if let (Some(ref shared_sum), Some(ref shared_count)) =
-                (&self.shared_sum, &self.shared_count)
-            {
-                let shared_sum_val = *shared_sum.lock().unwrap();
-                let shared_count_val = *shared_count.lock().unwrap();
-
-                // Only sync if there's a significant difference (indicating restoration happened)
-                if (st.sum - shared_sum_val).abs() > 0.0001 || st.count != shared_count_val {
-                    st.sum = shared_sum_val;
-                    st.count = shared_count_val;
+            // Sync from shared state only after restoration (cheap atomic check)
+            if let Some(ref holder) = self.state_holder {
+                if holder
+                    .base
+                    .restored
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let (Some(ref shared_sum), Some(ref shared_count)) =
+                        (&self.shared_sum, &self.shared_count)
+                    {
+                        st.sum = *shared_sum.lock().unwrap();
+                        st.count = *shared_count.lock().unwrap();
+                    }
                 }
             }
 
@@ -310,7 +310,7 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
                 st.count -= 1;
             }
 
-            // Update shared state for persistence (only for non-group aggregators)
+            // Update shared state for persistence
             if let (Some(ref shared_sum), Some(ref shared_count)) =
                 (&self.shared_sum, &self.shared_count)
             {
@@ -318,7 +318,6 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
                 *shared_count.lock().unwrap() = st.count;
             }
 
-            // Record state change for incremental checkpointing
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_value_removed(v);
             }
@@ -359,33 +358,25 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
 
-        // Always sync internal state with shared state before cloning to ensure consistency
         let synchronized_state = if let (Some(shared_sum), Some(shared_count)) =
             (&self.shared_sum, &self.shared_count)
         {
-            let shared_sum_val = *shared_sum.lock().unwrap();
-            let shared_count_val = *shared_count.lock().unwrap();
             SumState {
-                sum: shared_sum_val,
-                count: shared_count_val,
+                sum: *shared_sum.lock().unwrap(),
+                count: *shared_count.lock().unwrap(),
             }
         } else {
-            let current_state = self.state.lock().unwrap().clone();
-            current_state
+            self.state.lock().unwrap().clone()
         };
-
-        // Create independent shared state for each group to prevent cross-group interference
-        let group_shared_sum = Arc::new(Mutex::new(synchronized_state.sum));
-        let group_shared_count = Arc::new(Mutex::new(synchronized_state.count));
 
         Box::new(SumAttributeAggregatorExecutor {
             arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
             return_type: self.return_type,
             state: Mutex::new(synchronized_state),
             app_ctx: Some(Arc::clone(ctx)),
-            state_holder: None, // Group aggregators don't need individual state holders
-            shared_sum: Some(group_shared_sum), // Independent shared state per group
-            shared_count: Some(group_shared_count), // Independent shared state per group
+            state_holder: None,
+            shared_sum: None,
+            shared_count: None,
         })
     }
 }
@@ -415,138 +406,6 @@ impl ExpressionExecutor for SumAttributeAggregatorExecutor {
     }
 }
 
-// StateHolder implementation for SumAttributeAggregatorExecutor
-impl crate::core::persistence::state_holder::StateHolder for SumAttributeAggregatorExecutor {
-    fn schema_version(&self) -> crate::core::persistence::state_holder::SchemaVersion {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.schema_version()
-        } else {
-            crate::core::persistence::state_holder::SchemaVersion::new(1, 0, 0)
-        }
-    }
-
-    fn serialize_state(
-        &self,
-        hints: &crate::core::persistence::state_holder::SerializationHints,
-    ) -> Result<
-        crate::core::persistence::state_holder::StateSnapshot,
-        crate::core::persistence::state_holder::StateError,
-    > {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.serialize_state(hints)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::SerializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn deserialize_state(
-        &self,
-        snapshot: &crate::core::persistence::state_holder::StateSnapshot,
-    ) -> Result<(), crate::core::persistence::state_holder::StateError> {
-        if let Some(ref state_holder) = self.state_holder {
-            // First restore the state holder
-            let result = state_holder.deserialize_state(snapshot);
-
-            // Then synchronize the executor's internal state with the restored state holder
-            if result.is_ok() {
-                let restored_sum = state_holder.get_sum();
-                let restored_count = state_holder.get_count();
-                let mut st = self.state.lock().unwrap();
-                st.sum = restored_sum;
-                st.count = restored_count;
-
-                // Also synchronize shared state if available
-                if let Some(ref shared_sum) = self.shared_sum {
-                    if let Ok(mut shared) = shared_sum.try_lock() {
-                        *shared = restored_sum;
-                    }
-                }
-                if let Some(ref shared_count) = self.shared_count {
-                    if let Ok(mut shared) = shared_count.try_lock() {
-                        *shared = restored_count;
-                    }
-                }
-            }
-
-            result
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::DeserializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn get_changelog(
-        &self,
-        since: crate::core::persistence::state_holder::CheckpointId,
-    ) -> Result<
-        crate::core::persistence::state_holder::ChangeLog,
-        crate::core::persistence::state_holder::StateError,
-    > {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.get_changelog(since)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::CheckpointNotFound {
-                    checkpoint_id: since,
-                },
-            )
-        }
-    }
-
-    fn apply_changelog(
-        &self,
-        changes: &crate::core::persistence::state_holder::ChangeLog,
-    ) -> Result<(), crate::core::persistence::state_holder::StateError> {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.apply_changelog(changes)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::DeserializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn estimate_size(&self) -> crate::core::persistence::state_holder::StateSize {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.estimate_size()
-        } else {
-            crate::core::persistence::state_holder::StateSize {
-                bytes: 16, // f64 + u64
-                entries: 1,
-                estimated_growth_rate: 0.0,
-            }
-        }
-    }
-
-    fn access_pattern(&self) -> crate::core::persistence::state_holder::AccessPattern {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.access_pattern()
-        } else {
-            crate::core::persistence::state_holder::AccessPattern::Random
-        }
-    }
-
-    fn component_metadata(&self) -> crate::core::persistence::state_holder::StateMetadata {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.component_metadata()
-        } else {
-            crate::core::persistence::state_holder::StateMetadata::new(
-                "unknown_sum_aggregator".to_string(),
-                "SumAttributeAggregatorExecutor".to_string(),
-            )
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 struct AvgState {
     sum: f64,
@@ -559,6 +418,9 @@ pub struct AvgAttributeAggregatorExecutor {
     state: Mutex<AvgState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<AvgAggregatorStateHolder>,
+    // Shared state for persistence (same as used by state holder)
+    shared_sum: Option<Arc<Mutex<f64>>>,
+    shared_count: Option<Arc<Mutex<u64>>>,
 }
 
 impl Default for AvgAttributeAggregatorExecutor {
@@ -568,6 +430,8 @@ impl Default for AvgAttributeAggregatorExecutor {
             state: Mutex::new(AvgState::default()),
             app_ctx: None,
             state_holder: None,
+            shared_sum: None,
+            shared_count: None,
         }
     }
 }
@@ -586,19 +450,23 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
         self.arg_exec = Some(execs.remove(0));
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for enterprise state management
+        // Initialize state holder for persistence
         let sum_arc = Arc::new(Mutex::new(0.0f64));
         let count_arc = Arc::new(Mutex::new(0u64));
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("avg_aggregator_{}", aggregator_id);
 
-        let state_holder = AvgAggregatorStateHolder::new(sum_arc, count_arc, component_id.clone());
+        let state_holder =
+            AvgAggregatorStateHolder::new(sum_arc.clone(), count_arc.clone(), component_id.clone());
 
         // Register state holder with SnapshotService for persistence
         let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
             Arc::new(Mutex::new(state_holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
+        // Store shared state references for synchronized updates
+        self.shared_sum = Some(sum_arc);
+        self.shared_count = Some(count_arc);
         self.state_holder = Some(state_holder);
 
         Ok(())
@@ -607,10 +475,32 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
     fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         if let Some(v) = data.as_ref().and_then(value_as_f64) {
             let mut st = self.state.lock().unwrap();
+
+            if let Some(ref holder) = self.state_holder {
+                if holder
+                    .base
+                    .restored
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let (Some(ref shared_sum), Some(ref shared_count)) =
+                        (&self.shared_sum, &self.shared_count)
+                    {
+                        st.sum = *shared_sum.lock().unwrap();
+                        st.count = *shared_count.lock().unwrap();
+                    }
+                }
+            }
+
             st.sum += v;
             st.count += 1;
 
-            // Record state change for incremental checkpointing
+            if let (Some(ref shared_sum), Some(ref shared_count)) =
+                (&self.shared_sum, &self.shared_count)
+            {
+                *shared_sum.lock().unwrap() = st.sum;
+                *shared_count.lock().unwrap() = st.count;
+            }
+
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_value_added(v);
             }
@@ -626,12 +516,34 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
     fn process_remove(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         if let Some(v) = data.as_ref().and_then(value_as_f64) {
             let mut st = self.state.lock().unwrap();
+
+            if let Some(ref holder) = self.state_holder {
+                if holder
+                    .base
+                    .restored
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let (Some(ref shared_sum), Some(ref shared_count)) =
+                        (&self.shared_sum, &self.shared_count)
+                    {
+                        st.sum = *shared_sum.lock().unwrap();
+                        st.count = *shared_count.lock().unwrap();
+                    }
+                }
+            }
+
             st.sum -= v;
             if st.count > 0 {
                 st.count -= 1;
             }
 
-            // Record state change for incremental checkpointing
+            if let (Some(ref shared_sum), Some(ref shared_count)) =
+                (&self.shared_sum, &self.shared_count)
+            {
+                *shared_sum.lock().unwrap() = st.sum;
+                *shared_count.lock().unwrap() = st.count;
+            }
+
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_value_removed(v);
             }
@@ -652,6 +564,14 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
         st.sum = 0.0;
         st.count = 0;
 
+        // Update shared state for persistence
+        if let (Some(ref shared_sum), Some(ref shared_count)) =
+            (&self.shared_sum, &self.shared_count)
+        {
+            *shared_sum.lock().unwrap() = 0.0;
+            *shared_count.lock().unwrap() = 0;
+        }
+
         // Record state reset for incremental checkpointing
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_reset(old_sum, old_count);
@@ -662,11 +582,25 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
 
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
+
+        let synchronized_state = if let (Some(shared_sum), Some(shared_count)) =
+            (&self.shared_sum, &self.shared_count)
+        {
+            AvgState {
+                sum: *shared_sum.lock().unwrap(),
+                count: *shared_count.lock().unwrap(),
+            }
+        } else {
+            self.state.lock().unwrap().clone()
+        };
+
         Box::new(AvgAttributeAggregatorExecutor {
             arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
-            state: Mutex::new(self.state.lock().unwrap().clone()),
+            state: Mutex::new(synchronized_state),
             app_ctx: Some(Arc::clone(ctx)),
-            state_holder: self.state_holder.clone(),
+            state_holder: None,
+            shared_sum: None,
+            shared_count: None,
         })
     }
 }
@@ -693,114 +627,6 @@ impl ExpressionExecutor for AvgAttributeAggregatorExecutor {
 
     fn is_attribute_aggregator(&self) -> bool {
         true
-    }
-}
-
-// StateHolder implementation for AvgAttributeAggregatorExecutor
-impl crate::core::persistence::state_holder::StateHolder for AvgAttributeAggregatorExecutor {
-    fn schema_version(&self) -> crate::core::persistence::state_holder::SchemaVersion {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.schema_version()
-        } else {
-            crate::core::persistence::state_holder::SchemaVersion::new(1, 0, 0)
-        }
-    }
-
-    fn serialize_state(
-        &self,
-        hints: &crate::core::persistence::state_holder::SerializationHints,
-    ) -> Result<
-        crate::core::persistence::state_holder::StateSnapshot,
-        crate::core::persistence::state_holder::StateError,
-    > {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.serialize_state(hints)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::SerializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn deserialize_state(
-        &self,
-        snapshot: &crate::core::persistence::state_holder::StateSnapshot,
-    ) -> Result<(), crate::core::persistence::state_holder::StateError> {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.deserialize_state(snapshot)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::DeserializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn get_changelog(
-        &self,
-        since: crate::core::persistence::state_holder::CheckpointId,
-    ) -> Result<
-        crate::core::persistence::state_holder::ChangeLog,
-        crate::core::persistence::state_holder::StateError,
-    > {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.get_changelog(since)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::CheckpointNotFound {
-                    checkpoint_id: since,
-                },
-            )
-        }
-    }
-
-    fn apply_changelog(
-        &self,
-        changes: &crate::core::persistence::state_holder::ChangeLog,
-    ) -> Result<(), crate::core::persistence::state_holder::StateError> {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.apply_changelog(changes)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::DeserializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn estimate_size(&self) -> crate::core::persistence::state_holder::StateSize {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.estimate_size()
-        } else {
-            crate::core::persistence::state_holder::StateSize {
-                bytes: 16, // f64 + u64
-                entries: 1,
-                estimated_growth_rate: 0.0,
-            }
-        }
-    }
-
-    fn access_pattern(&self) -> crate::core::persistence::state_holder::AccessPattern {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.access_pattern()
-        } else {
-            crate::core::persistence::state_holder::AccessPattern::Random
-        }
-    }
-
-    fn component_metadata(&self) -> crate::core::persistence::state_holder::StateMetadata {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.component_metadata()
-        } else {
-            crate::core::persistence::state_holder::StateMetadata::new(
-                "unknown_avg_aggregator".to_string(),
-                "AvgAttributeAggregatorExecutor".to_string(),
-            )
-        }
     }
 }
 
@@ -839,7 +665,7 @@ impl AttributeAggregatorExecutor for CountAttributeAggregatorExecutor {
     ) -> Result<(), String> {
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for enterprise state management
+        // Initialize state holder for persistence
         let count_arc = Arc::new(Mutex::new(0i64));
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("count_aggregator_{}", aggregator_id);
@@ -861,27 +687,25 @@ impl AttributeAggregatorExecutor for CountAttributeAggregatorExecutor {
     fn process_add(&self, _d: Option<AttributeValue>) -> Option<AttributeValue> {
         let mut st = self.state.lock().unwrap();
 
-        // Sync internal state with shared state before processing (for post-restoration scenarios)
-        if let Some(ref shared_count) = self.shared_count {
-            let shared_count_val = *shared_count.lock().unwrap();
-
-            // Only sync if there's a significant difference (indicating restoration happened)
-            if st.count != shared_count_val {
-                st.count = shared_count_val;
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let Some(ref shared_count) = self.shared_count {
+                    st.count = *shared_count.lock().unwrap();
+                }
             }
         }
 
         st.count += 1;
         let new_count = st.count;
 
-        // Synchronize with shared state for persistence
         if let Some(ref shared_count) = self.shared_count {
-            if let Ok(mut shared) = shared_count.try_lock() {
-                *shared = new_count;
-            }
+            *shared_count.lock().unwrap() = new_count;
         }
 
-        // Record state change for incremental checkpointing
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_increment();
         }
@@ -891,27 +715,25 @@ impl AttributeAggregatorExecutor for CountAttributeAggregatorExecutor {
     fn process_remove(&self, _d: Option<AttributeValue>) -> Option<AttributeValue> {
         let mut st = self.state.lock().unwrap();
 
-        // Sync internal state with shared state before processing (for post-restoration scenarios)
-        if let Some(ref shared_count) = self.shared_count {
-            let shared_count_val = *shared_count.lock().unwrap();
-
-            // Only sync if there's a significant difference (indicating restoration happened)
-            if st.count != shared_count_val {
-                st.count = shared_count_val;
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let Some(ref shared_count) = self.shared_count {
+                    st.count = *shared_count.lock().unwrap();
+                }
             }
         }
 
         st.count -= 1;
         let new_count = st.count;
 
-        // Synchronize with shared state for persistence
         if let Some(ref shared_count) = self.shared_count {
-            if let Ok(mut shared) = shared_count.try_lock() {
-                *shared = new_count;
-            }
+            *shared_count.lock().unwrap() = new_count;
         }
 
-        // Record state change for incremental checkpointing
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_decrement();
         }
@@ -923,11 +745,8 @@ impl AttributeAggregatorExecutor for CountAttributeAggregatorExecutor {
         let old_count = st.count;
         st.count = 0;
 
-        // Synchronize with shared state for persistence
         if let Some(ref shared_count) = self.shared_count {
-            if let Ok(mut shared) = shared_count.try_lock() {
-                *shared = 0;
-            }
+            *shared_count.lock().unwrap() = 0;
         }
 
         // Record state reset for incremental checkpointing
@@ -938,7 +757,8 @@ impl AttributeAggregatorExecutor for CountAttributeAggregatorExecutor {
         Some(AttributeValue::Long(0))
     }
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
-        // Sync internal state with shared state before cloning
+        let ctx = self.app_ctx.as_ref().unwrap();
+
         let synchronized_state = if let Some(shared_count) = &self.shared_count {
             CountState {
                 count: *shared_count.lock().unwrap(),
@@ -947,14 +767,11 @@ impl AttributeAggregatorExecutor for CountAttributeAggregatorExecutor {
             self.state.lock().unwrap().clone()
         };
 
-        // Create independent shared state for each group to prevent cross-group interference
-        let group_shared_count = Arc::new(Mutex::new(synchronized_state.count));
-
         Box::new(CountAttributeAggregatorExecutor {
             state: Mutex::new(synchronized_state),
-            app_ctx: self.app_ctx.as_ref().cloned(),
-            state_holder: None, // Group aggregators don't need individual state holders
-            shared_count: Some(group_shared_count), // Independent shared state per group
+            app_ctx: Some(Arc::clone(ctx)),
+            state_holder: None,
+            shared_count: None,
         })
     }
 }
@@ -983,131 +800,6 @@ impl ExpressionExecutor for CountAttributeAggregatorExecutor {
     }
 }
 
-// StateHolder implementation for CountAttributeAggregatorExecutor
-impl crate::core::persistence::state_holder::StateHolder for CountAttributeAggregatorExecutor {
-    fn schema_version(&self) -> crate::core::persistence::state_holder::SchemaVersion {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.schema_version()
-        } else {
-            crate::core::persistence::state_holder::SchemaVersion::new(1, 0, 0)
-        }
-    }
-
-    fn serialize_state(
-        &self,
-        hints: &crate::core::persistence::state_holder::SerializationHints,
-    ) -> Result<
-        crate::core::persistence::state_holder::StateSnapshot,
-        crate::core::persistence::state_holder::StateError,
-    > {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.serialize_state(hints)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::SerializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn deserialize_state(
-        &self,
-        snapshot: &crate::core::persistence::state_holder::StateSnapshot,
-    ) -> Result<(), crate::core::persistence::state_holder::StateError> {
-        if let Some(ref state_holder) = self.state_holder {
-            // First restore the state holder
-            let result = state_holder.deserialize_state(snapshot);
-
-            // Then synchronize the executor's internal state with the restored state holder
-            if result.is_ok() {
-                let restored_count = state_holder.get_count();
-                let mut st = self.state.lock().unwrap();
-                st.count = restored_count;
-
-                // Also synchronize shared state if available
-                if let Some(ref shared_count) = self.shared_count {
-                    if let Ok(mut shared) = shared_count.try_lock() {
-                        *shared = restored_count;
-                    }
-                }
-            }
-
-            result
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::DeserializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn get_changelog(
-        &self,
-        since: crate::core::persistence::state_holder::CheckpointId,
-    ) -> Result<
-        crate::core::persistence::state_holder::ChangeLog,
-        crate::core::persistence::state_holder::StateError,
-    > {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.get_changelog(since)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::CheckpointNotFound {
-                    checkpoint_id: since,
-                },
-            )
-        }
-    }
-
-    fn apply_changelog(
-        &self,
-        changes: &crate::core::persistence::state_holder::ChangeLog,
-    ) -> Result<(), crate::core::persistence::state_holder::StateError> {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.apply_changelog(changes)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::DeserializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn estimate_size(&self) -> crate::core::persistence::state_holder::StateSize {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.estimate_size()
-        } else {
-            crate::core::persistence::state_holder::StateSize {
-                bytes: 8, // i64
-                entries: 1,
-                estimated_growth_rate: 0.0,
-            }
-        }
-    }
-
-    fn access_pattern(&self) -> crate::core::persistence::state_holder::AccessPattern {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.access_pattern()
-        } else {
-            crate::core::persistence::state_holder::AccessPattern::Random
-        }
-    }
-
-    fn component_metadata(&self) -> crate::core::persistence::state_holder::StateMetadata {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.component_metadata()
-        } else {
-            crate::core::persistence::state_holder::StateMetadata::new(
-                "unknown_count_aggregator".to_string(),
-                "CountAttributeAggregatorExecutor".to_string(),
-            )
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 struct DistinctCountState {
     map: HashMap<String, i64>,
@@ -1119,6 +811,8 @@ pub struct DistinctCountAttributeAggregatorExecutor {
     state: Mutex<DistinctCountState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<DistinctCountAggregatorStateHolder>,
+    // Shared state for persistence (same as used by state holder)
+    shared_map: Option<Arc<Mutex<HashMap<String, i64>>>>,
 }
 
 impl Default for DistinctCountAttributeAggregatorExecutor {
@@ -1128,6 +822,7 @@ impl Default for DistinctCountAttributeAggregatorExecutor {
             state: Mutex::new(DistinctCountState::default()),
             app_ctx: None,
             state_holder: None,
+            shared_map: None,
         }
     }
 }
@@ -1146,38 +841,75 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
         self.arg_exec = Some(e.remove(0));
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize StateHolder
-        let map_ref = Arc::new(Mutex::new(HashMap::new()));
+        // Initialize state holder for persistence
+        let map_arc = Arc::new(Mutex::new(HashMap::new()));
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("distinctcount_aggregator_{}", aggregator_id);
-        self.state_holder = Some(DistinctCountAggregatorStateHolder::new(
-            map_ref.clone(),
-            component_id,
-        ));
+
+        let holder = DistinctCountAggregatorStateHolder::new(map_arc.clone(), component_id.clone());
+        let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
+            Arc::new(Mutex::new(holder.clone()));
+        ctx.register_state_holder(component_id, state_holder_arc);
+
+        // Store shared state reference for synchronized updates
+        self.shared_map = Some(map_arc);
+        self.state_holder = Some(holder);
 
         Ok(())
     }
+
     fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         if let Some(v) = data {
             let key = format!("{v:?}");
             let mut st = self.state.lock().unwrap();
+
+            if let Some(ref holder) = self.state_holder {
+                if holder
+                    .base
+                    .restored
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let Some(ref shared) = self.shared_map {
+                        st.map = shared.lock().unwrap().clone();
+                    }
+                }
+            }
+
             let old_count = st.map.get(&key).copied();
             let c = st.map.entry(key.clone()).or_insert(0);
             *c += 1;
+            let new_count = *c;
 
-            // Record state change
+            if let Some(ref shared) = self.shared_map {
+                shared.lock().unwrap().insert(key.clone(), new_count);
+            }
+
             if let Some(ref state_holder) = self.state_holder {
-                state_holder.record_value_added(&key, old_count, *c);
+                state_holder.record_value_added(&key, old_count, new_count);
             }
         }
         Some(AttributeValue::Long(
             self.state.lock().unwrap().map.len() as i64
         ))
     }
+
     fn process_remove(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         if let Some(v) = data {
             let key = format!("{v:?}");
             let mut st = self.state.lock().unwrap();
+
+            if let Some(ref holder) = self.state_holder {
+                if holder
+                    .base
+                    .restored
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let Some(ref shared) = self.shared_map {
+                        st.map = shared.lock().unwrap().clone();
+                    }
+                }
+            }
+
             if let Some(c) = st.map.get_mut(&key) {
                 let old_count = *c;
                 *c -= 1;
@@ -1187,6 +919,16 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
                 } else {
                     Some(*c)
                 };
+
+                // Update shared state for persistence
+                if let Some(ref shared) = self.shared_map {
+                    let mut shared_map = shared.lock().unwrap();
+                    if let Some(nc) = new_count {
+                        shared_map.insert(key.clone(), nc);
+                    } else {
+                        shared_map.remove(&key);
+                    }
+                }
 
                 // Record state change
                 if let Some(ref state_holder) = self.state_holder {
@@ -1198,6 +940,7 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
             self.state.lock().unwrap().map.len() as i64
         ))
     }
+
     fn reset(&self) -> Option<AttributeValue> {
         let old_map = {
             let mut st = self.state.lock().unwrap();
@@ -1206,6 +949,11 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
             old_map
         };
 
+        // Update shared state for persistence
+        if let Some(ref shared) = self.shared_map {
+            shared.lock().unwrap().clear();
+        }
+
         // Record state change
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_reset(&old_map);
@@ -1213,13 +961,25 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
 
         Some(AttributeValue::Long(0))
     }
+
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
+
+        // Read from shared state for consistency
+        let synchronized_state = if let Some(ref shared) = self.shared_map {
+            DistinctCountState {
+                map: shared.lock().unwrap().clone(),
+            }
+        } else {
+            self.state.lock().unwrap().clone()
+        };
+
         Box::new(DistinctCountAttributeAggregatorExecutor {
             arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
-            state: Mutex::new(self.state.lock().unwrap().clone()),
+            state: Mutex::new(synchronized_state),
             app_ctx: Some(Arc::clone(ctx)),
-            state_holder: self.state_holder.clone(),
+            state_holder: None,
+            shared_map: None,
         })
     }
 }
@@ -1243,116 +1003,6 @@ impl ExpressionExecutor for DistinctCountAttributeAggregatorExecutor {
     }
     fn is_attribute_aggregator(&self) -> bool {
         true
-    }
-}
-
-// StateHolder implementation for DistinctCountAttributeAggregatorExecutor
-impl crate::core::persistence::state_holder::StateHolder
-    for DistinctCountAttributeAggregatorExecutor
-{
-    fn schema_version(&self) -> crate::core::persistence::state_holder::SchemaVersion {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.schema_version()
-        } else {
-            crate::core::persistence::state_holder::SchemaVersion::new(1, 0, 0)
-        }
-    }
-
-    fn serialize_state(
-        &self,
-        hints: &crate::core::persistence::state_holder::SerializationHints,
-    ) -> Result<
-        crate::core::persistence::state_holder::StateSnapshot,
-        crate::core::persistence::state_holder::StateError,
-    > {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.serialize_state(hints)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::SerializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn deserialize_state(
-        &self,
-        snapshot: &crate::core::persistence::state_holder::StateSnapshot,
-    ) -> Result<(), crate::core::persistence::state_holder::StateError> {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.deserialize_state(snapshot)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::DeserializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn get_changelog(
-        &self,
-        since: crate::core::persistence::state_holder::CheckpointId,
-    ) -> Result<
-        crate::core::persistence::state_holder::ChangeLog,
-        crate::core::persistence::state_holder::StateError,
-    > {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.get_changelog(since)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::CheckpointNotFound {
-                    checkpoint_id: since,
-                },
-            )
-        }
-    }
-
-    fn apply_changelog(
-        &self,
-        changes: &crate::core::persistence::state_holder::ChangeLog,
-    ) -> Result<(), crate::core::persistence::state_holder::StateError> {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.apply_changelog(changes)
-        } else {
-            Err(
-                crate::core::persistence::state_holder::StateError::DeserializationError {
-                    message: "No state holder available".to_string(),
-                },
-            )
-        }
-    }
-
-    fn estimate_size(&self) -> crate::core::persistence::state_holder::StateSize {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.estimate_size()
-        } else {
-            crate::core::persistence::state_holder::StateSize {
-                bytes: std::mem::size_of::<HashMap<String, i64>>(),
-                entries: 0,
-                estimated_growth_rate: 0.1,
-            }
-        }
-    }
-
-    fn access_pattern(&self) -> crate::core::persistence::state_holder::AccessPattern {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.access_pattern()
-        } else {
-            crate::core::persistence::state_holder::AccessPattern::Random
-        }
-    }
-
-    fn component_metadata(&self) -> crate::core::persistence::state_holder::StateMetadata {
-        if let Some(ref state_holder) = self.state_holder {
-            state_holder.component_metadata()
-        } else {
-            crate::core::persistence::state_holder::StateMetadata::new(
-                "unknown_distinctcount_aggregator".to_string(),
-                "DistinctCountAttributeAggregatorExecutor".to_string(),
-            )
-        }
     }
 }
 
@@ -1400,6 +1050,9 @@ pub struct MinMaxAttributeAggregatorExecutor {
     app_ctx: Option<Arc<EventFluxAppContext>>,
     mode: MinMaxMode,
     preserve_on_reset: bool, // true for "forever" variants
+    min_state_holder: Option<MinAggregatorStateHolder>,
+    max_state_holder: Option<MaxAggregatorStateHolder>,
+    shared_value: Option<Arc<Mutex<Option<f64>>>>,
 }
 
 impl MinMaxAttributeAggregatorExecutor {
@@ -1411,19 +1064,53 @@ impl MinMaxAttributeAggregatorExecutor {
             app_ctx: None,
             mode,
             preserve_on_reset,
+            min_state_holder: None,
+            max_state_holder: None,
+            shared_value: None,
         }
     }
 
-    fn update_state(&self, data: Option<AttributeValue>) {
+    /// Check restoration flag from either min or max state holder.
+    fn check_restored(&self) -> bool {
+        if let Some(ref holder) = self.min_state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                return true;
+            }
+        }
+        if let Some(ref holder) = self.max_state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Try to update the tracked value. If the value changes, sync shared state and record.
+    fn try_update(&self, st: &mut MinMaxState, data: Option<AttributeValue>) {
+        let old_value = st.value;
         if let Some(v) = data.and_then(|v| value_as_f64(&v)) {
-            let mut st = self.state.lock().unwrap();
             match st.value {
-                Some(current) => {
-                    if self.mode.should_replace(v, current) {
-                        st.value = Some(v);
-                    }
-                }
-                None => st.value = Some(v),
+                Some(current) if !self.mode.should_replace(v, current) => {}
+                _ => st.value = Some(v),
+            }
+        }
+        if old_value != st.value {
+            if let Some(ref shared) = self.shared_value {
+                *shared.lock().unwrap() = st.value;
+            }
+            if let Some(ref holder) = self.min_state_holder {
+                holder.record_value_updated(old_value, st.value);
+            }
+            if let Some(ref holder) = self.max_state_holder {
+                holder.record_value_updated(old_value, st.value);
             }
         }
     }
@@ -1444,42 +1131,125 @@ impl AttributeAggregatorExecutor for MinMaxAttributeAggregatorExecutor {
         self.return_type = exec.get_return_type();
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
+
+        // Initialize state holder for persistence
+        let value_arc = Arc::new(Mutex::new(None::<f64>));
+        let aggregator_id = ctx.next_aggregator_id();
+        let mode_name = match self.mode {
+            MinMaxMode::Min => "min",
+            MinMaxMode::Max => "max",
+        };
+        let forever_suffix = if self.preserve_on_reset {
+            "_forever"
+        } else {
+            ""
+        };
+        let component_id = format!(
+            "{}{}_aggregator_{}",
+            mode_name, forever_suffix, aggregator_id
+        );
+
+        match self.mode {
+            MinMaxMode::Min => {
+                let holder = MinAggregatorStateHolder::new(
+                    value_arc.clone(),
+                    component_id.clone(),
+                    self.return_type,
+                );
+                let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
+                    Arc::new(Mutex::new(holder.clone()));
+                ctx.register_state_holder(component_id, state_holder_arc);
+                self.min_state_holder = Some(holder);
+            }
+            MinMaxMode::Max => {
+                let holder = MaxAggregatorStateHolder::new(
+                    value_arc.clone(),
+                    component_id.clone(),
+                    self.return_type,
+                );
+                let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
+                    Arc::new(Mutex::new(holder.clone()));
+                ctx.register_state_holder(component_id, state_holder_arc);
+                self.max_state_holder = Some(holder);
+            }
+        }
+        self.shared_value = Some(value_arc);
+
         Ok(())
     }
 
     fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
-        self.update_state(data);
-        st_to_val(self.return_type, &self.state.lock().unwrap())
+        let mut st = self.state.lock().unwrap();
+
+        if self.check_restored() {
+            if let Some(ref shared) = self.shared_value {
+                st.value = *shared.lock().unwrap();
+            }
+        }
+
+        self.try_update(&mut st, data);
+        st_to_val(self.return_type, &st)
     }
 
-    fn process_remove(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
-        // "Forever" variants also update on remove (like Java)
-        if self.preserve_on_reset {
-            self.update_state(data);
+    fn process_remove(&self, _data: Option<AttributeValue>) -> Option<AttributeValue> {
+        let mut st = self.state.lock().unwrap();
+
+        if self.check_restored() {
+            if let Some(ref shared) = self.shared_value {
+                st.value = *shared.lock().unwrap();
+            }
         }
-        st_to_val(self.return_type, &self.state.lock().unwrap())
+
+        // For forever variants (preserve_on_reset), removal is a no-op
+        // since we preserve the historical min/max.
+        // For windowed variants, the window processor handles recomputation.
+        st_to_val(self.return_type, &st)
     }
 
     fn reset(&self) -> Option<AttributeValue> {
+        let mut st = self.state.lock().unwrap();
         if self.preserve_on_reset {
-            // "Forever" variants do NOT clear state on reset
-            st_to_val(self.return_type, &self.state.lock().unwrap())
+            st_to_val(self.return_type, &st)
         } else {
-            // Regular variants clear state and return None
-            self.state.lock().unwrap().value = None;
+            let old_value = st.value;
+            st.value = None;
+
+            if let Some(ref shared) = self.shared_value {
+                *shared.lock().unwrap() = None;
+            }
+            if let Some(ref holder) = self.min_state_holder {
+                holder.record_reset(old_value);
+            }
+            if let Some(ref holder) = self.max_state_holder {
+                holder.record_reset(old_value);
+            }
+
             None
         }
     }
 
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
+
+        // Read from shared state for consistency
+        let synchronized_state = if let Some(ref shared) = self.shared_value {
+            MinMaxState {
+                value: *shared.lock().unwrap(),
+            }
+        } else {
+            self.state.lock().unwrap().clone()
+        };
+
         Box::new(MinMaxAttributeAggregatorExecutor {
             arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
             return_type: self.return_type,
-            state: Mutex::new(self.state.lock().unwrap().clone()),
+            state: Mutex::new(synchronized_state),
             app_ctx: Some(Arc::clone(ctx)),
             mode: self.mode,
             preserve_on_reset: self.preserve_on_reset,
+            min_state_holder: None,
+            max_state_holder: None,
+            shared_value: None,
         })
     }
 }
@@ -1537,6 +1307,12 @@ pub struct StdDevAttributeAggregatorExecutor {
     arg_exec: Option<Box<dyn ExpressionExecutor>>,
     state: Mutex<StdDevState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
+    state_holder: Option<StdDevAggregatorStateHolder>,
+    // Shared state for persistence (same as used by state holder)
+    shared_mean: Option<Arc<Mutex<f64>>>,
+    shared_m2: Option<Arc<Mutex<f64>>>,
+    shared_sum: Option<Arc<Mutex<f64>>>,
+    shared_count: Option<Arc<Mutex<u64>>>,
 }
 
 impl Default for StdDevAttributeAggregatorExecutor {
@@ -1545,6 +1321,11 @@ impl Default for StdDevAttributeAggregatorExecutor {
             arg_exec: None,
             state: Mutex::new(StdDevState::default()),
             app_ctx: None,
+            state_holder: None,
+            shared_mean: None,
+            shared_m2: None,
+            shared_sum: None,
+            shared_count: None,
         }
     }
 }
@@ -1562,11 +1343,60 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
         }
         self.arg_exec = Some(e.remove(0));
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
+
+        // Initialize state holder for persistence
+        let mean_arc = Arc::new(Mutex::new(0.0f64));
+        let m2_arc = Arc::new(Mutex::new(0.0f64));
+        let sum_arc = Arc::new(Mutex::new(0.0f64));
+        let count_arc = Arc::new(Mutex::new(0u64));
+        let aggregator_id = ctx.next_aggregator_id();
+        let component_id = format!("stddev_aggregator_{}", aggregator_id);
+
+        let holder = StdDevAggregatorStateHolder::new(
+            mean_arc.clone(),
+            m2_arc.clone(),
+            sum_arc.clone(),
+            count_arc.clone(),
+            component_id.clone(),
+        );
+
+        let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
+            Arc::new(Mutex::new(holder.clone()));
+        ctx.register_state_holder(component_id, state_holder_arc);
+
+        // Store shared state references for synchronized updates
+        self.shared_mean = Some(mean_arc);
+        self.shared_m2 = Some(m2_arc);
+        self.shared_sum = Some(sum_arc);
+        self.shared_count = Some(count_arc);
+        self.state_holder = Some(holder);
+
         Ok(())
     }
 
     fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         let mut st = self.state.lock().unwrap();
+
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let (Some(ref s_mean), Some(ref s_m2), Some(ref s_sum), Some(ref s_count)) = (
+                    &self.shared_mean,
+                    &self.shared_m2,
+                    &self.shared_sum,
+                    &self.shared_count,
+                ) {
+                    st.mean = *s_mean.lock().unwrap();
+                    st.m2 = *s_m2.lock().unwrap();
+                    st.sum = *s_sum.lock().unwrap();
+                    st.count = *s_count.lock().unwrap();
+                }
+            }
+        }
+
         if let Some(v) = data.and_then(|v| value_as_f64(&v)) {
             st.count += 1;
             if st.count == 1 {
@@ -1579,12 +1409,50 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
                 st.mean = st.sum / st.count as f64;
                 st.m2 += (v - old_mean) * (v - st.mean);
             }
+
+            // Update shared state for persistence
+            if let (Some(ref s_mean), Some(ref s_m2), Some(ref s_sum), Some(ref s_count)) = (
+                &self.shared_mean,
+                &self.shared_m2,
+                &self.shared_sum,
+                &self.shared_count,
+            ) {
+                *s_mean.lock().unwrap() = st.mean;
+                *s_m2.lock().unwrap() = st.m2;
+                *s_sum.lock().unwrap() = st.sum;
+                *s_count.lock().unwrap() = st.count;
+            }
+
+            if let Some(ref holder) = self.state_holder {
+                holder.record_value_added(v);
+            }
         }
         st.current_stddev()
     }
 
     fn process_remove(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         let mut st = self.state.lock().unwrap();
+
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let (Some(ref s_mean), Some(ref s_m2), Some(ref s_sum), Some(ref s_count)) = (
+                    &self.shared_mean,
+                    &self.shared_m2,
+                    &self.shared_sum,
+                    &self.shared_count,
+                ) {
+                    st.mean = *s_mean.lock().unwrap();
+                    st.m2 = *s_m2.lock().unwrap();
+                    st.sum = *s_sum.lock().unwrap();
+                    st.count = *s_count.lock().unwrap();
+                }
+            }
+        }
+
         if let Some(v) = data.and_then(|v| value_as_f64(&v)) {
             if st.count > 0 {
                 st.count -= 1;
@@ -1597,7 +1465,23 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
                 let old_mean = st.mean;
                 st.sum -= v;
                 st.mean = st.sum / st.count as f64;
-                st.m2 -= (v - old_mean) * (v - st.mean);
+                st.m2 = (st.m2 - (v - old_mean) * (v - st.mean)).max(0.0);
+            }
+
+            if let (Some(ref s_mean), Some(ref s_m2), Some(ref s_sum), Some(ref s_count)) = (
+                &self.shared_mean,
+                &self.shared_m2,
+                &self.shared_sum,
+                &self.shared_count,
+            ) {
+                *s_mean.lock().unwrap() = st.mean;
+                *s_m2.lock().unwrap() = st.m2;
+                *s_sum.lock().unwrap() = st.sum;
+                *s_count.lock().unwrap() = st.count;
+            }
+
+            if let Some(ref holder) = self.state_holder {
+                holder.record_value_removed(v);
             }
         }
         st.current_stddev()
@@ -1609,15 +1493,56 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
         st.m2 = 0.0;
         st.sum = 0.0;
         st.count = 0;
+
+        // Update shared state for persistence
+        if let (Some(ref s_mean), Some(ref s_m2), Some(ref s_sum), Some(ref s_count)) = (
+            &self.shared_mean,
+            &self.shared_m2,
+            &self.shared_sum,
+            &self.shared_count,
+        ) {
+            *s_mean.lock().unwrap() = 0.0;
+            *s_m2.lock().unwrap() = 0.0;
+            *s_sum.lock().unwrap() = 0.0;
+            *s_count.lock().unwrap() = 0;
+        }
+
+        if let Some(ref holder) = self.state_holder {
+            holder.record_reset();
+        }
+
         None
     }
 
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
+
+        // Read from shared state for consistency
+        let synchronized_state = if let (Some(s_mean), Some(s_m2), Some(s_sum), Some(s_count)) = (
+            &self.shared_mean,
+            &self.shared_m2,
+            &self.shared_sum,
+            &self.shared_count,
+        ) {
+            StdDevState {
+                mean: *s_mean.lock().unwrap(),
+                m2: *s_m2.lock().unwrap(),
+                sum: *s_sum.lock().unwrap(),
+                count: *s_count.lock().unwrap(),
+            }
+        } else {
+            self.state.lock().unwrap().clone()
+        };
+
         Box::new(StdDevAttributeAggregatorExecutor {
             arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
-            state: Mutex::new(self.state.lock().unwrap().clone()),
+            state: Mutex::new(synchronized_state),
             app_ctx: Some(Arc::clone(ctx)),
+            state_holder: None,
+            shared_mean: None,
+            shared_m2: None,
+            shared_sum: None,
+            shared_count: None,
         })
     }
 }
@@ -1662,6 +1587,9 @@ pub struct FirstAttributeAggregatorExecutor {
     return_type: ApiAttributeType,
     state: Mutex<FirstState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
+    state_holder: Option<FirstAggregatorStateHolder>,
+    // Shared state for persistence (same as used by state holder)
+    shared_values: Option<Arc<Mutex<VecDeque<AttributeValue>>>>,
 }
 
 impl Default for FirstAttributeAggregatorExecutor {
@@ -1671,6 +1599,8 @@ impl Default for FirstAttributeAggregatorExecutor {
             return_type: ApiAttributeType::STRING, // Will be set from input
             state: Mutex::new(FirstState::default()),
             app_ctx: None,
+            state_holder: None,
+            shared_values: None,
         }
     }
 }
@@ -1690,14 +1620,50 @@ impl AttributeAggregatorExecutor for FirstAttributeAggregatorExecutor {
         self.return_type = exec.get_return_type();
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
+
+        // Initialize state holder for persistence
+        let values_arc = Arc::new(Mutex::new(VecDeque::new()));
+        let aggregator_id = ctx.next_aggregator_id();
+        let component_id = format!("first_aggregator_{}", aggregator_id);
+
+        let holder = FirstAggregatorStateHolder::new(values_arc.clone(), component_id.clone());
+        let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
+            Arc::new(Mutex::new(holder.clone()));
+        ctx.register_state_holder(component_id, state_holder_arc);
+
+        // Store shared state reference for synchronized updates
+        self.shared_values = Some(values_arc);
+        self.state_holder = Some(holder);
+
         Ok(())
     }
 
     fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         if let Some(v) = data {
             let mut st = self.state.lock().unwrap();
-            st.values.push_back(v);
-            // Return front (first value)
+
+            if let Some(ref holder) = self.state_holder {
+                if holder
+                    .base
+                    .restored
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let Some(ref shared) = self.shared_values {
+                        st.values = shared.lock().unwrap().clone();
+                    }
+                }
+            }
+
+            st.values.push_back(v.clone());
+
+            if let Some(ref shared) = self.shared_values {
+                shared.lock().unwrap().push_back(v.clone());
+            }
+
+            if let Some(ref holder) = self.state_holder {
+                holder.record_value_added(&v);
+            }
+
             st.values.front().cloned()
         } else {
             let st = self.state.lock().unwrap();
@@ -1707,25 +1673,66 @@ impl AttributeAggregatorExecutor for FirstAttributeAggregatorExecutor {
 
     fn process_remove(&self, _data: Option<AttributeValue>) -> Option<AttributeValue> {
         let mut st = self.state.lock().unwrap();
-        // Remove front (oldest/first value that's expiring)
+
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let Some(ref shared) = self.shared_values {
+                    st.values = shared.lock().unwrap().clone();
+                }
+            }
+        }
+
         st.values.pop_front();
-        // Return new front (new first value)
+
+        if let Some(ref shared) = self.shared_values {
+            shared.lock().unwrap().pop_front();
+        }
+
+        if let Some(ref holder) = self.state_holder {
+            holder.record_value_removed();
+        }
+
         st.values.front().cloned()
     }
 
     fn reset(&self) -> Option<AttributeValue> {
         let mut st = self.state.lock().unwrap();
         st.values.clear();
+
+        // Update shared state for persistence
+        if let Some(ref shared) = self.shared_values {
+            shared.lock().unwrap().clear();
+        }
+
+        if let Some(ref holder) = self.state_holder {
+            holder.record_reset();
+        }
+
         None
     }
 
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
+
+        let synchronized_state = if let Some(ref shared) = self.shared_values {
+            FirstState {
+                values: shared.lock().unwrap().clone(),
+            }
+        } else {
+            self.state.lock().unwrap().clone()
+        };
+
         Box::new(FirstAttributeAggregatorExecutor {
             arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
             return_type: self.return_type,
-            state: Mutex::new(self.state.lock().unwrap().clone()),
+            state: Mutex::new(synchronized_state),
             app_ctx: Some(Arc::clone(ctx)),
+            state_holder: None,
+            shared_values: None,
         })
     }
 }
@@ -1770,6 +1777,9 @@ pub struct LastAttributeAggregatorExecutor {
     return_type: ApiAttributeType,
     state: Mutex<LastState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
+    state_holder: Option<LastAggregatorStateHolder>,
+    // Shared state for persistence (same as used by state holder)
+    shared_value: Option<Arc<Mutex<Option<AttributeValue>>>>,
 }
 
 impl Default for LastAttributeAggregatorExecutor {
@@ -1779,6 +1789,8 @@ impl Default for LastAttributeAggregatorExecutor {
             return_type: ApiAttributeType::STRING, // Will be set from input
             state: Mutex::new(LastState::default()),
             app_ctx: None,
+            state_holder: None,
+            shared_value: None,
         }
     }
 }
@@ -1798,13 +1810,50 @@ impl AttributeAggregatorExecutor for LastAttributeAggregatorExecutor {
         self.return_type = exec.get_return_type();
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
+
+        // Initialize state holder for persistence
+        let value_arc = Arc::new(Mutex::new(None::<AttributeValue>));
+        let aggregator_id = ctx.next_aggregator_id();
+        let component_id = format!("last_aggregator_{}", aggregator_id);
+
+        let holder = LastAggregatorStateHolder::new(value_arc.clone(), component_id.clone());
+        let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
+            Arc::new(Mutex::new(holder.clone()));
+        ctx.register_state_holder(component_id, state_holder_arc);
+
+        // Store shared state reference for synchronized updates
+        self.shared_value = Some(value_arc);
+        self.state_holder = Some(holder);
+
         Ok(())
     }
 
     fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
         if let Some(v) = data {
             let mut st = self.state.lock().unwrap();
+
+            if let Some(ref holder) = self.state_holder {
+                if holder
+                    .base
+                    .restored
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let Some(ref shared) = self.shared_value {
+                        st.last_value = shared.lock().unwrap().clone();
+                    }
+                }
+            }
+
             st.last_value = Some(v.clone());
+
+            if let Some(ref shared) = self.shared_value {
+                *shared.lock().unwrap() = Some(v.clone());
+            }
+
+            if let Some(ref holder) = self.state_holder {
+                holder.record_value_updated(&v);
+            }
+
             Some(v)
         } else {
             let st = self.state.lock().unwrap();
@@ -1813,25 +1862,58 @@ impl AttributeAggregatorExecutor for LastAttributeAggregatorExecutor {
     }
 
     fn process_remove(&self, _data: Option<AttributeValue>) -> Option<AttributeValue> {
-        // Expired event is the oldest, not the last
-        // Keep current last_value
-        let st = self.state.lock().unwrap();
+        let mut st = self.state.lock().unwrap();
+
+        // Sync from shared state if restoration happened
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let Some(ref shared) = self.shared_value {
+                    st.last_value = shared.lock().unwrap().clone();
+                }
+            }
+        }
+
         st.last_value.clone()
     }
 
     fn reset(&self) -> Option<AttributeValue> {
         let mut st = self.state.lock().unwrap();
         st.last_value = None;
+
+        // Update shared state for persistence
+        if let Some(ref shared) = self.shared_value {
+            *shared.lock().unwrap() = None;
+        }
+
+        if let Some(ref holder) = self.state_holder {
+            holder.record_reset();
+        }
+
         None
     }
 
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
+
+        let synchronized_state = if let Some(ref shared) = self.shared_value {
+            LastState {
+                last_value: shared.lock().unwrap().clone(),
+            }
+        } else {
+            self.state.lock().unwrap().clone()
+        };
+
         Box::new(LastAttributeAggregatorExecutor {
             arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
             return_type: self.return_type,
-            state: Mutex::new(self.state.lock().unwrap().clone()),
+            state: Mutex::new(synchronized_state),
             app_ctx: Some(Arc::clone(ctx)),
+            state_holder: None,
+            shared_value: None,
         })
     }
 }
@@ -1863,6 +1945,8 @@ impl ExpressionExecutor for LastAttributeAggregatorExecutor {
 
 use crate::core::extension::AttributeAggregatorFactory;
 
+pub(crate) mod aggregator_state_holder_base;
+
 pub mod sum_aggregator_state_holder;
 pub use sum_aggregator_state_holder::SumAggregatorStateHolder;
 
@@ -1880,6 +1964,38 @@ pub use max_aggregator_state_holder::MaxAggregatorStateHolder;
 
 pub mod distinctcount_aggregator_state_holder;
 pub use distinctcount_aggregator_state_holder::DistinctCountAggregatorStateHolder;
+
+pub mod stddev_aggregator_state_holder;
+pub use stddev_aggregator_state_holder::StdDevAggregatorStateHolder;
+
+pub mod first_aggregator_state_holder;
+pub use first_aggregator_state_holder::FirstAggregatorStateHolder;
+
+pub mod last_aggregator_state_holder;
+pub use last_aggregator_state_holder::LastAggregatorStateHolder;
+
+pub mod and_aggregator_state_holder;
+pub use and_aggregator_state_holder::AndAggregatorStateHolder;
+
+pub mod or_aggregator_state_holder;
+pub use or_aggregator_state_holder::OrAggregatorStateHolder;
+
+/// Shared helper for state holder changelog operation keys.
+/// Generates a unique key by combining operation type, timestamp, and atomic counter.
+pub(crate) fn generate_operation_key(operation_type: &str) -> Vec<u8> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let mut key = Vec::new();
+    key.extend_from_slice(operation_type.as_bytes());
+    key.push(b'_');
+    let timestamp = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    key.extend_from_slice(&timestamp.to_le_bytes());
+    key.push(b'_');
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    key.extend_from_slice(&seq.to_le_bytes());
+    key
+}
 
 #[derive(Debug, Clone)]
 pub struct SumAttributeAggregatorFactory;
@@ -2052,6 +2168,459 @@ impl AttributeAggregatorFactory for LastAttributeAggregatorFactory {
     }
     fn create(&self) -> Box<dyn AttributeAggregatorExecutor> {
         Box::new(LastAttributeAggregatorExecutor::default())
+    }
+    fn clone_box(&self) -> Box<dyn AttributeAggregatorFactory> {
+        Box::new(Self)
+    }
+}
+
+// ============================================================================
+// And Aggregator - Returns true only if ALL boolean values in window are true
+// ============================================================================
+
+#[derive(Debug, Clone, Default)]
+struct AndState {
+    true_count: i64,
+    false_count: i64,
+}
+
+#[derive(Debug)]
+pub struct AndAttributeAggregatorExecutor {
+    arg_exec: Option<Box<dyn ExpressionExecutor>>,
+    state: Mutex<AndState>,
+    app_ctx: Option<Arc<EventFluxAppContext>>,
+    state_holder: Option<AndAggregatorStateHolder>,
+    // Shared state for persistence (same as used by state holder)
+    shared_true_count: Option<Arc<Mutex<i64>>>,
+    shared_false_count: Option<Arc<Mutex<i64>>>,
+}
+
+impl Default for AndAttributeAggregatorExecutor {
+    fn default() -> Self {
+        Self {
+            arg_exec: None,
+            state: Mutex::new(AndState::default()),
+            app_ctx: None,
+            state_holder: None,
+            shared_true_count: None,
+            shared_false_count: None,
+        }
+    }
+}
+
+impl AttributeAggregatorExecutor for AndAttributeAggregatorExecutor {
+    fn init(
+        &mut self,
+        mut e: Vec<Box<dyn ExpressionExecutor>>,
+        _m: ProcessingMode,
+        _ex: bool,
+        ctx: &EventFluxQueryContext,
+    ) -> Result<(), String> {
+        if e.len() != 1 {
+            return Err("and() requires exactly one argument".into());
+        }
+        let exec = e.remove(0);
+        if exec.get_return_type() != ApiAttributeType::BOOL {
+            return Err("and() requires a boolean argument".into());
+        }
+        self.arg_exec = Some(exec);
+        self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
+
+        // Initialize state holder for persistence
+        let true_count_arc = Arc::new(Mutex::new(0i64));
+        let false_count_arc = Arc::new(Mutex::new(0i64));
+        let aggregator_id = ctx.next_aggregator_id();
+        let component_id = format!("and_aggregator_{}", aggregator_id);
+
+        let holder = AndAggregatorStateHolder::new(
+            true_count_arc.clone(),
+            false_count_arc.clone(),
+            component_id.clone(),
+        );
+        let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
+            Arc::new(Mutex::new(holder.clone()));
+        ctx.register_state_holder(component_id, state_holder_arc);
+
+        // Store shared state references for synchronized updates
+        self.shared_true_count = Some(true_count_arc);
+        self.shared_false_count = Some(false_count_arc);
+        self.state_holder = Some(holder);
+
+        Ok(())
+    }
+
+    fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
+        let mut st = self.state.lock().unwrap();
+
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let (Some(ref shared_tc), Some(ref shared_fc)) =
+                    (&self.shared_true_count, &self.shared_false_count)
+                {
+                    st.true_count = *shared_tc.lock().unwrap();
+                    st.false_count = *shared_fc.lock().unwrap();
+                }
+            }
+        }
+
+        if let Some(b) = data.as_ref().and_then(|v| v.as_bool()) {
+            if b {
+                st.true_count += 1;
+            } else {
+                st.false_count += 1;
+            }
+
+            if let (Some(ref shared_tc), Some(ref shared_fc)) =
+                (&self.shared_true_count, &self.shared_false_count)
+            {
+                *shared_tc.lock().unwrap() = st.true_count;
+                *shared_fc.lock().unwrap() = st.false_count;
+            }
+
+            if let Some(ref holder) = self.state_holder {
+                holder.record_value_added(b);
+            }
+        }
+        Some(AttributeValue::Bool(
+            st.true_count > 0 && st.false_count == 0,
+        ))
+    }
+
+    fn process_remove(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
+        let mut st = self.state.lock().unwrap();
+
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let (Some(ref shared_tc), Some(ref shared_fc)) =
+                    (&self.shared_true_count, &self.shared_false_count)
+                {
+                    st.true_count = *shared_tc.lock().unwrap();
+                    st.false_count = *shared_fc.lock().unwrap();
+                }
+            }
+        }
+
+        if let Some(b) = data.as_ref().and_then(|v| v.as_bool()) {
+            if b {
+                if st.true_count > 0 {
+                    st.true_count -= 1;
+                }
+            } else if st.false_count > 0 {
+                st.false_count -= 1;
+            }
+
+            // Update shared state for persistence
+            if let (Some(ref shared_tc), Some(ref shared_fc)) =
+                (&self.shared_true_count, &self.shared_false_count)
+            {
+                *shared_tc.lock().unwrap() = st.true_count;
+                *shared_fc.lock().unwrap() = st.false_count;
+            }
+
+            if let Some(ref holder) = self.state_holder {
+                holder.record_value_removed(b);
+            }
+        }
+        Some(AttributeValue::Bool(
+            st.true_count > 0 && st.false_count == 0,
+        ))
+    }
+
+    fn reset(&self) -> Option<AttributeValue> {
+        let mut st = self.state.lock().unwrap();
+        let old_true = st.true_count;
+        let old_false = st.false_count;
+        st.true_count = 0;
+        st.false_count = 0;
+
+        // Update shared state for persistence
+        if let (Some(ref shared_tc), Some(ref shared_fc)) =
+            (&self.shared_true_count, &self.shared_false_count)
+        {
+            *shared_tc.lock().unwrap() = 0;
+            *shared_fc.lock().unwrap() = 0;
+        }
+
+        if let Some(ref holder) = self.state_holder {
+            holder.record_reset(old_true, old_false);
+        }
+
+        Some(AttributeValue::Bool(false))
+    }
+
+    fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
+        let ctx = self.app_ctx.as_ref().unwrap();
+
+        // Read from shared state for consistency
+        let synchronized_state = if let (Some(ref shared_tc), Some(ref shared_fc)) =
+            (&self.shared_true_count, &self.shared_false_count)
+        {
+            AndState {
+                true_count: *shared_tc.lock().unwrap(),
+                false_count: *shared_fc.lock().unwrap(),
+            }
+        } else {
+            self.state.lock().unwrap().clone()
+        };
+
+        Box::new(AndAttributeAggregatorExecutor {
+            arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
+            state: Mutex::new(synchronized_state),
+            app_ctx: Some(Arc::clone(ctx)),
+            state_holder: None,
+            shared_true_count: None,
+            shared_false_count: None,
+        })
+    }
+}
+
+impl ExpressionExecutor for AndAttributeAggregatorExecutor {
+    fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
+        let event = event?;
+        let data = self.arg_exec.as_ref().and_then(|e| e.execute(Some(event)));
+        match event.get_event_type() {
+            ComplexEventType::Current => self.process_add(data),
+            ComplexEventType::Expired => self.process_remove(data),
+            ComplexEventType::Reset => self.reset(),
+            _ => None,
+        }
+    }
+
+    fn get_return_type(&self) -> ApiAttributeType {
+        ApiAttributeType::BOOL
+    }
+
+    fn clone_executor(&self, _ctx: &Arc<EventFluxAppContext>) -> Box<dyn ExpressionExecutor> {
+        Box::new(AttributeAggregatorExpressionExecutor::new(self.clone_box()))
+    }
+
+    fn is_attribute_aggregator(&self) -> bool {
+        true
+    }
+}
+
+// ============================================================================
+// Or Aggregator - Returns true if ANY boolean value in window is true
+// ============================================================================
+
+#[derive(Debug, Clone, Default)]
+struct OrState {
+    true_count: i64,
+}
+
+#[derive(Debug)]
+pub struct OrAttributeAggregatorExecutor {
+    arg_exec: Option<Box<dyn ExpressionExecutor>>,
+    state: Mutex<OrState>,
+    app_ctx: Option<Arc<EventFluxAppContext>>,
+    state_holder: Option<OrAggregatorStateHolder>,
+    // Shared state for persistence (same as used by state holder)
+    shared_true_count: Option<Arc<Mutex<i64>>>,
+}
+
+impl Default for OrAttributeAggregatorExecutor {
+    fn default() -> Self {
+        Self {
+            arg_exec: None,
+            state: Mutex::new(OrState::default()),
+            app_ctx: None,
+            state_holder: None,
+            shared_true_count: None,
+        }
+    }
+}
+
+impl AttributeAggregatorExecutor for OrAttributeAggregatorExecutor {
+    fn init(
+        &mut self,
+        mut e: Vec<Box<dyn ExpressionExecutor>>,
+        _m: ProcessingMode,
+        _ex: bool,
+        ctx: &EventFluxQueryContext,
+    ) -> Result<(), String> {
+        if e.len() != 1 {
+            return Err("or() requires exactly one argument".into());
+        }
+        let exec = e.remove(0);
+        if exec.get_return_type() != ApiAttributeType::BOOL {
+            return Err("or() requires a boolean argument".into());
+        }
+        self.arg_exec = Some(exec);
+        self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
+
+        // Initialize state holder for persistence
+        let true_count_arc = Arc::new(Mutex::new(0i64));
+        let aggregator_id = ctx.next_aggregator_id();
+        let component_id = format!("or_aggregator_{}", aggregator_id);
+
+        let holder = OrAggregatorStateHolder::new(true_count_arc.clone(), component_id.clone());
+        let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
+            Arc::new(Mutex::new(holder.clone()));
+        ctx.register_state_holder(component_id, state_holder_arc);
+
+        // Store shared state reference for synchronized updates
+        self.shared_true_count = Some(true_count_arc);
+        self.state_holder = Some(holder);
+
+        Ok(())
+    }
+
+    fn process_add(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
+        let mut st = self.state.lock().unwrap();
+
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let Some(ref shared_tc) = self.shared_true_count {
+                    st.true_count = *shared_tc.lock().unwrap();
+                }
+            }
+        }
+
+        if let Some(true) = data.as_ref().and_then(|v| v.as_bool()) {
+            st.true_count += 1;
+
+            if let Some(ref shared_tc) = self.shared_true_count {
+                *shared_tc.lock().unwrap() = st.true_count;
+            }
+
+            if let Some(ref holder) = self.state_holder {
+                holder.record_increment();
+            }
+        }
+        Some(AttributeValue::Bool(st.true_count > 0))
+    }
+
+    fn process_remove(&self, data: Option<AttributeValue>) -> Option<AttributeValue> {
+        let mut st = self.state.lock().unwrap();
+
+        if let Some(ref holder) = self.state_holder {
+            if holder
+                .base
+                .restored
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                if let Some(ref shared_tc) = self.shared_true_count {
+                    st.true_count = *shared_tc.lock().unwrap();
+                }
+            }
+        }
+
+        if let Some(true) = data.as_ref().and_then(|v| v.as_bool()) {
+            if st.true_count > 0 {
+                st.true_count -= 1;
+            }
+
+            // Update shared state for persistence
+            if let Some(ref shared_tc) = self.shared_true_count {
+                *shared_tc.lock().unwrap() = st.true_count;
+            }
+
+            if let Some(ref holder) = self.state_holder {
+                holder.record_decrement();
+            }
+        }
+        Some(AttributeValue::Bool(st.true_count > 0))
+    }
+
+    fn reset(&self) -> Option<AttributeValue> {
+        let mut st = self.state.lock().unwrap();
+        let old_count = st.true_count;
+        st.true_count = 0;
+
+        // Update shared state for persistence
+        if let Some(ref shared_tc) = self.shared_true_count {
+            *shared_tc.lock().unwrap() = 0;
+        }
+
+        if let Some(ref holder) = self.state_holder {
+            holder.record_reset(old_count);
+        }
+
+        Some(AttributeValue::Bool(false))
+    }
+
+    fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
+        let ctx = self.app_ctx.as_ref().unwrap();
+
+        let synchronized_state = if let Some(ref shared_tc) = self.shared_true_count {
+            OrState {
+                true_count: *shared_tc.lock().unwrap(),
+            }
+        } else {
+            self.state.lock().unwrap().clone()
+        };
+
+        Box::new(OrAttributeAggregatorExecutor {
+            arg_exec: self.arg_exec.as_ref().map(|e| e.clone_executor(ctx)),
+            state: Mutex::new(synchronized_state),
+            app_ctx: Some(Arc::clone(ctx)),
+            state_holder: None,
+            shared_true_count: None,
+        })
+    }
+}
+
+impl ExpressionExecutor for OrAttributeAggregatorExecutor {
+    fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
+        let event = event?;
+        let data = self.arg_exec.as_ref().and_then(|e| e.execute(Some(event)));
+        match event.get_event_type() {
+            ComplexEventType::Current => self.process_add(data),
+            ComplexEventType::Expired => self.process_remove(data),
+            ComplexEventType::Reset => self.reset(),
+            _ => None,
+        }
+    }
+
+    fn get_return_type(&self) -> ApiAttributeType {
+        ApiAttributeType::BOOL
+    }
+
+    fn clone_executor(&self, _ctx: &Arc<EventFluxAppContext>) -> Box<dyn ExpressionExecutor> {
+        Box::new(AttributeAggregatorExpressionExecutor::new(self.clone_box()))
+    }
+
+    fn is_attribute_aggregator(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AndAttributeAggregatorFactory;
+
+impl AttributeAggregatorFactory for AndAttributeAggregatorFactory {
+    fn name(&self) -> &'static str {
+        "and"
+    }
+    fn create(&self) -> Box<dyn AttributeAggregatorExecutor> {
+        Box::new(AndAttributeAggregatorExecutor::default())
+    }
+    fn clone_box(&self) -> Box<dyn AttributeAggregatorFactory> {
+        Box::new(Self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OrAttributeAggregatorFactory;
+
+impl AttributeAggregatorFactory for OrAttributeAggregatorFactory {
+    fn name(&self) -> &'static str {
+        "or"
+    }
+    fn create(&self) -> Box<dyn AttributeAggregatorExecutor> {
+        Box::new(OrAttributeAggregatorExecutor::default())
     }
     fn clone_box(&self) -> Box<dyn AttributeAggregatorFactory> {
         Box::new(Self)

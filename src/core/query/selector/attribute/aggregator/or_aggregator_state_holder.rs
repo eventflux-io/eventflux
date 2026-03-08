@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! StateHolder implementation for CountAttributeAggregatorExecutor
+//! StateHolder implementation for OrAttributeAggregatorExecutor
 
 use super::aggregator_state_holder_base::{
     compress_and_build_snapshot, default_compression_hints, verify_and_decompress, StateHolderBase,
@@ -15,15 +15,15 @@ use crate::core::util::compression::{
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
-pub struct CountAggregatorStateHolder {
-    count: Arc<Mutex<i64>>,
+pub struct OrAggregatorStateHolder {
+    true_count: Arc<Mutex<i64>>,
     pub(crate) base: StateHolderBase,
 }
 
-impl CountAggregatorStateHolder {
-    pub fn new(count: Arc<Mutex<i64>>, component_id: String) -> Self {
+impl OrAggregatorStateHolder {
+    pub fn new(true_count: Arc<Mutex<i64>>, component_id: String) -> Self {
         Self {
-            count,
+            true_count,
             base: StateHolderBase::new(component_id),
         }
     }
@@ -44,12 +44,12 @@ impl CountAggregatorStateHolder {
         });
     }
 
-    pub fn record_reset(&self, old_count: i64) {
+    pub fn record_reset(&self, old_true_count: i64) {
         use crate::core::util::to_bytes;
         let mut change_log = self.base.change_log.lock().unwrap();
         change_log.push(StateOperation::Update {
             key: b"reset".to_vec(),
-            old_value: to_bytes(&old_count).unwrap_or_default(),
+            old_value: to_bytes(&old_true_count).unwrap_or_default(),
             new_value: to_bytes(&0i64).unwrap_or_default(),
         });
     }
@@ -58,12 +58,12 @@ impl CountAggregatorStateHolder {
         self.base.clear_change_log(checkpoint_id);
     }
 
-    pub fn get_count(&self) -> i64 {
-        *self.count.lock().unwrap()
+    pub fn get_true_count(&self) -> i64 {
+        *self.true_count.lock().unwrap()
     }
 }
 
-impl StateHolder for CountAggregatorStateHolder {
+impl StateHolder for OrAggregatorStateHolder {
     fn schema_version(&self) -> SchemaVersion {
         SchemaVersion::new(1, 0, 0)
     }
@@ -71,10 +71,12 @@ impl StateHolder for CountAggregatorStateHolder {
     fn serialize_state(&self, hints: &SerializationHints) -> Result<StateSnapshot, StateError> {
         use crate::core::util::to_bytes;
 
-        let count = *self.count.lock().unwrap();
-        let state_data = CountAggregatorStateData::new(count);
+        let state_data = OrAggregatorStateData {
+            true_count: *self.true_count.lock().unwrap(),
+        };
+
         let data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
-            message: format!("Failed to serialize count aggregator state: {e}"),
+            message: format!("Failed to serialize or aggregator state: {e}"),
         })?;
 
         compress_and_build_snapshot(self, data, hints)
@@ -84,12 +86,12 @@ impl StateHolder for CountAggregatorStateHolder {
         use crate::core::util::from_bytes;
 
         let data = verify_and_decompress(self, snapshot)?;
-        let state_data: CountAggregatorStateData =
+        let state_data: OrAggregatorStateData =
             from_bytes(&data).map_err(|e| StateError::DeserializationError {
-                message: format!("Failed to deserialize count aggregator state: {e}"),
+                message: format!("Failed to deserialize or aggregator state: {e}"),
             })?;
 
-        *self.count.lock().unwrap() = state_data.count;
+        *self.true_count.lock().unwrap() = state_data.true_count;
         self.base
             .restored
             .store(true, std::sync::atomic::Ordering::Release);
@@ -101,28 +103,20 @@ impl StateHolder for CountAggregatorStateHolder {
     }
 
     fn apply_changelog(&self, changes: &ChangeLog) -> Result<(), StateError> {
-        use crate::core::util::from_bytes;
+        let mut true_count = self.true_count.lock().unwrap();
 
-        let mut count = self.count.lock().unwrap();
         for operation in &changes.operations {
             match operation {
                 StateOperation::Insert { .. } => {
-                    *count += 1;
+                    *true_count += 1;
                 }
                 StateOperation::Delete { .. } => {
-                    if *count > 0 {
-                        *count -= 1;
+                    if *true_count > 0 {
+                        *true_count -= 1;
                     }
                 }
-                StateOperation::Update { new_value, .. } => {
-                    let new_count: i64 =
-                        from_bytes(new_value).map_err(|e| StateError::DeserializationError {
-                            message: format!("Failed to deserialize new count: {e}"),
-                        })?;
-                    *count = new_count;
-                }
-                StateOperation::Clear => {
-                    *count = 0;
+                StateOperation::Update { .. } | StateOperation::Clear => {
+                    *true_count = 0;
                 }
             }
         }
@@ -144,113 +138,85 @@ impl StateHolder for CountAggregatorStateHolder {
     fn component_metadata(&self) -> StateMetadata {
         let mut metadata = StateMetadata::new(
             self.base.component_id.clone(),
-            "CountAttributeAggregatorExecutor".to_string(),
+            "OrAttributeAggregatorExecutor".to_string(),
         );
         metadata.access_pattern = self.access_pattern();
         metadata.size_estimation = self.estimate_size();
         metadata
             .custom_metadata
-            .insert("aggregator_type".to_string(), "count".to_string());
-        metadata
-            .custom_metadata
-            .insert("current_count".to_string(), self.get_count().to_string());
+            .insert("aggregator_type".to_string(), "or".to_string());
+        metadata.custom_metadata.insert(
+            "current_true_count".to_string(),
+            self.get_true_count().to_string(),
+        );
         metadata
     }
 }
 
-impl CompressibleStateHolder for CountAggregatorStateHolder {
+impl CompressibleStateHolder for OrAggregatorStateHolder {
     fn compression_hints(&self) -> CompressionHints {
         default_compression_hints(DataCharacteristics::Numeric)
     }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct CountAggregatorStateData {
-    count: i64,
-}
-
-impl CountAggregatorStateData {
-    fn new(count: i64) -> Self {
-        Self { count }
-    }
+struct OrAggregatorStateData {
+    true_count: i64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
-    fn test_count_aggregator_state_holder_creation() {
-        let count = Arc::new(Mutex::new(0));
-        let holder = CountAggregatorStateHolder::new(count, "test_count_aggregator".to_string());
-
+    fn test_or_state_holder_creation() {
+        let holder = OrAggregatorStateHolder::new(Arc::new(Mutex::new(0)), "test_or".to_string());
         assert_eq!(holder.schema_version(), SchemaVersion::new(1, 0, 0));
-        assert_eq!(holder.access_pattern(), AccessPattern::Random);
-        assert_eq!(holder.get_count(), 0);
+        assert_eq!(holder.get_true_count(), 0);
     }
 
     #[test]
-    fn test_state_serialization_and_deserialization() {
-        let count = Arc::new(Mutex::new(42));
-
-        let holder = CountAggregatorStateHolder::new(count, "test_count_aggregator".to_string());
+    fn test_serialization_deserialization() {
+        let holder = OrAggregatorStateHolder::new(Arc::new(Mutex::new(3)), "test_or".to_string());
 
         let hints = SerializationHints::default();
-
         let snapshot = holder.serialize_state(&hints).unwrap();
         assert!(snapshot.verify_integrity());
 
-        let result = holder.deserialize_state(&snapshot);
-        assert!(result.is_ok());
-
-        assert_eq!(holder.get_count(), 42);
+        *holder.true_count.lock().unwrap() = 0;
+        holder.deserialize_state(&snapshot).unwrap();
+        assert_eq!(holder.get_true_count(), 3);
     }
 
     #[test]
     fn test_change_log_tracking() {
-        let count = Arc::new(Mutex::new(0));
-        let holder = CountAggregatorStateHolder::new(count, "test_count_aggregator".to_string());
+        let holder = OrAggregatorStateHolder::new(Arc::new(Mutex::new(0)), "test_or".to_string());
 
         holder.record_increment();
         holder.record_increment();
-
-        let changelog = holder.get_changelog(0).unwrap();
-        assert_eq!(changelog.operations.len(), 2);
-
         holder.record_decrement();
 
         let changelog = holder.get_changelog(0).unwrap();
         assert_eq!(changelog.operations.len(), 3);
 
-        holder.record_reset(2);
-
+        holder.record_reset(1);
         let changelog = holder.get_changelog(0).unwrap();
         assert_eq!(changelog.operations.len(), 4);
     }
 
     #[test]
-    fn test_size_estimation() {
-        let count = Arc::new(Mutex::new(100));
-        let holder = CountAggregatorStateHolder::new(count, "test_count_aggregator".to_string());
-
-        let size = holder.estimate_size();
-        assert_eq!(size.entries, 1);
-        assert!(size.bytes > 0);
-        assert_eq!(size.estimated_growth_rate, 0.0);
-    }
-
-    #[test]
     fn test_metadata() {
-        let count = Arc::new(Mutex::new(99));
-        let holder = CountAggregatorStateHolder::new(count, "test_count_aggregator".to_string());
+        let holder = OrAggregatorStateHolder::new(Arc::new(Mutex::new(5)), "test_or".to_string());
 
         let metadata = holder.component_metadata();
-        assert_eq!(metadata.component_type, "CountAttributeAggregatorExecutor");
+        assert_eq!(metadata.component_type, "OrAttributeAggregatorExecutor");
         assert_eq!(
             metadata.custom_metadata.get("aggregator_type").unwrap(),
-            "count"
+            "or"
         );
-        assert_eq!(metadata.custom_metadata.get("current_count").unwrap(), "99");
+        assert_eq!(
+            metadata.custom_metadata.get("current_true_count").unwrap(),
+            "5"
+        );
     }
 }
