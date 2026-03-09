@@ -3,7 +3,7 @@
 [![Build](https://github.com/eventflux-io/eventflux/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/eventflux-io/eventflux/actions/workflows/docker-publish.yml)
 [![Rust](https://github.com/eventflux-io/eventflux/actions/workflows/rust.yml/badge.svg)](https://github.com/eventflux-io/eventflux/actions/workflows/rust.yml)
 [![GHCR](https://img.shields.io/badge/ghcr.io-eventflux--io%2Feventflux-green)](https://ghcr.io/eventflux-io/eventflux)
-[![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-green.svg)](LICENSE-APACHE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 
 Stream processing engine built in Rust. Write SQL, process events, skip the infrastructure headache.
 
@@ -118,4 +118,4 @@ See [DEV_GUIDE.md](DEV_GUIDE.md) for setup.
 
 ## License
 
-[Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
+[Apache-2.0](LICENSE)
