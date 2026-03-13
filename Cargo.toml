@@ -51,6 +51,9 @@ log = "0.4"
 env_logger = "0.11"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 tungstenite = "0.24"
+aes-gcm = "0.10"
+sha2 = "0.10"
+
 dashmap = "6.0"
 urlencoding = "2.1"
 

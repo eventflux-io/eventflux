@@ -16,6 +16,7 @@
  */
 
 pub mod cast_executor;
+pub mod case_executor;
 pub mod collection_aggregation_executor;
 pub mod condition;
 pub mod constant_expression_executor;
@@ -29,6 +30,7 @@ pub mod multi_value_variable_function_executor;
 pub mod variable_expression_executor; // For incremental aggregation executors
 
 pub use self::cast_executor::CastExecutor;
+pub use self::case_executor::CaseExecutor;
 pub use self::collection_aggregation_executor::{
     CollectionAvgExecutor, CollectionCountExecutor, CollectionMinMaxExecutor,
     CollectionStdDevExecutor, CollectionSumExecutor, MinMaxType,

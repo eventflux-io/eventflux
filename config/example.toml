@@ -15,6 +15,18 @@ buffer_size = "2048"
 timeout = "30s"
 retry_count = "3"
 
+# Encryption configuration for data at rest (GDPR compliance)
+[application.encryption]
+enabled = "${ENCRYPTION_ENABLED:true}"
+key = "${ENCRYPTION_KEY}"  # 32-byte key for AES-256, required if enabled
+
+# TLS configuration for secure transport (GDPR and banking compliance)
+[application.tls]
+enabled = "${TLS_ENABLED:true}"
+cert_file = "${TLS_CERT_FILE}"
+key_file = "${TLS_KEY_FILE}"
+ca_file = "${TLS_CA_FILE}"
+
 # Kafka configuration with environment variable substitution
 [application.kafka]
 # Syntax: ${VAR_NAME} - required variable (fails if missing)

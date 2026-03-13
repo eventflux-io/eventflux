@@ -83,3 +83,17 @@ pub trait ExpressionExecutor: Debug + Send + Sync + 'static {
 // Added Arc import, which might be needed by clone_executor implementations if they store Arc<EventFluxAppContext>
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use std::sync::Arc;
+
+// Factory function to create ExpressionExecutor from Expression
+pub fn create_expression_executor(
+    expr: &crate::query_api::expression::Expression,
+    context: &Arc<EventFluxAppContext>,
+) -> Result<Box<dyn ExpressionExecutor>, crate::core::error::error::Error> {
+    match expr {
+        crate::query_api::expression::Expression::Case(case) => {
+            Ok(Box::new(crate::core::executor::case_executor::CaseExecutor::new(case, context)?))
+        }
+        // Add other cases as implemented
+        _ => Err(crate::core::error::error::Error::new("Unsupported expression type")),
+    }
+}

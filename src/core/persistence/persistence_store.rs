@@ -19,21 +19,76 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use log::error;
+use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, NewAead};
+use rand::Rng;
+use crate::core::util::audit::{AuditEntry, AuditLogger};
+
+/// Configuration for encryption
+#[derive(Clone)]
+pub struct EncryptionConfig {
+    pub key: Vec<u8>, // 32 bytes for AES-256
+    pub enabled: bool,
+}
+
+impl EncryptionConfig {
+    pub fn new(key: Vec<u8>) -> Self {
+        Self { key, enabled: true }
+    }
+
+    pub fn disabled() -> Self {
+        Self { key: vec![], enabled: false }
+    }
+}
+
+/// Encrypt data using AES-256-GCM
+pub fn encrypt_data(data: &[u8], config: &EncryptionConfig) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    if !config.enabled {
+        return Ok(data.to_vec());
+    }
+    let key = Key::from_slice(&config.key);
+    let cipher = Aes256Gcm::new(key);
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher.encrypt(nonce, data)?;
+    let mut result = nonce_bytes.to_vec();
+    result.extend(ciphertext);
+    Ok(result)
+}
+
+/// Decrypt data using AES-256-GCM
+pub fn decrypt_data(data: &[u8], config: &EncryptionConfig) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    if !config.enabled {
+        return Ok(data.to_vec());
+    }
+    if data.len() < 12 {
+        return Err("Invalid encrypted data".into());
+    }
+    let nonce = Nonce::from_slice(&data[0..12]);
+    let ciphertext = &data[12..];
+    let key = Key::from_slice(&config.key);
+    let cipher = Aes256Gcm::new(key);
+    let plaintext = cipher.decrypt(nonce, ciphertext)?;
+    Ok(plaintext)
+}
 
 /// Trait for simple persistence stores that save full snapshots.
 pub trait PersistenceStore: Send + Sync {
-    fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8]);
-    fn load(&self, eventflux_app_id: &str, revision: &str) -> Option<Vec<u8>>;
+    fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8], config: &EncryptionConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    fn load(&self, eventflux_app_id: &str, revision: &str, config: &EncryptionConfig) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>;
     fn get_last_revision(&self, eventflux_app_id: &str) -> Option<String>;
     fn clear_all_revisions(&self, eventflux_app_id: &str);
+    fn delete_revision(&self, eventflux_app_id: &str, revision: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Trait for incremental persistence stores.
 pub trait IncrementalPersistenceStore: Send + Sync {
-    fn save(&self, revision: &str, snapshot: &[u8]);
-    fn load(&self, revision: &str) -> Option<Vec<u8>>;
+    fn save(&self, revision: &str, snapshot: &[u8], config: &EncryptionConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    fn load(&self, revision: &str, config: &EncryptionConfig) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>;
     fn get_last_revision(&self, eventflux_app_id: &str) -> Option<String>;
     fn clear_all_revisions(&self, eventflux_app_id: &str);
+    fn delete_revision(&self, eventflux_app_id: &str, revision: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Very small in-memory implementation useful for tests.
@@ -50,22 +105,35 @@ impl InMemoryPersistenceStore {
 }
 
 impl PersistenceStore for InMemoryPersistenceStore {
-    fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8]) {
+    fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8], config: &EncryptionConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let encrypted = encrypt_data(snapshot, config)?;
         let mut m = self.inner.lock().unwrap();
         let entry = m.entry(eventflux_app_id.to_string()).or_default();
-        entry.insert(revision.to_string(), snapshot.to_vec());
+        entry.insert(revision.to_string(), encrypted);
         self.last_revision
             .lock()
             .unwrap()
             .insert(eventflux_app_id.to_string(), revision.to_string());
+
+        // Audit log
+        let audit_entry = AuditEntry::new("save", &format!("{}/{}", eventflux_app_id, revision))
+            .with_detail("size", &snapshot.len().to_string());
+        // Assume global logger or pass in; for now, just log
+        log::info!("Audit: {:?}", audit_entry);
+
+        Ok(())
     }
 
-    fn load(&self, eventflux_app_id: &str, revision: &str) -> Option<Vec<u8>> {
-        self.inner
+    fn load(&self, eventflux_app_id: &str, revision: &str, config: &EncryptionConfig) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+        let data = self.inner
             .lock()
             .unwrap()
             .get(eventflux_app_id)
-            .and_then(|m| m.get(revision).cloned())
+            .and_then(|m| m.get(revision).cloned());
+        match data {
+            Some(d) => Ok(Some(decrypt_data(&d, config)?)),
+            None => Ok(None),
+        }
     }
 
     fn get_last_revision(&self, eventflux_app_id: &str) -> Option<String> {
@@ -80,16 +148,29 @@ impl PersistenceStore for InMemoryPersistenceStore {
         self.inner.lock().unwrap().remove(eventflux_app_id);
         self.last_revision.lock().unwrap().remove(eventflux_app_id);
     }
+
+    fn delete_revision(&self, eventflux_app_id: &str, revision: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut m = self.inner.lock().unwrap();
+        if let Some(entry) = m.get_mut(eventflux_app_id) {
+            entry.remove(revision);
+        }
+
+        // Audit log
+        let audit_entry = AuditEntry::new("delete", &format!("{}/{}", eventflux_app_id, revision));
+        log::info!("Audit: {:?}", audit_entry);
+
+        Ok(())
+    }
 }
 
 impl IncrementalPersistenceStore for InMemoryPersistenceStore {
-    fn save(&self, revision: &str, snapshot: &[u8]) {
+    fn save(&self, revision: &str, snapshot: &[u8], config: &EncryptionConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // For tests we treat incremental same as full with eventflux_app_id="default"
-        <Self as PersistenceStore>::save(self, "default", revision, snapshot);
+        <Self as PersistenceStore>::save(self, "default", revision, snapshot, config)
     }
 
-    fn load(&self, revision: &str) -> Option<Vec<u8>> {
-        <Self as PersistenceStore>::load(self, "default", revision)
+    fn load(&self, revision: &str, config: &EncryptionConfig) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+        <Self as PersistenceStore>::load(self, "default", revision, config)
     }
 
     fn get_last_revision(&self, eventflux_app_id: &str) -> Option<String> {
@@ -98,6 +179,10 @@ impl IncrementalPersistenceStore for InMemoryPersistenceStore {
 
     fn clear_all_revisions(&self, eventflux_app_id: &str) {
         PersistenceStore::clear_all_revisions(self, eventflux_app_id)
+    }
+
+    fn delete_revision(&self, eventflux_app_id: &str, revision: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        PersistenceStore::delete_revision(self, "default", revision)
     }
 }
 
@@ -126,29 +211,25 @@ impl FilePersistenceStore {
 }
 
 impl PersistenceStore for FilePersistenceStore {
-    fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8]) {
+    fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8], config: &EncryptionConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let dir = self.base.join(eventflux_app_id);
-        if let Err(e) = fs::create_dir_all(&dir) {
-            error!("FilePersistenceStore: cannot create dir: {e}");
-            return;
-        }
+        fs::create_dir_all(&dir)?;
         let path = self.file_path(eventflux_app_id, revision);
-        match fs::write(&path, snapshot) {
-            Ok(_) => {
-                self.last_revision
-                    .lock()
-                    .unwrap()
-                    .insert(eventflux_app_id.to_string(), revision.to_string());
-            }
-            Err(e) => {
-                error!("FilePersistenceStore: write failed: {e}");
-            }
-        }
+        let encrypted = encrypt_data(snapshot, config)?;
+        fs::write(&path, encrypted)?;
+        self.last_revision
+            .lock()
+            .unwrap()
+            .insert(eventflux_app_id.to_string(), revision.to_string());
+        Ok(())
     }
 
-    fn load(&self, eventflux_app_id: &str, revision: &str) -> Option<Vec<u8>> {
+    fn load(&self, eventflux_app_id: &str, revision: &str, config: &EncryptionConfig) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
         let path = self.file_path(eventflux_app_id, revision);
-        fs::read(path).ok()
+        match fs::read(&path) {
+            Ok(data) => Ok(Some(decrypt_data(&data, config)?)),
+            Err(_) => Ok(None),
+        }
     }
 
     fn get_last_revision(&self, eventflux_app_id: &str) -> Option<String> {
@@ -163,6 +244,12 @@ impl PersistenceStore for FilePersistenceStore {
         let dir = self.base.join(eventflux_app_id);
         let _ = fs::remove_dir_all(&dir);
         self.last_revision.lock().unwrap().remove(eventflux_app_id);
+    }
+
+    fn delete_revision(&self, eventflux_app_id: &str, revision: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let path = self.file_path(eventflux_app_id, revision);
+        fs::remove_file(path)?;
+        Ok(())
     }
 }
 
@@ -186,24 +273,27 @@ impl SqlitePersistenceStore {
 }
 
 impl PersistenceStore for SqlitePersistenceStore {
-    fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8]) {
+    fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8], config: &EncryptionConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let conn = self.conn.lock().unwrap();
-        if let Err(e) = conn.execute(
+        let encrypted = encrypt_data(snapshot, config)?;
+        conn.execute(
             "INSERT OR REPLACE INTO snapshots(app, rev, data) VALUES (?1, ?2, ?3)",
-            params![eventflux_app_id, revision, snapshot],
-        ) {
-            error!("SqlitePersistenceStore: write failed: {e}");
-        }
+            params![eventflux_app_id, revision, &encrypted],
+        )?;
+        Ok(())
     }
 
-    fn load(&self, eventflux_app_id: &str, revision: &str) -> Option<Vec<u8>> {
+    fn load(&self, eventflux_app_id: &str, revision: &str, config: &EncryptionConfig) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row(
+        let data: Option<Vec<u8>> = conn.query_row(
             "SELECT data FROM snapshots WHERE app=?1 AND rev=?2",
             params![eventflux_app_id, revision],
             |row| row.get(0),
-        )
-        .ok()
+        ).ok();
+        match data {
+            Some(d) => Ok(Some(decrypt_data(&d, config)?)),
+            None => Ok(None),
+        }
     }
 
     fn get_last_revision(&self, eventflux_app_id: &str) -> Option<String> {
@@ -222,6 +312,15 @@ impl PersistenceStore for SqlitePersistenceStore {
             "DELETE FROM snapshots WHERE app=?1",
             params![eventflux_app_id],
         );
+    }
+
+    fn delete_revision(&self, eventflux_app_id: &str, revision: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM snapshots WHERE app=?1 AND rev=?2",
+            params![eventflux_app_id, revision],
+        )?;
+        Ok(())
     }
 }
 
@@ -550,3 +649,48 @@ impl PersistenceStore for RedisPersistenceStore {
 
 use crate::core::distributed::StateBackend;
 use std::sync::Arc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encrypt_decrypt_enabled() {
+        let key = vec![0u8; 32]; // Dummy key for test
+        let config = EncryptionConfig::new(key);
+        let data = b"Hello, World!";
+        let encrypted = encrypt_data(data, &config).unwrap();
+        let decrypted = decrypt_data(&encrypted, &config).unwrap();
+        assert_eq!(data.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_disabled() {
+        let config = EncryptionConfig::disabled();
+        let data = b"Hello, World!";
+        let encrypted = encrypt_data(data, &config).unwrap();
+        let decrypted = decrypt_data(&encrypted, &config).unwrap();
+        assert_eq!(data.to_vec(), decrypted);
+        assert_eq!(data.to_vec(), encrypted); // Should be unchanged
+    }
+
+    #[test]
+    fn test_in_memory_store_with_encryption() {
+        let store = InMemoryPersistenceStore::new();
+        let config = EncryptionConfig::new(vec![1u8; 32]);
+        let data = b"test data";
+        store.save("app1", "rev1", data, &config).unwrap();
+        let loaded = store.load("app1", "rev1", &config).unwrap().unwrap();
+        assert_eq!(data.to_vec(), loaded);
+    }
+
+    #[test]
+    fn test_delete_revision() {
+        let store = InMemoryPersistenceStore::new();
+        let config = EncryptionConfig::disabled();
+        store.save("app1", "rev1", b"data", &config).unwrap();
+        assert!(store.load("app1", "rev1", &config).unwrap().is_some());
+        store.delete_revision("app1", "rev1").unwrap();
+        assert!(store.load("app1", "rev1", &config).unwrap().is_none());
+    }
+}

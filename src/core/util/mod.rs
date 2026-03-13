@@ -18,7 +18,11 @@
 // src/core/util/mod.rs
 
 pub mod attribute_converter;
+pub mod audit;
+pub mod compliance_util;
 pub mod compression; // High-performance shared compression utility
+pub mod health;
+pub mod shutdown;
 pub mod event_serde;
 pub mod event_serialization; // Advanced event serialization with proper AttributeValue handling
 pub mod eventflux_constants; // Added eventflux_constants module
@@ -51,6 +55,8 @@ pub mod statistics; // This might conflict with core::config::StatisticsConfigur
 pub use self::attribute_converter::{
     get_property_value, get_property_value_from_str, is_numeric_type,
 };
+pub use self::audit::*;
+pub use self::compliance_util::*;
 pub use self::compression::{
     CompressibleStateHolder, CompressionEngine, CompressionHints, DataCharacteristics,
     DataSizeRange, GLOBAL_COMPRESSION_ENGINE,
