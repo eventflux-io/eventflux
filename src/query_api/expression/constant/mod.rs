@@ -262,10 +262,7 @@ mod tests {
     #[test]
     fn test_time_util_hour() {
         let c = TimeUtil::hour(1); // 1 hour
-        assert_eq!(
-            c.get_value(),
-            &ConstantValueWithFloat::Time(1 * 60 * 60 * 1000)
-        );
+        assert_eq!(c.get_value(), &ConstantValueWithFloat::Time(60 * 60 * 1000));
     }
 
     #[test]
@@ -273,7 +270,7 @@ mod tests {
         let c = TimeUtil::day(1); // 1 day
         assert_eq!(
             c.get_value(),
-            &ConstantValueWithFloat::Time(1 * 24 * 60 * 60 * 1000)
+            &ConstantValueWithFloat::Time(24 * 60 * 60 * 1000)
         );
     }
 
@@ -282,7 +279,7 @@ mod tests {
         let c = TimeUtil::week(1); // 1 week
         assert_eq!(
             c.get_value(),
-            &ConstantValueWithFloat::Time(1 * 7 * 24 * 60 * 60 * 1000)
+            &ConstantValueWithFloat::Time(7 * 24 * 60 * 60 * 1000)
         );
     }
 

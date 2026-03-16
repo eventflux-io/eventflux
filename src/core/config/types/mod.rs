@@ -176,7 +176,7 @@ mod tests {
         use serde_json;
 
         let duration = Duration::from_secs(3600);
-        let serialized = serde_json::to_string(&duration).unwrap();
+        let _serialized = serde_json::to_string(&duration).unwrap();
         // Note: This test would work with a wrapper struct that uses the serde module
     }
 }

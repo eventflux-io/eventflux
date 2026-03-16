@@ -65,6 +65,7 @@ pub struct MemoryPersistenceBackend {
 }
 
 /// Distributed persistence backend (placeholder for etcd/Consul integration)
+#[allow(dead_code)]
 pub struct DistributedPersistenceBackend {
     /// Cluster endpoints
     endpoints: Vec<String>,
@@ -116,6 +117,7 @@ enum CheckpointType {
 
 /// Backend performance statistics
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 struct BackendStatistics {
     /// Total checkpoints stored
     pub total_stored: u64,
@@ -346,6 +348,7 @@ impl FilePersistenceBackend {
     }
 
     /// Calculate file checksum
+    #[allow(dead_code)]
     fn calculate_file_checksum(&self, data: &[u8]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -561,13 +564,17 @@ impl PersistenceBackend for FilePersistenceBackend {
     }
 
     fn cleanup_checkpoints(&self, before: Instant) -> Result<usize, StateError> {
-        // For testing purposes, clean up all checkpoints
-        // In production, this would use the proper time comparison
-        let before_timestamp = SystemTime::now()
+        // Convert Instant → epoch seconds so we can compare with metadata.created_at (u64).
+        let now = Instant::now();
+        let now_epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs()
-            + 1;
+            .as_secs();
+        let before_timestamp = if now >= before {
+            now_epoch.saturating_sub((now - before).as_secs())
+        } else {
+            now_epoch + (before - now).as_secs()
+        };
         let mut removed_count = 0;
 
         let mut to_remove = Vec::new();
@@ -576,7 +583,9 @@ impl PersistenceBackend for FilePersistenceBackend {
         {
             let cache = self.metadata_cache.read().unwrap();
             for (checkpoint_id, metadata) in cache.iter() {
-                if metadata.created_at < before_timestamp {
+                // Use <= because created_at has second granularity; a sub-second
+                // delta between creation and the cutoff would otherwise be missed.
+                if metadata.created_at <= before_timestamp {
                     to_remove.push(*checkpoint_id);
                 }
             }

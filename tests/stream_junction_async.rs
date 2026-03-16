@@ -93,13 +93,11 @@ impl Processor for RecordingProcessor {
     }
 }
 
+type SharedEventVec = Arc<Mutex<Vec<Vec<AttributeValue>>>>;
+
 fn setup_junction(
     async_mode: bool,
-) -> (
-    Arc<Mutex<StreamJunction>>,
-    Arc<Mutex<Vec<Vec<AttributeValue>>>>,
-    Arc<Mutex<Vec<Vec<AttributeValue>>>>,
-) {
+) -> (Arc<Mutex<StreamJunction>>, SharedEventVec, SharedEventVec) {
     let eventflux_context = Arc::new(EventFluxContext::new());
     let app = Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
         "App".to_string(),
@@ -150,7 +148,8 @@ fn test_sync_cloning() {
     junction
         .lock()
         .unwrap()
-        .send_event(Event::new_with_data(0, vec![AttributeValue::Int(1)]));
+        .send_event(Event::new_with_data(0, vec![AttributeValue::Int(1)]))
+        .unwrap();
     let v1 = r1.lock().unwrap().clone();
     let v2 = r2.lock().unwrap().clone();
     assert_eq!(v1, vec![vec![AttributeValue::Int(1)]]);
@@ -163,7 +162,8 @@ fn test_async_processing() {
     junction
         .lock()
         .unwrap()
-        .send_event(Event::new_with_data(0, vec![AttributeValue::Int(2)]));
+        .send_event(Event::new_with_data(0, vec![AttributeValue::Int(2)]))
+        .unwrap();
     // wait for async tasks
     thread::sleep(Duration::from_millis(200));
     let v1 = r1.lock().unwrap().clone();

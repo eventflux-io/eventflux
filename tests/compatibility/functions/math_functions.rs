@@ -786,6 +786,7 @@ async fn function_test_trunc_negative() {
 
 /// Test trunc function with precision
 #[tokio::test]
+#[allow(clippy::approx_constant)]
 async fn function_test_trunc_with_precision() {
     let app = "\
         CREATE STREAM inputStream (value DOUBLE);\n\
@@ -796,7 +797,9 @@ async fn function_test_trunc_with_precision() {
     runner.send("inputStream", vec![AttributeValue::Double(3.14159)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][0], AttributeValue::Double(3.14)); // Truncate to 2 decimal places
+    #[allow(clippy::approx_constant)]
+    let expected = AttributeValue::Double(3.14); // Truncate to 2 decimal places
+    assert_eq!(out[0][0], expected);
 }
 
 /// Test truncate alias
@@ -831,8 +834,8 @@ async fn function_test_asin_basic() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // asin(0.5) ≈ 0.5235987755982989 (π/6)
-        assert!((result - 0.5235987755982989).abs() < 0.0001);
+        // asin(0.5) ≈ π/6
+        assert!((result - std::f64::consts::FRAC_PI_6).abs() < 0.0001);
     } else {
         panic!("Expected Double value");
     }
@@ -905,8 +908,8 @@ async fn function_test_acos_basic() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // acos(0.5) ≈ 1.0471975511965979 (π/3)
-        assert!((result - 1.0471975511965979).abs() < 0.0001);
+        // acos(0.5) ≈ π/3
+        assert!((result - std::f64::consts::FRAC_PI_3).abs() < 0.0001);
     } else {
         panic!("Expected Double value");
     }

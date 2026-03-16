@@ -204,6 +204,7 @@ impl LengthBatchWindowStateHolder {
     }
 
     /// Clear the change log (called after successful checkpoint)
+    #[allow(dead_code)]
     pub fn clear_change_log(&self, checkpoint_id: CheckpointId) {
         let mut change_log = self.change_log.lock().unwrap();
         change_log.clear();
@@ -268,13 +269,9 @@ impl StateHolder for LengthBatchWindowStateHolder {
         let reset_event = {
             let reset_guard = self.reset_event.lock().unwrap();
             if let Some(ref event) = *reset_guard {
-                match self
-                    .serialization_service
+                self.serialization_service
                     .serialize_event_with_strategy(event, storage_strategy.clone())
-                {
-                    Ok(data) => Some(data),
-                    Err(_e) => None, // Skip if serialization fails
-                }
+                    .ok()
             } else {
                 None
             }
@@ -289,7 +286,7 @@ impl StateHolder for LengthBatchWindowStateHolder {
         };
 
         // Serialize to bytes
-        let mut data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
+        let data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
             message: format!("Failed to serialize length batch window state: {e}"),
         })?;
 
@@ -378,10 +375,7 @@ impl StateHolder for LengthBatchWindowStateHolder {
         {
             let mut reset_guard = self.reset_event.lock().unwrap();
             *reset_guard = if let Some(serialized_event) = state_data.reset_event {
-                match self.deserialize_event(&serialized_event) {
-                    Ok(event) => Some(event),
-                    Err(_e) => None, // Skip if deserialization fails
-                }
+                self.deserialize_event(&serialized_event).ok()
             } else {
                 None
             };
@@ -674,7 +668,7 @@ mod tests {
         }
 
         let reset_event = Arc::new(Mutex::new(None));
-        let mut holder = LengthBatchWindowStateHolder::new(
+        let holder = LengthBatchWindowStateHolder::new(
             buffer,
             expired,
             reset_event,
@@ -699,12 +693,12 @@ mod tests {
         assert_eq!(expired.len(), 1); // Expired batch events should be restored
 
         // Verify event data integrity
-        if let Some(event) = buffer.get(0) {
+        if let Some(event) = buffer.first() {
             assert_eq!(event.timestamp, 1000);
             assert_eq!(event.before_window_data.len(), 2);
         }
 
-        if let Some(event) = expired.get(0) {
+        if let Some(event) = expired.first() {
             assert_eq!(event.timestamp, 3000);
             assert_eq!(event.before_window_data.len(), 1);
         }

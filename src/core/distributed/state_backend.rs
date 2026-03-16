@@ -64,6 +64,12 @@ pub struct InMemoryBackend {
     state: Arc<RwLock<std::collections::HashMap<String, Vec<u8>>>>,
 }
 
+impl Default for InMemoryBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryBackend {
     pub fn new() -> Self {
         Self {
@@ -146,6 +152,7 @@ impl Default for RedisConfig {
 }
 
 /// Redis state backend for distributed state management
+#[allow(clippy::type_complexity)]
 pub struct RedisBackend {
     pool: Option<Pool>,
     config: RedisConfig,
@@ -165,6 +172,12 @@ impl std::fmt::Debug for RedisBackend {
                 ),
             )
             .finish()
+    }
+}
+
+impl Default for RedisBackend {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -257,7 +270,7 @@ impl StateBackend for RedisBackend {
         // Test with a simple ping
         let mut conn = conn;
         redis::cmd("PING")
-            .query_async::<_, String>(&mut conn)
+            .query_async::<String>(&mut conn)
             .await
             .map_err(|e| DistributedError::StateError {
                 message: format!("Redis ping failed: {}", e),
@@ -315,7 +328,7 @@ impl StateBackend for RedisBackend {
         }
 
         // Execute pipeline atomically
-        pipe.query_async::<_, ()>(&mut conn)
+        pipe.query_async::<()>(&mut conn)
             .await
             .map_err(|e| DistributedError::StateError {
                 message: format!("Redis atomic set_multi failed: {}", e),

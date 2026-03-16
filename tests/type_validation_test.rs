@@ -166,6 +166,7 @@ fn test_1_2_string_int_comparison_rejected() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn test_1_2_string_double_comparison_rejected() {
     let left = Box::new(ConstantExpressionExecutor::new(
         AttributeValue::String("test".to_string()),
@@ -435,6 +436,7 @@ fn test_1_6_not_non_boolean_rejected() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn test_1_6_not_double_rejected() {
     let double_exec = Box::new(ConstantExpressionExecutor::new(
         AttributeValue::Double(3.14),
@@ -557,14 +559,13 @@ fn test_1_8_direct_aggregation_query_rejected() {
 
     let result = parse(sql);
     // Expected: Direct aggregation query should be rejected
-    if result.is_err() {
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("aggregation") || err.contains("Aggregation"),
-            "Error should mention aggregation: {}",
-            err
-        );
-    }
+    assert!(result.is_err(), "Expected invalid SQL to be rejected");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("aggregation") || err.contains("Aggregation"),
+        "Error should mention aggregation: {}",
+        err
+    );
 }
 
 // ============================================================================
@@ -633,14 +634,13 @@ fn test_1_10_every_aggregation_in_pattern_rejected() {
 
     let result = parse(sql);
     // Expected: Aggregation in pattern should be rejected
-    if result.is_err() {
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("aggregation") || err.contains("pattern"),
-            "Error should mention aggregation in pattern: {}",
-            err
-        );
-    }
+    assert!(result.is_err(), "Expected invalid SQL to be rejected");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("aggregation") || err.contains("pattern"),
+        "Error should mention aggregation in pattern: {}",
+        err
+    );
 }
 
 // ============================================================================
@@ -682,6 +682,7 @@ fn test_int_long_comparison_allowed() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn test_float_double_comparison_allowed() {
     let float_exec = Box::new(ConstantExpressionExecutor::new(
         AttributeValue::Float(3.14),

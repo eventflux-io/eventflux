@@ -429,7 +429,7 @@ mod tests {
     fn test_batch_processing() {
         let pipeline = PipelineBuilder::new().with_capacity(128).build().unwrap();
 
-        let events: Vec<_> = (0..10).map(|i| create_test_event(i)).collect();
+        let events: Vec<_> = (0..10).map(create_test_event).collect();
 
         let results = pipeline.publish_batch(events);
         assert_eq!(results.len(), 10);
@@ -484,7 +484,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut count = 0;
             let result = pipeline_for_consume.consume(move |event, _sequence| {
-                if let Some(AttributeValue::Int(value)) = event.before_window_data.get(0) {
+                if let Some(AttributeValue::Int(value)) = event.before_window_data.first() {
                     events_clone.lock().unwrap().push(*value);
                     count += 1;
 

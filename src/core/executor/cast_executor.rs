@@ -261,6 +261,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_double_to_string() {
         let inner = make_constant_executor(AttributeValue::Double(3.14));
         let cast = CastExecutor::new(inner, ApiAttributeType::STRING);
@@ -280,6 +281,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_float_to_double() {
         let inner = make_constant_executor(AttributeValue::Float(3.14_f32));
         let cast = CastExecutor::new(inner, ApiAttributeType::DOUBLE);

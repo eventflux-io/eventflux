@@ -347,6 +347,7 @@ impl SecretProvider for KubernetesSecretProvider {
 
 /// External secret provider interface for HashiCorp Vault, AWS Secrets Manager, etc.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExternalSecretProvider {
     /// Provider name
     name: String,

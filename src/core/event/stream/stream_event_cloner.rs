@@ -101,6 +101,7 @@ impl StreamEventCloner {
                 stream_event.output_data.as_ref(),
                 new_event.output_data.as_mut(),
             ) {
+                #[allow(clippy::needless_range_loop)]
                 for i in 0..self.output_data_size {
                     if let Some(v) = src.get(i) {
                         dest[i] = v.clone();

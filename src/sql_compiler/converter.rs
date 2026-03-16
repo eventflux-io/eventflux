@@ -20,10 +20,10 @@
 //! Converts SQL statements to EventFlux query_api::Query structures.
 
 use sqlparser::ast::{
-    AccessExpr, BinaryOperator, Expr as SqlExpr, JoinConstraint, JoinOperator,
-    OutputRateLimit, OutputRateLimitMode, OutputRateLimitUnit, PartitionKey, PatternExpression,
-    PatternLogicalOp, PatternMode, Select as SqlSelect, SetExpr, Statement, Subscript,
-    TableFactor, UnaryOperator, WithinConstraint,
+    AccessExpr, BinaryOperator, Expr as SqlExpr, JoinConstraint, JoinOperator, OutputRateLimit,
+    OutputRateLimitMode, OutputRateLimitUnit, PartitionKey, PatternExpression, PatternLogicalOp,
+    PatternMode, Select as SqlSelect, SetExpr, Statement, Subscript, TableFactor, UnaryOperator,
+    WithinConstraint,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -417,15 +417,18 @@ impl SqlConverter {
                     OutputRateLimitMode::Snapshot => {
                         OutputRateVariant::Snapshot(SnapshotOutputRate::new(millis))
                     }
-                    OutputRateLimitMode::All => {
-                        OutputRateVariant::Time(TimeOutputRate::new(millis), OutputRateBehavior::All)
-                    }
-                    OutputRateLimitMode::First => {
-                        OutputRateVariant::Time(TimeOutputRate::new(millis), OutputRateBehavior::First)
-                    }
-                    OutputRateLimitMode::Last => {
-                        OutputRateVariant::Time(TimeOutputRate::new(millis), OutputRateBehavior::Last)
-                    }
+                    OutputRateLimitMode::All => OutputRateVariant::Time(
+                        TimeOutputRate::new(millis),
+                        OutputRateBehavior::All,
+                    ),
+                    OutputRateLimitMode::First => OutputRateVariant::Time(
+                        TimeOutputRate::new(millis),
+                        OutputRateBehavior::First,
+                    ),
+                    OutputRateLimitMode::Last => OutputRateVariant::Time(
+                        TimeOutputRate::new(millis),
+                        OutputRateBehavior::Last,
+                    ),
                 }
             }
         };
@@ -456,7 +459,7 @@ impl SqlConverter {
             (join_input, String::new())
         } else {
             // Handle single relation in FROM
-            let first = select.from.get(0).ok_or_else(|| {
+            let first = select.from.first().ok_or_else(|| {
                 ConverterError::ConversionFailed("No FROM clause found".to_string())
             })?;
 
@@ -665,6 +668,7 @@ impl SqlConverter {
     }
 
     /// Extract stream name from FROM clause
+    #[allow(dead_code)]
     fn extract_from_stream(
         from: &[sqlparser::ast::TableWithJoins],
     ) -> Result<String, ConverterError> {
@@ -696,6 +700,7 @@ impl SqlConverter {
     }
 
     /// Extract window specification from TableFactor (native AST field)
+    #[allow(dead_code)]
     fn extract_window_from_table_factor(
         from: &[sqlparser::ast::TableWithJoins],
     ) -> Option<&sqlparser::ast::StreamingWindowSpec> {

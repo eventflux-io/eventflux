@@ -47,6 +47,7 @@ impl Query {
     }
 
     // Static factory method from Java
+    #[allow(clippy::self_named_constructors)]
     pub fn query() -> Self {
         Self::new()
     }
@@ -112,6 +113,22 @@ impl Query {
 
     pub fn get_output_rate(&self) -> Option<&OutputRate> {
         self.output_rate.as_ref()
+    }
+}
+
+impl Default for Query {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// EventFluxElement is composed, access via `self.eventflux_element.query_context_start_index` etc.
+// Or implement Deref/DerefMut if desired for direct access.
+
+// Implement ExecutionElementTrait for Query
+impl ExecutionElementTrait for Query {
+    fn get_annotations(&self) -> &Vec<Annotation> {
+        &self.annotations
     }
 }
 
@@ -227,21 +244,5 @@ mod tests {
             q3.output_stream.get_output_event_type(),
             Some(OutputEventType::CurrentEvents)
         );
-    }
-}
-
-impl Default for Query {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// EventFluxElement is composed, access via `self.eventflux_element.query_context_start_index` etc.
-// Or implement Deref/DerefMut if desired for direct access.
-
-// Implement ExecutionElementTrait for Query
-impl ExecutionElementTrait for Query {
-    fn get_annotations(&self) -> &Vec<Annotation> {
-        &self.annotations
     }
 }

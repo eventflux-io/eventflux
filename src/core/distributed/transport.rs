@@ -67,6 +67,7 @@ pub struct Connection {
 
 /// Internal connection handle
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum ConnectionHandle {
     Tcp(TcpStream),
     // Placeholder for gRPC - actual implementation in grpc module
@@ -206,6 +207,12 @@ impl Default for TcpTransportConfig {
             recv_buffer_size: Some(65536),
             max_message_size: 10 * 1024 * 1024, // 10MB
         }
+    }
+}
+
+impl Default for TcpTransport {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -657,8 +664,8 @@ mod tests {
     fn test_tcp_config_default() {
         let config = TcpTransportConfig::default();
         assert_eq!(config.connection_timeout_ms, 5000);
-        assert_eq!(config.keepalive_enabled, true);
-        assert_eq!(config.nodelay, true);
+        assert!(config.keepalive_enabled);
+        assert!(config.nodelay);
         assert_eq!(config.max_message_size, 10 * 1024 * 1024);
     }
 

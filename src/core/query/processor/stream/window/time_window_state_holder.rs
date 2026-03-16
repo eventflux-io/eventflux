@@ -108,6 +108,7 @@ impl TimeWindowStateHolder {
     }
 
     /// Update window start time
+    #[allow(dead_code)]
     pub fn update_window_start_time(&self, timestamp: i64) {
         *self.window_start_time.lock().unwrap() = Some(timestamp);
     }
@@ -158,6 +159,7 @@ impl TimeWindowStateHolder {
     }
 
     /// Clear the change log (called after successful checkpoint)
+    #[allow(dead_code)]
     pub fn clear_change_log(&self, checkpoint_id: CheckpointId) {
         let mut change_log = self.change_log.lock().unwrap();
         change_log.clear();
@@ -209,7 +211,7 @@ impl StateHolder for TimeWindowStateHolder {
         };
 
         // Serialize to bytes
-        let mut data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
+        let data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
             message: format!("Failed to serialize time window state: {e}"),
         })?;
 
@@ -443,7 +445,7 @@ mod tests {
             buf.push_back(Arc::new(event));
         }
 
-        let mut holder = TimeWindowStateHolder::new(buffer, "test_time_window".to_string(), 1000);
+        let holder = TimeWindowStateHolder::new(buffer, "test_time_window".to_string(), 1000);
 
         // Set window start time
         holder.update_window_start_time(900);
@@ -463,7 +465,7 @@ mod tests {
         assert_eq!(buffer.len(), 1); // Window events should be restored
 
         // Verify event data integrity
-        if let Some(event) = buffer.get(0) {
+        if let Some(event) = buffer.front() {
             assert_eq!(event.timestamp, 1000);
             assert_eq!(event.before_window_data.len(), 2);
         }

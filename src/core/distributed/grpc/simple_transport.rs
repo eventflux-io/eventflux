@@ -62,6 +62,12 @@ pub struct SimpleGrpcTransport {
     clients: Arc<RwLock<HashMap<String, super::transport_client::TransportClient<Channel>>>>,
 }
 
+impl Default for SimpleGrpcTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SimpleGrpcTransport {
     /// Create a new simple gRPC transport
     pub fn new() -> Self {
@@ -122,7 +128,7 @@ impl SimpleGrpcTransport {
             }
         })?;
 
-        let response_message = self.from_proto_message(&response.into_inner());
+        let response_message = self.decode_proto_message(&response.into_inner());
         Ok(response_message)
     }
 
@@ -188,12 +194,12 @@ impl SimpleGrpcTransport {
     }
 
     /// Convert protobuf message to local message
-    pub fn from_proto_message(&self, proto_msg: &TransportMessage) -> Message {
+    pub fn decode_proto_message(&self, proto_msg: &TransportMessage) -> Message {
         Message {
             id: proto_msg.id.clone(),
             payload: proto_msg.payload.clone(),
             headers: proto_msg.headers.clone(),
-            message_type: self.from_proto_message_type(proto_msg.message_type),
+            message_type: self.decode_proto_message_type(proto_msg.message_type),
         }
     }
 
@@ -213,7 +219,7 @@ impl SimpleGrpcTransport {
     }
 
     /// Convert protobuf message type to local message type
-    fn from_proto_message_type(
+    fn decode_proto_message_type(
         &self,
         proto_type: i32,
     ) -> crate::core::distributed::transport::MessageType {
@@ -232,13 +238,12 @@ impl SimpleGrpcTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::distributed::transport::MessageType;
 
     #[test]
     fn test_simple_grpc_transport_creation() {
         let transport = SimpleGrpcTransport::new();
         assert_eq!(transport.config.connection_timeout_ms, 10000);
-        assert_eq!(transport.config.enable_compression, true);
+        assert!(transport.config.enable_compression);
     }
 
     #[test]
@@ -249,7 +254,7 @@ mod tests {
             .with_header("source_node".to_string(), "node1".to_string());
 
         let proto_message = transport.to_proto_message(&original_message);
-        let converted_message = transport.from_proto_message(&proto_message);
+        let converted_message = transport.decode_proto_message(&proto_message);
 
         assert_eq!(original_message.id, converted_message.id);
         assert_eq!(original_message.payload, converted_message.payload);
@@ -263,7 +268,7 @@ mod tests {
     fn test_config_default() {
         let config = SimpleGrpcConfig::default();
         assert_eq!(config.connection_timeout_ms, 10000);
-        assert_eq!(config.enable_compression, true);
+        assert!(config.enable_compression);
         assert_eq!(config.server_address, "127.0.0.1:50051");
     }
 }

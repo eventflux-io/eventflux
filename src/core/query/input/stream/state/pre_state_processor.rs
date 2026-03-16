@@ -254,11 +254,12 @@ mod tests {
     use super::*;
     use crate::core::config::eventflux_app_context::EventFluxAppContext;
     use crate::core::config::eventflux_query_context::EventFluxQueryContext;
-    use crate::core::query::processor::{CommonProcessorMeta, ProcessingMode};
+
     use std::sync::{Arc, Mutex};
 
     // ===== Mock Implementation for Testing =====
 
+    #[allow(dead_code)]
     #[derive(Debug)]
     struct MockPreStateProcessor {
         app_context: Arc<EventFluxAppContext>,
@@ -511,7 +512,7 @@ mod tests {
 
     #[test]
     fn test_state_changed() {
-        let mut processor = MockPreStateProcessor::new(0, true);
+        let processor = MockPreStateProcessor::new(0, true);
         assert!(!processor.has_state_changed());
         processor.state_changed();
         assert!(processor.has_state_changed());

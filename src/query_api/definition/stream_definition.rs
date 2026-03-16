@@ -177,7 +177,7 @@ impl AsMut<EventFluxElement> for StreamDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_api::definition::attribute::{Attribute, Type as AttributeType};
+    use crate::query_api::definition::attribute::Type as AttributeType;
 
     #[test]
     fn test_stream_definition_creation_and_attributes() {

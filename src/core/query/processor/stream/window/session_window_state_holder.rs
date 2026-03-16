@@ -77,6 +77,7 @@ struct SerializableSessionState {
 
 /// Enhanced state holder for SessionWindowProcessor with StateHolder capabilities
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SessionWindowStateHolder {
     /// Reference to the session window's state
     state: Arc<Mutex<SessionWindowState>>,
@@ -101,6 +102,7 @@ pub struct SessionWindowStateHolder {
     total_events_processed: Arc<Mutex<u64>>,
 }
 
+#[allow(dead_code)]
 impl SessionWindowStateHolder {
     /// Create a new enhanced state holder
     pub fn new(
@@ -667,7 +669,7 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_empty_state() {
         let state = Arc::new(Mutex::new(SessionWindowState::new()));
-        let mut holder = SessionWindowStateHolder::new(
+        let holder = SessionWindowStateHolder::new(
             state.clone(),
             "test_session_window".to_string(),
             5000,
@@ -712,7 +714,7 @@ mod tests {
                 .insert("session1".to_string(), container);
         }
 
-        let mut holder = SessionWindowStateHolder::new(
+        let holder = SessionWindowStateHolder::new(
             state.clone(),
             "test_session_window".to_string(),
             5000,
@@ -936,8 +938,10 @@ mod tests {
         );
 
         // Serialize WITHOUT compression
-        let mut hints = SerializationHints::default();
-        hints.prefer_compression = Some(CompressionType::None); // Explicitly request no compression
+        let hints = SerializationHints {
+            prefer_compression: Some(CompressionType::None), // Explicitly request no compression
+            ..Default::default()
+        };
         let snapshot = holder.serialize_state(&hints).unwrap();
         assert_eq!(snapshot.compression, CompressionType::None);
     }
@@ -1001,7 +1005,7 @@ mod tests {
         }
 
         println!("Creating SessionWindowStateHolder");
-        let mut holder = SessionWindowStateHolder::new(
+        let holder = SessionWindowStateHolder::new(
             state.clone(),
             "test_session_window".to_string(),
             5000,
@@ -1010,8 +1014,10 @@ mod tests {
         println!("Created holder");
 
         // Test LZ4 compression
-        let mut hints = SerializationHints::default();
-        hints.prefer_compression = Some(CompressionType::LZ4);
+        let hints = SerializationHints {
+            prefer_compression: Some(CompressionType::LZ4),
+            ..Default::default()
+        };
         println!("Set compression hints");
 
         // Serialize with LZ4 compression
@@ -1072,7 +1078,7 @@ mod tests {
             }
         }
 
-        let mut holder = SessionWindowStateHolder::new(
+        let holder = SessionWindowStateHolder::new(
             state.clone(),
             "test_session_window".to_string(),
             5000,
@@ -1080,8 +1086,10 @@ mod tests {
         );
 
         // Test Snappy compression
-        let mut hints = SerializationHints::default();
-        hints.prefer_compression = Some(CompressionType::Snappy);
+        let hints = SerializationHints {
+            prefer_compression: Some(CompressionType::Snappy),
+            ..Default::default()
+        };
 
         // Serialize with Snappy compression
         let snapshot = holder.serialize_state(&hints).unwrap();
@@ -1143,7 +1151,7 @@ mod tests {
                 .insert("large_session".to_string(), container);
         }
 
-        let mut holder = SessionWindowStateHolder::new(
+        let holder = SessionWindowStateHolder::new(
             state.clone(),
             "test_session_window".to_string(),
             5000,
@@ -1151,8 +1159,10 @@ mod tests {
         );
 
         // Test Zstd compression
-        let mut hints = SerializationHints::default();
-        hints.prefer_compression = Some(CompressionType::Zstd);
+        let hints = SerializationHints {
+            prefer_compression: Some(CompressionType::Zstd),
+            ..Default::default()
+        };
 
         // Serialize with Zstd compression
         let snapshot = holder.serialize_state(&hints).unwrap();
@@ -1226,26 +1236,34 @@ mod tests {
         );
 
         // Test no compression (baseline)
-        let mut hints_none = SerializationHints::default();
-        hints_none.prefer_compression = Some(CompressionType::None);
+        let hints_none = SerializationHints {
+            prefer_compression: Some(CompressionType::None),
+            ..Default::default()
+        };
         let snapshot_none = holder.serialize_state(&hints_none).unwrap();
         let uncompressed_size = snapshot_none.data.len();
 
         // Test LZ4 compression
-        let mut hints_lz4 = SerializationHints::default();
-        hints_lz4.prefer_compression = Some(CompressionType::LZ4);
+        let hints_lz4 = SerializationHints {
+            prefer_compression: Some(CompressionType::LZ4),
+            ..Default::default()
+        };
         let snapshot_lz4 = holder.serialize_state(&hints_lz4).unwrap();
         let lz4_size = snapshot_lz4.data.len();
 
         // Test Snappy compression
-        let mut hints_snappy = SerializationHints::default();
-        hints_snappy.prefer_compression = Some(CompressionType::Snappy);
+        let hints_snappy = SerializationHints {
+            prefer_compression: Some(CompressionType::Snappy),
+            ..Default::default()
+        };
         let snapshot_snappy = holder.serialize_state(&hints_snappy).unwrap();
         let snappy_size = snapshot_snappy.data.len();
 
         // Test Zstd compression
-        let mut hints_zstd = SerializationHints::default();
-        hints_zstd.prefer_compression = Some(CompressionType::Zstd);
+        let hints_zstd = SerializationHints {
+            prefer_compression: Some(CompressionType::Zstd),
+            ..Default::default()
+        };
         let snapshot_zstd = holder.serialize_state(&hints_zstd).unwrap();
         let zstd_size = snapshot_zstd.data.len();
 

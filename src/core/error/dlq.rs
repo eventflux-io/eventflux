@@ -20,10 +20,12 @@
 //! This module provides DLQ configuration with fallback strategies for scenarios
 //! where the DLQ stream itself is unavailable or delivery fails.
 
+use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::core::config::{FlatConfig, PropertySource};
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::retry::RetryConfig;
 
@@ -51,9 +53,11 @@ pub enum DlqFallbackStrategy {
     Retry,
 }
 
-impl DlqFallbackStrategy {
+impl std::str::FromStr for DlqFallbackStrategy {
+    type Err = String;
+
     /// Parse fallback strategy from string (case-insensitive)
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "log" => Ok(DlqFallbackStrategy::Log),
             "fail" => Ok(DlqFallbackStrategy::Fail),
@@ -64,7 +68,9 @@ impl DlqFallbackStrategy {
             )),
         }
     }
+}
 
+impl DlqFallbackStrategy {
     /// Convert fallback strategy to string representation
     #[inline]
     pub const fn as_str(&self) -> &'static str {

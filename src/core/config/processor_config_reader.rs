@@ -158,12 +158,10 @@ impl ProcessorConfigReader {
     fn lookup_window_config(&self, window_type: &str, key: &str) -> Option<ConfigValue> {
         // First check application-specific window configuration
         if let Some(ref app_config) = self.app_config {
-            if let Some(definition_config) = app_config.definitions.get(window_type) {
-                if let crate::core::config::DefinitionConfig::Window(window_config) =
-                    definition_config
-                {
-                    return self.extract_config_value_from_yaml(&window_config.parameters, key);
-                }
+            if let Some(crate::core::config::DefinitionConfig::Window(window_config)) =
+                app_config.definitions.get(window_type)
+            {
+                return self.extract_config_value_from_yaml(&window_config.parameters, key);
             }
         }
 
@@ -205,13 +203,12 @@ impl ProcessorConfigReader {
     fn lookup_stream_config(&self, processor_type: &str, key: &str) -> Option<ConfigValue> {
         // First check application-specific stream configuration
         if let Some(ref app_config) = self.app_config {
-            if let Some(definition_config) = app_config.definitions.get(processor_type) {
-                if let crate::core::config::DefinitionConfig::Stream(_stream_config) =
-                    definition_config
-                {
-                    // For now, we'll implement simple stream config extraction later
-                    // TODO: Implement stream-specific configuration extraction
-                }
+            if let Some(crate::core::config::DefinitionConfig::Stream(_stream_config)) =
+                app_config.definitions.get(processor_type)
+            {
+                // TODO: Extract @source/@sink properties from the unified
+                // ApplicationConfig and map them to processor properties.
+                // Without this, YAML-based stream configuration is ignored at runtime.
             }
         }
 
@@ -259,6 +256,7 @@ impl ProcessorConfigReader {
     }
 
     /// Extract configuration value from parameter map
+    #[allow(dead_code)]
     fn extract_config_value(
         &self,
         parameters: &Option<std::collections::HashMap<String, String>>,
@@ -290,7 +288,7 @@ impl ProcessorConfigReader {
         key: &str,
     ) -> Option<ConfigValue> {
         if let serde_yaml::Value::Mapping(map) = yaml_value {
-            if let Some(value) = map.get(&serde_yaml::Value::String(key.to_string())) {
+            if let Some(value) = map.get(serde_yaml::Value::String(key.to_string())) {
                 match value {
                     serde_yaml::Value::Number(num) => {
                         if let Some(int_val) = num.as_i64() {
@@ -421,6 +419,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_config_value_conversions() {
         let int_val = ConfigValue::Integer(42);
         assert_eq!(int_val.as_integer(), Some(42));

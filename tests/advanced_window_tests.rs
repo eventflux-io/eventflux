@@ -43,28 +43,37 @@ async fn test_unique_window_basic() {
         SELECT symbol, price, volume\n\
         FROM StockStream WINDOW('unique', symbol);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // First event for AAPL
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(150.0),
-        AttributeValue::Long(1000),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(150.0),
+            AttributeValue::Long(1000),
+        ],
+    );
 
     // First event for GOOG
-    runner.send("StockStream", vec![
-        AttributeValue::String("GOOG".to_string()),
-        AttributeValue::Double(2800.0),
-        AttributeValue::Long(500),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("GOOG".to_string()),
+            AttributeValue::Double(2800.0),
+            AttributeValue::Long(500),
+        ],
+    );
 
     // Second event for AAPL - should replace the first
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(151.0),
-        AttributeValue::Long(2000),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(151.0),
+            AttributeValue::Long(2000),
+        ],
+    );
 
     let results = runner.shutdown();
 
@@ -82,24 +91,33 @@ async fn test_unique_window_replaces_old_event() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('unique', symbol);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Send AAPL at $150
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(150.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(150.0),
+        ],
+    );
 
     // Send AAPL again at $155 - should expire the $150 event
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(155.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(155.0),
+        ],
+    );
 
     let results = runner.shutdown();
 
     // We should have received events - the second AAPL should trigger an expired + current
-    assert!(!results.is_empty(), "Should have received at least one event");
+    assert!(
+        !results.is_empty(),
+        "Should have received at least one event"
+    );
 }
 
 #[tokio::test]
@@ -111,30 +129,46 @@ async fn test_unique_window_multiple_keys() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('unique', symbol);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Different symbols - all should be kept
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(150.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("GOOG".to_string()),
-        AttributeValue::Double(2800.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("MSFT".to_string()),
-        AttributeValue::Double(350.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("AMZN".to_string()),
-        AttributeValue::Double(3400.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(150.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("GOOG".to_string()),
+            AttributeValue::Double(2800.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("MSFT".to_string()),
+            AttributeValue::Double(350.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AMZN".to_string()),
+            AttributeValue::Double(3400.0),
+        ],
+    );
 
     let results = runner.shutdown();
 
     // All 4 unique symbols should result in 4 events
-    assert_eq!(results.len(), 4, "Should have 4 events for 4 unique symbols");
+    assert_eq!(
+        results.len(),
+        4,
+        "Should have 4 events for 4 unique symbols"
+    );
 }
 
 // ============================================================================
@@ -151,30 +185,43 @@ async fn test_first_unique_window_basic() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('firstUnique', symbol);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // First AAPL - should be kept
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(150.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(150.0),
+        ],
+    );
 
     // Second AAPL - should be ignored
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(155.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(155.0),
+        ],
+    );
 
     // First GOOG - should be kept
-    runner.send("StockStream", vec![
-        AttributeValue::String("GOOG".to_string()),
-        AttributeValue::Double(2800.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("GOOG".to_string()),
+            AttributeValue::Double(2800.0),
+        ],
+    );
 
     let results = runner.shutdown();
 
     // Only 2 events should pass: first AAPL and first GOOG
-    assert_eq!(results.len(), 2, "Only first occurrence per key should pass");
+    assert_eq!(
+        results.len(),
+        2,
+        "Only first occurrence per key should pass"
+    );
 }
 
 #[tokio::test]
@@ -186,20 +233,27 @@ async fn test_first_unique_window_ignores_duplicates() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('firstUnique', symbol);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Send same symbol multiple times
     for i in 0..10 {
-        runner.send("StockStream", vec![
-            AttributeValue::String("AAPL".to_string()),
-            AttributeValue::Double(150.0 + i as f64),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String("AAPL".to_string()),
+                AttributeValue::Double(150.0 + i as f64),
+            ],
+        );
     }
 
     let results = runner.shutdown();
 
     // Only the first event should pass
-    assert_eq!(results.len(), 1, "Only first occurrence should pass, duplicates ignored");
+    assert_eq!(
+        results.len(),
+        1,
+        "Only first occurrence should pass, duplicates ignored"
+    );
 }
 
 // ============================================================================
@@ -216,13 +270,16 @@ async fn test_delay_window_basic() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('delay', 100);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Send an event
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(150.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(150.0),
+        ],
+    );
 
     // Events are delayed, so immediate shutdown may not capture them
     // This test validates the window doesn't crash
@@ -242,12 +299,15 @@ async fn test_delay_window_with_wait() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('delay', 50);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(150.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(150.0),
+        ],
+    );
 
     // Allow some time for the delay
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -274,14 +334,17 @@ async fn test_expression_window_count_limit() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('expression', 'count() <= 3');\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Send 5 events
     for i in 0..5 {
-        runner.send("StockStream", vec![
-            AttributeValue::String(format!("SYM{}", i)),
-            AttributeValue::Double(100.0 + i as f64),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String(format!("SYM{}", i)),
+                AttributeValue::Double(100.0 + i as f64),
+            ],
+        );
     }
 
     let results = runner.shutdown();
@@ -301,13 +364,16 @@ async fn test_expression_window_count_limit_lt() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('expression', 'count() < 5');\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     for i in 0..6 {
-        runner.send("StockStream", vec![
-            AttributeValue::String(format!("SYM{}", i)),
-            AttributeValue::Double(100.0 + i as f64),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String(format!("SYM{}", i)),
+                AttributeValue::Double(100.0 + i as f64),
+            ],
+        );
     }
 
     let results = runner.shutdown();
@@ -330,29 +396,38 @@ async fn test_frequent_window_basic() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('frequent', 2);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // AAPL appears 3 times
     for _ in 0..3 {
-        runner.send("StockStream", vec![
-            AttributeValue::String("AAPL".to_string()),
-            AttributeValue::Double(150.0),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String("AAPL".to_string()),
+                AttributeValue::Double(150.0),
+            ],
+        );
     }
 
     // GOOG appears 2 times
     for _ in 0..2 {
-        runner.send("StockStream", vec![
-            AttributeValue::String("GOOG".to_string()),
-            AttributeValue::Double(2800.0),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String("GOOG".to_string()),
+                AttributeValue::Double(2800.0),
+            ],
+        );
     }
 
     // MSFT appears 1 time
-    runner.send("StockStream", vec![
-        AttributeValue::String("MSFT".to_string()),
-        AttributeValue::Double(350.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("MSFT".to_string()),
+            AttributeValue::Double(350.0),
+        ],
+    );
 
     let results = runner.shutdown();
 
@@ -370,15 +445,18 @@ async fn test_frequent_window_eviction() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('frequent', 1);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Alternate between symbols
     for i in 0..4 {
         let symbol = if i % 2 == 0 { "AAPL" } else { "GOOG" };
-        runner.send("StockStream", vec![
-            AttributeValue::String(symbol.to_string()),
-            AttributeValue::Double(100.0 + i as f64),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String(symbol.to_string()),
+                AttributeValue::Double(100.0 + i as f64),
+            ],
+        );
     }
 
     let results = runner.shutdown();
@@ -401,22 +479,28 @@ async fn test_lossy_frequent_window_basic() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('lossyFrequent', 0.3, 0.1);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Send 10 events, AAPL appears 5 times (50%)
     for _ in 0..5 {
-        runner.send("StockStream", vec![
-            AttributeValue::String("AAPL".to_string()),
-            AttributeValue::Double(150.0),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String("AAPL".to_string()),
+                AttributeValue::Double(150.0),
+            ],
+        );
     }
 
     // Other symbols appear once each
     for symbol in &["GOOG", "MSFT", "AMZN", "META", "TSLA"] {
-        runner.send("StockStream", vec![
-            AttributeValue::String(symbol.to_string()),
-            AttributeValue::Double(100.0),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String(symbol.to_string()),
+                AttributeValue::Double(100.0),
+            ],
+        );
     }
 
     let results = runner.shutdown();
@@ -435,14 +519,17 @@ async fn test_lossy_frequent_window_default_error() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('lossyFrequent', 0.2);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Send events
     for i in 0..10 {
-        runner.send("StockStream", vec![
-            AttributeValue::String(format!("SYM{}", i % 3)),
-            AttributeValue::Double(100.0 + i as f64),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String(format!("SYM{}", i % 3)),
+                AttributeValue::Double(100.0 + i as f64),
+            ],
+        );
     }
 
     let results = runner.shutdown();
@@ -494,13 +581,16 @@ async fn test_frequent_window_single_item() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('frequent', 5);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Single event
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(150.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(150.0),
+        ],
+    );
 
     let results = runner.shutdown();
 
@@ -517,19 +607,26 @@ async fn test_expression_window_all_events_within_limit() {
         SELECT symbol, price\n\
         FROM StockStream WINDOW('expression', 'count() <= 10');\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     for i in 0..5 {
-        runner.send("StockStream", vec![
-            AttributeValue::String(format!("SYM{}", i)),
-            AttributeValue::Double(100.0),
-        ]);
+        runner.send(
+            "StockStream",
+            vec![
+                AttributeValue::String(format!("SYM{}", i)),
+                AttributeValue::Double(100.0),
+            ],
+        );
     }
 
     let results = runner.shutdown();
 
     // All 5 events should pass since count <= 10
-    assert_eq!(results.len(), 5, "All events should pass within expression limit");
+    assert_eq!(
+        results.len(),
+        5,
+        "All events should pass within expression limit"
+    );
 }
 
 // ============================================================================
@@ -545,20 +642,29 @@ async fn test_unique_window_with_aggregation() {
         SELECT sum(price) as totalPrice\n\
         FROM StockStream WINDOW('unique', symbol);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(100.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("GOOG".to_string()),
-        AttributeValue::Double(200.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(150.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(100.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("GOOG".to_string()),
+            AttributeValue::Double(200.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(150.0),
+        ],
+    );
 
     let results = runner.shutdown();
 
@@ -575,29 +681,44 @@ async fn test_first_unique_window_with_count() {
         SELECT count() as cnt\n\
         FROM StockStream WINDOW('firstUnique', symbol);\n";
 
-    let mut runner = AppRunner::new(app, "OutStream").await;
+    let runner = AppRunner::new(app, "OutStream").await;
 
     // Send 3 unique and 2 duplicate
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()),
-        AttributeValue::Double(100.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("GOOG".to_string()),
-        AttributeValue::Double(200.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("AAPL".to_string()), // duplicate
-        AttributeValue::Double(150.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("MSFT".to_string()),
-        AttributeValue::Double(300.0),
-    ]);
-    runner.send("StockStream", vec![
-        AttributeValue::String("GOOG".to_string()), // duplicate
-        AttributeValue::Double(250.0),
-    ]);
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()),
+            AttributeValue::Double(100.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("GOOG".to_string()),
+            AttributeValue::Double(200.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("AAPL".to_string()), // duplicate
+            AttributeValue::Double(150.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("MSFT".to_string()),
+            AttributeValue::Double(300.0),
+        ],
+    );
+    runner.send(
+        "StockStream",
+        vec![
+            AttributeValue::String("GOOG".to_string()), // duplicate
+            AttributeValue::Double(250.0),
+        ],
+    );
 
     let results = runner.shutdown();
 

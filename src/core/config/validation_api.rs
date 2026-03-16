@@ -561,7 +561,7 @@ impl ConfigurationValidator {
         self.rules.push(rule);
 
         // Sort rules by priority (highest first)
-        self.rules.sort_by(|a, b| b.priority().cmp(&a.priority()));
+        self.rules.sort_by_key(|b| std::cmp::Reverse(b.priority()));
     }
 
     /// Add multiple validation rules
@@ -917,14 +917,13 @@ impl ValidationRule for SecurityValidationRule {
         if matches!(
             config.eventflux.runtime.mode,
             crate::core::config::types::RuntimeMode::Distributed
-        ) {
-            if config.eventflux.security.is_none() {
-                report.add_error(ValidationError::new(
+        ) && config.eventflux.security.is_none()
+        {
+            report.add_error(ValidationError::new(
                     "MISSING_SECURITY_CONFIG".to_string(),
                     "Security configuration is required in distributed mode".to_string(),
                     "eventflux.security".to_string(),
                 ).with_suggestion("Add security configuration with appropriate authentication and authorization settings".to_string()));
-            }
         }
 
         // Check for monitoring configuration in production
@@ -1126,7 +1125,7 @@ mod tests {
         rule.validate(&config, &mut report).await.unwrap();
 
         assert!(report.is_valid); // Warnings don't invalidate
-        assert!(report.warnings.len() >= 1); // Should have warnings
+        assert!(!report.warnings.is_empty()); // Should have warnings
     }
 
     #[tokio::test]
@@ -1160,9 +1159,10 @@ mod tests {
         let report = validator.validate(&config).await.unwrap();
 
         assert!(!report.is_valid);
-        assert!(report.errors.len() > 0);
+        assert!(!report.errors.is_empty());
         // Validation duration should be set (could be 0 for very fast validation)
-        assert!(report.validation_duration.as_nanos() >= 0);
+        // validation_duration is always >= 0 for Duration
+        let _ = report.validation_duration;
         assert!(!report.summary().contains("✅"));
     }
 

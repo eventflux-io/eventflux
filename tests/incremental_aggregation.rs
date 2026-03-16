@@ -81,7 +81,7 @@ fn test_incremental_executor_basic() {
     );
     let exec = parse_expression(&expr, &ctx).unwrap();
     let table = Arc::new(InMemoryTable::new());
-    let mut inc = IncrementalExecutor::new(
+    let inc = IncrementalExecutor::new(
         TimeDuration::Seconds,
         vec![exec],
         Box::new(|_| "key".to_string()),

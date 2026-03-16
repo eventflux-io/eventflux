@@ -567,7 +567,6 @@ impl ProcessorChain {
         use crate::core::event::state::meta_state_event::MetaStateEvent;
         use crate::core::event::state::state_event_cloner::StateEventCloner;
         use crate::core::event::state::state_event_factory::StateEventFactory;
-        use crate::core::event::stream::meta_stream_event::MetaStreamEvent;
         use crate::core::event::stream::stream_event_cloner::StreamEventCloner;
         use crate::core::event::stream::stream_event_factory::StreamEventFactory;
 
@@ -581,7 +580,6 @@ impl ProcessorChain {
                 stream_defs[0].clone() // Fallback to first def
             };
 
-            let meta_stream = MetaStreamEvent::new_for_single_input(stream_def.clone());
             // Use attribute count from stream definition for before_window_data size
             // (new_for_single_input puts attrs in output_data but we need before_window_data)
             let attr_count = stream_def.abstract_definition.attribute_list.len();

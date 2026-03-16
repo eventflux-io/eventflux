@@ -148,12 +148,10 @@ impl SourceErrorContext {
     ) -> ErrorAction {
         let action = self.handler.handle_error(event, error);
 
-        match &action {
-            ErrorAction::Retry { delay } => {
-                // Sleep for retry delay
-                thread::sleep(*delay);
-            }
-            _ => {}
+        if let ErrorAction::Retry { delay } = &action {
+            // Note: This runs on blocking source threads (spawn_blocking), not the async executor.
+            // thread::sleep is intentional here — sources are synchronous.
+            thread::sleep(*delay);
         }
 
         action

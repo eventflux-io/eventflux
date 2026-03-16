@@ -157,7 +157,7 @@ impl LogicalPostStateProcessor {
                     // Partner not matched yet, just mark state changed
                     // Don't forward yet - waiting for both sides
                     if let Some(this_pre) = self.base_processor.this_state_pre_processor.as_ref() {
-                        if let Ok(mut guard) = this_pre.lock() {
+                        if let Ok(guard) = this_pre.lock() {
                             guard.state_changed();
                         }
                     }

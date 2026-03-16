@@ -73,11 +73,9 @@ impl ExpressionExecutor for IncrementalShouldUpdateFunctionExecutor {
 mod tests {
     use super::*;
     use crate::core::event::stream::stream_event::StreamEvent;
-    use crate::core::executor::constant_expression_executor::ConstantExpressionExecutor;
+
     use crate::core::executor::variable_expression_executor::VariableExpressionExecutor;
-    use crate::core::util::eventflux_constants::{
-        BEFORE_WINDOW_DATA_INDEX, STREAM_ATTRIBUTE_INDEX_IN_TYPE, STREAM_ATTRIBUTE_TYPE_INDEX,
-    };
+    use crate::core::util::eventflux_constants::BEFORE_WINDOW_DATA_INDEX;
 
     #[test]
     fn test_should_update() {

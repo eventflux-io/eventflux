@@ -28,11 +28,13 @@ use eventflux::core::stream::output::stream_callback::StreamCallback;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct CollectCallback {
     events: Arc<Mutex<Vec<Vec<AttributeValue>>>>,
 }
 
+#[allow(dead_code)]
 impl StreamCallback for CollectCallback {
     fn receive_events(&self, events: &[Event]) {
         let mut vec = self.events.lock().unwrap();
@@ -42,6 +44,7 @@ impl StreamCallback for CollectCallback {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct AppRunner {
     runtime: Arc<EventFluxAppRuntime>,
@@ -49,6 +52,7 @@ pub struct AppRunner {
     _manager: EventFluxManager,
 }
 
+#[allow(dead_code)]
 impl AppRunner {
     // ============================================================================
     // TIER 1: Basic Constructors (No Configuration)

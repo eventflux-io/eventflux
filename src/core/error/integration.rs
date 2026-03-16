@@ -53,6 +53,7 @@ use std::sync::{Arc, Mutex};
 ///
 /// This provides utilities for M7 to extract error configuration from stream
 /// properties and lookup DLQ stream junctions.
+#[allow(clippy::type_complexity)]
 pub struct ErrorIntegrationHelper {
     /// Lookup function for DLQ stream junctions
     dlq_lookup: Box<dyn Fn(&str) -> Option<Arc<Mutex<InputHandler>>> + Send + Sync>,
@@ -117,10 +118,15 @@ impl ErrorIntegrationHelper {
             return Ok(None);
         }
 
-        // Extract error configuration
-        let error_config = error_config_builder.build()?.ok_or_else(|| {
+        // TODO: Wire error_config into SourceErrorContext for runtime error handling
+        let _error_config = error_config_builder.build()?.ok_or_else(|| {
             "Error handling configured but failed to build ErrorConfig".to_string()
         })?;
+        log::error!(
+            "[{}] Error handling configuration parsed but not yet wired into runtime. \
+             Configured error strategy will NOT be applied — defaults will be used.",
+            stream_name
+        );
 
         // Lookup DLQ junction if needed
         let dlq_junction = if let Some(dlq_stream) = properties.get("error.dlq.stream") {

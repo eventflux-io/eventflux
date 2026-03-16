@@ -22,6 +22,7 @@ pub mod count_state_element;
 pub mod every_state_element;
 pub mod logical_state_element;
 pub mod next_state_element;
+#[allow(clippy::module_inception)]
 pub mod state; // This is the factory class with static methods
 pub mod state_element; // Interface, will be an enum or trait
 pub mod stream_state_element;

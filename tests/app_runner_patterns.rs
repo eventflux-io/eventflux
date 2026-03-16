@@ -153,8 +153,7 @@ async fn kleene_star_pattern_rejected() {
 
 #[tokio::test]
 async fn sequence_with_timeout() {
-    let mut app =
-        eventflux::query_api::eventflux_app::EventFluxApp::new("Timeout".to_string());
+    let mut app = eventflux::query_api::eventflux_app::EventFluxApp::new("Timeout".to_string());
     let a_def = StreamDefinition::new("A".to_string()).attribute("val".to_string(), AttrType::INT);
     let b_def = StreamDefinition::new("B".to_string()).attribute("val".to_string(), AttrType::INT);
     let out_def = StreamDefinition::new("Out".to_string())
@@ -292,8 +291,7 @@ async fn pattern_alias_two_streams() {
     use eventflux::query_api::execution::query::Query;
     use eventflux::query_api::execution::ExecutionElement;
 
-    let mut app =
-        eventflux::query_api::eventflux_app::EventFluxApp::new("AliasTest".to_string());
+    let mut app = eventflux::query_api::eventflux_app::EventFluxApp::new("AliasTest".to_string());
     let a_def = StreamDefinition::new("StreamA".to_string())
         .attribute("price".to_string(), AttrType::DOUBLE)
         .attribute("symbol".to_string(), AttrType::STRING);

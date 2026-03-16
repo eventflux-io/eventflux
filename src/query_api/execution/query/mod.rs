@@ -20,6 +20,7 @@
 // Existing modules
 pub mod input;
 pub mod on_demand_query;
+#[allow(clippy::module_inception)]
 pub mod query;
 pub mod selection;
 pub mod store_query;

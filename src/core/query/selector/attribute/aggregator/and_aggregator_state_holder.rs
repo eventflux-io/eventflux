@@ -196,7 +196,9 @@ impl StateHolder for AndAggregatorStateHolder {
     fn reset_state(&self) {
         *self.true_count.lock().unwrap() = 0;
         *self.false_count.lock().unwrap() = 0;
-        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+        self.base
+            .restored
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
