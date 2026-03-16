@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#[allow(clippy::module_inception)]
 pub mod partition;
 pub mod partition_type;
 pub mod range_partition_type;

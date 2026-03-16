@@ -23,9 +23,7 @@
 //! state management. Tests include connection pooling, state operations,
 //! checkpoint/restore functionality, and error handling.
 
-use eventflux::core::distributed::{
-    DistributedError, RedisBackend, RedisConfig, StateBackend,
-};
+use eventflux::core::distributed::{DistributedError, RedisBackend, RedisConfig, StateBackend};
 use std::time::Duration;
 use uuid::Uuid;
 

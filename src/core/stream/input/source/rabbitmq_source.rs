@@ -111,6 +111,7 @@ impl RabbitMQSourceConfig {
     }
 
     /// Parse configuration from properties HashMap
+    #[allow(clippy::field_reassign_with_default)]
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
 
@@ -915,7 +916,7 @@ impl SourceFactory for RabbitMQSourceFactory {
             .unwrap_or_else(|| "rabbitmq-source".to_string());
 
         let source = RabbitMQSource::from_properties(config, None, &queue_name)
-            .map_err(|e| EventFluxError::configuration(e))?;
+            .map_err(EventFluxError::configuration)?;
 
         Ok(Box::new(source))
     }

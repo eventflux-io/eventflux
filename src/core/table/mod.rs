@@ -379,9 +379,8 @@ pub trait Table: Debug + Send + Sync {
                 for i in 0..stream_attr_count {
                     joined.before_window_data[i] = stream_event.before_window_data[i].clone();
                 }
-                for j in 0..row.len() {
-                    joined.before_window_data[stream_attr_count + j] = row[j].clone();
-                }
+                joined.before_window_data[stream_attr_count..(row.len() + stream_attr_count)]
+                    .clone_from_slice(&row[..]);
                 if let Some(AttributeValue::Bool(true)) = exec.execute(Some(&joined)) {
                     matched.push(row);
                 }
@@ -537,7 +536,7 @@ pub trait Table: Debug + Send + Sync {
         &self,
         stream_event: &StreamEvent,
         condition_executor: &dyn ExpressionExecutor,
-        set_column_indices: &[usize],
+        _set_column_indices: &[usize],
         set_value_executors: &[Box<dyn ExpressionExecutor>],
     ) -> Result<usize, crate::core::exception::EventFluxError> {
         // Fallback: If no SET executors (simple case), delegate to update_with_expression
@@ -550,13 +549,15 @@ pub trait Table: Debug + Send + Sync {
 
         // Dynamic SET expressions require table-specific atomic implementation
         // to prevent data loss from non-atomic delete-then-insert patterns
-        Err(crate::core::exception::EventFluxError::OperationNotSupported {
-            message: "UPDATE with SET expressions referencing table columns requires \
+        Err(
+            crate::core::exception::EventFluxError::OperationNotSupported {
+                message: "UPDATE with SET expressions referencing table columns requires \
                      table-specific implementation. Override update_with_set_executors() \
                      in your Table implementation. See InMemoryTable for reference."
-                .to_string(),
-            operation: Some("update_with_set_executors".to_string()),
-        })
+                    .to_string(),
+                operation: Some("update_with_set_executors".to_string()),
+            },
+        )
     }
 
     /// Delete rows matching a condition expression when evaluated against stream event + table row.
@@ -655,7 +656,7 @@ pub trait Table: Debug + Send + Sync {
         &self,
         stream_event: &StreamEvent,
         condition_executor: &dyn ExpressionExecutor,
-        set_column_indices: &[usize],
+        _set_column_indices: &[usize],
         set_value_executors: &[Box<dyn ExpressionExecutor>],
     ) -> Result<(usize, usize), crate::core::exception::EventFluxError> {
         // Fallback: If no SET executors (simple UPSERT), try find-then-update/insert pattern
@@ -673,11 +674,8 @@ pub trait Table: Debug + Send + Sync {
             }
 
             // Find matching rows using the condition
-            let matched = find_matching_rows_for_mutation(
-                self.all_rows()?,
-                stream_event,
-                condition_executor,
-            );
+            let matched =
+                find_matching_rows_for_mutation(self.all_rows()?, stream_event, condition_executor);
 
             if matched.is_empty() {
                 // No match - insert
@@ -688,9 +686,7 @@ pub trait Table: Debug + Send + Sync {
                 let cond = InMemoryCompiledCondition {
                     values: matched[0].clone(),
                 };
-                let us = InMemoryCompiledUpdateSet {
-                    values: new_values,
-                };
+                let us = InMemoryCompiledUpdateSet { values: new_values };
                 if self.update(&cond, &us)? {
                     return Ok((1, 0));
                 }
@@ -699,13 +695,15 @@ pub trait Table: Debug + Send + Sync {
         }
 
         // Dynamic SET expressions require table-specific atomic implementation
-        Err(crate::core::exception::EventFluxError::OperationNotSupported {
-            message: "UPSERT with SET expressions referencing table columns requires \
+        Err(
+            crate::core::exception::EventFluxError::OperationNotSupported {
+                message: "UPSERT with SET expressions referencing table columns requires \
                      table-specific implementation. Override upsert_with_set_executors() \
                      in your Table implementation. See InMemoryTable for reference."
-                .to_string(),
-            operation: Some("upsert_with_set_executors".to_string()),
-        })
+                    .to_string(),
+                operation: Some("upsert_with_set_executors".to_string()),
+            },
+        )
     }
 
     /// Clone helper for boxed trait objects.
@@ -922,7 +920,7 @@ impl Table for InMemoryTable {
 
         // Update index: add this row's index to the key's index list
         let mut index = self.index.write().unwrap();
-        index.entry(key).or_insert_with(Vec::new).push(new_index);
+        index.entry(key).or_default().push(new_index);
         Ok(())
     }
 
@@ -976,10 +974,7 @@ impl Table for InMemoryTable {
 
         // Update index: remove old key entries, add new key entries
         index.remove(&old_key);
-        index
-            .entry(new_key)
-            .or_insert_with(Vec::new)
-            .extend(indices_to_update);
+        index.entry(new_key).or_default().extend(indices_to_update);
 
         Ok(true)
     }
@@ -1017,7 +1012,7 @@ impl Table for InMemoryTable {
         index.clear();
         for (idx, row) in rows.iter().enumerate() {
             let row_key = Self::row_to_key(row);
-            index.entry(row_key).or_insert_with(Vec::new).push(idx);
+            index.entry(row_key).or_default().push(idx);
         }
 
         Ok(true)
@@ -1081,9 +1076,8 @@ impl Table for InMemoryTable {
                 for i in 0..stream_attr_count {
                     joined.before_window_data[i] = stream_event.before_window_data[i].clone();
                 }
-                for j in 0..row.len() {
-                    joined.before_window_data[stream_attr_count + j] = row[j].clone();
-                }
+                joined.before_window_data[stream_attr_count..(row.len() + stream_attr_count)]
+                    .clone_from_slice(&row[..]);
                 if let Some(AttributeValue::Bool(true)) = exec.execute(Some(&joined)) {
                     matched.push(row.clone());
                 }
@@ -1307,15 +1301,17 @@ impl Table for InMemoryTable {
                 let skipped = updates.len();
                 self.concurrent_modification_skips
                     .fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed);
-                return Err(crate::core::exception::EventFluxError::QueryableRecordTable {
-                    message: format!(
-                        "Concurrent modification limit exceeded after {} retries. \
+                return Err(
+                    crate::core::exception::EventFluxError::QueryableRecordTable {
+                        message: format!(
+                            "Concurrent modification limit exceeded after {} retries. \
                          {} updates could not be applied due to table contention. \
                          Consider routing to fault stream or implementing backoff retry.",
-                        MAX_CONCURRENT_MODIFICATION_RETRIES, skipped
-                    ),
-                    table_name: None,
-                });
+                            MAX_CONCURRENT_MODIFICATION_RETRIES, skipped
+                        ),
+                        table_name: None,
+                    },
+                );
             }
 
             // Step 2: Apply all updates (all rows verified)
@@ -1332,7 +1328,7 @@ impl Table for InMemoryTable {
                             index.remove(&old_key);
                         }
                     }
-                    index.entry(new_key).or_insert_with(Vec::new).push(idx);
+                    index.entry(new_key).or_default().push(idx);
                 }
             }
 
@@ -1527,15 +1523,17 @@ impl Table for InMemoryTable {
                 let skipped = updates.len();
                 self.concurrent_modification_skips
                     .fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed);
-                return Err(crate::core::exception::EventFluxError::QueryableRecordTable {
-                    message: format!(
-                        "Concurrent modification limit exceeded after {} retries. \
+                return Err(
+                    crate::core::exception::EventFluxError::QueryableRecordTable {
+                        message: format!(
+                            "Concurrent modification limit exceeded after {} retries. \
                          {} upsert updates could not be applied due to table contention. \
                          Consider routing to fault stream or implementing backoff retry.",
-                        MAX_CONCURRENT_MODIFICATION_RETRIES, skipped
-                    ),
-                    table_name: None,
-                });
+                            MAX_CONCURRENT_MODIFICATION_RETRIES, skipped
+                        ),
+                        table_name: None,
+                    },
+                );
             }
 
             // Step 2: Apply all updates (all rows verified)
@@ -1551,7 +1549,7 @@ impl Table for InMemoryTable {
                             index.remove(&old_key);
                         }
                     }
-                    index.entry(new_key).or_insert_with(Vec::new).push(idx);
+                    index.entry(new_key).or_default().push(idx);
                 }
             }
 
@@ -1617,7 +1615,7 @@ impl Table for InMemoryTable {
                                 index.remove(&old_key);
                             }
                         }
-                        index.entry(new_key).or_insert_with(Vec::new).push(idx);
+                        index.entry(new_key).or_default().push(idx);
                     }
                     Ok((1, 0)) // Updated, not inserted
                 } else {
@@ -1625,7 +1623,7 @@ impl Table for InMemoryTable {
                     let key = Self::row_to_key(&new_values);
                     let new_index = rows.len();
                     rows.push(new_values);
-                    index.entry(key).or_insert_with(Vec::new).push(new_index);
+                    index.entry(key).or_default().push(new_index);
                     Ok((0, 1))
                 }
             } else {
@@ -1734,15 +1732,17 @@ impl Table for InMemoryTable {
                 let skipped = matched_rows.len();
                 self.concurrent_modification_skips
                     .fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed);
-                return Err(crate::core::exception::EventFluxError::QueryableRecordTable {
-                    message: format!(
-                        "Concurrent modification limit exceeded after {} retries. \
+                return Err(
+                    crate::core::exception::EventFluxError::QueryableRecordTable {
+                        message: format!(
+                            "Concurrent modification limit exceeded after {} retries. \
                          {} deletes could not be applied due to table contention. \
                          Consider routing to fault stream or implementing backoff retry.",
-                        MAX_CONCURRENT_MODIFICATION_RETRIES, skipped
-                    ),
-                    table_name: None,
-                });
+                            MAX_CONCURRENT_MODIFICATION_RETRIES, skipped
+                        ),
+                        table_name: None,
+                    },
+                );
             }
 
             // Step 2: Delete rows using swap_remove for O(1) per deletion
@@ -1917,15 +1917,17 @@ impl Table for InMemoryTable {
                 let skipped = updates.len();
                 self.concurrent_modification_skips
                     .fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed);
-                return Err(crate::core::exception::EventFluxError::QueryableRecordTable {
-                    message: format!(
-                        "Concurrent modification limit exceeded after {} retries. \
+                return Err(
+                    crate::core::exception::EventFluxError::QueryableRecordTable {
+                        message: format!(
+                            "Concurrent modification limit exceeded after {} retries. \
                          {} updates could not be applied due to table contention. \
                          Consider routing to fault stream or implementing backoff retry.",
-                        MAX_CONCURRENT_MODIFICATION_RETRIES, skipped
-                    ),
-                    table_name: None,
-                });
+                            MAX_CONCURRENT_MODIFICATION_RETRIES, skipped
+                        ),
+                        table_name: None,
+                    },
+                );
             }
 
             // Step 2: Apply all updates (all rows verified)
@@ -1942,7 +1944,7 @@ impl Table for InMemoryTable {
                             index.remove(&old_key);
                         }
                     }
-                    index.entry(new_key).or_insert_with(Vec::new).push(idx);
+                    index.entry(new_key).or_default().push(idx);
                 }
             }
 

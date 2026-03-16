@@ -75,6 +75,7 @@ impl LengthWindowStateHolder {
     }
 
     /// Record an event addition for incremental checkpointing
+    #[allow(dead_code)]
     pub fn record_event_added(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
         let event_data = self.serialize_event(event);
@@ -89,6 +90,7 @@ impl LengthWindowStateHolder {
     }
 
     /// Record an event removal for incremental checkpointing
+    #[allow(dead_code)]
     pub fn record_event_removed(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
         let event_data = self.serialize_event(event);
@@ -100,6 +102,7 @@ impl LengthWindowStateHolder {
     }
 
     /// Generate a unique key for an event
+    #[allow(dead_code)]
     fn generate_event_key(&self, event: &StreamEvent) -> Vec<u8> {
         // Use timestamp and a hash of the event data as key
         let mut key = Vec::new();
@@ -113,6 +116,7 @@ impl LengthWindowStateHolder {
     }
 
     /// Simple hash function for event data
+    #[allow(dead_code)]
     fn hash_event_data(&self, data: &[crate::core::event::value::AttributeValue]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -171,6 +175,7 @@ impl LengthWindowStateHolder {
     }
 
     /// Clear the change log (called after successful checkpoint)
+    #[allow(dead_code)]
     pub fn clear_change_log(&self, checkpoint_id: CheckpointId) {
         let mut change_log = self.change_log.lock().unwrap();
         change_log.clear();
@@ -420,7 +425,7 @@ mod tests {
             buf.push_back(Arc::new(event));
         }
 
-        let mut holder = LengthWindowStateHolder::new(buffer, "test_length_window".to_string(), 10);
+        let holder = LengthWindowStateHolder::new(buffer, "test_length_window".to_string(), 10);
 
         let hints = SerializationHints::default();
 

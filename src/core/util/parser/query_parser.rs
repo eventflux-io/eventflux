@@ -1040,7 +1040,7 @@ impl QueryParser {
                                 let pre = chain.pre_processors[idx].clone();
                                 stream_to_processors
                                     .entry(elem.stream_id.clone())
-                                    .or_insert_with(Vec::new)
+                                    .or_default()
                                     .push(pre);
                             }
                         }
@@ -1153,7 +1153,7 @@ impl QueryParser {
                                     event.before_window_data[self.first_len + j] = val;
                                 }
                                 if let Some(ref next) = self.next_processor {
-                                    if let Ok(mut proc) = next.lock() {
+                                    if let Ok(proc) = next.lock() {
                                         proc.process(Some(Box::new(event)));
                                     }
                                 }

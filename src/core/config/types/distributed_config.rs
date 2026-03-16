@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 /// Distributed processing configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct DistributedConfig {
     /// Node configuration
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -47,19 +47,6 @@ pub struct DistributedConfig {
     /// Message broker configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_broker: Option<MessageBrokerConfig>,
-}
-
-impl Default for DistributedConfig {
-    fn default() -> Self {
-        Self {
-            node: None,
-            cluster: None,
-            transport: TransportConfig::default(),
-            state_backend: StateBackendConfig::default(),
-            coordination: CoordinationConfig::default(),
-            message_broker: None,
-        }
-    }
 }
 
 impl DistributedConfig {

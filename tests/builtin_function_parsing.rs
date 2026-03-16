@@ -43,7 +43,7 @@ fn make_query_ctx(name: &str) -> Arc<EventFluxQueryContext> {
     ))
 }
 
-fn empty_ctx(query: &str) -> ExpressionParserContext {
+fn empty_ctx(query: &str) -> ExpressionParserContext<'_> {
     ExpressionParserContext {
         eventflux_app_context: make_app_ctx(),
         eventflux_query_context: make_query_ctx(query),

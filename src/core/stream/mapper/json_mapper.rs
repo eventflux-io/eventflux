@@ -138,7 +138,7 @@ impl JsonSourceMapper {
         // Preserve JSON key order (serde_json maintains insertion order)
         // This allows the JSON input to match schema field order
         let mut event_data = Vec::new();
-        for (key, value) in obj.iter() {
+        for (_key, value) in obj.iter() {
             event_data.push(json_value_to_attribute(value, self.date_format.as_deref())?);
         }
 
@@ -425,8 +425,8 @@ pub fn convert_java_date_format(java_format: &str) -> String {
                     chars.next();
                     count += 1;
                 }
-                // HH → %H (24-hour, 00-23)
-                result.push_str("%H");
+                // HH → %H (24-hour with zero-pad), H → %-H (without)
+                result.push_str(if count >= 2 { "%H" } else { "%-H" });
             }
             'h' => {
                 // Count consecutive h's
@@ -435,8 +435,8 @@ pub fn convert_java_date_format(java_format: &str) -> String {
                     chars.next();
                     count += 1;
                 }
-                // hh → %I (12-hour, 01-12)
-                result.push_str("%I");
+                // hh → %I (12-hour with zero-pad), h → %-I (without)
+                result.push_str(if count >= 2 { "%I" } else { "%-I" });
             }
             'm' => {
                 // Count consecutive m's
@@ -445,8 +445,8 @@ pub fn convert_java_date_format(java_format: &str) -> String {
                     chars.next();
                     count += 1;
                 }
-                // mm → %M (minute, 00-59)
-                result.push_str("%M");
+                // mm → %M (minute with zero-pad), m → %-M (without)
+                result.push_str(if count >= 2 { "%M" } else { "%-M" });
             }
             's' => {
                 // Count consecutive s's
@@ -455,8 +455,8 @@ pub fn convert_java_date_format(java_format: &str) -> String {
                     chars.next();
                     count += 1;
                 }
-                // ss → %S (second, 00-59)
-                result.push_str("%S");
+                // ss → %S (second with zero-pad), s → %-S (without)
+                result.push_str(if count >= 2 { "%S" } else { "%-S" });
             }
             'S' => {
                 // Count consecutive S's for milliseconds
@@ -501,6 +501,7 @@ pub fn convert_java_date_format(java_format: &str) -> String {
 /// - `$.nested.field` - Nested field
 /// - `$.array[0]` - Array element
 /// - `$.nested.array[0].field` - Complex path
+///
 /// Extract value from JSON using JSONPath
 ///
 /// # Parameters
@@ -1007,6 +1008,16 @@ mod tests {
         // Java: M/d/yyyy
         // Chrono: %-m/%-d/%Y
         assert_eq!(convert_java_date_format("M/d/yyyy"), "%-m/%-d/%Y");
+    }
+
+    #[test]
+    fn test_convert_java_date_format_single_vs_double_time() {
+        // Single-char specifiers omit leading zero (Java SimpleDateFormat behavior)
+        assert_eq!(convert_java_date_format("H:m:s"), "%-H:%-M:%-S");
+        assert_eq!(convert_java_date_format("HH:mm:ss"), "%H:%M:%S");
+        // 12-hour format
+        assert_eq!(convert_java_date_format("h:m"), "%-I:%-M");
+        assert_eq!(convert_java_date_format("hh:mm"), "%I:%M");
     }
 
     #[test]

@@ -175,8 +175,13 @@ impl SnapshotService {
 
     /// Reset all registered state holders to their initial (empty) values.
     pub fn clear_state_holders(&self) {
-        let holders: Vec<_> = self.state_holders.lock().unwrap()
-            .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let holders: Vec<_> = self
+            .state_holders
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         for (id, holder) in holders {
             holder.lock().unwrap().reset_state();
             log::debug!("Reset state for component: {}", id);

@@ -139,7 +139,7 @@ pub fn validate_dlq_schema(
     }
 
     // 5. Check for extra fields not in required schema
-    for (actual_name, _) in &actual_fields {
+    for actual_name in actual_fields.keys() {
         if !REQUIRED_DLQ_FIELDS
             .iter()
             .any(|(req_name, _)| req_name == actual_name)
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_validate_dlq_schema_missing_field() {
-        let mut stream_def = StreamDefinition::new("IncompleteDLQ".to_string())
+        let stream_def = StreamDefinition::new("IncompleteDLQ".to_string())
             .attribute("originalEvent".to_string(), AttributeType::STRING)
             .attribute("errorMessage".to_string(), AttributeType::STRING);
         // Missing other required fields
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_validate_dlq_schema_wrong_type() {
-        let mut stream_def = StreamDefinition::new("WrongTypeDLQ".to_string())
+        let stream_def = StreamDefinition::new("WrongTypeDLQ".to_string())
             .attribute("originalEvent".to_string(), AttributeType::STRING)
             .attribute("errorMessage".to_string(), AttributeType::STRING)
             .attribute("errorType".to_string(), AttributeType::STRING)
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn test_validate_dlq_schema_wrong_field_name() {
-        let mut stream_def = StreamDefinition::new("WrongNameDLQ".to_string())
+        let stream_def = StreamDefinition::new("WrongNameDLQ".to_string())
             .attribute("original_event".to_string(), AttributeType::STRING) // Wrong name
             .attribute("errorMessage".to_string(), AttributeType::STRING)
             .attribute("errorType".to_string(), AttributeType::STRING)
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn test_dlq_schema_field_order_independence() {
         // Fields can be in any order as long as all are present
-        let mut stream_def = StreamDefinition::new("ReorderedDLQ".to_string())
+        let stream_def = StreamDefinition::new("ReorderedDLQ".to_string())
             .attribute("streamName".to_string(), AttributeType::STRING)
             .attribute("attemptCount".to_string(), AttributeType::INT)
             .attribute("timestamp".to_string(), AttributeType::LONG)

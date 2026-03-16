@@ -146,6 +146,7 @@ impl SortWindowProcessor {
     }
 
     /// Check if memory-optimized processing should be used
+    #[allow(dead_code)]
     fn should_use_memory_optimization(&self) -> bool {
         // For now, return false since we don't have direct access to runtime config
         // TODO: Implement memory optimization detection through config reader

@@ -108,6 +108,7 @@ impl RabbitMQSinkConfig {
     }
 
     /// Parse configuration from properties HashMap
+    #[allow(clippy::field_reassign_with_default)]
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
 
@@ -396,19 +397,22 @@ impl Sink for RabbitMQSink {
 
         // Define the async publish operation
         let publish_future = async move {
-            let state_guard = state
-                .lock()
-                .map_err(|_| EventFluxError::app_runtime("State lock poisoned".to_string()))?;
-            let conn_state =
-                state_guard
-                    .as_ref()
-                    .ok_or_else(|| EventFluxError::ConnectionUnavailable {
-                        message: "RabbitMQ sink not started - call start() first".to_string(),
-                        source: None,
-                    })?;
+            // Clone the channel (internally Arc-based) and drop the guard before .await
+            let channel = {
+                let state_guard = state
+                    .lock()
+                    .map_err(|_| EventFluxError::app_runtime("State lock poisoned".to_string()))?;
+                let conn_state =
+                    state_guard
+                        .as_ref()
+                        .ok_or_else(|| EventFluxError::ConnectionUnavailable {
+                            message: "RabbitMQ sink not started - call start() first".to_string(),
+                            source: None,
+                        })?;
+                conn_state.channel.clone()
+            };
 
-            conn_state
-                .channel
+            channel
                 .basic_publish(
                     &exchange,
                     &routing_key,
@@ -464,8 +468,12 @@ impl Sink for RabbitMQSink {
         // Create the shutdown future
         let state = Arc::clone(&self.state);
         let shutdown_future = async move {
-            let mut state_guard = state.lock().unwrap();
-            if let Some(conn_state) = state_guard.take() {
+            // Take the connection state and drop the guard before .await
+            let conn_state = {
+                let mut state_guard = state.lock().unwrap();
+                state_guard.take()
+            };
+            if let Some(conn_state) = conn_state {
                 if let Err(e) = conn_state.channel.close(200, "Normal shutdown").await {
                     log::warn!("[RabbitMQSink] Error closing channel: {}", e);
                 }
@@ -667,8 +675,8 @@ impl SinkFactory for RabbitMQSinkFactory {
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Sink>, EventFluxError> {
         // Parse and validate configuration
-        let parsed = RabbitMQSinkConfig::from_properties(config)
-            .map_err(|e| EventFluxError::configuration(e))?;
+        let parsed =
+            RabbitMQSinkConfig::from_properties(config).map_err(EventFluxError::configuration)?;
 
         // Create RabbitMQ sink
         let sink = RabbitMQSink::new(parsed);
@@ -789,6 +797,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn test_exchange_kind_conversion() {
         // Test all supported exchange types
         let mut config = RabbitMQSinkConfig::default();

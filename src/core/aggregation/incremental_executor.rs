@@ -78,7 +78,12 @@ impl IncrementalExecutor {
                     out[i] = v.clone();
                 }
             }
-            self.table.insert(&values);
+            if let Err(e) = self.table.insert(&values) {
+                log::error!("Failed to insert aggregation into table: {}", e);
+                // Best-effort persistence: downstream processing continues so the
+                // event pipeline is not blocked by a table write failure.
+                // TODO: Route to error handler / DLQ when error infrastructure is wired.
+            }
             if let Some(ref next) = self.next {
                 next.execute(&ev);
             }

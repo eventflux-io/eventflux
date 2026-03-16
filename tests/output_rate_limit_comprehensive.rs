@@ -75,13 +75,25 @@ async fn test_all_behavior_exact_batch_emission() {
 
     // Send 3 events - should emit all 3
     runner.send("Input", vec![AttributeValue::Int(10)]);
-    assert_eq!(runner.collected.lock().unwrap().len(), 0, "No output before batch complete");
+    assert_eq!(
+        runner.collected.lock().unwrap().len(),
+        0,
+        "No output before batch complete"
+    );
 
     runner.send("Input", vec![AttributeValue::Int(20)]);
-    assert_eq!(runner.collected.lock().unwrap().len(), 0, "No output before batch complete");
+    assert_eq!(
+        runner.collected.lock().unwrap().len(),
+        0,
+        "No output before batch complete"
+    );
 
     runner.send("Input", vec![AttributeValue::Int(30)]);
-    assert_eq!(runner.collected.lock().unwrap().len(), 3, "All 3 events emitted on batch complete");
+    assert_eq!(
+        runner.collected.lock().unwrap().len(),
+        3,
+        "All 3 events emitted on batch complete"
+    );
 
     // Verify the actual values emitted
     {
@@ -112,17 +124,29 @@ async fn test_all_behavior_multiple_batches() {
     // First batch
     runner.send("Input", vec![AttributeValue::Int(1)]);
     runner.send("Input", vec![AttributeValue::Int(2)]);
-    assert_eq!(runner.collected.lock().unwrap().len(), 2, "First batch emitted");
+    assert_eq!(
+        runner.collected.lock().unwrap().len(),
+        2,
+        "First batch emitted"
+    );
 
     // Second batch
     runner.send("Input", vec![AttributeValue::Int(3)]);
     runner.send("Input", vec![AttributeValue::Int(4)]);
-    assert_eq!(runner.collected.lock().unwrap().len(), 4, "Second batch emitted");
+    assert_eq!(
+        runner.collected.lock().unwrap().len(),
+        4,
+        "Second batch emitted"
+    );
 
     // Third batch
     runner.send("Input", vec![AttributeValue::Int(5)]);
     runner.send("Input", vec![AttributeValue::Int(6)]);
-    assert_eq!(runner.collected.lock().unwrap().len(), 6, "Third batch emitted");
+    assert_eq!(
+        runner.collected.lock().unwrap().len(),
+        6,
+        "Third batch emitted"
+    );
 
     // Verify values from each batch
     let out = runner.shutdown();
@@ -148,10 +172,34 @@ async fn test_all_behavior_preserves_order() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    runner.send("Input", vec![AttributeValue::Int(1), AttributeValue::String("first".to_string())]);
-    runner.send("Input", vec![AttributeValue::Int(2), AttributeValue::String("second".to_string())]);
-    runner.send("Input", vec![AttributeValue::Int(3), AttributeValue::String("third".to_string())]);
-    runner.send("Input", vec![AttributeValue::Int(4), AttributeValue::String("fourth".to_string())]);
+    runner.send(
+        "Input",
+        vec![
+            AttributeValue::Int(1),
+            AttributeValue::String("first".to_string()),
+        ],
+    );
+    runner.send(
+        "Input",
+        vec![
+            AttributeValue::Int(2),
+            AttributeValue::String("second".to_string()),
+        ],
+    );
+    runner.send(
+        "Input",
+        vec![
+            AttributeValue::Int(3),
+            AttributeValue::String("third".to_string()),
+        ],
+    );
+    runner.send(
+        "Input",
+        vec![
+            AttributeValue::Int(4),
+            AttributeValue::String("fourth".to_string()),
+        ],
+    );
 
     let out = runner.shutdown();
     assert_eq!(out.len(), 4);
@@ -551,16 +599,22 @@ async fn test_rate_limit_with_window() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    runner.send("Input", vec![
-        AttributeValue::String("IBM".to_string()),
-        AttributeValue::Float(100.0),
-    ]);
+    runner.send(
+        "Input",
+        vec![
+            AttributeValue::String("IBM".to_string()),
+            AttributeValue::Float(100.0),
+        ],
+    );
     assert_eq!(runner.collected.lock().unwrap().len(), 0);
 
-    runner.send("Input", vec![
-        AttributeValue::String("MSFT".to_string()),
-        AttributeValue::Float(200.0),
-    ]);
+    runner.send(
+        "Input",
+        vec![
+            AttributeValue::String("MSFT".to_string()),
+            AttributeValue::Float(200.0),
+        ],
+    );
     assert_eq!(runner.collected.lock().unwrap().len(), 2);
 
     let out = runner.shutdown();
@@ -854,7 +908,11 @@ async fn test_large_event_volume() {
     }
 
     let out = runner.shutdown();
-    assert_eq!(out.len(), 1000, "All events should be emitted in 10 batches");
+    assert_eq!(
+        out.len(),
+        1000,
+        "All events should be emitted in 10 batches"
+    );
 
     // Verify first and last values
     assert_eq!(get_int(&out[0], 0), 0);
@@ -924,13 +982,18 @@ async fn test_last_large_volume() {
 /// Test: Compare ALL vs FIRST vs LAST with same input
 #[tokio::test]
 async fn test_behavior_comparison() {
-    let base_app = |behavior: &str| format!(r#"
+    let base_app = |behavior: &str| {
+        format!(
+            r#"
         CREATE STREAM Input (value INT);
         CREATE STREAM Output (value INT);
         INSERT INTO Output
         SELECT value FROM Input
         OUTPUT {} EVERY 3 EVENTS;
-    "#, behavior);
+    "#,
+            behavior
+        )
+    };
 
     // Test ALL
     let runner_all = AppRunner::new(&base_app("ALL"), "Output").await;

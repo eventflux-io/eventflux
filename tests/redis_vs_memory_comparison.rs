@@ -99,14 +99,14 @@ async fn test_memory_store_with_count() {
     // Verify restoration worked: event 5 should cause event 1 to expire again
     let event_5_idx = out
         .iter()
-        .position(|e| e.get(0) == Some(&AttributeValue::Int(5)))
+        .position(|e| e.first() == Some(&AttributeValue::Int(5)))
         .expect("Event 5 should be in output");
 
     // The event before event 5 should be event 1 expiring with count 2
     if event_5_idx > 0 {
         let prev_event = &out[event_5_idx - 1];
         assert_eq!(
-            prev_event.get(0),
+            prev_event.first(),
             Some(&AttributeValue::Int(1)),
             "Event 1 should expire before event 5 enters"
         );
@@ -155,7 +155,7 @@ async fn test_count_aggregator_multiple_checkpoints() {
     // Verify: event 80 should have count=3 (window is [30,70,80])
     let event_80_idx = out
         .iter()
-        .rposition(|e| e.get(0) == Some(&AttributeValue::Int(80)))
+        .rposition(|e| e.first() == Some(&AttributeValue::Int(80)))
         .expect("Event 80 should be in output");
 
     assert_eq!(

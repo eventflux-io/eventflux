@@ -254,8 +254,12 @@ impl ProcessingEngineImpl for SingleNodeEngine {
         let streams = self.streams.read().await;
 
         if let Some(junction) = streams.get(stream_id) {
-            let mut junction = junction.lock().await;
-            junction.send_event(event);
+            let junction = junction.lock().await;
+            junction
+                .send_event(event)
+                .map_err(|e| DistributedError::StateError {
+                    message: format!("Failed to send event to stream {}: {}", stream_id, e),
+                })?;
             Ok(())
         } else {
             Err(DistributedError::NetworkError {
@@ -341,14 +345,18 @@ impl DistributedEngine {
 
 #[async_trait]
 impl ProcessingEngineImpl for DistributedEngine {
-    async fn process_event(&self, stream_id: &str, event: Event) -> DistributedResult<()> {
+    async fn process_event(&self, stream_id: &str, _event: Event) -> DistributedResult<()> {
         // In distributed mode, route event to appropriate node
         let target_node = self.load_balancer.select_node(stream_id).await?;
 
-        // Send event to target node (simplified)
-        println!(
-            "Routing event for stream {} to node {}",
-            stream_id, target_node
+        // FIXME: Event is selected for routing but not forwarded to the target node.
+        // Must send `_event` to `target_node` via the transport layer once the
+        // distributed message protocol is implemented.
+        log::warn!(
+            "Distributed routing not yet implemented: event for stream '{}' \
+             selected node '{}' but was not forwarded",
+            stream_id,
+            target_node
         );
 
         Ok(())
@@ -419,7 +427,7 @@ impl ProcessingEngineImpl for DistributedEngine {
         for (query_id, node_id) in assignments.iter() {
             node_queries
                 .entry(node_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(query_id.clone());
         }
 
@@ -435,6 +443,7 @@ impl ProcessingEngineImpl for DistributedEngine {
 }
 
 /// Hybrid processing engine
+#[allow(dead_code)]
 struct HybridEngine {
     /// Local engine for processing
     local_engine: SingleNodeEngine,

@@ -213,7 +213,7 @@ impl ExpressionExecutor for AsinFunctionExecutor {
             _ => {
                 let num = to_f64(&val)?;
                 // asin is only defined for values in [-1, 1]
-                if num < -1.0 || num > 1.0 {
+                if !(-1.0..=1.0).contains(&num) {
                     Some(AttributeValue::Double(f64::NAN))
                 } else {
                     Some(AttributeValue::Double(num.asin()))
@@ -252,7 +252,7 @@ impl ExpressionExecutor for AcosFunctionExecutor {
             _ => {
                 let num = to_f64(&val)?;
                 // acos is only defined for values in [-1, 1]
-                if num < -1.0 || num > 1.0 {
+                if !(-1.0..=1.0).contains(&num) {
                     Some(AttributeValue::Double(f64::NAN))
                 } else {
                     Some(AttributeValue::Double(num.acos()))

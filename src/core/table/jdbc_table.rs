@@ -664,9 +664,8 @@ impl Table for JdbcTable {
                 for i in 0..stream_attr_count {
                     joined.before_window_data[i] = stream_event.before_window_data[i].clone();
                 }
-                for j in 0..vals.len() {
-                    joined.before_window_data[stream_attr_count + j] = vals[j].clone();
-                }
+                joined.before_window_data[stream_attr_count..(vals.len() + stream_attr_count)]
+                    .clone_from_slice(&vals[..]);
                 if let Some(AttributeValue::Bool(true)) = exec.execute(Some(&joined)) {
                     matched.push(vals);
                 }

@@ -367,7 +367,7 @@ mod tests {
 
         env::set_var("EVENTFLUX_RUNTIME_MODE", "distributed");
 
-        let mut config = EventFluxConfig::default();
+        let config = EventFluxConfig::default();
         // This is a mock test - in real usage, the config would have variable placeholders
         // For now, just verify the function runs without error
         let resolved = resolver.resolve_all(config).unwrap();

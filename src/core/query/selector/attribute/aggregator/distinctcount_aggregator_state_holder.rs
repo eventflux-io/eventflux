@@ -248,7 +248,9 @@ impl StateHolder for DistinctCountAggregatorStateHolder {
 
     fn reset_state(&self) {
         self.map.lock().unwrap().clear();
-        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+        self.base
+            .restored
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 

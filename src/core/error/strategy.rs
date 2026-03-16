@@ -52,36 +52,6 @@ pub enum ErrorStrategy {
 }
 
 impl ErrorStrategy {
-    /// Parse error strategy from string (case-insensitive)
-    ///
-    /// # Arguments
-    /// * `s` - String representation of error strategy
-    ///
-    /// # Returns
-    /// * `Ok(ErrorStrategy)` - Successfully parsed strategy
-    /// * `Err(String)` - Parse error with message
-    ///
-    /// # Examples
-    /// ```
-    /// use eventflux::core::error::ErrorStrategy;
-    ///
-    /// assert_eq!(ErrorStrategy::from_str("drop").unwrap(), ErrorStrategy::Drop);
-    /// assert_eq!(ErrorStrategy::from_str("RETRY").unwrap(), ErrorStrategy::Retry);
-    /// assert!(ErrorStrategy::from_str("invalid").is_err());
-    /// ```
-    pub fn from_str(s: &str) -> Result<Self, String> {
-        match s.to_lowercase().as_str() {
-            "drop" => Ok(ErrorStrategy::Drop),
-            "retry" => Ok(ErrorStrategy::Retry),
-            "dlq" => Ok(ErrorStrategy::Dlq),
-            "fail" => Ok(ErrorStrategy::Fail),
-            _ => Err(format!(
-                "Invalid error strategy '{}'. Valid values: 'drop', 'retry', 'dlq', 'fail'",
-                s
-            )),
-        }
-    }
-
     /// Convert error strategy to string representation
     ///
     /// Returns the canonical lowercase string representation of the strategy.
@@ -116,6 +86,41 @@ impl Default for ErrorStrategy {
     }
 }
 
+impl std::str::FromStr for ErrorStrategy {
+    type Err = String;
+
+    /// Parse error strategy from string (case-insensitive)
+    ///
+    /// # Arguments
+    /// * `s` - String representation of error strategy
+    ///
+    /// # Returns
+    /// * `Ok(ErrorStrategy)` - Successfully parsed strategy
+    /// * `Err(String)` - Parse error with message
+    ///
+    /// # Examples
+    /// ```
+    /// use eventflux::core::error::ErrorStrategy;
+    /// use std::str::FromStr;
+    ///
+    /// assert_eq!(ErrorStrategy::from_str("drop").unwrap(), ErrorStrategy::Drop);
+    /// assert_eq!(ErrorStrategy::from_str("RETRY").unwrap(), ErrorStrategy::Retry);
+    /// assert!(ErrorStrategy::from_str("invalid").is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "drop" => Ok(ErrorStrategy::Drop),
+            "retry" => Ok(ErrorStrategy::Retry),
+            "dlq" => Ok(ErrorStrategy::Dlq),
+            "fail" => Ok(ErrorStrategy::Fail),
+            _ => Err(format!(
+                "Invalid error strategy '{}'. Valid values: 'drop', 'retry', 'dlq', 'fail'",
+                s
+            )),
+        }
+    }
+}
+
 impl std::fmt::Display for ErrorStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
@@ -125,6 +130,7 @@ impl std::fmt::Display for ErrorStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_error_strategy_from_str() {

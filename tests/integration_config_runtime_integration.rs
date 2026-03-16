@@ -26,16 +26,13 @@ use eventflux::core::config::{
     ApplicationConfig, ConfigManager, ConfigValue, EventFluxConfig, ProcessorConfigReader,
     RuntimeMode,
 };
-use eventflux::core::event::{Event, StreamEvent};
-use eventflux::core::eventflux_manager::EventFluxManager as Manager;
+use eventflux::core::event::Event;
 use eventflux::core::stream::output::stream_callback::StreamCallback;
 use eventflux::core::EventFluxManager;
 use serial_test::serial;
-use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tempfile::NamedTempFile;
-use tokio;
 
 /// Test data structure to collect output events
 #[derive(Debug, Clone, Default)]
@@ -44,6 +41,7 @@ struct TestEventCollector {
     callback_count: Arc<Mutex<usize>>,
 }
 
+#[allow(dead_code)]
 impl TestEventCollector {
     fn new() -> Self {
         Self {
@@ -234,7 +232,7 @@ async fn test_yaml_config_to_runtime_integration() {
         .expect("Failed to start runtime");
 
     // Get input handler and send test events
-    let input_handler = eventflux_app_runtime
+    let _input_handler = eventflux_app_runtime
         .get_input_handler("InputStream")
         .expect("Failed to get input handler");
 
@@ -363,9 +361,11 @@ async fn test_config_manager_eventflux_manager_integration() {
     let mut config = EventFluxConfig::default();
     config.eventflux.runtime.mode = RuntimeMode::Distributed;
 
-    let mut perf_config = PerformanceConfig::default();
-    perf_config.event_buffer_size = 16384;
-    perf_config.batch_size = Some(5000);
+    let perf_config = PerformanceConfig {
+        event_buffer_size: 16384,
+        batch_size: Some(5000),
+        ..Default::default()
+    };
     config.eventflux.runtime.performance = perf_config;
 
     // Create application-specific config
@@ -404,6 +404,7 @@ async fn test_config_manager_eventflux_manager_integration() {
 
 #[tokio::test]
 #[serial]
+#[allow(clippy::approx_constant)]
 async fn test_config_value_type_conversions() {
     // Test ConfigValue type conversions
     let int_val = ConfigValue::Integer(42);

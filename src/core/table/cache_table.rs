@@ -193,9 +193,8 @@ impl Table for CacheTable {
                 for i in 0..stream_attr_count {
                     joined.before_window_data[i] = stream_event.before_window_data[i].clone();
                 }
-                for j in 0..row.len() {
-                    joined.before_window_data[stream_attr_count + j] = row[j].clone();
-                }
+                joined.before_window_data[stream_attr_count..(row.len() + stream_attr_count)]
+                    .clone_from_slice(&row[..]);
                 if let Some(AttributeValue::Bool(true)) = exec.execute(Some(&joined)) {
                     matched.push(row.clone());
                 }

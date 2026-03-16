@@ -201,9 +201,9 @@ pub struct ExpressionParserContext<'a> {
 /// Parses query_api::Expression into core::ExpressionExecutor instances.
 /// Current limitations: Variable resolution is simplified for single input streams.
 /// Does not handle full complexity of all expression types or contexts (e.g., aggregations within HAVING).
-pub fn parse_expression<'a>(
+pub fn parse_expression(
     api_expr: &ApiExpression,
-    context: &ExpressionParserContext<'a>,
+    context: &ExpressionParserContext<'_>,
 ) -> ExpressionParseResult<Box<dyn ExpressionExecutor>> {
     match api_expr {
         ApiExpression::Constant(api_const) => {

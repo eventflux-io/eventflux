@@ -19,7 +19,6 @@
 mod common;
 use common::AppRunner;
 use eventflux::core::event::value::AttributeValue;
-use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
@@ -48,7 +47,7 @@ async fn async_partition_pool_order() {
         runner.send(
             "In",
             vec![
-                AttributeValue::Int(i as i32),
+                AttributeValue::Int(i),
                 AttributeValue::String(part.to_string()),
             ],
         );

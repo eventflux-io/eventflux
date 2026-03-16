@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Configuration metadata following Kubernetes API conventions
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ConfigMetadata {
     /// Name of the configuration
     pub name: Option<String>,
@@ -53,21 +53,6 @@ pub struct ConfigMetadata {
     /// Last update timestamp (ISO 8601)
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
-}
-
-impl Default for ConfigMetadata {
-    fn default() -> Self {
-        Self {
-            name: None,
-            namespace: None,
-            version: None,
-            environment: None,
-            labels: HashMap::new(),
-            annotations: HashMap::new(),
-            created_at: None,
-            updated_at: None,
-        }
-    }
 }
 
 impl ConfigMetadata {
@@ -129,7 +114,7 @@ impl ConfigMetadata {
     pub fn matches_labels(&self, selectors: &HashMap<String, String>) -> bool {
         selectors
             .iter()
-            .all(|(key, value)| self.labels.get(key).map_or(false, |v| v == value))
+            .all(|(key, value)| self.labels.get(key) == Some(value))
     }
 
     /// Generate a unique identifier for this configuration

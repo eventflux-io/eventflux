@@ -224,6 +224,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_default_allows_numeric_widening() {
         // INT + LONG should work
         let result = DefaultFunctionExecutor::new(vec![

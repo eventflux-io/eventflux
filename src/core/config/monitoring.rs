@@ -1149,6 +1149,7 @@ impl EndpointConfig {
     }
 
     /// Kubernetes configuration
+    #[allow(clippy::needless_update)]
     pub fn kubernetes() -> Self {
         Self {
             health_endpoint: "/healthz".to_string(), // K8s standard

@@ -98,5 +98,5 @@ fn timer_source_to_log_sink() {
     std::thread::sleep(Duration::from_millis(20));
 
     let events = collected.lock().unwrap();
-    assert!(events.len() > 0);
+    assert!(!events.is_empty());
 }

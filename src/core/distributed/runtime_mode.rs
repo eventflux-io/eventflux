@@ -27,6 +27,7 @@ use super::{DistributedConfig, DistributedError, DistributedResult, RuntimeMode}
 use std::sync::Arc;
 
 /// Runtime mode manager that handles mode-specific initialization
+#[allow(dead_code)]
 pub struct RuntimeModeManager {
     /// Current runtime mode
     mode: RuntimeMode,
@@ -202,6 +203,7 @@ pub struct ComponentHealth {
 }
 
 /// Single-node mode implementation
+#[allow(dead_code)]
 struct SingleNodeMode {
     config: Arc<DistributedConfig>,
     start_time: std::time::Instant,
@@ -276,6 +278,7 @@ impl RuntimeModeImpl for SingleNodeMode {
 }
 
 /// Distributed mode implementation
+#[allow(dead_code)]
 struct DistributedMode {
     config: Arc<DistributedConfig>,
     coordinator: Option<Arc<dyn super::coordinator::DistributedCoordinator>>,
@@ -385,6 +388,7 @@ impl RuntimeModeImpl for DistributedMode {
 }
 
 /// Hybrid mode implementation (local processing with distributed state)
+#[allow(dead_code)]
 struct HybridMode {
     config: Arc<DistributedConfig>,
     single_node: SingleNodeMode,
@@ -490,8 +494,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_distributed_mode_validation() {
-        let mut config = DistributedConfig::default();
-        config.mode = RuntimeMode::Distributed;
+        let mut config = DistributedConfig {
+            mode: RuntimeMode::Distributed,
+            ..Default::default()
+        };
 
         // Should fail without cluster config
         let result = RuntimeModeManager::new(config.clone());
@@ -518,8 +524,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_hybrid_mode() {
-        let mut config = DistributedConfig::default();
-        config.mode = RuntimeMode::Hybrid;
+        let config = DistributedConfig {
+            mode: RuntimeMode::Hybrid,
+            ..Default::default()
+        };
 
         let mut manager = RuntimeModeManager::new(config).unwrap();
 

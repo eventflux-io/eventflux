@@ -188,6 +188,7 @@ pub struct CompressionMetrics {
 }
 
 /// High-performance compression engine implementation with thread-local optimization
+#[allow(dead_code)]
 pub struct OptimizedCompressionEngine {
     /// Thread-local LZ4 contexts for zero-allocation compression
     lz4_contexts: ThreadLocal<LZ4Context>,
@@ -207,6 +208,7 @@ struct LZ4Context {
 }
 
 /// Thread-local Snappy compression context
+#[allow(dead_code)]
 struct SnapContext {
     encoder: snap::raw::Encoder,
     decoder: snap::raw::Decoder,
@@ -298,12 +300,12 @@ impl OptimizedCompressionEngine {
             }
             e if e < 6.0 => {
                 // Check if mostly ASCII text
-                let ascii_count = sample.iter().filter(|&&b| b >= 32 && b <= 126).count();
+                let ascii_count = sample.iter().filter(|&&b| (32..=126).contains(&b)).count();
                 if ascii_count > sample_size * 3 / 4 {
                     DataCharacteristics::TextBased
                 } else {
                     // Check if mostly numeric patterns
-                    let numeric_count = sample.iter().filter(|&&b| b >= b'0' && b <= b'9').count();
+                    let numeric_count = sample.iter().filter(|&&b| b.is_ascii_digit()).count();
                     if numeric_count > sample_size / 2 {
                         DataCharacteristics::Numeric
                     } else {

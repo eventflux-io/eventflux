@@ -24,7 +24,6 @@
 mod common;
 
 use common::pattern_chain_test_utils::*;
-use eventflux::core::event::stream::stream_event::StreamEvent;
 use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 
 // ============================================================================

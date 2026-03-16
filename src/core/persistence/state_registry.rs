@@ -454,7 +454,7 @@ impl StateRegistry {
         for component_id in topology.components.keys() {
             if !visited.contains(component_id) {
                 let mut current_path = Vec::new();
-                self.dfs_longest_path(
+                Self::dfs_longest_path(
                     component_id,
                     &topology.dependency_graph,
                     &mut visited,
@@ -471,7 +471,6 @@ impl StateRegistry {
     }
 
     fn dfs_longest_path(
-        &self,
         node: &ComponentId,
         graph: &DependencyGraph,
         visited: &mut HashSet<ComponentId>,
@@ -483,7 +482,7 @@ impl StateRegistry {
         if let Some(neighbors) = graph.edges.get(node) {
             for neighbor in neighbors {
                 if !visited.contains(neighbor) {
-                    self.dfs_longest_path(neighbor, graph, visited, current_path);
+                    Self::dfs_longest_path(neighbor, graph, visited, current_path);
                 }
             }
         }

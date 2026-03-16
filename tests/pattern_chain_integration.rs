@@ -28,14 +28,7 @@
 mod common;
 
 use common::pattern_chain_test_utils::*;
-use eventflux::core::event::stream::stream_event::StreamEvent;
-use eventflux::core::query::input::stream::state::pattern_chain_builder::{
-    PatternChainBuilder, PatternStepConfig, ProcessorChain,
-};
-use eventflux::core::query::input::stream::state::post_state_processor::PostStateProcessor;
 use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
-use eventflux::query_api::definition::stream_definition::StreamDefinition;
-use std::sync::{Arc, Mutex};
 // Note: build_pattern_chain_with_within() is provided by common module
 
 // ============================================================================
@@ -131,7 +124,7 @@ fn test_integration_1_complex_count_quantifiers() {
     // - After B1, B2: First match (2 As, 2 Bs)
     // - Potentially more matches with A3
     assert!(
-        outputs.len() >= 1,
+        !outputs.is_empty(),
         "Expected at least 1 output from A{{2,3}} -> B{{2}} pattern"
     );
 
@@ -301,7 +294,7 @@ fn test_integration_3_concurrent_instances() {
     // With A{2} -> B{2}, we expect at least 1 match from (A1,A2) -> (B1,B2)
     // Potentially more with overlapping instances
     assert!(
-        outputs.len() >= 1,
+        !outputs.is_empty(),
         "Expected at least 1 output from concurrent A{{2}} -> B{{2}} instances"
     );
 

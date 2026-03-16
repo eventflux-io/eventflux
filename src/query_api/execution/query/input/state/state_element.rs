@@ -38,6 +38,7 @@ pub enum StateElement {
 
 // Implement EventFluxElement for the enum by dispatching to variants' composed eventflux_element field
 impl StateElement {
+    #[allow(dead_code)]
     fn eventflux_element_ref(&self) -> &EventFluxElement {
         match self {
             StateElement::Stream(s) => &s.eventflux_element,
@@ -49,6 +50,7 @@ impl StateElement {
         }
     }
 
+    #[allow(dead_code)]
     fn eventflux_element_mut_ref(&mut self) -> &mut EventFluxElement {
         match self {
             StateElement::Stream(s) => &mut s.eventflux_element,

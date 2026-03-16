@@ -50,6 +50,7 @@ impl Selector {
     }
 
     // Static factory `selector()`
+    #[allow(clippy::self_named_constructors)]
     pub fn selector() -> Self {
         Self::new()
     }
@@ -60,7 +61,7 @@ impl Selector {
         if self
             .selection_list
             .iter()
-            .any(|attr| attr.get_rename().as_ref().map_or(false, |r| r == &rename))
+            .any(|attr| attr.get_rename().as_ref() == Some(&rename))
         {
             eprintln!(
                 "Warning: Duplicate column name '{}' in select clause",
@@ -100,11 +101,11 @@ impl Selector {
         for new_attr in &projection_list {
             if let Some(new_rename) = new_attr.get_rename() {
                 // Check against existing selections
-                if self.selection_list.iter().any(|attr| {
-                    attr.get_rename()
-                        .as_ref()
-                        .map_or(false, |r| r == new_rename)
-                }) {
+                if self
+                    .selection_list
+                    .iter()
+                    .any(|attr| attr.get_rename().as_ref() == Some(new_rename))
+                {
                     eprintln!(
                         "Warning: Duplicate column name '{}' in select clause",
                         new_rename
@@ -114,11 +115,7 @@ impl Selector {
                 // Check against other items in the same list
                 if projection_list
                     .iter()
-                    .filter(|attr| {
-                        attr.get_rename()
-                            .as_ref()
-                            .map_or(false, |r| r == new_rename)
-                    })
+                    .filter(|attr| attr.get_rename().as_ref() == Some(new_rename))
                     .count()
                     > 1
                 {
@@ -227,7 +224,7 @@ mod tests {
         Order as OrderByOrder, OrderByAttribute,
     };
     use crate::query_api::execution::query::selection::output_attribute::OutputAttribute;
-    use crate::query_api::expression::constant::{Constant, ConstantValueWithFloat};
+    use crate::query_api::expression::constant::Constant;
     use crate::query_api::expression::variable::Variable;
     use crate::query_api::expression::Expression;
 

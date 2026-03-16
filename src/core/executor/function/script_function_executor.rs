@@ -53,7 +53,7 @@ impl ExpressionExecutor for ScriptFunctionExecutor {
 impl ScalarFunctionExecutor for ScriptFunctionExecutor {
     fn init(
         &mut self,
-        _args: &Vec<Box<dyn ExpressionExecutor>>,
+        _args: &[Box<dyn ExpressionExecutor>],
         _ctx: &Arc<EventFluxAppContext>,
     ) -> Result<(), String> {
         Ok(())

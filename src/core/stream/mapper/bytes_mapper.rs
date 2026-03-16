@@ -242,7 +242,7 @@ mod tests {
         let input = vec![0x00, 0x01, 0xff, 0xfe, 0x80, 0x90, 0xa0, 0xb0];
 
         let events = mapper.map(&input).unwrap();
-        let cloned_events: Vec<Event> = events.iter().map(|e| e.clone()).collect();
+        let cloned_events: Vec<Event> = events.to_vec();
 
         // Verify cloned data is preserved exactly
         if let AttributeValue::Bytes(bytes) = &cloned_events[0].data[0] {

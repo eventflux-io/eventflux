@@ -1082,16 +1082,10 @@ impl<'a> TypeInferenceEngine<'a> {
         let context = self.build_context_from_query(query);
 
         // Validate WHERE clauses (in stream handlers)
-        if let Some(input_stream) = query.get_input_stream() {
-            if let InputStream::Single(single_stream) = input_stream {
-                for handler in single_stream.get_stream_handlers() {
-                    if let StreamHandler::Filter(filter) = handler {
-                        self.validate_boolean_expression(
-                            &filter.filter_expression,
-                            &context,
-                            "WHERE",
-                        )?;
-                    }
+        if let Some(InputStream::Single(single_stream)) = query.get_input_stream() {
+            for handler in single_stream.get_stream_handlers() {
+                if let StreamHandler::Filter(filter) = handler {
+                    self.validate_boolean_expression(&filter.filter_expression, &context, "WHERE")?;
                 }
             }
         }
@@ -1207,9 +1201,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_constant_type_inference() {
         let catalog = create_test_catalog();
-        let engine = TypeInferenceEngine::new(&catalog);
+        let _engine = TypeInferenceEngine::new(&catalog);
 
         assert_eq!(
             TypeInferenceEngine::infer_constant_type(&Constant::int(42)).unwrap(),

@@ -132,7 +132,7 @@ impl YamlConfigLoader {
     /// Load configuration from a specific file
     pub async fn load_file<P: AsRef<Path>>(&self, path: P) -> ConfigResult<EventFluxConfig> {
         let path = path.as_ref();
-        let content = fs::read_to_string(path).map_err(|e| ConfigError::IoError(e))?;
+        let content = fs::read_to_string(path).map_err(ConfigError::IoError)?;
 
         self.parse_yaml_content(&content, path.to_string_lossy().as_ref())
     }

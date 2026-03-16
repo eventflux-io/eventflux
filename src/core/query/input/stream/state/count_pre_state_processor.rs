@@ -151,13 +151,9 @@ impl PreStateProcessor for CountPreStateProcessor {
     ) -> Option<Box<dyn ComplexEvent>> {
         // Get incoming StreamEvent from chunk
         let stream_event = match chunk.as_ref() {
-            Some(c) => match c
+            Some(c) => c
                 .as_any()
-                .downcast_ref::<crate::core::event::stream::stream_event::StreamEvent>()
-            {
-                Some(se) => se,
-                None => return None,
-            },
+                .downcast_ref::<crate::core::event::stream::stream_event::StreamEvent>()?,
             None => return None,
         };
 
@@ -220,10 +216,7 @@ impl PreStateProcessor for CountPreStateProcessor {
         let stream_cloner = self.stream_processor.get_stream_event_cloner().clone();
 
         // Get post processor for validation
-        let post_processor = match self.stream_processor.get_this_state_post_processor() {
-            Some(p) => p,
-            None => return None, // No post processor, can't validate count
-        };
+        let post_processor = self.stream_processor.get_this_state_post_processor()?;
 
         let mut any_state_completed = false;
 
@@ -1135,6 +1128,7 @@ mod tests {
         outputs: Arc<Mutex<Vec<StateEvent>>>,
     }
 
+    #[allow(dead_code)]
     impl OutputTracker {
         fn new() -> Self {
             Self {
@@ -1192,7 +1186,7 @@ mod tests {
         let state_factory = StateEventFactory::new(1, 0);
         let state_cloner = StateEventCloner::new(&meta_state, state_factory);
 
-        let stream_pre_state = StreamPreState::new();
+        let _stream_pre_state = StreamPreState::new();
 
         let eventflux_context = Arc::new(EventFluxContext::new());
         let app = Arc::new(EventFluxApp::new("TestApp".to_string()));
@@ -1524,7 +1518,7 @@ mod tests {
         pre_proc.update_state();
 
         // Send events with specific timestamps
-        let timestamps = vec![1000i64, 2000i64, 3000i64];
+        let timestamps = [1000i64, 2000i64, 3000i64];
         for (i, &ts) in timestamps.iter().enumerate() {
             let mut event = StreamEvent::new(((i + 1) * 100) as i64, 0, 0, 0);
             event.timestamp = ts;
@@ -1719,7 +1713,7 @@ mod tests {
         let state_factory = StateEventFactory::new(1, 0);
         let state_cloner = StateEventCloner::new(&meta_state, state_factory);
 
-        let stream_pre_state = StreamPreState::new();
+        let _stream_pre_state = StreamPreState::new();
 
         let eventflux_context = Arc::new(EventFluxContext::new());
         let app = Arc::new(EventFluxApp::new("TestApp".to_string()));

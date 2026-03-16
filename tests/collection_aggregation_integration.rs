@@ -970,15 +970,15 @@ mod end_to_end_processor_tests {
     use eventflux::core::event::state::MetaStateEvent;
     use eventflux::core::event::state::StateEventCloner;
     use eventflux::core::event::state::StateEventFactory;
-    use eventflux::core::event::stream::MetaStreamEvent;
+
     use eventflux::core::event::stream::StreamEventCloner;
-    use eventflux::core::event::stream::StreamEventFactory;
+
     use eventflux::core::query::input::stream::state::count_post_state_processor::CountPostStateProcessor;
     use eventflux::core::query::input::stream::state::count_pre_state_processor::CountPreStateProcessor;
     use eventflux::core::query::input::stream::state::post_state_processor::PostStateProcessor;
     use eventflux::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
     use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
-    use eventflux::query_api::definition::stream_definition::StreamDefinition;
+
     use eventflux::query_api::EventFluxApp;
 
     /// CapturingPreStateProcessor - captures StateEvents via add_state()
@@ -1082,7 +1082,6 @@ mod end_to_end_processor_tests {
     fn create_wired_count_processor(
         min: usize,
         max: usize,
-        attr_count: usize,
     ) -> (CountPreStateProcessor, Arc<Mutex<Vec<StateEvent>>>) {
         // Create context hierarchy
         let eventflux_ctx = Arc::new(EventFluxContext::new());
@@ -1184,7 +1183,7 @@ mod end_to_end_processor_tests {
     #[ignore = "E2E processor wiring produces double outputs - needs investigation"]
     fn test_e2e_exact_count_3_with_sum() {
         // Simulates: PATTERN (e1=Trade{{3}}) SELECT sum(e1.price)
-        let (mut processor, captured) = create_wired_count_processor(3, 3, 1);
+        let (mut processor, captured) = create_wired_count_processor(3, 3);
 
         // Send exactly 3 events with prices: 100, 200, 300
         processor.process(Some(Box::new(create_price_event(100.0))));
@@ -1229,7 +1228,7 @@ mod end_to_end_processor_tests {
     fn test_e2e_exact_count_3_with_all_aggregations() {
         // Simulates: PATTERN (e1=Trade{{3}})
         // SELECT count(e1), sum(e1.price), avg(e1.price), min(e1.price), max(e1.price)
-        let (mut processor, captured) = create_wired_count_processor(3, 3, 1);
+        let (mut processor, captured) = create_wired_count_processor(3, 3);
 
         processor.process(Some(Box::new(create_price_event(10.0))));
         processor.process(Some(Box::new(create_price_event(20.0))));
@@ -1298,7 +1297,7 @@ mod end_to_end_processor_tests {
     fn test_e2e_range_count_2_to_4_produces_multiple_outputs() {
         // Simulates: PATTERN (e1=Trade{{2,4}}) SELECT sum(e1.price)
         // Should output at count=2, count=3, count=4
-        let (mut processor, captured) = create_wired_count_processor(2, 4, 1);
+        let (mut processor, captured) = create_wired_count_processor(2, 4);
 
         processor.process(Some(Box::new(create_price_event(100.0))));
         processor.process(Some(Box::new(create_price_event(200.0)))); // Output 1: [100, 200]
@@ -1344,7 +1343,7 @@ mod end_to_end_processor_tests {
     #[ignore = "E2E processor wiring produces double outputs - needs investigation"]
     fn test_e2e_chain_order_preserved() {
         // Verify events are chained in arrival order
-        let (mut processor, captured) = create_wired_count_processor(5, 5, 1);
+        let (mut processor, captured) = create_wired_count_processor(5, 5);
 
         // Send events with sequential prices
         for i in 1..=5 {
@@ -1375,7 +1374,7 @@ mod end_to_end_processor_tests {
     fn test_e2e_stddev_on_processor_output() {
         // Simulates: PATTERN (e1=Trade{{8}}) SELECT stdDev(e1.price)
         // Values: [2, 4, 4, 4, 5, 5, 7, 9] -> mean=5, stddev=2
-        let (mut processor, captured) = create_wired_count_processor(8, 8, 1);
+        let (mut processor, captured) = create_wired_count_processor(8, 8);
 
         for price in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
             processor.process(Some(Box::new(create_price_event(*price))));
@@ -1401,7 +1400,7 @@ mod end_to_end_processor_tests {
     #[test]
     fn test_e2e_insufficient_events_no_output() {
         // Simulates: PATTERN (e1=Trade{{5}}) but only send 4 events
-        let (mut processor, captured) = create_wired_count_processor(5, 5, 1);
+        let (mut processor, captured) = create_wired_count_processor(5, 5);
 
         // Send only 4 events (less than required 5)
         for i in 1..=4 {
@@ -1420,7 +1419,7 @@ mod end_to_end_processor_tests {
     #[ignore = "E2E processor wiring produces double outputs - needs investigation"]
     fn test_e2e_min_1_produces_output_on_first_event() {
         // Simulates: PATTERN (e1=Trade{{1,3}}) - should output starting from first event
-        let (mut processor, captured) = create_wired_count_processor(1, 3, 1);
+        let (mut processor, captured) = create_wired_count_processor(1, 3);
 
         processor.process(Some(Box::new(create_price_event(100.0)))); // Output 1
         processor.process(Some(Box::new(create_price_event(200.0)))); // Output 2

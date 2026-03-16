@@ -26,9 +26,7 @@ use eventflux::query_api::execution::query::input::InputStream;
 use eventflux::query_api::execution::query::output::output_stream::{
     InsertIntoStreamAction, OutputStream, OutputStreamAction,
 };
-use eventflux::query_api::execution::query::output::ratelimit::{
-    OutputRate, OutputRateBehavior,
-};
+use eventflux::query_api::execution::query::output::ratelimit::{OutputRate, OutputRateBehavior};
 use eventflux::query_api::execution::query::selection::Selector;
 use eventflux::query_api::execution::query::Query;
 use eventflux::query_api::execution::ExecutionElement;

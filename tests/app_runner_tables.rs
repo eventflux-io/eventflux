@@ -80,7 +80,7 @@ fn setup_sqlite_table(ctx: &Arc<EventFluxContext>, name: &str) {
     let ds = ctx.get_data_source("DS1").unwrap();
     let conn_any = ds.get_connection().unwrap();
     let conn_arc = conn_any.downcast::<Arc<Mutex<Connection>>>().unwrap();
-    let mut conn = conn_arc.lock().unwrap();
+    let conn = conn_arc.lock().unwrap();
     let sql = match name {
         "J2" => format!("CREATE TABLE {} (roomNo INTEGER, type TEXT)", name),
         _ => format!("CREATE TABLE {} (v TEXT)", name),
@@ -129,7 +129,7 @@ async fn cache_table_crud_via_app_runner() {
 
 #[tokio::test]
 async fn jdbc_table_crud_via_app_runner() {
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
     manager
         .add_data_source(
             "DS1".to_string(),
@@ -195,12 +195,10 @@ async fn stream_table_join_basic() {
         FROM L JOIN R ON L.roomNo = R.roomNo;\n";
     let runner = AppRunner::new(query, "Out").await;
     let th = runner.runtime().get_table_input_handler("R").unwrap();
-    th.add(vec![
-        eventflux::core::event::event::Event::new_with_data(
-            0,
-            vec![AttributeValue::Int(1), AttributeValue::String("A".into())],
-        ),
-    ]);
+    th.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
+        vec![AttributeValue::Int(1), AttributeValue::String("A".into())],
+    )]);
     runner.send(
         "L",
         vec![AttributeValue::Int(1), AttributeValue::String("v".into())],
@@ -218,7 +216,7 @@ async fn stream_table_join_basic() {
 
 #[tokio::test]
 async fn stream_table_join_jdbc() {
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
     manager
         .add_data_source(
             "DS1".to_string(),
@@ -238,12 +236,10 @@ async fn stream_table_join_jdbc() {
         FROM L JOIN J2 ON L.roomNo = J2.roomNo;\n";
     let runner = AppRunner::new_with_manager(manager, query, "Out").await;
     let th = runner.runtime().get_table_input_handler("J2").unwrap();
-    th.add(vec![
-        eventflux::core::event::event::Event::new_with_data(
-            0,
-            vec![AttributeValue::Int(2), AttributeValue::String("B".into())],
-        ),
-    ]);
+    th.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
+        vec![AttributeValue::Int(2), AttributeValue::String("B".into())],
+    )]);
     runner.send(
         "L",
         vec![AttributeValue::Int(2), AttributeValue::String("x".into())],
@@ -262,7 +258,7 @@ async fn stream_table_join_jdbc() {
 #[tokio::test]
 #[ignore = "INSERT INTO TABLE runtime not implemented - need table insert processor in query execution pipeline"]
 async fn cache_and_jdbc_tables_eviction_and_queries() {
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
     manager
         .add_data_source(
             "DS1".to_string(),
@@ -373,15 +369,13 @@ async fn test_table_on_left_stream_on_right_join() {
 
     // Add data to table
     let th = runner.runtime().get_table_input_handler("T").unwrap();
-    th.add(vec![
-        eventflux::core::event::event::Event::new_with_data(
-            0,
-            vec![
-                AttributeValue::Int(42),
-                AttributeValue::String("test".into()),
-            ],
-        ),
-    ]);
+    th.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
+        vec![
+            AttributeValue::Int(42),
+            AttributeValue::String("test".into()),
+        ],
+    )]);
 
     // Send stream event
     runner.send(
@@ -426,30 +420,26 @@ async fn test_multiple_tables_in_query() {
 
     // Add user data
     let user_handler = runner.runtime().get_table_input_handler("users").unwrap();
-    user_handler.add(vec![
-        eventflux::core::event::event::Event::new_with_data(
-            0,
-            vec![
-                AttributeValue::Int(100),
-                AttributeValue::String("Alice".into()),
-            ],
-        ),
-    ]);
+    user_handler.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
+        vec![
+            AttributeValue::Int(100),
+            AttributeValue::String("Alice".into()),
+        ],
+    )]);
 
     // Add product data
     let product_handler = runner
         .runtime()
         .get_table_input_handler("products")
         .unwrap();
-    product_handler.add(vec![
-        eventflux::core::event::event::Event::new_with_data(
-            0,
-            vec![
-                AttributeValue::Int(200),
-                AttributeValue::String("Widget".into()),
-            ],
-        ),
-    ]);
+    product_handler.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
+        vec![
+            AttributeValue::Int(200),
+            AttributeValue::String("Widget".into()),
+        ],
+    )]);
 
     // Send event
     runner.send(
@@ -483,15 +473,13 @@ async fn test_table_join_no_match() {
 
     // Add table data with id=1
     let th = runner.runtime().get_table_input_handler("T").unwrap();
-    th.add(vec![
-        eventflux::core::event::event::Event::new_with_data(
-            0,
-            vec![
-                AttributeValue::Int(1),
-                AttributeValue::String("label1".into()),
-            ],
-        ),
-    ]);
+    th.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
+        vec![
+            AttributeValue::Int(1),
+            AttributeValue::String("label1".into()),
+        ],
+    )]);
 
     // Send stream event with id=999 (no match)
     runner.send(
@@ -525,15 +513,13 @@ async fn test_table_join_multiple_matches() {
 
     // Add multiple table rows with same category
     let th = runner.runtime().get_table_input_handler("T").unwrap();
-    th.add(vec![
-        eventflux::core::event::event::Event::new_with_data(
-            0,
-            vec![
-                AttributeValue::Int(5),
-                AttributeValue::String("label_a".into()),
-            ],
-        ),
-    ]);
+    th.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
+        vec![
+            AttributeValue::Int(5),
+            AttributeValue::String("label_a".into()),
+        ],
+    )]);
 
     // Send stream event
     runner.send(
@@ -575,15 +561,13 @@ async fn test_stream_table_join_with_qualified_names() {
         .runtime()
         .get_table_input_handler("user_profiles")
         .unwrap();
-    th.add(vec![
-        eventflux::core::event::event::Event::new_with_data(
-            0,
-            vec![
-                AttributeValue::Int(123),
-                AttributeValue::String("US".into()),
-            ],
-        ),
-    ]);
+    th.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
+        vec![
+            AttributeValue::Int(123),
+            AttributeValue::String("US".into()),
+        ],
+    )]);
 
     // Send order
     runner.send(

@@ -40,7 +40,7 @@ async fn partition_async_ordered() {
         runner.send(
             "In",
             vec![
-                AttributeValue::Int(i as i32),
+                AttributeValue::Int(i),
                 AttributeValue::String(p.to_string()),
             ],
         );

@@ -97,7 +97,7 @@ pub struct EventFluxContext {
     default_junction_async: bool,
 
     // Actual fields for extensions and data sources
-    /// Stores factories for User-Defined Scalar Functions. Key: "namespace:name" or "name", Value: clonable factory instance.
+    /// Stores factories for User-Defined Scalar Functions. Key: "namespace:name" or "name", Value: cloneable factory instance.
     scalar_function_factories: Arc<RwLock<HashMap<String, Box<dyn ScalarFunctionExecutor>>>>,
     /// Window processor factories
     window_factories:
@@ -455,11 +455,17 @@ impl EventFluxContext {
         self.add_window_factory("session".to_string(), Box::new(SessionWindowFactory));
         self.add_window_factory("sort".to_string(), Box::new(SortWindowFactory));
         self.add_window_factory("unique".to_string(), Box::new(UniqueWindowFactory));
-        self.add_window_factory("firstUnique".to_string(), Box::new(FirstUniqueWindowFactory));
+        self.add_window_factory(
+            "firstUnique".to_string(),
+            Box::new(FirstUniqueWindowFactory),
+        );
         self.add_window_factory("delay".to_string(), Box::new(DelayWindowFactory));
         self.add_window_factory("expression".to_string(), Box::new(ExpressionWindowFactory));
         self.add_window_factory("frequent".to_string(), Box::new(FrequentWindowFactory));
-        self.add_window_factory("lossyFrequent".to_string(), Box::new(LossyFrequentWindowFactory));
+        self.add_window_factory(
+            "lossyFrequent".to_string(),
+            Box::new(LossyFrequentWindowFactory),
+        );
 
         self.add_attribute_aggregator_factory(
             "sum".to_string(),

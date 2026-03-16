@@ -51,6 +51,7 @@ impl Partition {
     }
 
     // Static factory `partition()` from Java
+    #[allow(clippy::self_named_constructors)]
     pub fn partition() -> Self {
         Self::new()
     }

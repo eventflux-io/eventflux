@@ -39,6 +39,7 @@ pub enum StreamHandler {
 
 impl StreamHandler {
     // Accessing the composed eventflux_element from the variants
+    #[allow(dead_code)]
     fn eventflux_element_ref(&self) -> &EventFluxElement {
         match self {
             StreamHandler::Filter(f) => &f.eventflux_element,
@@ -47,6 +48,7 @@ impl StreamHandler {
         }
     }
 
+    #[allow(dead_code)]
     fn eventflux_element_mut_ref(&mut self) -> &mut EventFluxElement {
         match self {
             StreamHandler::Filter(f) => &mut f.eventflux_element,

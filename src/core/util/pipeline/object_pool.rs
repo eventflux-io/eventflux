@@ -58,6 +58,7 @@ pub struct PooledEvent {
 
 impl PooledEvent {
     /// Create a new pooled event
+    #[allow(dead_code)]
     fn new(pool: Arc<EventPool>) -> Self {
         Self {
             event: None,

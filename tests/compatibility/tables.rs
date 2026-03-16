@@ -1303,6 +1303,7 @@ async fn table_mutation_update_with_expression() {
 
 /// UPSERT with different data types
 #[tokio::test]
+#[allow(clippy::approx_constant)]
 async fn table_mutation_upsert_different_types() {
     let app = "\
         CREATE TABLE dataTable (id INT, name STRING, value DOUBLE, active BOOL) WITH (extension = 'inMemory');\n\
@@ -3079,7 +3080,7 @@ async fn table_test_coalesce() {
         ],
     );
     let out = runner.shutdown();
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
     // First lookup returns table value "dark"
     assert_eq!(out[0][0], AttributeValue::String("dark".to_string()));
 }
@@ -3488,7 +3489,7 @@ async fn table_test_update_same_key() {
     );
     let out = runner.shutdown();
     // Should get at least one result
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
 }
 
 /// Table with integer multiplication
@@ -3998,7 +3999,7 @@ async fn table_test_update() {
     );
     let out = runner.shutdown();
     // Second insert should update the value
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
     let last = out.last().unwrap();
     assert_eq!(last[1], AttributeValue::Int(200));
 }
@@ -4975,7 +4976,7 @@ async fn table_test_update_on_duplicate() {
     );
     let out = runner.shutdown();
     // Second insert should update the row
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
     // The last output should be "Bob"
     let last_name = &out[out.len() - 1][1];
     assert_eq!(last_name, &AttributeValue::String("Bob".to_string()));
@@ -5622,7 +5623,7 @@ async fn table_test_uuid_select() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::String(uuid) = &out[0][1] {
-        assert!(uuid.len() > 0);
+        assert!(!uuid.is_empty());
     } else {
         panic!("Expected string UUID");
     }

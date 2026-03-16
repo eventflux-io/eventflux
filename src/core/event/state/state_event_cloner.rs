@@ -58,9 +58,7 @@ impl StateEventCloner {
         if self.output_data_size > 0 {
             if let (Some(src), Some(dest)) = (&state_event.output_data, &mut new_event.output_data)
             {
-                for i in 0..self.output_data_size {
-                    dest[i] = src[i].clone();
-                }
+                dest[..self.output_data_size].clone_from_slice(&src[..self.output_data_size]);
             }
         }
         if self.stream_event_size > 0 {
@@ -228,6 +226,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_clone_output_data() {
         let mut state = StateEvent::new(1, 3);
 

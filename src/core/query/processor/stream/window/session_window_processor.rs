@@ -598,7 +598,7 @@ impl SessionEventChunk {
 mod tests {
     use super::*;
     use crate::core::event::stream::StreamEvent;
-    use crate::core::event::value::AttributeValue;
+
     use std::sync::Arc;
 
     #[test]

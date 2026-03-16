@@ -127,9 +127,7 @@ fn test_compare_type_coercion_int_double() {
     let result = exec.execute(None);
     assert_eq!(
         result,
-        Some(eventflux::core::event::value::AttributeValue::Bool(
-            true
-        ))
+        Some(eventflux::core::event::value::AttributeValue::Bool(true))
     );
 }
 
@@ -171,7 +169,7 @@ fn test_variable_not_found_error() {
 #[test]
 fn test_table_variable_resolution() {
     use eventflux::query_api::definition::TableDefinition;
-    let table = TableDefinition::new("T".to_string()).attribute("val".to_string(), AttrType::INT);
+    let _table = TableDefinition::new("T".to_string()).attribute("val".to_string(), AttrType::INT);
     let stream_equiv = Arc::new(
         StreamDefinition::new("T".to_string()).attribute("val".to_string(), AttrType::INT),
     );
@@ -242,7 +240,7 @@ fn test_custom_udf_plus_one() {
     impl ScalarFunctionExecutor for PlusOneFn {
         fn init(
             &mut self,
-            args: &Vec<Box<dyn ExpressionExecutor>>,
+            args: &[Box<dyn ExpressionExecutor>],
             _ctx: &Arc<EventFluxAppContext>,
         ) -> Result<(), String> {
             if args.len() != 1 {
@@ -320,7 +318,7 @@ fn test_join_query_parsing() {
         None,
         None,
     );
-    let mut selector = eventflux::query_api::execution::query::selection::Selector::new();
+    let selector = eventflux::query_api::execution::query::selection::Selector::new();
     let insert_action =
         eventflux::query_api::execution::query::output::output_stream::InsertIntoStreamAction {
             target_id: "Out".to_string(),
@@ -389,7 +387,7 @@ fn test_join_query_parsing() {
     assert!(res.is_ok());
 
     // Also ensure expression parsing works standalone
-    let mut left_meta = MetaStreamEvent::new_for_single_input(Arc::clone(&left_def));
+    let left_meta = MetaStreamEvent::new_for_single_input(Arc::clone(&left_def));
     let mut right_meta = MetaStreamEvent::new_for_single_input(Arc::clone(&right_def));
     right_meta.apply_attribute_offset(1);
     let mut map = HashMap::new();
@@ -432,7 +430,7 @@ fn test_pattern_query_parsing() {
     let next = State::next(StateElement::Stream(sse1), StateElement::Stream(sse2));
     let state_stream = StateInputStream::sequence_stream(next, None);
     let input = InputStream::State(Box::new(state_stream));
-    let mut selector = eventflux::query_api::execution::query::selection::Selector::new();
+    let selector = eventflux::query_api::execution::query::selection::Selector::new();
     let insert_action =
         eventflux::query_api::execution::query::output::output_stream::InsertIntoStreamAction {
             target_id: "Out".to_string(),
@@ -615,7 +613,7 @@ async fn test_app_runner_table_in_lookup() {
         InsertIntoStreamAction, OutputStream, OutputStreamAction,
     };
     use eventflux::query_api::execution::query::selection::Selector;
-    use eventflux::query_api::execution::query::{OutputAttribute, Query};
+    use eventflux::query_api::execution::query::Query;
 
     use eventflux::core::config::stream_config::{FlatConfig, PropertySource};
 
@@ -741,7 +739,7 @@ async fn test_app_runner_custom_udf() {
     impl ScalarFunctionExecutor for PlusOneFn {
         fn init(
             &mut self,
-            args: &Vec<Box<dyn ExpressionExecutor>>,
+            args: &[Box<dyn ExpressionExecutor>],
             ctx: &std::sync::Arc<
                 eventflux::core::config::eventflux_app_context::EventFluxAppContext,
             >,
@@ -761,7 +759,7 @@ async fn test_app_runner_custom_udf() {
         }
     }
 
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
     manager.add_scalar_function_factory("plusOne".to_string(), Box::new(PlusOneFn::default()));
 
     let app = "\

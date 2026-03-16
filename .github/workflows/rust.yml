@@ -21,6 +21,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Disable incremental compilation to save disk space
@@ -29,8 +32,8 @@ env:
   RUSTFLAGS: "-C debuginfo=0"
 
 jobs:
-  build:
-
+  ci:
+    name: Quality, Build & Test
     runs-on: ubuntu-latest
 
     services:
@@ -45,7 +48,7 @@ jobs:
           - 6379:6379
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       with:
         submodules: recursive
 
@@ -57,20 +60,44 @@ jobs:
         df -h
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7  # stable
       with:
         toolchain: 1.85
+        components: rustfmt, clippy
 
     - name: Cache cargo registry and target
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('src/**') }}
         restore-keys: |
+          ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Run clippy
+      # Note: Not using --all-features because cloud-native features (kubernetes, consul,
+      # etcd, vault) require external system dependencies not available in CI.
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Check typos
+      uses: crate-ci/typos@631208b7aac2daa8b707f55e7331f9112b0e062d  # v1.44.0
+
+    - name: Install cargo-machete and cargo-sort
+      uses: taiki-e/install-action@cbb1dcaa26e1459e2876c39f61c1e22a1258aac5  # v2
+      with:
+        tool: cargo-machete,cargo-sort
+
+    - name: Check unused dependencies
+      run: cargo machete
+
+    - name: Check dependency sorting
+      run: cargo sort --workspace --check
 
     - name: Run tests
       run: cargo test --verbose

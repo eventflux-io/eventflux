@@ -693,7 +693,6 @@ impl LengthBatchWindowProcessor {
             Arc::new(Mutex::new(state_holder_clone));
         if let Some(snapshot_service) = app_ctx.get_snapshot_service() {
             snapshot_service.register_state_holder(component_id.clone(), state_holder_arc);
-        } else {
         }
 
         Self {
@@ -2023,12 +2022,15 @@ fn resolve_key_indices(
     if params.is_empty() {
         return Ok(Vec::new());
     }
-    let meta = parse_ctx.stream_meta_map.get(&parse_ctx.default_source)
+    let meta = parse_ctx
+        .stream_meta_map
+        .get(&parse_ctx.default_source)
         .ok_or_else(|| format!("No stream metadata for '{}'", parse_ctx.default_source))?;
     let mut indices = Vec::new();
     for param in params {
         if let Expression::Variable(var) = param {
-            let (idx, _) = meta.find_attribute_info(&var.attribute_name)
+            let (idx, _) = meta
+                .find_attribute_info(&var.attribute_name)
                 .ok_or_else(|| format!("Attribute '{}' not found in stream", var.attribute_name))?;
             indices.push(*idx);
         }
@@ -2044,14 +2046,18 @@ fn generate_composite_key(event: &StreamEvent, key_indices: &[usize]) -> String 
     let mut buf = String::new();
     if key_indices.is_empty() {
         for (i, v) in event.before_window_data.iter().enumerate() {
-            if i > 0 { buf.push('\0'); }
+            if i > 0 {
+                buf.push('\0');
+            }
             let _ = write!(buf, "{}", v);
         }
     } else {
         let mut first = true;
         for &idx in key_indices {
             if let Some(v) = event.before_window_data.get(idx) {
-                if !first { buf.push('\0'); }
+                if !first {
+                    buf.push('\0');
+                }
                 let _ = write!(buf, "{}", v);
                 first = false;
             }
@@ -2126,7 +2132,8 @@ impl Processor for UniqueWindowProcessor {
                     if let Some(se) = ev.as_any().downcast_ref::<StreamEvent>() {
                         let key = generate_composite_key(se, &self.key_attribute_indices);
 
-                        if let Some(old_event) = map.insert(key, Arc::new(se.clone_without_next())) {
+                        if let Some(old_event) = map.insert(key, Arc::new(se.clone_without_next()))
+                        {
                             // Expire the old event with the same key
                             let mut ex = old_event.as_ref().clone_without_next();
                             ex.set_event_type(ComplexEventType::Expired);
@@ -2345,9 +2352,9 @@ impl WindowProcessorFactory for FirstUniqueWindowFactory {
         query_ctx: Arc<EventFluxQueryContext>,
         parse_ctx: &crate::core::util::parser::expression_parser::ExpressionParserContext,
     ) -> Result<Arc<Mutex<dyn Processor>>, String> {
-        Ok(Arc::new(Mutex::new(FirstUniqueWindowProcessor::from_handler(
-            handler, app_ctx, query_ctx, parse_ctx,
-        )?)))
+        Ok(Arc::new(Mutex::new(
+            FirstUniqueWindowProcessor::from_handler(handler, app_ctx, query_ctx, parse_ctx)?,
+        )))
     }
 
     fn clone_box(&self) -> Box<dyn WindowProcessorFactory> {
@@ -2435,7 +2442,9 @@ impl DelayWindowProcessor {
             };
             let processor = Self::new(delay, app_ctx, query_ctx);
             if processor.scheduler.is_none() {
-                return Err("Delay window requires a scheduler (not available in this context)".to_string());
+                return Err(
+                    "Delay window requires a scheduler (not available in this context)".to_string(),
+                );
             }
             Ok(processor)
         } else {
@@ -2476,7 +2485,9 @@ impl Processor for DelayWindowProcessor {
     }
 
     fn clone_processor(&self, query_ctx: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
-        let scheduler = self.scheduler.as_ref()
+        let scheduler = self
+            .scheduler
+            .as_ref()
             .expect("DelayWindowProcessor invariant violated: scheduler missing during clone")
             .clone();
         Box::new(Self::new_cloned(
@@ -2618,7 +2629,8 @@ impl Processor for FrequentWindowProcessor {
                         let key = generate_composite_key(se, &self.key_attribute_indices);
                         let cloned = Arc::new(se.clone_without_next());
 
-                        if let Some(old) = state.event_map.insert(key.clone(), Arc::clone(&cloned)) {
+                        if let Some(old) = state.event_map.insert(key.clone(), Arc::clone(&cloned))
+                        {
                             // Key exists — replacement policy: expire old, emit new
                             *state.count_map.entry(key).or_insert(0) += 1;
                             let mut ex = old.as_ref().clone_without_next();
@@ -2647,7 +2659,8 @@ impl Processor for FrequentWindowProcessor {
                                         ex.set_event_type(ComplexEventType::Expired);
                                         ex.set_timestamp(se.timestamp);
                                         *output_tail = Some(Box::new(ex));
-                                        output_tail = output_tail.as_mut().unwrap().mut_next_ref_option();
+                                        output_tail =
+                                            output_tail.as_mut().unwrap().mut_next_ref_option();
                                     }
                                 }
 
@@ -2657,7 +2670,8 @@ impl Processor for FrequentWindowProcessor {
                                 } else {
                                     state.count_map.insert(key, 1);
                                     *output_tail = Some(Box::new(se.clone_without_next()));
-                                    output_tail = output_tail.as_mut().unwrap().mut_next_ref_option();
+                                    output_tail =
+                                        output_tail.as_mut().unwrap().mut_next_ref_option();
                                 }
                             } else {
                                 state.count_map.insert(key, 1);
@@ -2840,7 +2854,13 @@ impl LossyFrequentWindowProcessor {
         // Resolve optional key attribute indices from remaining parameters
         let key_attribute_indices = resolve_key_indices(&params[key_params_start..], parse_ctx)?;
 
-        Ok(Self::new(support, error, key_attribute_indices, app_ctx, query_ctx))
+        Ok(Self::new(
+            support,
+            error,
+            key_attribute_indices,
+            app_ctx,
+            query_ctx,
+        ))
     }
 }
 
@@ -2868,16 +2888,21 @@ impl Processor for LossyFrequentWindowProcessor {
                             lc.count += 1;
                         } else {
                             let bucket_id = state.current_bucket_id.saturating_sub(1);
-                            state.count_map.insert(key.clone(), LossyCount {
-                                count: 1,
-                                bucket_id,
-                            });
+                            state.count_map.insert(
+                                key.clone(),
+                                LossyCount {
+                                    count: 1,
+                                    bucket_id,
+                                },
+                            );
                         }
 
                         // Check threshold to decide window membership
                         let threshold = (self.support - self.error) * (state.total_count as f64);
-                        let meets_threshold = state.count_map.get(&key)
-                            .map_or(false, |lc| lc.count as f64 >= threshold);
+                        let meets_threshold = state
+                            .count_map
+                            .get(&key)
+                            .is_some_and(|lc| lc.count as f64 >= threshold);
                         let was_in_window = state.event_map.contains_key(&key);
 
                         if meets_threshold {
@@ -2909,7 +2934,9 @@ impl Processor for LossyFrequentWindowProcessor {
                         // Prune if at window boundary
                         if state.total_count % self.window_width == 0 {
                             let bucket_id = state.current_bucket_id;
-                            let keys_to_remove: Vec<String> = state.count_map.iter()
+                            let keys_to_remove: Vec<String> = state
+                                .count_map
+                                .iter()
                                 .filter(|(_, lc)| lc.count + lc.bucket_id <= bucket_id)
                                 .map(|(k, _)| k.clone())
                                 .collect();
@@ -2920,7 +2947,8 @@ impl Processor for LossyFrequentWindowProcessor {
                                     ex.set_event_type(ComplexEventType::Expired);
                                     ex.set_timestamp(se.timestamp);
                                     *output_tail = Some(Box::new(ex));
-                                    output_tail = output_tail.as_mut().unwrap().mut_next_ref_option();
+                                    output_tail =
+                                        output_tail.as_mut().unwrap().mut_next_ref_option();
                                 }
                             }
                         }
@@ -2990,9 +3018,9 @@ impl WindowProcessorFactory for LossyFrequentWindowFactory {
         query_ctx: Arc<EventFluxQueryContext>,
         parse_ctx: &crate::core::util::parser::expression_parser::ExpressionParserContext,
     ) -> Result<Arc<Mutex<dyn Processor>>, String> {
-        Ok(Arc::new(Mutex::new(LossyFrequentWindowProcessor::from_handler(
-            handler, app_ctx, query_ctx, parse_ctx,
-        )?)))
+        Ok(Arc::new(Mutex::new(
+            LossyFrequentWindowProcessor::from_handler(handler, app_ctx, query_ctx, parse_ctx)?,
+        )))
     }
 
     fn clone_box(&self) -> Box<dyn WindowProcessorFactory> {
@@ -3047,7 +3075,10 @@ impl ExpressionWindowProcessor {
             if rest.starts_with("<=") {
                 rest.trim_start_matches("<=").trim().parse().ok()
             } else if rest.starts_with("<") {
-                rest.trim_start_matches("<").trim().parse::<usize>().ok()
+                rest.trim_start_matches("<")
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
                     .map(|n| n.saturating_sub(1))
             } else {
                 None
@@ -3110,7 +3141,8 @@ impl Processor for ExpressionWindowProcessor {
                                         ex.set_event_type(ComplexEventType::Expired);
                                         ex.set_timestamp(se.timestamp);
                                         *output_tail = Some(Box::new(ex));
-                                        output_tail = output_tail.as_mut().unwrap().mut_next_ref_option();
+                                        output_tail =
+                                            output_tail.as_mut().unwrap().mut_next_ref_option();
                                     }
                                 }
                             }
@@ -3183,9 +3215,9 @@ impl WindowProcessorFactory for ExpressionWindowFactory {
         query_ctx: Arc<EventFluxQueryContext>,
         parse_ctx: &crate::core::util::parser::expression_parser::ExpressionParserContext,
     ) -> Result<Arc<Mutex<dyn Processor>>, String> {
-        Ok(Arc::new(Mutex::new(ExpressionWindowProcessor::from_handler(
-            handler, app_ctx, query_ctx, parse_ctx,
-        )?)))
+        Ok(Arc::new(Mutex::new(
+            ExpressionWindowProcessor::from_handler(handler, app_ctx, query_ctx, parse_ctx)?,
+        )))
     }
 
     fn clone_box(&self) -> Box<dyn WindowProcessorFactory> {

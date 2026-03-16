@@ -147,6 +147,9 @@ website/.cache-loader/
 website/.npm/
 research/
 
+# Feature development scratchpads (may contain proprietary references)
+feat/
+
 # LLM instruction files
 GEMINI.md
 CLAUDE.md

@@ -26,6 +26,7 @@ pub mod math;
 // Declare modules for individual expression types at this level
 pub mod attribute_function;
 pub mod cast;
+#[allow(clippy::module_inception)]
 pub mod expression;
 pub mod indexed_variable;
 pub mod variable; // This is the main Expression enum

@@ -458,7 +458,7 @@ impl UnifiedStateManager {
 
     /// Perform live state schema migration
     pub fn migrate_schema(&self, migration: SchemaMigration) -> Result<(), StateError> {
-        let component = self
+        let _component = self
             .registry
             .get_component(&migration.component_id)
             .ok_or_else(|| StateError::InvalidStateData {
