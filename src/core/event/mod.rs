@@ -16,6 +16,7 @@
  */
 
 pub mod complex_event;
+#[allow(clippy::module_inception)]
 pub mod event;
 pub mod state;
 pub mod stream;

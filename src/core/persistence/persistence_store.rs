@@ -328,7 +328,7 @@ impl PersistenceStore for RedisPersistenceStore {
                 ];
 
                 // Try atomic multi-set, initialize if needed
-                if let Err(_) = backend.set_multi(kvs.clone()).await {
+                if backend.set_multi(kvs.clone()).await.is_err() {
                     // Initialize and retry
                     if let Err(e) = backend.initialize().await {
                         error!("Failed to initialize Redis backend: {}", e);
@@ -336,7 +336,6 @@ impl PersistenceStore for RedisPersistenceStore {
                     }
                     if let Err(e) = backend.set_multi(kvs).await {
                         error!("Failed to atomically save snapshot to Redis: {}", e);
-                        return;
                     }
                 }
             });
@@ -354,7 +353,7 @@ impl PersistenceStore for RedisPersistenceStore {
                     ];
 
                     // Try atomic multi-set, initialize if needed
-                    if let Err(_) = backend.set_multi(kvs.clone()).await {
+                    if backend.set_multi(kvs.clone()).await.is_err() {
                         // Initialize and retry
                         if let Err(e) = backend.initialize().await {
                             error!("Failed to initialize Redis backend: {}", e);
@@ -362,7 +361,6 @@ impl PersistenceStore for RedisPersistenceStore {
                         }
                         if let Err(e) = backend.set_multi(kvs).await {
                             error!("Failed to atomically save snapshot to Redis: {}", e);
-                            return;
                         }
                     }
                 })
@@ -504,7 +502,7 @@ impl PersistenceStore for RedisPersistenceStore {
 
                 // Try to delete, initialize if needed
                 let last_rev_key = Self::last_revision_key(eventflux_app_id);
-                if let Err(_) = backend.delete(&last_rev_key).await {
+                if backend.delete(&last_rev_key).await.is_err() {
                     // Initialize and retry
                     if let Err(e) = backend.initialize().await {
                         error!("Failed to initialize Redis backend: {}", e);
@@ -528,7 +526,7 @@ impl PersistenceStore for RedisPersistenceStore {
 
                     // Try to delete, initialize if needed
                     let last_rev_key = Self::last_revision_key(&eventflux_app_id);
-                    if let Err(_) = backend.delete(&last_rev_key).await {
+                    if backend.delete(&last_rev_key).await.is_err() {
                         // Initialize and retry
                         if let Err(e) = backend.initialize().await {
                             error!("Failed to initialize Redis backend: {}", e);

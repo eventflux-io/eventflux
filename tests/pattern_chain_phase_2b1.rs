@@ -440,7 +440,7 @@ fn test_2b1_6_range_quantifier() {
     // So we get 2 outputs: one for A{1}->B{2} and one for A{2}->B{2}
     let outputs = collector.get_outputs();
     println!("Final outputs count: {}", outputs.len());
-    assert!(outputs.len() >= 1, "Expected at least 1 output event");
+    assert!(!outputs.is_empty(), "Expected at least 1 output event");
     assert!(
         outputs.len() <= 2,
         "Expected at most 2 output events for A{{1,3}}"

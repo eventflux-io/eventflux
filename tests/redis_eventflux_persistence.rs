@@ -351,7 +351,7 @@ async fn test_redis_aggregation_state_persistence() {
     let category_a_events: Vec<_> = out
         .iter()
         .filter(|event| {
-            if let Some(AttributeValue::String(cat)) = event.get(0) {
+            if let Some(AttributeValue::String(cat)) = event.first() {
                 cat == "A"
             } else {
                 false
@@ -669,7 +669,7 @@ async fn test_redis_aggregator_recovery_identical() {
     // Verify the aggregated values in the last output event (has complete aggregates)
     if let Some(last_event) = original_output.last() {
         // Total should be 100 + 200 + 50 = 350
-        if let Some(AttributeValue::Int(total)) = last_event.get(0) {
+        if let Some(AttributeValue::Int(total)) = last_event.first() {
             assert_eq!(*total, 350, "Original SUM should be 350 (100+200+50)");
         }
 
@@ -748,8 +748,8 @@ async fn test_redis_aggregator_recovery_identical() {
     {
         // Verify total (SUM) - should be 350 if state was restored
         assert_eq!(
-            original_event.get(0),
-            restored_event.get(0),
+            original_event.first(),
+            restored_event.first(),
             "SUM aggregate should match exactly (350 if state restored correctly, \
              50 if aggregator restarted from zero)"
         );

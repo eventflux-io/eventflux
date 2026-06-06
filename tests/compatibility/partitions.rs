@@ -3794,7 +3794,7 @@ async fn partition_test116_uuid() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::String(uuid) = &out[0][1] {
-        assert!(uuid.len() > 0);
+        assert!(!uuid.is_empty());
     } else {
         panic!("Expected string UUID");
     }

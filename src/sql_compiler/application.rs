@@ -321,7 +321,7 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                                 // Has qualifier - validate it matches target table or alias
                                 let qualifier = &parts[0];
                                 let is_valid_qualifier = qualifier == &target_table
-                                    || target_alias.as_ref().map_or(false, |a| a == qualifier);
+                                    || (target_alias.as_ref() == Some(qualifier));
 
                                 if !is_valid_qualifier {
                                     return Err(ApplicationError::Converter(

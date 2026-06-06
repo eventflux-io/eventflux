@@ -124,19 +124,19 @@ impl EventFluxConfig {
 
     /// Check if configuration is valid for single-node mode
     pub fn is_single_node_mode(&self) -> bool {
-        match self.eventflux.runtime.mode {
-            super::global_config::RuntimeMode::SingleNode => true,
-            _ => false,
-        }
+        matches!(
+            self.eventflux.runtime.mode,
+            super::global_config::RuntimeMode::SingleNode
+        )
     }
 
     /// Check if configuration is for distributed mode
     pub fn is_distributed_mode(&self) -> bool {
-        match self.eventflux.runtime.mode {
+        matches!(
+            self.eventflux.runtime.mode,
             super::global_config::RuntimeMode::Distributed
-            | super::global_config::RuntimeMode::Hybrid => true,
-            _ => false,
-        }
+                | super::global_config::RuntimeMode::Hybrid
+        )
     }
 
     /// Get the effective environment name
@@ -221,7 +221,7 @@ impl EventFluxConfig {
         }
 
         // Validate application names are not empty
-        for (name, _) in &self.applications {
+        for name in self.applications.keys() {
             if name.is_empty() {
                 errors.push("Application name cannot be empty".to_string());
             }

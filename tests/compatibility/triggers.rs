@@ -169,6 +169,12 @@ async fn trigger_test10_batch_processing() {
     let runner = AppRunner::new(app, "outputStream").await;
     sleep(Duration::from_millis(50));
     let out = runner.shutdown();
-    // Output depends on window implementation
-    assert!(out.len() >= 0);
+    // No data was sent to inputStream. The sliding time window should produce
+    // no output because no events entered the window.
+    // Sleep (50ms) is shorter than the trigger interval (100ms) to minimize race risk.
+    assert!(
+        out.is_empty(),
+        "Expected no output since no data was sent to inputStream, got {} events",
+        out.len()
+    );
 }

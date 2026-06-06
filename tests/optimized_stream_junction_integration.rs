@@ -30,7 +30,7 @@ use eventflux::core::event::stream::StreamEvent;
 use eventflux::core::event::value::AttributeValue;
 use eventflux::core::query::processor::{ProcessingMode, Processor};
 use eventflux::core::stream::{
-    BackpressureStrategy, JunctionBenchmark, JunctionConfig, StreamJunction, StreamJunctionFactory,
+    BackpressureStrategy, JunctionConfig, StreamJunction, StreamJunctionFactory,
 };
 use eventflux::query_api::definition::attribute::Type as AttrType;
 use eventflux::query_api::definition::StreamDefinition;
@@ -78,12 +78,12 @@ impl PerformanceTestProcessor {
 
 impl Processor for PerformanceTestProcessor {
     fn process(&self, mut chunk: Option<Box<dyn ComplexEvent>>) {
-        let received_time = Instant::now();
+        let _received_time = Instant::now();
 
         while let Some(mut ce) = chunk {
             chunk = ce.set_next(None);
 
-            if let Some(se) = ce.as_any().downcast_ref::<StreamEvent>() {
+            if let Some(_se) = ce.as_any().downcast_ref::<StreamEvent>() {
                 // Calculate latency from timestamp
                 // For testing purposes, we just count events rather than calculate real latency
                 // since the timestamps in the test are sequential numbers, not real timestamps
@@ -283,7 +283,7 @@ fn test_synchronous_mode_ordering_guarantee() {
             while let Some(mut ce) = chunk {
                 chunk = ce.set_next(None);
                 if let Some(se) = ce.as_any().downcast_ref::<StreamEvent>() {
-                    if let Some(AttributeValue::Int(value)) = se.before_window_data.get(0) {
+                    if let Some(AttributeValue::Int(value)) = se.before_window_data.first() {
                         self.received_order.lock().unwrap().push(*value);
                     }
                 }
@@ -432,7 +432,7 @@ fn test_concurrent_publishers_optimized_junction() {
                 let event = Event::new_with_data(
                     (thread_id * events_per_thread + i) as i64,
                     vec![
-                        AttributeValue::Int(thread_id as i32 * 1000 + i as i32),
+                        AttributeValue::Int(thread_id * 1000 + i),
                         AttributeValue::Long(
                             std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)

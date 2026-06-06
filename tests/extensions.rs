@@ -121,9 +121,8 @@ impl AttributeAggregatorFactory for ConstAggFactory {
     }
     fn create(
         &self,
-    ) -> Box<
-        dyn eventflux::core::query::selector::attribute::aggregator::AttributeAggregatorExecutor,
-    >{
+    ) -> Box<dyn eventflux::core::query::selector::attribute::aggregator::AttributeAggregatorExecutor>
+    {
         Box::new(ConstAggExec)
     }
     fn clone_box(&self) -> Box<dyn AttributeAggregatorFactory> {
@@ -283,20 +282,19 @@ fn test_register_window_factory() {
     ));
 
     // Create minimal ExpressionParserContext for the test
-    let parse_ctx =
-        eventflux::core::util::parser::expression_parser::ExpressionParserContext {
-            eventflux_app_context: Arc::clone(&app_ctx),
-            eventflux_query_context: Arc::clone(&q_ctx),
-            stream_meta_map: std::collections::HashMap::new(),
-            table_meta_map: std::collections::HashMap::new(),
-            window_meta_map: std::collections::HashMap::new(),
-            aggregation_meta_map: std::collections::HashMap::new(),
-            state_meta_map: std::collections::HashMap::new(),
-            stream_positions: std::collections::HashMap::new(),
-            default_source: String::new(),
-            query_name: "test_query",
-            is_mutation_context: false,
-        };
+    let parse_ctx = eventflux::core::util::parser::expression_parser::ExpressionParserContext {
+        eventflux_app_context: Arc::clone(&app_ctx),
+        eventflux_query_context: Arc::clone(&q_ctx),
+        stream_meta_map: std::collections::HashMap::new(),
+        table_meta_map: std::collections::HashMap::new(),
+        window_meta_map: std::collections::HashMap::new(),
+        aggregation_meta_map: std::collections::HashMap::new(),
+        state_meta_map: std::collections::HashMap::new(),
+        stream_positions: std::collections::HashMap::new(),
+        default_source: String::new(),
+        query_name: "test_query",
+        is_mutation_context: false,
+    };
 
     let res = eventflux::core::query::processor::stream::window::create_window_processor(
         &handler, app_ctx, q_ctx, &parse_ctx,

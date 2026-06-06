@@ -47,6 +47,7 @@ impl StreamStateElement {
     }
 
     // Helper method for StateInputStream or other internal uses.
+    #[allow(dead_code)]
     pub(crate) fn get_stream_id(&self) -> &str {
         // SingleInputStream has get_stream_id_str() directly.
         self.basic_single_input_stream.get_stream_id_str()

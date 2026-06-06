@@ -17,9 +17,7 @@
 
 use eventflux::core::event::{value::AttributeValue, Event};
 use eventflux::core::eventflux_manager::EventFluxManager;
-use eventflux::core::persistence::{
-    InMemoryPersistenceStore, PersistenceStore, SnapshotService,
-};
+use eventflux::core::persistence::{InMemoryPersistenceStore, PersistenceStore, SnapshotService};
 use eventflux::core::stream::output::stream_callback::StreamCallback;
 use eventflux::core::util::{event_from_bytes, event_to_bytes};
 use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};

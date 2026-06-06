@@ -19,7 +19,7 @@
 // Comprehensive tests for the type system implementation
 
 #[cfg(test)]
-mod type_system_tests {
+mod tests {
     use crate::core::event::value::AttributeValue;
     use crate::core::util::type_system::{
         get_arithmetic_result_type, TypeConverter, TypePrecedence,

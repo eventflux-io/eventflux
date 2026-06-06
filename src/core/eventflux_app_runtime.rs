@@ -245,7 +245,7 @@ impl EventFluxAppRuntime {
     fn new_with_applied_config(
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_context: Arc<crate::core::config::eventflux_context::EventFluxContext>,
-        eventflux_app_string: Option<String>,
+        _eventflux_app_string: Option<String>,
         app_config: &ApplicationConfig,
     ) -> Result<Self, String> {
         // 1. Create EventFluxAppContext using YAML/TOML configuration (ApplicationConfig)
@@ -930,10 +930,7 @@ impl EventFluxAppRuntime {
             if service.persistence_store.is_some() {
                 match self.persist() {
                     Ok(report) => {
-                        log::info!(
-                            "Auto-persisted on shutdown (revision: {})",
-                            report.revision
-                        )
+                        log::info!("Auto-persisted on shutdown (revision: {})", report.revision)
                     }
                     Err(e) => log::warn!("Auto-persist on shutdown failed: {}", e),
                 }
@@ -1059,14 +1056,13 @@ impl EventFluxAppRuntime {
         for query_runtime in &self.query_runtimes {
             // Try to access the processor chain and find SelectProcessors
             if let Some(ref processor) = query_runtime.processor_chain_head {
-                self.clear_processor_chain_group_states(processor);
+                Self::clear_processor_chain_group_states(processor);
             }
         }
     }
 
     /// Recursively clear group states in processor chains
     fn clear_processor_chain_group_states(
-        &self,
         processor: &Arc<Mutex<dyn crate::core::query::processor::Processor>>,
     ) {
         if let Ok(proc) = processor.lock() {
@@ -1075,7 +1071,7 @@ impl EventFluxAppRuntime {
 
             // Recursively check next processors in the chain
             if let Some(ref next) = proc.next_processor() {
-                self.clear_processor_chain_group_states(next);
+                Self::clear_processor_chain_group_states(next);
             }
         }
     }
@@ -2004,9 +2000,9 @@ impl EventFluxAppRuntime {
         };
 
         // Remove fields already extracted elsewhere (to avoid duplication)
-        mapping.remove(&serde_yaml::Value::String("type".to_string()));
-        mapping.remove(&serde_yaml::Value::String("format".to_string()));
-        mapping.remove(&serde_yaml::Value::String("connection".to_string()));
+        mapping.remove(serde_yaml::Value::String("type".to_string()));
+        mapping.remove(serde_yaml::Value::String("format".to_string()));
+        mapping.remove(serde_yaml::Value::String("connection".to_string()));
 
         // Flatten remaining fields (security, delivery_guarantee, retry, batching)
         Self::flatten_yaml_value(&serde_yaml::Value::Mapping(mapping), "", properties)?;
@@ -2034,9 +2030,9 @@ impl EventFluxAppRuntime {
         };
 
         // Remove fields already extracted elsewhere (to avoid duplication)
-        mapping.remove(&serde_yaml::Value::String("type".to_string()));
-        mapping.remove(&serde_yaml::Value::String("format".to_string()));
-        mapping.remove(&serde_yaml::Value::String("connection".to_string()));
+        mapping.remove(serde_yaml::Value::String("type".to_string()));
+        mapping.remove(serde_yaml::Value::String("format".to_string()));
+        mapping.remove(serde_yaml::Value::String("connection".to_string()));
 
         // Flatten remaining fields (security, error_handling, rate_limit)
         Self::flatten_yaml_value(&serde_yaml::Value::Mapping(mapping), "", properties)?;

@@ -22,12 +22,12 @@
 
 use eventflux::core::config::{
     monitoring::{
-        AlertRule, AlertingConfig, CheckResult, CustomMetric, EndpointConfig, HealthCheck,
-        HealthCheckConfig, HealthCheckType, HealthState, HealthStatus, LoggingConfig, MetricType,
-        MetricsConfig, MetricsExporter, MetricsExporterType, MonitoringConfig, NotificationChannel,
+        AlertRule, CheckResult, CustomMetric, EndpointConfig, HealthCheck, HealthCheckConfig,
+        HealthCheckType, HealthState, HealthStatus, LoggingConfig, MetricType, MetricsConfig,
+        MetricsExporter, MetricsExporterType, MonitoringConfig, NotificationChannel,
         NotificationChannelType, ObservabilityConfig, ProbeConfig, TracingConfig,
     },
-    ConfigManager, EventFluxConfig,
+    ConfigManager,
 };
 use std::collections::HashMap;
 use std::time::Duration;

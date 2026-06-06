@@ -121,6 +121,7 @@ pub enum ConflictResolution {
 }
 
 /// Compression engine for state data
+#[allow(dead_code)]
 pub struct CompressionEngine {
     /// Compression type
     compression_type: CompressionType,
@@ -153,6 +154,7 @@ pub struct MergeStatistics {
 
 /// Intermediate merge result
 #[derive(Debug)]
+#[allow(dead_code)]
 struct MergeResult {
     /// Merged component state
     component_states: HashMap<ComponentId, MergedComponentState>,
@@ -169,6 +171,7 @@ struct MergeResult {
 
 /// Merged state for a single component
 #[derive(Debug)]
+#[allow(dead_code)]
 struct MergedComponentState {
     /// Final state snapshot
     snapshot: StateSnapshot,
@@ -185,6 +188,7 @@ struct MergedComponentState {
 
 /// Metadata about the merge operation
 #[derive(Debug)]
+#[allow(dead_code)]
 struct MergeMetadata {
     /// Merge start time
     start_time: Instant,
@@ -497,9 +501,6 @@ impl CheckpointMerger for AdvancedCheckpointMerger {
             return Ok(base.clone());
         }
 
-        // Analyze chain for optimization opportunities
-        let analysis = self.analyze_chain(incrementals);
-
         // Collect all operations in chronological order
         let mut all_operations = Vec::new();
         for checkpoint in incrementals {
@@ -553,7 +554,7 @@ impl CheckpointMerger for AdvancedCheckpointMerger {
         changes: HashMap<ComponentId, ChangeLog>,
         wal_range: (u64, u64),
     ) -> Result<IncrementalCheckpoint, StateError> {
-        let start_time = Instant::now();
+        let _start_time = Instant::now();
 
         // Calculate total size
         let mut total_size = 0;
@@ -736,6 +737,7 @@ impl CompressionEngine {
 
 /// Analysis of checkpoint chain
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ChainAnalysis {
     total_checkpoints: usize,
     total_size: usize,
@@ -746,6 +748,7 @@ struct ChainAnalysis {
 
 /// Identified merge opportunity
 #[derive(Debug)]
+#[allow(dead_code)]
 struct MergeOpportunity {
     checkpoint_range: (CheckpointId, CheckpointId),
     overlapping_components: usize,
@@ -755,6 +758,7 @@ struct MergeOpportunity {
 
 /// Type of merge opportunity
 #[derive(Debug)]
+#[allow(dead_code)]
 enum MergeOpportunityType {
     ComponentOverlap,
     SmallCheckpoint,
@@ -911,7 +915,9 @@ mod tests {
             wal_offset_range: (0, 10),
         };
 
-        let result = merger.optimize_chain(&[incremental.clone()]).unwrap();
+        let result = merger
+            .optimize_chain(std::slice::from_ref(&incremental))
+            .unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].checkpoint_id, incremental.checkpoint_id);

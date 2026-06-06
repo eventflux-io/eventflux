@@ -143,7 +143,12 @@ fn test_fault_stream_routing() {
             events: Arc::clone(&rec),
         })));
     main_junction.stop_processing();
-    main_junction.send_event(Event::new_with_data(0, vec![AttributeValue::Int(1)]));
+    // send_event after stop returns Err, but the error routing side effect is what we test
+    let result = main_junction.send_event(Event::new_with_data(0, vec![AttributeValue::Int(1)]));
+    assert!(
+        result.is_err(),
+        "Expected send to fail after stop_processing"
+    );
     assert_eq!(rec.lock().unwrap().len(), 1);
 }
 
@@ -175,6 +180,11 @@ fn test_error_store_routing() {
     .unwrap();
     junction.set_on_error_action(OnErrorAction::STORE);
     junction.stop_processing();
-    junction.send_event(Event::new_with_data(0, vec![AttributeValue::Int(2)]));
+    // send_event after stop returns Err, but the error routing side effect is what we test
+    let result = junction.send_event(Event::new_with_data(0, vec![AttributeValue::Int(2)]));
+    assert!(
+        result.is_err(),
+        "Expected send to fail after stop_processing"
+    );
     assert_eq!(error_store.errors().len(), 1);
 }

@@ -17,14 +17,12 @@
 
 // Integration test for gRPC transport in distributed mode
 
-use eventflux::core::distributed::grpc::simple_transport::{
-    SimpleGrpcConfig, SimpleGrpcTransport,
-};
+use eventflux::core::distributed::grpc::simple_transport::{SimpleGrpcConfig, SimpleGrpcTransport};
 use eventflux::core::distributed::transport::{Message, MessageType};
 
 #[tokio::test]
 async fn test_simple_grpc_transport_creation() {
-    let transport = SimpleGrpcTransport::new();
+    let _transport = SimpleGrpcTransport::new();
     // Transport created successfully
 
     let custom_config = SimpleGrpcConfig {
@@ -45,7 +43,7 @@ fn test_grpc_message_conversion() {
         .with_header("target_node".to_string(), "node2".to_string());
 
     let proto_message = transport.to_proto_message(&original_message);
-    let converted_message = transport.from_proto_message(&proto_message);
+    let converted_message = transport.decode_proto_message(&proto_message);
 
     assert_eq!(original_message.id, converted_message.id);
     assert_eq!(original_message.payload, converted_message.payload);
@@ -78,7 +76,7 @@ fn test_grpc_message_types() {
         };
 
         let proto_message = transport.to_proto_message(&original_message);
-        let converted_message = transport.from_proto_message(&proto_message);
+        let converted_message = transport.decode_proto_message(&proto_message);
 
         assert_eq!(
             original_message.message_type,
@@ -92,7 +90,7 @@ fn test_grpc_message_types() {
 fn test_grpc_config_validation() {
     let config = SimpleGrpcConfig::default();
     assert_eq!(config.connection_timeout_ms, 10000);
-    assert_eq!(config.enable_compression, true);
+    assert!(config.enable_compression);
     assert_eq!(config.server_address, "127.0.0.1:50051");
 
     let custom_config = SimpleGrpcConfig {
@@ -101,7 +99,7 @@ fn test_grpc_config_validation() {
         server_address: "0.0.0.0:9090".to_string(),
     };
     assert_eq!(custom_config.connection_timeout_ms, 15000);
-    assert_eq!(custom_config.enable_compression, false);
+    assert!(!custom_config.enable_compression);
     assert_eq!(custom_config.server_address, "0.0.0.0:9090");
 }
 
@@ -158,7 +156,7 @@ async fn test_grpc_message_serialization_with_headers() {
     assert_eq!(proto_message.priority, 5);
 
     // Test round-trip conversion
-    let converted_message = transport.from_proto_message(&proto_message);
+    let converted_message = transport.decode_proto_message(&proto_message);
     assert_eq!(original_message.id, converted_message.id);
     assert_eq!(original_message.payload, converted_message.payload);
     assert_eq!(

@@ -45,32 +45,31 @@ use crate::core::extension::SinkFactory;
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex as TokioMutex;
 use tokio_tungstenite::{
     connect_async, tungstenite::http::Request, tungstenite::protocol::Message, MaybeTlsStream,
     WebSocketStream,
 };
 
 /// Message type for WebSocket sink
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MessageType {
     /// Send messages as text (UTF-8)
+    #[default]
     Text,
     /// Send messages as binary
     Binary,
 }
 
-impl Default for MessageType {
-    fn default() -> Self {
-        MessageType::Text
-    }
-}
+impl std::str::FromStr for MessageType {
+    type Err = String;
 
-impl MessageType {
     /// Parse from string
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "text" => Ok(MessageType::Text),
             "binary" => Ok(MessageType::Binary),
@@ -120,6 +119,7 @@ impl Default for WebSocketSinkConfig {
 
 impl WebSocketSinkConfig {
     /// Build configuration from properties HashMap
+    #[allow(clippy::field_reassign_with_default)]
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
 
@@ -210,7 +210,8 @@ pub struct WebSocketSink {
     /// Configuration
     config: WebSocketSinkConfig,
     /// Connection state (established in start())
-    state: Arc<Mutex<Option<WebSocketConnectionState>>>,
+    /// Uses tokio::sync::Mutex to safely hold across .await points in publish/stop
+    state: Arc<TokioMutex<Option<WebSocketConnectionState>>>,
     /// Tokio runtime for async operations (owned runtime when created by us)
     runtime: Arc<Mutex<Option<tokio::runtime::Runtime>>>,
     /// Runtime handle for async operations (stored when started inside existing runtime)
@@ -222,7 +223,7 @@ impl WebSocketSink {
     pub fn new(config: WebSocketSinkConfig) -> Self {
         Self {
             config,
-            state: Arc::new(Mutex::new(None)),
+            state: Arc::new(TokioMutex::new(None)),
             runtime: Arc::new(Mutex::new(None)),
             runtime_handle: Arc::new(Mutex::new(None)),
         }
@@ -348,7 +349,7 @@ impl Clone for WebSocketSink {
         // Connection will be established on start()
         Self {
             config: self.config.clone(),
-            state: Arc::new(Mutex::new(None)),
+            state: Arc::new(TokioMutex::new(None)),
             runtime: Arc::new(Mutex::new(None)),
             runtime_handle: Arc::new(Mutex::new(None)),
         }
@@ -365,7 +366,7 @@ impl Sink for WebSocketSink {
             let conn_state = Self::connect(&config).await?;
 
             // Store connection state
-            let mut state_guard = state.lock().unwrap();
+            let mut state_guard = state.lock().await;
             *state_guard = Some(conn_state);
 
             log::info!("[WebSocketSink] Ready to publish to {}", config.url);
@@ -428,13 +429,12 @@ impl Sink for WebSocketSink {
             async move {
                 // Try to send on existing connection
                 {
-                    let mut state_guard = state.lock().unwrap();
+                    let mut state_guard = state.lock().await;
                     if let Some(conn_state) = state_guard.as_mut() {
                         match conn_state.write.send(message.clone()).await {
                             Ok(()) => return Ok(()),
                             Err(e) => {
                                 log::warn!("[WebSocketSink] Send failed, will reconnect: {}", e);
-                                // Clear the state to trigger reconnection
                                 *state_guard = None;
                             }
                         }
@@ -452,7 +452,7 @@ impl Sink for WebSocketSink {
                     })?;
 
                     // Store the new connection
-                    let mut state_guard = state.lock().unwrap();
+                    let mut state_guard = state.lock().await;
                     *state_guard = Some(conn_state);
 
                     Ok(())
@@ -500,11 +500,13 @@ impl Sink for WebSocketSink {
 
         let state = Arc::clone(&self.state);
 
-        // Create the shutdown future
+        // Create the shutdown future — take state first so it's cleaned up even if close fails
         let shutdown_future = async move {
-            let mut state_guard = state.lock().unwrap();
-            if let Some(mut conn_state) = state_guard.take() {
-                // Send close frame
+            let conn_state = {
+                let mut state_guard = state.lock().await;
+                state_guard.take()
+            };
+            if let Some(mut conn_state) = conn_state {
                 if let Err(e) = conn_state.write.close().await {
                     log::warn!("[WebSocketSink] Error closing connection: {}", e);
                 }
@@ -633,8 +635,8 @@ impl SinkFactory for WebSocketSinkFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Sink>, EventFluxError> {
-        let parsed = WebSocketSinkConfig::from_properties(config)
-            .map_err(|e| EventFluxError::configuration(e))?;
+        let parsed =
+            WebSocketSinkConfig::from_properties(config).map_err(EventFluxError::configuration)?;
 
         let sink = WebSocketSink::new(parsed);
 
@@ -830,7 +832,8 @@ mod tests {
         assert!(!cloned.config.reconnect);
         assert_eq!(cloned.config.message_type, MessageType::Binary);
         // Cloned sink should not have connection state
-        assert!(cloned.state.lock().unwrap().is_none());
+        // tokio::sync::Mutex::try_lock() for sync test context
+        assert!(cloned.state.try_lock().unwrap().is_none());
     }
 
     // =========================================================================

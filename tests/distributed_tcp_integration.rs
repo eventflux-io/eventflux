@@ -22,7 +22,6 @@ use eventflux::core::distributed::transport::{
 };
 use eventflux::core::distributed::DistributedError;
 use std::sync::Arc;
-use tokio;
 
 fn is_socket_permission_denied(err: &DistributedError) -> bool {
     match err {

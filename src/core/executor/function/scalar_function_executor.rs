@@ -38,7 +38,7 @@ pub trait ScalarFunctionExecutor: ExpressionExecutor {
     /// any internal state required for [`execute`](ExpressionExecutor::execute).
     fn init(
         &mut self,
-        argument_executors: &Vec<Box<dyn ExpressionExecutor>>,
+        argument_executors: &[Box<dyn ExpressionExecutor>],
         eventflux_app_context: &Arc<EventFluxAppContext>,
     ) -> Result<(), String>;
 

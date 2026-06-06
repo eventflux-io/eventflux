@@ -1,0 +1,27 @@
+[files]
+extend-exclude = [
+    "vendor/",
+    "references/",
+    "target/",
+    "studio/webview/dist/",
+    "*.lock",
+]
+
+[default.extend-identifiers]
+# SQL keyword plurals used in comments (WHENs, WINDOWs)
+WHENs = "WHENs"
+WINDOWs = "WINDOWs"
+
+[default.extend-words]
+# HashiCorp proper noun (substring match)
+Hashi = "Hashi"
+
+# Substring in test assertions (e.g., SUBSTRING('hello', 1, 3) = 'Hel')
+Hel = "Hel"
+hel = "hel"
+
+# Part of filename app_runner_event_ser.rs
+ser = "ser"
+
+# IIF is a valid SQL function name
+IIF = "IIF"

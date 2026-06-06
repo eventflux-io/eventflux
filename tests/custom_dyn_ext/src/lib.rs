@@ -15,18 +15,20 @@
  * limitations under the License.
  */
 
-use std::sync::{Arc, Mutex};
-use eventflux::core::config::{eventflux_app_context::EventFluxAppContext, eventflux_query_context::EventFluxQueryContext};
+use eventflux::core::config::{
+    eventflux_app_context::EventFluxAppContext, eventflux_query_context::EventFluxQueryContext,
+};
 use eventflux::core::event::complex_event::ComplexEvent;
 use eventflux::core::event::value::AttributeValue;
-use eventflux::core::extension::WindowProcessorFactory;
+use eventflux::core::eventflux_manager::EventFluxManager;
 use eventflux::core::executor::expression_executor::ExpressionExecutor;
 use eventflux::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
-use eventflux::core::query::processor::{CommonProcessorMeta, ProcessingMode, Processor};
+use eventflux::core::extension::WindowProcessorFactory;
 use eventflux::core::query::processor::stream::window::WindowProcessor;
-use eventflux::core::eventflux_manager::EventFluxManager;
+use eventflux::core::query::processor::{CommonProcessorMeta, ProcessingMode, Processor};
 use eventflux::query_api::definition::attribute::Type as AttrType;
 use eventflux::query_api::execution::query::input::handler::WindowHandler;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 struct DynWindowProcessor {
@@ -49,7 +51,12 @@ impl Processor for DynWindowProcessor {
     }
 
     fn clone_processor(&self, q: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
-        Box::new(DynWindowProcessor { meta: CommonProcessorMeta::new(Arc::clone(&self.meta.eventflux_app_context), Arc::clone(q)) })
+        Box::new(DynWindowProcessor {
+            meta: CommonProcessorMeta::new(
+                Arc::clone(&self.meta.eventflux_app_context),
+                Arc::clone(q),
+            ),
+        })
     }
 
     fn get_eventflux_app_context(&self) -> Arc<EventFluxAppContext> {
@@ -73,11 +80,23 @@ impl WindowProcessor for DynWindowProcessor {}
 #[derive(Debug, Clone)]
 struct DynWindowFactory;
 impl WindowProcessorFactory for DynWindowFactory {
-    fn name(&self) -> &'static str { "dynWindow" }
-    fn create(&self, _h: &WindowHandler, app: Arc<EventFluxAppContext>, q: Arc<EventFluxQueryContext>, _parse_ctx: &eventflux::core::util::parser::expression_parser::ExpressionParserContext) -> Result<Arc<Mutex<dyn Processor>>, String> {
-        Ok(Arc::new(Mutex::new(DynWindowProcessor { meta: CommonProcessorMeta::new(app, q) })))
+    fn name(&self) -> &'static str {
+        "dynWindow"
     }
-    fn clone_box(&self) -> Box<dyn WindowProcessorFactory> { Box::new(self.clone()) }
+    fn create(
+        &self,
+        _h: &WindowHandler,
+        app: Arc<EventFluxAppContext>,
+        q: Arc<EventFluxQueryContext>,
+        _parse_ctx: &eventflux::core::util::parser::expression_parser::ExpressionParserContext,
+    ) -> Result<Arc<Mutex<dyn Processor>>, String> {
+        Ok(Arc::new(Mutex::new(DynWindowProcessor {
+            meta: CommonProcessorMeta::new(app, q),
+        })))
+    }
+    fn clone_box(&self) -> Box<dyn WindowProcessorFactory> {
+        Box::new(self.clone())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -85,7 +104,9 @@ struct DynPlusOne {
     arg: Option<Box<dyn ExpressionExecutor>>,
 }
 impl Clone for DynPlusOne {
-    fn clone(&self) -> Self { Self { arg: None } }
+    fn clone(&self) -> Self {
+        Self { arg: None }
+    }
 }
 impl ExpressionExecutor for DynPlusOne {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
@@ -95,20 +116,32 @@ impl ExpressionExecutor for DynPlusOne {
             _ => None,
         }
     }
-    fn get_return_type(&self) -> AttrType { AttrType::INT }
+    fn get_return_type(&self) -> AttrType {
+        AttrType::INT
+    }
     fn clone_executor(&self, _c: &Arc<EventFluxAppContext>) -> Box<dyn ExpressionExecutor> {
         Box::new(self.clone())
     }
 }
 impl ScalarFunctionExecutor for DynPlusOne {
-    fn init(&mut self, args: &Vec<Box<dyn ExpressionExecutor>>, ctx: &Arc<EventFluxAppContext>) -> Result<(), String> {
-        if args.len() != 1 { return Err("dynPlusOne expects one argument".to_string()); }
+    fn init(
+        &mut self,
+        args: &[Box<dyn ExpressionExecutor>],
+        ctx: &Arc<EventFluxAppContext>,
+    ) -> Result<(), String> {
+        if args.len() != 1 {
+            return Err("dynPlusOne expects one argument".to_string());
+        }
         self.arg = Some(args[0].clone_executor(ctx));
         Ok(())
     }
     fn destroy(&mut self) {}
-    fn get_name(&self) -> String { "dynPlusOne".to_string() }
-    fn clone_scalar_function(&self) -> Box<dyn ScalarFunctionExecutor> { Box::new(self.clone()) }
+    fn get_name(&self) -> String {
+        "dynPlusOne".to_string()
+    }
+    fn clone_scalar_function(&self) -> Box<dyn ScalarFunctionExecutor> {
+        Box::new(self.clone())
+    }
 }
 
 #[no_mangle]
@@ -129,6 +162,10 @@ pub fn library_path() -> std::path::PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("../../target/debug/deps");
     p = p.canonicalize().unwrap_or(p);
-    p.push(format!("{}custom_dyn_ext.{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_EXTENSION));
+    p.push(format!(
+        "{}custom_dyn_ext.{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_EXTENSION
+    ));
     p
 }

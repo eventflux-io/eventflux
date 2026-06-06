@@ -661,6 +661,7 @@ impl std::fmt::Debug for EventFluxManager {
 // Helper on ApiEventFluxApp for getting name (if not already part of query_api)
 // This is more robust than assuming api_eventflux_app.name
 impl ApiEventFluxApp {
+    #[allow(dead_code)]
     fn get_name(&self) -> Option<String> {
         self.annotations
             .iter()

@@ -34,7 +34,9 @@ fn make_context_with_table() -> Arc<EventFluxAppContext> {
         String::new(),
     ));
     let table: Arc<dyn Table> = Arc::new(InMemoryTable::new());
-    table.insert(&[AttributeValue::Int(1)]);
+    table
+        .insert(&[AttributeValue::Int(1)])
+        .expect("Failed to insert test data");
     ctx.get_eventflux_context()
         .add_table("MyTable".to_string(), table);
     ctx

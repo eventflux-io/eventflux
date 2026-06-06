@@ -31,6 +31,12 @@ pub struct SinkFactoryRegistry {
     factories: HashMap<String, Box<dyn SinkFactoryTrait>>,
 }
 
+impl Default for SinkFactoryRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SinkFactoryRegistry {
     /// Create a new sink factory registry with default factories
     pub fn new() -> Self {

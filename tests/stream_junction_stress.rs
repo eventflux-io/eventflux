@@ -93,12 +93,9 @@ impl Processor for RecordingProcessor {
     }
 }
 
-fn setup_junction(
-    async_mode: bool,
-) -> (
-    Arc<Mutex<StreamJunction>>,
-    Arc<Mutex<Vec<Vec<AttributeValue>>>>,
-) {
+type SharedEventVec = Arc<Mutex<Vec<Vec<AttributeValue>>>>;
+
+fn setup_junction(async_mode: bool) -> (Arc<Mutex<StreamJunction>>, SharedEventVec) {
     let eventflux_context = Arc::new(EventFluxContext::new());
     let app = Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
         "App".to_string(),
@@ -149,10 +146,13 @@ fn stress_async_concurrent_publish() {
         let j = junction.clone();
         handles.push(thread::spawn(move || {
             for k in 0..500 {
-                j.lock().unwrap().send_event(Event::new_with_data(
-                    0,
-                    vec![AttributeValue::Int(i * 500 + k)],
-                ));
+                j.lock()
+                    .unwrap()
+                    .send_event(Event::new_with_data(
+                        0,
+                        vec![AttributeValue::Int(i * 500 + k)],
+                    ))
+                    .expect("stress test: send_event failed under contention");
             }
         }));
     }

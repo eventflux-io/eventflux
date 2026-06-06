@@ -267,7 +267,7 @@ async fn test_sql_with_missing_extension_error() {
         }
         Ok(runtime) => {
             // Runtime created, but stream should not be attached
-            runtime.start();
+            runtime.start().expect("Failed to start runtime");
             assert!(
                 runtime.get_source_handler("BadStream").is_none(),
                 "Source should not be attached when extension is missing"
@@ -432,7 +432,7 @@ async fn test_sql_internal_stream_no_with() {
 
     // Should receive events through internal stream
     assert!(
-        out.len() >= 1,
+        !out.is_empty(),
         "Expected at least 1 event, got {}",
         out.len()
     );
@@ -458,7 +458,7 @@ async fn test_sql_with_empty_clause() {
     assert!(runtime_result.is_ok());
 
     let runtime = runtime_result.unwrap();
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     // No source should be attached (no type specified)
     assert!(runtime.get_source_handler("EmptyWithStream").is_none());
@@ -476,7 +476,7 @@ async fn test_sql_with_properties_reach_factory() {
     use eventflux::core::extension::SourceFactory;
     use eventflux::core::stream::input::source::Source;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     // Counter to track factory calls
     static FACTORY_CALL_COUNT: Mutex<usize> = Mutex::new(0);

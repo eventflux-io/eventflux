@@ -499,10 +499,7 @@ fn build_dependency_graph(
         if let Some(target) = query.get_target_stream() {
             let sources = query.get_source_streams();
 
-            dependencies
-                .entry(target)
-                .or_insert_with(HashSet::new)
-                .extend(sources);
+            dependencies.entry(target).or_default().extend(sources);
         }
     }
 
@@ -512,7 +509,7 @@ fn build_dependency_graph(
         if let Some(dlq_stream) = config.get("error.dlq.stream") {
             dependencies
                 .entry(stream_name.clone())
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(dlq_stream.clone());
         }
     }
@@ -609,7 +606,7 @@ fn dfs_topo_sort(
 /// 4. DLQ junction wiring (if error.dlq.stream is configured)
 /// 5. SourceStreamHandler for lifecycle management
 fn initialize_source_stream_with_handler(
-    stream_def: &StreamDefinition,
+    _stream_def: &StreamDefinition,
     stream_config: &StreamTypeConfig,
     context: &EventFluxContext,
     input_manager: &crate::core::stream::input::InputManager,
@@ -952,7 +949,7 @@ fn validate_dlq_schema(
     }
 
     // 5. Check for extra fields not in required schema
-    for (actual_name, _) in &actual_fields {
+    for actual_name in actual_fields.keys() {
         if !REQUIRED_DLQ_FIELDS
             .iter()
             .any(|(req_name, _)| req_name == actual_name)
@@ -997,9 +994,7 @@ mod tests {
     use super::*;
     use crate::core::config::stream_config::{FlatConfig, PropertySource};
     use crate::core::extension::example_factories::{HttpSinkFactory, KafkaSourceFactory};
-    use crate::core::extension::{
-        CsvSinkMapperFactory, JsonSinkMapperFactory, JsonSourceMapperFactory,
-    };
+    use crate::core::extension::{CsvSinkMapperFactory, JsonSourceMapperFactory};
 
     #[test]
     fn test_initialize_source_stream_success() {

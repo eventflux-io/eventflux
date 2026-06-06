@@ -32,13 +32,12 @@ use eventflux::core::config::{
     },
     EventFluxConfig,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Test basic validation report functionality
 #[test]
 fn test_validation_report_creation() {
-    let mut report = ValidationReport::new();
+    let report = ValidationReport::new();
 
     assert!(report.is_valid);
     assert_eq!(report.errors.len(), 0);
@@ -345,7 +344,7 @@ async fn test_performance_validation_rule() {
     rule.validate(&config, &mut report2).await.unwrap();
 
     assert!(report2.is_valid); // Warnings don't invalidate
-    assert!(report2.warnings.len() > 0);
+    assert!(!report2.warnings.is_empty());
     assert!(report2
         .warnings
         .iter()
@@ -454,7 +453,10 @@ async fn test_configuration_validator_integration() {
     // Test with valid configuration
     let report = validator.validate(&config).await.unwrap();
     assert!(report.is_valid);
-    assert!(report.validation_duration.as_nanos() >= 0);
+    assert!(
+        report.validation_duration > std::time::Duration::ZERO,
+        "Validation duration should be recorded"
+    );
     assert!(report.metadata.contains_key("rules_executed"));
 
     // Test with invalid configuration
@@ -462,7 +464,7 @@ async fn test_configuration_validator_integration() {
     let report2 = validator.validate(&config).await.unwrap();
 
     assert!(!report2.is_valid);
-    assert!(report2.errors.len() > 0);
+    assert!(!report2.errors.is_empty());
     assert!(report2.validation_score < 1.0);
 }
 
@@ -547,7 +549,7 @@ async fn test_strict_mode() {
 
     // In strict mode, warnings become errors
     assert!(!report.is_valid);
-    assert!(report.errors.len() > 0);
+    assert!(!report.errors.is_empty());
     assert_eq!(report.warnings.len(), 0); // Warnings converted to errors
 }
 

@@ -374,7 +374,7 @@ impl PreStateProcessor for LogicalPreStateProcessor {
         };
 
         let state_id = self.base_processor.state_id();
-        let mut state = self.base_processor.state.lock().unwrap();
+        let state = self.base_processor.state.lock().unwrap();
         let pending_states: Vec<StateEvent> = state.get_pending_list().iter().cloned().collect();
         drop(state); // Release lock before processing
 

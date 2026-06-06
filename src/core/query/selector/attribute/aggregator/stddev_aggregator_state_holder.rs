@@ -231,7 +231,9 @@ impl StateHolder for StdDevAggregatorStateHolder {
         *self.m2.lock().unwrap() = 0.0;
         *self.sum.lock().unwrap() = 0.0;
         *self.count.lock().unwrap() = 0;
-        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+        self.base
+            .restored
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 

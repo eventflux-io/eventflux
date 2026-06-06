@@ -127,6 +127,7 @@ pub struct StreamPreStateProcessor {
     // This enables cross-stream references like: e2[price > e1.price]
     // The current event being evaluated is already in StateEvent at position self.state_id
     // Uses Arc for shareability across clones (partitioned execution, state restoration)
+    #[allow(clippy::type_complexity)]
     condition_fn: Option<Arc<dyn Fn(&StateEvent) -> bool + Send + Sync>>,
 }
 
@@ -318,12 +319,10 @@ impl StreamPreStateProcessor {
             }
         } else {
             // Fallback: check first non-null event (legacy behavior)
-            for stream_opt in &state_event.stream_events {
-                if let Some(stream) = stream_opt {
-                    let age = (current_timestamp - stream.timestamp).abs();
-                    if age > within {
-                        return true;
-                    }
+            for stream in state_event.stream_events.iter().flatten() {
+                let age = (current_timestamp - stream.timestamp).abs();
+                if age > within {
+                    return true;
                 }
             }
         }
@@ -1046,10 +1045,9 @@ mod tests {
         // Condition: price > 100 (accessing from position 0 in StateEvent)
         processor.set_condition(|state_event| {
             if let Some(stream_event) = state_event.get_stream_event(0) {
-                if let Some(value) = stream_event.before_window_data.get(0) {
-                    if let AttributeValue::Float(price) = value {
-                        return *price > 100.0;
-                    }
+                if let Some(AttributeValue::Float(price)) = stream_event.before_window_data.first()
+                {
+                    return *price > 100.0;
                 }
             }
             false
@@ -1150,7 +1148,7 @@ mod tests {
 
     #[test]
     fn test_state_changed_flag() {
-        let mut processor = create_test_processor(0, true, StateType::Pattern);
+        let processor = create_test_processor(0, true, StateType::Pattern);
         assert!(!processor.has_state_changed());
 
         processor.state_changed();

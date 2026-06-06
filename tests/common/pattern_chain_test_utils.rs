@@ -36,6 +36,7 @@ use eventflux::query_api::definition::stream_definition::StreamDefinition;
 use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::{Arc, Mutex};
 
+#[allow(dead_code)]
 /// Create test contexts for pattern chain tests
 pub fn create_test_contexts() -> (Arc<EventFluxAppContext>, Arc<EventFluxQueryContext>) {
     let eventflux_context = Arc::new(EventFluxContext::new());
@@ -54,6 +55,7 @@ pub fn create_test_contexts() -> (Arc<EventFluxAppContext>, Arc<EventFluxQueryCo
     (app_ctx, query_ctx)
 }
 
+#[allow(dead_code)]
 /// Create a stream definition for testing
 pub fn create_stream_definition(name: &str) -> Arc<StreamDefinition> {
     Arc::new(
@@ -61,11 +63,13 @@ pub fn create_stream_definition(name: &str) -> Arc<StreamDefinition> {
     )
 }
 
+#[allow(dead_code)]
 /// Create a StreamEvent with specified timestamp
 pub fn create_stream_event(timestamp: i64) -> StreamEvent {
     StreamEvent::new(timestamp, 0, 0, 0)
 }
 
+#[allow(dead_code)]
 /// Build a pattern chain with specified number of steps
 pub fn build_pattern_chain(
     steps: Vec<(String, String, usize, usize)>, // (alias, stream_name, min, max)
@@ -116,6 +120,7 @@ pub fn build_pattern_chain(
     (chain, collector)
 }
 
+#[allow(dead_code)]
 /// Build a pattern chain with WITHIN time constraint
 pub fn build_pattern_chain_with_within(
     steps: Vec<(String, String, usize, usize)>,
@@ -182,11 +187,13 @@ pub fn build_pattern_chain_with_within(
     (chain, collector)
 }
 
+#[allow(dead_code)]
 /// Output collector for capturing pattern match results
 pub struct OutputCollector {
     outputs: Arc<Mutex<Vec<StateEvent>>>,
 }
 
+#[allow(dead_code)]
 impl OutputCollector {
     pub fn new() -> Self {
         Self {
@@ -210,6 +217,7 @@ impl OutputCollector {
     }
 }
 
+#[allow(dead_code)]
 /// PostStateProcessor wrapper that captures outputs
 #[derive(Debug)]
 pub struct CollectorPostProcessor {

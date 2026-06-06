@@ -52,6 +52,7 @@ pub enum OnErrorAction {
 }
 
 /// High-performance event router with crossbeam-based pipeline
+#[allow(clippy::type_complexity)]
 pub struct StreamJunction {
     // Core identification
     pub stream_id: String,
@@ -243,6 +244,7 @@ impl StreamJunction {
     ///
     /// This is a private implementation detail - use `new()` or `new_with_backpressure()`
     /// for production code.
+    #[allow(clippy::too_many_arguments)]
     fn new_with_backpressure_and_executor(
         stream_id: String,
         stream_definition: Arc<StreamDefinition>,
@@ -493,41 +495,38 @@ impl StreamJunction {
                     // CRITICAL: Each slot can contain a linked list of StreamEvents via `next` pointers
                     // (e.g., from count/sequence quantifiers like e1[2] or e1{2,5})
                     // We must traverse the entire chain, not just the head
-                    for stream_event_opt in &state_event.stream_events {
-                        if let Some(stream_event_arc) = stream_event_opt {
-                            // Traverse the chain of StreamEvents at this position
-                            // stream_event_arc is &Arc<StreamEvent>, *stream_event_arc is Arc<StreamEvent> (via Deref)
-                            // which derefs to StreamEvent, so &*stream_event_arc gives &StreamEvent
-                            let stream_event_ref: &crate::core::event::stream::StreamEvent =
-                                &*stream_event_arc;
-                            let mut current_in_chain: Option<
-                                &dyn crate::core::event::ComplexEvent,
-                            > = Some(stream_event_ref);
+                    for stream_event_arc in state_event.stream_events.iter().flatten() {
+                        // Traverse the chain of StreamEvents at this position
+                        // stream_event_arc is &Arc<StreamEvent>, *stream_event_arc is Arc<StreamEvent> (via Deref)
+                        // which derefs to StreamEvent, so &*stream_event_arc gives &StreamEvent
+                        let stream_event_ref: &crate::core::event::stream::StreamEvent =
+                            stream_event_arc;
+                        let mut current_in_chain: Option<&dyn crate::core::event::ComplexEvent> =
+                            Some(stream_event_ref);
 
-                            while let Some(current) = current_in_chain {
-                                // Try to downcast to StreamEvent
-                                if let Some(se) = current
-                                    .as_any()
-                                    .downcast_ref::<crate::core::event::stream::StreamEvent>(
-                                ) {
-                                    let data = se
-                                        .output_data
-                                        .as_ref()
-                                        .unwrap_or(&se.before_window_data)
-                                        .clone();
-                                    let mut event = Event::new_with_data(se.timestamp, data);
-                                    event.is_expired = matches!(
-                                        state_event.event_type,
-                                        crate::core::event::complex_event::ComplexEventType::Expired
-                                    );
-                                    events.push(event);
+                        while let Some(current) = current_in_chain {
+                            // Try to downcast to StreamEvent
+                            if let Some(se) = current
+                                .as_any()
+                                .downcast_ref::<crate::core::event::stream::StreamEvent>(
+                            ) {
+                                let data = se
+                                    .output_data
+                                    .as_ref()
+                                    .unwrap_or(&se.before_window_data)
+                                    .clone();
+                                let mut event = Event::new_with_data(se.timestamp, data);
+                                event.is_expired = matches!(
+                                    state_event.event_type,
+                                    crate::core::event::complex_event::ComplexEventType::Expired
+                                );
+                                events.push(event);
 
-                                    // Move to next in chain
-                                    current_in_chain = se.next.as_ref().map(|b| b.as_ref());
-                                } else {
-                                    // Not a StreamEvent, stop traversing this chain
-                                    break;
-                                }
+                                // Move to next in chain
+                                current_in_chain = se.next.as_ref().map(|b| b.as_ref());
+                            } else {
+                                // Not a StreamEvent, stop traversing this chain
+                                break;
                             }
                         }
                     }
@@ -982,7 +981,7 @@ impl JunctionPerformanceMetrics {
         score -= error_rate * 2.0; // 2x penalty for errors
         score -= drop_rate * 1.5; // 1.5x penalty for drops
 
-        score.max(0.0).min(1.0)
+        score.clamp(0.0, 1.0)
     }
 
     /// Check if metrics indicate healthy operation

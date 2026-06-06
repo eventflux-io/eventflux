@@ -36,6 +36,7 @@ use crate::core::util::compression::{
 
 /// Enhanced state holder for ExternalTimpleWindowProcessor with StateHolder capabilities
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExternalTimeWindowStateHolder {
     /// Window buffer containing events
     buffer: Arc<Mutex<VecDeque<Arc<StreamEvent>>>>,
@@ -56,6 +57,7 @@ pub struct ExternalTimeWindowStateHolder {
     total_events_processed: Arc<Mutex<u64>>,
 }
 
+#[allow(dead_code)]
 impl ExternalTimeWindowStateHolder {
     /// Create a new enhanced state holder
     pub fn new(
@@ -189,7 +191,7 @@ impl StateHolder for ExternalTimeWindowStateHolder {
         };
 
         // Serialize to bytes
-        let mut data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
+        let data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
             message: format!("Failed to serialize external time window state: {e}"),
         })?;
 

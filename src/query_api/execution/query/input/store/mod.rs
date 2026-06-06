@@ -20,6 +20,7 @@
 pub mod aggregation_input_store;
 pub mod condition_input_store;
 pub mod input_store; // Interface, will be a trait or enum
+#[allow(clippy::module_inception)]
 pub mod store; // This is a BasicSingleInputStream that also implements InputStore
 
 // Re-export key types

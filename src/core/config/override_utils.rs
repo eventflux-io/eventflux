@@ -257,6 +257,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_parse_override_float() {
         let (_, value) = parse_override("ratio=3.14").unwrap();
         if let Value::Number(n) = value {

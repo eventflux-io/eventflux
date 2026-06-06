@@ -21,6 +21,8 @@
 //! retry configuration, DLQ configuration, and logging settings into a unified
 //! configuration system.
 
+use std::str::FromStr;
+
 use crate::core::config::FlatConfig;
 
 use super::dlq::DlqConfig;
@@ -42,9 +44,11 @@ pub enum LogLevel {
     Error,
 }
 
-impl LogLevel {
+impl std::str::FromStr for LogLevel {
+    type Err = String;
+
     /// Parse log level from string (case-insensitive)
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "debug" => Ok(LogLevel::Debug),
             "info" => Ok(LogLevel::Info),
@@ -56,7 +60,9 @@ impl LogLevel {
             )),
         }
     }
+}
 
+impl LogLevel {
     /// Convert log level to string representation
     #[inline]
     pub const fn as_str(&self) -> &'static str {

@@ -918,7 +918,7 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
     ];
 
     // Events that FAIL the filter (volume <= 1000) - should NOT appear in output
-    let fail_events = vec![
+    let fail_events = [
         json!({"symbol": "META", "price": 325.00, "volume": 800, "timestamp": 1702500003}),
         json!({"symbol": "NVDA", "price": 495.50, "volume": 500, "timestamp": 1702500004}),
     ];
@@ -1378,7 +1378,7 @@ fn test_e2e_query_based_rabbitmq_processing() {
     ];
 
     // Events that FAIL the filter (volume <= 1000)
-    let fail_events = vec![
+    let fail_events = [
         json!({"symbol": "META", "price": 325.00, "volume": 800}),
         json!({"symbol": "NVDA", "price": 495.50, "volume": 500}),
     ];

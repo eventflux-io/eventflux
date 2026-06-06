@@ -1,0 +1,41 @@
+# Pre-commit hooks for EventFlux Engine
+# Install: cargo install prek && prek install
+# Run all: prek run --all-files
+
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: typos
+        name: typos
+        entry: typos
+        language: system
+        types: [file]
+        pass_filenames: false
+
+      - id: cargo-machete
+        name: cargo machete
+        entry: cargo machete
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-sort
+        name: cargo sort
+        entry: cargo sort --workspace --check
+        language: system
+        types: [toml]
+        pass_filenames: false

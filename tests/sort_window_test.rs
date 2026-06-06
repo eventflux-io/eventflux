@@ -162,7 +162,7 @@ async fn test_sort_window_ordering() {
         match &event[0] {
             AttributeValue::Int(val) => {
                 assert!(
-                    vec![100, 200, 300].contains(val),
+                    [100, 200, 300].contains(val),
                     "Event value should be one of the sent values"
                 );
             }

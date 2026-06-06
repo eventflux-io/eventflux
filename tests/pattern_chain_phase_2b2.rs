@@ -390,7 +390,7 @@ fn test_2b2_4_range_quantifiers() {
     // Each match flows through the chain and may produce outputs
     let outputs = collector.get_outputs();
     assert!(
-        outputs.len() >= 1,
+        !outputs.is_empty(),
         "Expected at least 1 output with range quantifiers"
     );
     assert!(

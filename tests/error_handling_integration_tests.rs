@@ -346,6 +346,7 @@ fn test_dlq_event_delivery_action() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn test_dlq_preserves_original_event_data() {
     // Create event with complex data
     let original_event = Event::new_with_data(

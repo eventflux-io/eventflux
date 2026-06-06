@@ -31,7 +31,6 @@ use eventflux::core::stream::mapper::{
         SourceMapperFactory,
     },
     validation::{validate_sink_mapper_config, validate_source_mapper_config},
-    SinkMapper, SourceMapper,
 };
 use std::collections::HashMap;
 

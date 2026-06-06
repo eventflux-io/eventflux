@@ -156,7 +156,7 @@ fn bench_subscriber_lock_contention(c: &mut Criterion) {
                             for i in 0..2500 {
                                 let event = Event::new_with_data(
                                     i as i64,
-                                    vec![AttributeValue::Int((thread_id * 1000 + i) as i32)],
+                                    vec![AttributeValue::Int(thread_id * 1000 + i)],
                                 );
                                 // Use send_event and handle backpressure gracefully
                                 let _ = junction_clone.lock().unwrap().send_event(event);
@@ -199,8 +199,7 @@ fn bench_single_threaded_baseline(c: &mut Criterion) {
                 b.iter(|| {
                     // Send 10K events from single thread
                     for i in 0..10000 {
-                        let event =
-                            Event::new_with_data(i as i64, vec![AttributeValue::Int(i as i32)]);
+                        let event = Event::new_with_data(i as i64, vec![AttributeValue::Int(i)]);
                         let _ = black_box(junction.lock().unwrap().send_event(event));
                     }
                 });

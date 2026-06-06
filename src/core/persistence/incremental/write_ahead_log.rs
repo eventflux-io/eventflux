@@ -416,7 +416,7 @@ impl WriteAheadLog for SegmentedWAL {
         {
             let completed_segments = self.completed_segments.read().unwrap();
 
-            for (&segment_id, segment) in completed_segments.iter() {
+            for (_, segment) in completed_segments.iter() {
                 if current_offset >= segment.start_offset && current_offset < segment.end_offset {
                     let segment_entries =
                         segment.read_entries_from(current_offset, limit - results.len())?;
@@ -891,14 +891,16 @@ mod tests {
 
         // Should have rotated segments
         let completed_segments = wal.completed_segments.read().unwrap();
-        assert!(completed_segments.len() > 0);
+        assert!(!completed_segments.is_empty());
     }
 
     #[test]
     fn test_wal_cleanup() {
         let temp_dir = TempDir::new().unwrap();
-        let mut config = WALConfig::default();
-        config.retention_segments = 2;
+        let config = WALConfig {
+            retention_segments: 2,
+            ..Default::default()
+        };
 
         let wal = SegmentedWAL::new(temp_dir.path(), 50, config).unwrap();
 

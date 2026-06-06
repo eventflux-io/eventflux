@@ -48,8 +48,8 @@ mod tests {
     use super::*;
     use crate::core::event::stream::StreamEvent;
     use crate::core::event::value::AttributeValue;
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
+
+    use std::time::Instant;
 
     fn create_test_event(id: i32) -> StreamEvent {
         StreamEvent::new_with_data(0, vec![AttributeValue::Int(id)])

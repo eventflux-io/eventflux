@@ -400,16 +400,29 @@ See [docs/writing_extensions.md](docs/writing_extensions.md) for complete guide.
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
+
 ### Development Setup
 
 1. Fork the repository
 2. Clone your fork
-3. Create a feature branch
-4. Make changes
-5. Run tests: `cargo test`
-6. Format code: `cargo fmt`
-7. Run linter: `cargo clippy`
-8. Submit pull request
+3. Install pre-commit hooks:
+   ```bash
+   cargo install prek
+   prek install
+   ```
+4. Create a feature branch
+5. Make changes
+6. Run quality checks:
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --all-targets -- -D warnings
+   typos
+   cargo machete
+   cargo sort --workspace --check
+   cargo test
+   ```
+7. Submit pull request
 
 ### Code Style
 

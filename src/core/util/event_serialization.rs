@@ -525,6 +525,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_serialization_service() {
         let mut event = StreamEvent::new(1000, 2, 0, 0);
         event.before_window_data = vec![

@@ -46,7 +46,11 @@ impl Processor for InsertIntoTableProcessor {
         while let Some(mut event) = chunk {
             let next = event.set_next(None);
             if let Some(data) = event.get_output_data() {
-                self.table.insert(data);
+                if let Err(e) = self.table.insert(data) {
+                    log::error!("Failed to insert into table: {}", e);
+                    // Best-effort: processor continues so the pipeline is not stalled.
+                    // TODO: Route to error handler / DLQ when error infrastructure is wired.
+                }
             }
             chunk = next;
         }

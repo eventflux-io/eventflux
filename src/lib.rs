@@ -21,8 +21,8 @@ pub mod sql_compiler;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc; // For EventFluxApp's maps (not directly used in this test logic for app construction)
+
+    use std::sync::Arc;
 
     // query_api module items
     use crate::query_api::definition::{
@@ -52,7 +52,7 @@ mod tests {
     use crate::core::config::eventflux_context::EventFluxContext;
     // EventFluxAppContext is created inside EventFluxAppRuntime::new currently
     // use crate::core::config::eventflux_app_context::EventFluxAppContext;
-    use crate::core::event::event::Event;
+
     use crate::core::event::value::AttributeValue as CoreAttributeValue;
     use crate::core::eventflux_app_runtime::EventFluxAppRuntime;
     use crate::core::stream::output::stream_callback::LogStreamCallback; // Assuming LogStreamCallback is here
@@ -95,15 +95,13 @@ mod tests {
         // FROM InputStream[attribute1 > 10]
         let api_single_input_stream =
             ApiSingleInputStream::new_basic("InputStream".to_string(), false, false, None, {
-                let mut handlers = Vec::new();
-                handlers.push(
+                vec![
                     crate::query_api::execution::query::input::handler::StreamHandler::Filter(
                         crate::query_api::execution::query::input::handler::Filter::new(
                             filter_condition.clone(),
                         ),
                     ),
-                );
-                handlers
+                ]
             });
         // Assuming SingleInputStream from query_api has a method to add filters, or its handlers field is public.
         // For now, this relies on how `QueryParser` would interpret handlers.

@@ -1111,7 +1111,7 @@ async fn time_window_test4_avg_aggregation() {
     // Check that avg values are reasonable (100-200 range depending on timing)
     let has_valid_avg = out.iter().any(|row| {
         if let AttributeValue::Double(avg) = row[0] {
-            avg >= 100.0 && avg <= 200.0
+            (100.0..=200.0).contains(&avg)
         } else {
             false
         }
@@ -1168,7 +1168,7 @@ async fn expression_window_test1_basic() {
         INSERT INTO outputStream\n\
         SELECT symbol, sum(price) AS total \
         FROM stockStream WINDOW('expression', 'count() <= 2');\n";
-    let mut runner = AppRunner::new(app, "outputStream").await;
+    let runner = AppRunner::new(app, "outputStream").await;
     runner.send(
         "stockStream",
         vec![
@@ -2724,10 +2724,15 @@ async fn time_batch_window_test_multi_group() {
             AttributeValue::Float(110.0),
         ],
     );
-    sleep(Duration::from_millis(2100));
+    // Allow generous margin above the 2000ms window for CI environments under load
+    sleep(Duration::from_millis(3500));
     let out = runner.shutdown();
-    // May have outputs depending on batch timing
-    assert!(out.len() >= 0);
+    // After the 2-second batch window expires, grouped results should be emitted.
+    // Two events with different (symbol, region) keys should produce 2 output rows.
+    assert!(
+        !out.is_empty(),
+        "Expected output from timeBatch window after batch expiry"
+    );
 }
 
 /// Window with uuid() function
@@ -3034,7 +3039,6 @@ async fn length_batch_window_test_count() {
     }
     let out = runner.shutdown();
     // Batch output may or may not fire depending on timing
-    assert!(out.len() >= 0);
     if !out.is_empty() {
         assert_eq!(out[0][0], AttributeValue::Long(3));
     }
@@ -3098,7 +3102,7 @@ async fn time_batch_window_test_with_filter() {
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
     let out = runner.shutdown();
     // Only events with price > 100 should be counted (150 + 200 = 350)
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
 }
 
 /// Length batch window with MAX aggregation
@@ -3195,7 +3199,7 @@ async fn length_window_test_string_length_agg() {
     );
     let out = runner.shutdown();
     // Output for each event as window fills
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
 }
 
 /// Time window with large interval
@@ -3214,7 +3218,7 @@ async fn time_window_test_large_interval() {
     runner.send("eventStream", vec![AttributeValue::Int(3)]);
     let out = runner.shutdown();
     // All events should be in the window
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
     // Last output should have count of all events
     let last_count = match out.last().unwrap()[0] {
         AttributeValue::Int(c) => c,
@@ -3289,7 +3293,7 @@ async fn length_window_test_double_multiplication() {
         vec![AttributeValue::Double(20.25), AttributeValue::Int(3)],
     );
     let out = runner.shutdown();
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
 }
 
 /// Length window with multiple COUNT aggregations
@@ -3324,7 +3328,7 @@ async fn length_window_test_multiple_counts() {
         ],
     );
     let out = runner.shutdown();
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
 }
 
 /// Time batch window with AVG aggregation
@@ -3362,7 +3366,7 @@ async fn time_batch_window_test_avg() {
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
     let out = runner.shutdown();
     // Should have output with avg temperature around 22.0
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
 }
 
 /// Length window with CASE WHEN in select (tier classification)
@@ -4486,7 +4490,7 @@ async fn length_window_test_not_equal_filter() {
     );
     let out = runner.shutdown();
     // Only ACTIVE status events pass the filter
-    assert!(out.len() >= 1);
+    assert!(!out.is_empty());
 }
 
 /// Length batch window with LTE filter

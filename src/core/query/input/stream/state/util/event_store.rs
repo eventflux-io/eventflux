@@ -264,7 +264,7 @@ mod tests {
 
         let id = store.insert(event);
         let ref1 = store.get(id).unwrap();
-        let ref2 = store.get(id).unwrap();
+        let _ref2 = store.get(id).unwrap();
 
         // Both references point to same Arc
         assert_eq!(Arc::strong_count(&ref1), 3); // store + ref1 + ref2
@@ -342,7 +342,7 @@ mod tests {
         assert!(successful_inserts > 50);
         // Memory should be close to limit (within one event size)
         let memory_used = store.memory_usage_bytes();
-        assert!(memory_used >= 9_000 && memory_used <= 10_116); // Within limit + 1 event
+        assert!((9_000..=10_116).contains(&memory_used)); // Within limit + 1 event
 
         println!(
             "Inserted {} events using {} bytes before hitting 10KB limit",

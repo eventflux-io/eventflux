@@ -68,7 +68,7 @@ fn setup_table(ctx: &Arc<EventFluxContext>) {
     let ds = ctx.get_data_source("DS1").unwrap();
     let conn_any = ds.get_connection().unwrap();
     let conn_arc = conn_any.downcast::<Arc<Mutex<Connection>>>().unwrap();
-    let mut conn = conn_arc.lock().unwrap();
+    let conn = conn_arc.lock().unwrap();
     conn.execute("CREATE TABLE test (c0 TEXT, c1 TEXT)", [])
         .unwrap();
 }

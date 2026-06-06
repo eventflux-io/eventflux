@@ -74,7 +74,7 @@ impl ExpressionExecutor for StatefulCountFunction {
 impl ScalarFunctionExecutor for StatefulCountFunction {
     fn init(
         &mut self,
-        _arg_execs: &Vec<Box<dyn ExpressionExecutor>>,
+        _arg_execs: &[Box<dyn ExpressionExecutor>],
         _ctx: &Arc<EventFluxAppContext>,
     ) -> Result<(), String> {
         Ok(())

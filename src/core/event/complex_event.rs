@@ -73,7 +73,7 @@ pub trait ComplexEvent: Debug + Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
-    // Helper for cloning, if ComplexEvent needs to be clonable for some strategies
+    // Helper for cloning, if ComplexEvent needs to be cloneable for some strategies
     // Each implementor would need to implement this.
     // fn clone_complex_event(&self) -> Box<dyn ComplexEvent>;
 }

@@ -23,7 +23,6 @@
 //! using Tonic. It supports streaming, compression, load balancing, and health checks.
 
 use super::transport_client::TransportClient;
-use super::transport_server::Transport as TransportService;
 use super::{
     ClusterInfo, CompressionType, HeartbeatRequest, HeartbeatResponse, MessageType, NodeHealth,
     NodeStatus, TransportMessage,
@@ -45,6 +44,7 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 use tonic::{Request, Response, Status};
 
 /// gRPC transport implementation using Tonic
+#[allow(dead_code)]
 pub struct GrpcTransport {
     /// Client connections pool
     clients: Arc<RwLock<HashMap<String, TransportClient<Channel>>>>,
@@ -117,6 +117,7 @@ impl Default for GrpcTransportConfig {
 }
 
 /// Handle for gRPC server
+#[allow(dead_code)]
 struct GrpcServerHandle {
     /// Shutdown signal
     shutdown_tx: oneshot::Sender<()>,
@@ -125,6 +126,7 @@ struct GrpcServerHandle {
 }
 
 /// gRPC connection wrapper
+#[allow(dead_code)]
 pub struct GrpcConnection {
     /// Connection identifier
     pub id: String,
@@ -141,6 +143,7 @@ pub struct GrpcConnection {
 }
 
 /// gRPC listener wrapper
+#[allow(dead_code)]
 pub struct GrpcListener {
     /// Listen endpoint
     pub endpoint: String,
@@ -148,6 +151,12 @@ pub struct GrpcListener {
     server_handle: Option<GrpcServerHandle>,
     /// Connection acceptor
     connection_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<GrpcConnection>>>>,
+}
+
+impl Default for GrpcTransport {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GrpcTransport {
@@ -206,12 +215,13 @@ impl GrpcTransport {
     }
 
     /// Convert protobuf message to local message
-    fn from_proto_message(&self, proto_msg: &TransportMessage) -> Message {
+    #[allow(dead_code)]
+    fn decode_proto_message(&self, proto_msg: &TransportMessage) -> Message {
         Message {
             id: proto_msg.id.clone(),
             payload: proto_msg.payload.clone(),
             headers: proto_msg.headers.clone(),
-            message_type: self.from_proto_message_type(proto_msg.message_type),
+            message_type: self.decode_proto_message_type(proto_msg.message_type),
         }
     }
 
@@ -228,7 +238,8 @@ impl GrpcTransport {
     }
 
     /// Convert protobuf message type to local message type
-    fn from_proto_message_type(&self, proto_type: i32) -> LocalMessageType {
+    #[allow(dead_code)]
+    fn decode_proto_message_type(&self, proto_type: i32) -> LocalMessageType {
         match MessageType::try_from(proto_type).unwrap_or(MessageType::Unspecified) {
             MessageType::Event => LocalMessageType::Event,
             MessageType::Query => LocalMessageType::Query,
@@ -366,7 +377,7 @@ impl Transport for GrpcTransport {
         Ok(())
     }
 
-    async fn receive(&self, connection: &Connection) -> DistributedResult<Message> {
+    async fn receive(&self, _connection: &Connection) -> DistributedResult<Message> {
         // For gRPC, receiving is typically handled through streaming
         // This is a simplified implementation that would need to be extended
         // based on the specific use case (request/response vs streaming)
@@ -395,6 +406,7 @@ impl Transport for GrpcTransport {
 }
 
 /// gRPC service implementation
+#[allow(dead_code)]
 pub struct GrpcTransportService {
     /// Connection notifier
     connection_tx: mpsc::UnboundedSender<GrpcConnection>,
@@ -491,7 +503,7 @@ mod tests {
     async fn test_grpc_transport_creation() {
         let transport = GrpcTransport::new();
         assert_eq!(transport.config.connection_timeout_ms, 10000);
-        assert_eq!(transport.config.enable_compression, true);
+        assert!(transport.config.enable_compression);
     }
 
     #[tokio::test]
@@ -502,7 +514,7 @@ mod tests {
             .with_header("source_node".to_string(), "node1".to_string());
 
         let proto_message = transport.to_proto_message(&original_message);
-        let converted_message = transport.from_proto_message(&proto_message);
+        let converted_message = transport.decode_proto_message(&proto_message);
 
         assert_eq!(original_message.id, converted_message.id);
         assert_eq!(original_message.payload, converted_message.payload);
@@ -516,7 +528,7 @@ mod tests {
     fn test_grpc_config_default() {
         let config = GrpcTransportConfig::default();
         assert_eq!(config.connection_timeout_ms, 10000);
-        assert_eq!(config.enable_compression, true);
+        assert!(config.enable_compression);
         assert_eq!(config.preferred_compression, CompressionType::Zstd);
         assert_eq!(config.max_concurrent_requests, 1000);
     }

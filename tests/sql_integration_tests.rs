@@ -29,6 +29,7 @@ struct TestCallback {
     events: Arc<Mutex<Vec<Vec<AttributeValue>>>>,
 }
 
+#[allow(dead_code)]
 impl TestCallback {
     fn new() -> Self {
         TestCallback {
@@ -79,7 +80,7 @@ async fn test_sql_query_1_basic_filter() {
         .expect("Failed to add callback");
 
     // Start runtime
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     // Get input handler
     let input_handler = runtime
@@ -174,7 +175,7 @@ async fn test_sql_query_2_arithmetic() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("StockStream")
@@ -236,7 +237,7 @@ async fn test_sql_query_7_builtin_function() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("StockStream")
@@ -324,7 +325,7 @@ async fn test_sql_query_3_window_tumbling_avg() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("StockStream")
@@ -358,7 +359,7 @@ async fn test_sql_query_3_window_tumbling_avg() {
 
     // Verify AVG calculation: (100 + 200) / 2 = 150
     assert!(
-        output_events.len() > 0,
+        !output_events.is_empty(),
         "Expected at least 1 event from tumbling window"
     );
 
@@ -388,7 +389,7 @@ async fn test_sql_query_4_window_length_count() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("StockStream")
@@ -446,7 +447,7 @@ async fn test_sql_query_9_order_by_limit() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("StockStream")
@@ -484,7 +485,7 @@ async fn test_sql_query_9_order_by_limit() {
     // Actual ordering and limiting behavior depends on runtime implementation.
 
     // Verify we got some events (conversion and execution succeeded)
-    assert!(output_events.len() > 0, "Expected at least 1 event");
+    assert!(!output_events.is_empty(), "Expected at least 1 event");
 
     // TODO: Once runtime implements ORDER BY/LIMIT properly, add assertions:
     // - assert!(output_events.len() <= 3, "LIMIT 3 should restrict to 3 events");
@@ -516,7 +517,7 @@ async fn test_sql_query_10_insert_into() {
         .add_callback("HighPriceAlerts", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("StockStream")
@@ -600,7 +601,7 @@ async fn test_sql_query_6_sum_having() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("StockStream")
@@ -657,7 +658,10 @@ async fn test_sql_query_6_sum_having() {
 
     // Verify HAVING clause filters correctly
     // Should only have GOOGL (1100 > 1000), not AAPL (700 <= 1000)
-    assert!(output_events.len() > 0, "Expected at least 1 event (GOOGL)");
+    assert!(
+        !output_events.is_empty(),
+        "Expected at least 1 event (GOOGL)"
+    );
 
     // Find GOOGL in output
     let has_googl = output_events.iter().any(|event| {
@@ -716,7 +720,7 @@ async fn test_sql_query_8_multiple_aggregations() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("StockStream")
@@ -764,7 +768,7 @@ async fn test_sql_query_8_multiple_aggregations() {
 
     // Verify we got output
     assert!(
-        output_events.len() > 0,
+        !output_events.is_empty(),
         "Expected at least 1 event from tumbling window"
     );
 
@@ -854,7 +858,7 @@ async fn test_sql_query_5_stream_join() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let trades_handler = runtime
         .get_input_handler("Trades")
@@ -957,7 +961,7 @@ async fn test_tumbling_window_multi_batch_no_spurious_empty_events() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    let _ = runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("TradeStream")
@@ -1094,7 +1098,7 @@ async fn test_length_batch_window_multi_batch_no_spurious_empty_events() {
         .add_callback("OutputStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    let _ = runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("TradeStream")
@@ -1233,7 +1237,7 @@ async fn test_external_time_batch_window_multi_batch_no_spurious_empty_events() 
         .add_callback("OutStream", Box::new(callback.clone()))
         .expect("Failed to add callback");
 
-    let _ = runtime.start();
+    runtime.start().expect("Failed to start runtime");
 
     let input_handler = runtime
         .get_input_handler("TradeStream")
@@ -1275,7 +1279,8 @@ async fn test_external_time_batch_window_multi_batch_no_spurious_empty_events() 
     }
 
     // === BATCH 3: Events at time 2000-2500ms (triggers flush of batch 2) ===
-    for (ts, price) in [(2000i64, 500.0)] {
+    {
+        let (ts, price) = (2000i64, 500.0);
         input_handler
             .lock()
             .unwrap()

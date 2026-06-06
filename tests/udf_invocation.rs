@@ -28,7 +28,6 @@ use eventflux::core::eventflux_manager::EventFluxManager;
 use eventflux::core::executor::expression_executor::ExpressionExecutor;
 use eventflux::core::executor::function::scalar_function_executor::ScalarFunctionExecutor;
 use eventflux::query_api::definition::attribute::Type as AttrType;
-use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::Arc;
 
 #[derive(Debug, Default)]
@@ -66,7 +65,7 @@ impl ExpressionExecutor for PlusOneFn {
 impl ScalarFunctionExecutor for PlusOneFn {
     fn init(
         &mut self,
-        args: &Vec<Box<dyn ExpressionExecutor>>,
+        args: &[Box<dyn ExpressionExecutor>],
         ctx: &Arc<EventFluxAppContext>,
     ) -> Result<(), String> {
         if args.len() != 1 {
@@ -87,7 +86,7 @@ impl ScalarFunctionExecutor for PlusOneFn {
 #[tokio::test]
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn udf_invoked_in_query() {
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
     manager.add_scalar_function_factory("plusOne".to_string(), Box::new(PlusOneFn::default()));
 
     let app = "\

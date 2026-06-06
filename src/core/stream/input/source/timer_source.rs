@@ -160,6 +160,7 @@ impl TimerSource {
 
     /// Simulate a failure for testing purposes
     #[cfg(test)]
+    #[allow(dead_code)]
     fn simulate_error(&self) -> Result<(), EventFluxError> {
         use rand::Rng;
         if self.simulate_failure_rate > 0.0 {
@@ -176,6 +177,7 @@ impl TimerSource {
 
     /// Check for simulated errors (no-op in non-test builds)
     #[cfg(not(test))]
+    #[allow(dead_code)]
     fn simulate_error(&self) -> Result<(), EventFluxError> {
         Ok(())
     }
@@ -235,7 +237,7 @@ impl Source for TimerSource {
                 match error_result {
                     Ok(_) => {
                         // Success case - serialize event to bytes and deliver via callback
-                        match PassthroughMapper::serialize(&[event.clone()]) {
+                        match PassthroughMapper::serialize(std::slice::from_ref(&event)) {
                             Ok(bytes) => {
                                 if let Err(e) = callback.on_data(&bytes) {
                                     // Handle send error with error context

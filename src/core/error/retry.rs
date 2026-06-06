@@ -20,8 +20,10 @@
 //! This module provides configurable retry logic with multiple backoff strategies
 //! including exponential, linear, and fixed delay patterns.
 
-use crate::core::config::FlatConfig;
+use std::str::FromStr;
 use std::time::Duration;
+
+use crate::core::config::FlatConfig;
 
 /// Backoff strategy for retry delays
 ///
@@ -47,9 +49,11 @@ pub enum BackoffStrategy {
     Fixed,
 }
 
-impl BackoffStrategy {
+impl std::str::FromStr for BackoffStrategy {
+    type Err = String;
+
     /// Parse backoff strategy from string (case-insensitive)
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "exponential" => Ok(BackoffStrategy::Exponential),
             "linear" => Ok(BackoffStrategy::Linear),
@@ -60,7 +64,9 @@ impl BackoffStrategy {
             )),
         }
     }
+}
 
+impl BackoffStrategy {
     /// Convert backoff strategy to string representation
     #[inline]
     pub const fn as_str(&self) -> &'static str {

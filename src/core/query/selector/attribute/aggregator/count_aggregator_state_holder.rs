@@ -174,7 +174,9 @@ impl StateHolder for CountAggregatorStateHolder {
 
     fn reset_state(&self) {
         *self.count.lock().unwrap() = 0;
-        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+        self.base
+            .restored
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 

@@ -46,7 +46,7 @@
 /// # Example
 /// ```ignore
 /// use eventflux::core::query::input::stream::state::TimerWheel;
-/// let mut wheel = TimerWheel::new(3600_000, 1000); // 1 hour, 1-second ticks
+/// let mut wheel = TimerWheel::new(3_600_000, 1000); // 1 hour, 1-second ticks
 /// wheel.set_start_time(0);
 /// wheel.schedule(state_handle, trigger_at_ms);
 /// let expired = wheel.advance_to(current_time_ms);
@@ -69,12 +69,12 @@ impl<T> TimerWheel<T> {
     /// Create new timer wheel
     ///
     /// # Arguments
-    /// - `duration_ms`: Total time span covered (e.g., 3600_000 for 1 hour)
+    /// - `duration_ms`: Total time span covered (e.g., 3_600_000 for 1 hour)
     /// - `tick_ms`: Time per bucket (e.g., 1000 for 1 second)
     ///
     /// # Buckets
     /// - num_buckets = duration_ms / tick_ms
-    /// - Example: 3600_000 / 1000 = 3600 buckets (1 hour at 1-second resolution)
+    /// - Example: 3_600_000 / 1000 = 3600 buckets (1 hour at 1-second resolution)
     ///
     /// # Trade-offs
     /// - More buckets: Higher resolution, more memory
@@ -137,14 +137,14 @@ impl<T> TimerWheel<T> {
         // Edge case: if current_index == target_index, collect items at current bucket
         // This handles items scheduled at exactly current_time
         if self.current_index == target_index {
-            triggered.extend(self.buckets[self.current_index].drain(..));
+            triggered.append(&mut self.buckets[self.current_index]);
             return triggered;
         }
 
         // Advance wheel, collect expired items from each passed bucket
         while self.current_index != target_index {
             self.current_index = (self.current_index + 1) % self.buckets.len();
-            triggered.extend(self.buckets[self.current_index].drain(..));
+            triggered.append(&mut self.buckets[self.current_index]);
         }
 
         triggered
@@ -271,7 +271,7 @@ mod tests {
     fn test_timer_wheel_performance_10k_schedules() {
         use std::time::Instant;
 
-        let mut wheel = TimerWheel::new(3600_000, 1000); // 1 hour, 1-second ticks
+        let mut wheel = TimerWheel::new(3_600_000, 1000); // 1 hour, 1-second ticks
         wheel.set_start_time(0);
 
         // Schedule 10,000 items
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_timer_wheel_o1_advance() {
-        let mut wheel = TimerWheel::new(3600_000, 1000);
+        let mut wheel = TimerWheel::new(3_600_000, 1000);
         wheel.set_start_time(0);
 
         // Schedule many items

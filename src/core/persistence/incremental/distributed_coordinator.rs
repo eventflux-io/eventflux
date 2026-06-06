@@ -69,6 +69,7 @@ pub struct InMemoryDistributedCoordinator {
 
 /// State of the current node
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct NodeState {
     /// Node identifier
     node_id: String,
@@ -99,6 +100,7 @@ enum NodeRole {
 
 /// Health status of a node
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum NodeHealth {
     Healthy,
     Degraded { reason: String },
@@ -107,6 +109,7 @@ enum NodeHealth {
 
 /// Information about a cluster member
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct NodeInfo {
     /// Node identifier
     node_id: String,
@@ -126,6 +129,7 @@ struct NodeInfo {
 
 /// Capabilities of a cluster node
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct NodeCapabilities {
     /// Can participate in leader election
     can_be_leader: bool,
@@ -142,6 +146,7 @@ struct NodeCapabilities {
 
 /// Progress tracking for distributed checkpoints
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CheckpointProgress {
     /// Checkpoint identifier
     checkpoint_id: CheckpointId,
@@ -167,6 +172,7 @@ struct CheckpointProgress {
 
 /// Metadata for a distributed checkpoint
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CheckpointMetadata {
     /// Checkpoint type
     checkpoint_type: String,
@@ -199,6 +205,7 @@ struct ElectionState {
 
 /// Consensus log entry
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ConsensusEntry {
     /// Entry term
     term: u64,
@@ -218,6 +225,7 @@ struct ConsensusEntry {
 
 /// Type of consensus entry
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum ConsensusEntryType {
     CheckpointInitiation,
     CheckpointCompletion,
@@ -228,6 +236,7 @@ enum ConsensusEntryType {
 
 /// Coordinator performance statistics
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 struct CoordinatorStatistics {
     /// Total checkpoints coordinated
     pub total_checkpoints: u64,
@@ -253,6 +262,7 @@ struct CoordinatorStatistics {
 
 /// Simulated cluster state for testing
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 struct SimulatedClusterState {
     /// Nodes in the cluster
     nodes: HashMap<String, NodeInfo>,

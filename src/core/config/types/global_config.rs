@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Global EventFlux runtime configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct EventFluxGlobalConfig {
     /// Application configuration (name, async mode, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,21 +56,6 @@ pub struct EventFluxGlobalConfig {
     /// Extensions configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<ExtensionsConfig>,
-}
-
-impl Default for EventFluxGlobalConfig {
-    fn default() -> Self {
-        Self {
-            application: None,
-            runtime: RuntimeConfig::default(),
-            persistence: None,
-            distributed: None,
-            security: None,
-            observability: None,
-            monitoring: None,
-            extensions: None,
-        }
-    }
 }
 
 impl EventFluxGlobalConfig {
@@ -174,7 +159,7 @@ impl EventFluxGlobalConfig {
 ///
 /// Configures application-wide settings like application name and default async mode.
 /// Used to replace `@app` annotations in the old EventFluxQL syntax.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ApplicationGlobalConfig {
     /// Application name used for runtime identification and persistence
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,15 +168,6 @@ pub struct ApplicationGlobalConfig {
     /// Default async mode for all streams (unless overridden by stream-level config)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub async_default: Option<bool>,
-}
-
-impl Default for ApplicationGlobalConfig {
-    fn default() -> Self {
-        Self {
-            name: None,
-            async_default: None,
-        }
-    }
 }
 
 impl ApplicationGlobalConfig {

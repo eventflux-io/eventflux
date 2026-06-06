@@ -51,6 +51,7 @@ impl InputStore {
     }
 
     // Helper to access the composed eventflux_element from variants
+    #[allow(dead_code)]
     fn eventflux_element_ref(&self) -> &EventFluxElement {
         match self {
             InputStore::Store(s) => &s.eventflux_element,
@@ -58,6 +59,7 @@ impl InputStore {
             InputStore::Aggregation(a) => &a.eventflux_element,
         }
     }
+    #[allow(dead_code)]
     fn eventflux_element_mut_ref(&mut self) -> &mut EventFluxElement {
         match self {
             InputStore::Store(s) => &mut s.eventflux_element,

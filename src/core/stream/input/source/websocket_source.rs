@@ -96,6 +96,7 @@ impl Default for WebSocketSourceConfig {
 
 impl WebSocketSourceConfig {
     /// Parse configuration from properties HashMap
+    #[allow(clippy::field_reassign_with_default)]
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
 
@@ -683,7 +684,7 @@ impl SourceFactory for WebSocketSourceFactory {
             .unwrap_or_else(|| "websocket-source".to_string());
 
         let source = WebSocketSource::from_properties(config, None, &stream_name)
-            .map_err(|e| EventFluxError::configuration(e))?;
+            .map_err(EventFluxError::configuration)?;
 
         Ok(Box::new(source))
     }

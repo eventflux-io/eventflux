@@ -116,6 +116,7 @@ impl Expression {
     }
 
     // Math
+    #[allow(clippy::should_implement_trait)]
     pub fn add(left: Expression, right: Expression) -> Self {
         Expression::Add(Box::new(Add::new(left, right)))
     }
@@ -142,6 +143,7 @@ impl Expression {
     pub fn or(left: Expression, right: Expression) -> Self {
         Expression::Or(Box::new(Or::new(left, right)))
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn not(expr: Expression) -> Self {
         Expression::Not(Box::new(Not::new(expr)))
     }

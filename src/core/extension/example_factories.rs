@@ -46,6 +46,7 @@ use std::collections::HashMap;
 
 /// Kafka-specific validated configuration (INTERNAL to KafkaSourceFactory)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct KafkaSourceConfig {
     bootstrap_servers: Vec<String>,
     topic: String,
@@ -194,6 +195,7 @@ impl SourceFactory for KafkaSourceFactory {
 
 /// HTTP-specific validated configuration
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct HttpSinkConfig {
     url: String,
     method: String,

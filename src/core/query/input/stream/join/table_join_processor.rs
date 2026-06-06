@@ -41,6 +41,7 @@ pub struct TableJoinProcessor {
 }
 
 impl TableJoinProcessor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         join_type: JoinType,
         compiled_condition: Option<Arc<dyn CompiledCondition>>,

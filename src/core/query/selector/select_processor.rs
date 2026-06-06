@@ -361,6 +361,7 @@ pub struct SelectProcessor {
 }
 
 impl SelectProcessor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         api_selector: &crate::query_api::execution::query::selection::Selector,
         current_on: bool,

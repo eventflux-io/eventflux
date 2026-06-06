@@ -157,6 +157,7 @@ impl StreamPostStateProcessor {
     /// 3. Notify thisStatePreProcessor that state changed
     /// 4. Forward StateEvent to next/every/callback processors
     /// 5. Mark event as returned if output processor exists
+    ///
     /// Made public for LogicalPostStateProcessor to call
     pub fn process_state_event(&mut self, state_event: &StateEvent) {
         // Get the StreamEvent at this state position

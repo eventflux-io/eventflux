@@ -77,6 +77,7 @@ impl CountPostStateProcessor {
     /// stream_events[0] = e1 -> e2 -> e3
     /// count_events_in_chain() = 3
     /// ```
+    #[allow(dead_code)]
     fn count_events_in_chain(&self, state_event: &StateEvent) -> usize {
         use crate::core::event::stream::stream_event::StreamEvent;
 

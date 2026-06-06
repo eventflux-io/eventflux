@@ -47,6 +47,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::str::FromStr;
 
 /// Property source identifier with priority ordering
 ///
@@ -229,9 +230,11 @@ pub enum StreamType {
     Internal,
 }
 
-impl StreamType {
+impl std::str::FromStr for StreamType {
+    type Err = String;
+
     /// Parse stream type from string (case-insensitive)
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "source" => Ok(StreamType::Source),
             "sink" => Ok(StreamType::Sink),
@@ -242,7 +245,9 @@ impl StreamType {
             )),
         }
     }
+}
 
+impl StreamType {
     /// Convert stream type to string representation
     #[inline]
     pub const fn as_str(&self) -> &'static str {

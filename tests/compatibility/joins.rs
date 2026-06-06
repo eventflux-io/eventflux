@@ -2237,7 +2237,7 @@ async fn join_test_avg_agg() {
         };
         // Values should be in range of the input quantities
         assert!(
-            avg_val >= 3.0 && avg_val <= 9.0,
+            (3.0..=9.0).contains(&avg_val),
             "avg={} should be between 3 and 9",
             avg_val
         );

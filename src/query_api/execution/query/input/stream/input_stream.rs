@@ -51,6 +51,7 @@ pub enum InputStream {
 impl InputStream {
     // These helpers assume that SingleInputStream, JoinInputStream, StateInputStream
     // will be refactored to compose `eventflux_element: EventFluxElement`.
+    #[allow(dead_code)]
     fn eventflux_element_ref(&self) -> &EventFluxElement {
         match self {
             InputStream::Single(s) => &s.eventflux_element,
@@ -59,6 +60,7 @@ impl InputStream {
         }
     }
 
+    #[allow(dead_code)]
     fn eventflux_element_mut_ref(&mut self) -> &mut EventFluxElement {
         match self {
             InputStream::Single(s) => &mut s.eventflux_element,

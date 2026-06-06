@@ -224,6 +224,7 @@ pub struct CheckpointResult {
 }
 
 /// Incremental checkpointing system coordinator
+#[allow(dead_code)]
 pub struct IncrementalCheckpointSystem {
     /// System configuration
     config: IncrementalCheckpointConfig,

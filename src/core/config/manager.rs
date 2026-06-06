@@ -134,6 +134,7 @@ impl ConfigManager {
     }
 
     /// Check if running in Kubernetes environment
+    #[allow(dead_code)]
     fn is_kubernetes_environment(&self) -> bool {
         std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
     }
@@ -598,6 +599,6 @@ eventflux:
 
         // Should be able to load even with invalid config (when validation is off)
         let config = manager.load_unified_config().await.unwrap();
-        assert!(config.api_version.len() > 0);
+        assert!(!config.api_version.is_empty());
     }
 }

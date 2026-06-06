@@ -395,7 +395,7 @@ impl std::fmt::Debug for ErrorHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::FlatConfig;
+
     use crate::core::error::{BackoffStrategy, RetryConfig};
     use crate::core::event::AttributeValue;
 

@@ -591,7 +591,7 @@ async fn function_test_default_float_to_double() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(v) = out[0][0] {
-        assert!((v - 3.14159265358979).abs() < 0.0001);
+        assert!((v - std::f64::consts::PI).abs() < 0.0001);
     } else {
         panic!("Expected Double value");
     }
@@ -599,6 +599,7 @@ async fn function_test_default_float_to_double() {
 
 /// Test default with INT and DOUBLE widening
 #[tokio::test]
+#[allow(clippy::approx_constant)]
 async fn function_test_default_int_to_double() {
     let app = "\
         CREATE STREAM inputStream (value INT);\n\

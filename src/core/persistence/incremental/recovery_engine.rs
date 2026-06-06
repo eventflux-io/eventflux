@@ -34,6 +34,7 @@ use crate::core::persistence::state_holder::{
 };
 
 /// Advanced recovery engine with parallel processing
+#[allow(dead_code)]
 pub struct AdvancedRecoveryEngine {
     /// Persistence backend for loading checkpoints
     backend: Arc<dyn PersistenceBackend>,
@@ -113,6 +114,7 @@ pub enum VerificationLevel {
 
 /// Information about a checkpoint for recovery planning
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CheckpointInfo {
     /// Checkpoint identifier
     pub checkpoint_id: CheckpointId,
@@ -135,6 +137,7 @@ struct CheckpointInfo {
 
 /// Type of checkpoint
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum CheckpointType {
     Full,
     Incremental { base: CheckpointId },
@@ -164,6 +167,7 @@ pub struct RecoveryStatistics {
 
 /// Recovery plan for a set of components
 #[derive(Debug)]
+#[allow(dead_code)]
 struct RecoveryPlan {
     /// Recovery stages (can be executed in parallel)
     pub stages: Vec<RecoveryStage>,
@@ -180,6 +184,7 @@ struct RecoveryPlan {
 
 /// Single recovery stage
 #[derive(Debug)]
+#[allow(dead_code)]
 struct RecoveryStage {
     /// Components to recover in this stage
     pub components: Vec<ComponentId>,
@@ -196,6 +201,7 @@ struct RecoveryStage {
 
 /// Recovery context for tracking progress
 #[derive(Debug)]
+#[allow(dead_code)]
 struct RecoveryContext {
     /// Target components
     pub target_components: HashSet<ComponentId>,
@@ -237,6 +243,7 @@ impl AdvancedRecoveryEngine {
     }
 
     /// Build checkpoint information cache
+    #[allow(dead_code)]
     fn build_checkpoint_cache(&mut self) -> Result<(), StateError> {
         let checkpoint_ids = self.backend.list_checkpoints()?;
 
@@ -443,9 +450,10 @@ impl AdvancedRecoveryEngine {
                 // Apply changes to existing state
                 let mut updated_state = base_state.clone();
 
-                // Apply operations from changelog
-                for operation in &changes.operations {
-                    // Simplified - in practice would properly apply each operation
+                // FIXME: Placeholder — each operation in the changelog must be properly
+                // deserialized and applied to the state. Currently appends dummy bytes,
+                // which means incremental recovery produces incorrect state.
+                for _operation in &changes.operations {
                     updated_state.data.extend_from_slice(&[1, 2, 3]); // Placeholder
                 }
 
@@ -471,7 +479,7 @@ impl AdvancedRecoveryEngine {
         _verification_level: &VerificationLevel,
     ) -> Result<(), StateError> {
         // Verify checksums
-        for (component_id, snapshot) in results {
+        for snapshot in results.values() {
             let calculated_checksum =
                 crate::core::persistence::state_holder::StateSnapshot::calculate_checksum(
                     &snapshot.data,

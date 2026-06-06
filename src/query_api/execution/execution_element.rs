@@ -23,6 +23,7 @@ use crate::query_api::execution::query::Query;
 
 // This enum will wrap concrete types that are considered ExecutionElements.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ExecutionElement {
     Query(Query),
     Partition(Partition),

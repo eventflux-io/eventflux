@@ -128,5 +128,5 @@ async fn test_session_window_gap_validation() {
     println!("Session gap test output: {:?}", output);
 
     // Should succeed with valid gap
-    assert!(true, "Valid session gap should work");
+    // Valid session gap should work - test passes if we reach this point
 }

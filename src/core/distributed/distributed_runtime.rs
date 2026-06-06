@@ -448,8 +448,10 @@ mod tests {
         let api_app = Arc::new(EventFluxApp::default());
         let context = Arc::new(EventFluxContext::default());
 
-        let mut config = DistributedConfig::default();
-        config.mode = mode;
+        let mut config = DistributedConfig {
+            mode,
+            ..Default::default()
+        };
 
         if mode == RuntimeMode::Distributed {
             config.node = Some(super::super::NodeConfig {

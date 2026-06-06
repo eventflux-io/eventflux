@@ -121,7 +121,7 @@ impl ConfigValidator {
         }
 
         // Validate application names
-        for (name, _) in &config.applications {
+        for name in config.applications.keys() {
             if name.is_empty() {
                 result.add_error(ValidationError::invalid_field_value(
                     "applications.<name>",
@@ -223,13 +223,11 @@ impl ConfigValidator {
 
     /// Validate connectivity to external services
     async fn validate_connectivity(&self, _config: &EventFluxConfig) -> ValidationResult {
-        let result = ValidationResult::new();
-
         // Implementation pending: External service connectivity validation
         // Future implementation will test database connections, validate Kafka brokers,
         // check Redis connectivity, and verify external service endpoints
 
-        result
+        ValidationResult::new()
     }
 
     /// Validate resource requirements and limits
@@ -314,7 +312,7 @@ impl ValidationRule for ApplicationValidationRule {
             // Validate that each application has at least one definition
             if app_config.definitions.is_empty() {
                 result.add_warning(ValidationError::custom_validation(
-                    &format!("applications.{}.definitions", app_name),
+                    format!("applications.{}.definitions", app_name),
                     "Application has no definitions configured",
                 ));
             }
@@ -350,7 +348,7 @@ impl ApplicationValidationRule {
         // Validate definition name
         if def_name.is_empty() {
             result.add_error(ValidationError::invalid_field_value(
-                &format!("applications.{}.definitions.<name>", app_name),
+                format!("applications.{}.definitions.<name>", app_name),
                 "Definition name cannot be empty",
             ));
         }
@@ -404,7 +402,7 @@ impl ValidationRule for SecurityValidationRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::{PerformanceConfig, RuntimeMode};
+    use crate::core::config::RuntimeMode;
 
     #[tokio::test]
     async fn test_basic_validation() {

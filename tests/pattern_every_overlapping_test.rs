@@ -150,12 +150,12 @@ fn test_every_pattern_overlapping_instances() {
     for (i, state) in collected.iter().enumerate() {
         println!("  Match {}: ", i + 1);
         if let Some(e1) = state.get_stream_event(0) {
-            if let Some(AttributeValue::Long(val)) = e1.before_window_data.get(0) {
+            if let Some(AttributeValue::Long(val)) = e1.before_window_data.first() {
                 println!("    e1.value = {}", val);
             }
         }
         if let Some(e2) = state.get_stream_event(1) {
-            if let Some(AttributeValue::Long(val)) = e2.before_window_data.get(0) {
+            if let Some(AttributeValue::Long(val)) = e2.before_window_data.first() {
                 println!("    e2.value = {}", val);
             }
         }
@@ -174,12 +174,12 @@ fn test_every_pattern_overlapping_instances() {
     // Validate first match: A(1) -> B(2)
     let match1 = &collected[0];
     if let Some(e1) = match1.get_stream_event(0) {
-        if let Some(AttributeValue::Long(val)) = e1.before_window_data.get(0) {
+        if let Some(AttributeValue::Long(val)) = e1.before_window_data.first() {
             assert_eq!(*val, 1, "First match should have e1.value = 1");
         }
     }
     if let Some(e2) = match1.get_stream_event(1) {
-        if let Some(AttributeValue::Long(val)) = e2.before_window_data.get(0) {
+        if let Some(AttributeValue::Long(val)) = e2.before_window_data.first() {
             assert_eq!(*val, 2, "First match should have e2.value = 2");
         }
     }
@@ -187,12 +187,12 @@ fn test_every_pattern_overlapping_instances() {
     // Validate second match: A(3) -> B(4)
     let match2 = &collected[1];
     if let Some(e1) = match2.get_stream_event(0) {
-        if let Some(AttributeValue::Long(val)) = e1.before_window_data.get(0) {
+        if let Some(AttributeValue::Long(val)) = e1.before_window_data.first() {
             assert_eq!(*val, 3, "Second match should have e1.value = 3");
         }
     }
     if let Some(e2) = match2.get_stream_event(1) {
-        if let Some(AttributeValue::Long(val)) = e2.before_window_data.get(0) {
+        if let Some(AttributeValue::Long(val)) = e2.before_window_data.first() {
             assert_eq!(*val, 4, "Second match should have e2.value = 4");
         }
     }
@@ -291,7 +291,7 @@ fn test_pattern_without_every_no_overlapping() {
     // Verify it's the A(1) - B(3) match (first complete sequence)
     let match1 = &collected[0];
     if let Some(e1) = match1.get_stream_event(0) {
-        if let Some(AttributeValue::Long(val)) = e1.before_window_data.get(0) {
+        if let Some(AttributeValue::Long(val)) = e1.before_window_data.first() {
             assert_eq!(
                 *val, 1,
                 "Match should be from A(1), the first complete sequence"
@@ -915,7 +915,7 @@ fn test_true_every_overlapping_multiple_a_before_b() {
                 e1.timestamp,
                 e1.before_window_data.len()
             );
-            if let Some(AttributeValue::Long(val)) = e1.before_window_data.get(0) {
+            if let Some(AttributeValue::Long(val)) = e1.before_window_data.first() {
                 println!("    e1.value = {}", val);
             }
         }
@@ -925,7 +925,7 @@ fn test_true_every_overlapping_multiple_a_before_b() {
                 e2.timestamp,
                 e2.before_window_data.len()
             );
-            if let Some(AttributeValue::Long(val)) = e2.before_window_data.get(0) {
+            if let Some(AttributeValue::Long(val)) = e2.before_window_data.first() {
                 println!("    e2.value = {}", val);
             }
         }
@@ -1206,7 +1206,7 @@ fn test_ultra_explicit_overlapping_proof() {
 ///   - Instance 1: [A1, A2, A3] waits for B
 ///   - Instance 2: [A2, A3, A4] waits for B
 ///   - Instance 3: [A3, A4, A5] waits for B
-///   When B6 arrives: 3 matches
+///   - When B6 arrives: 3 matches
 ///
 /// This is the sliding window behavior described in PATTERN_GRAMMAR_V1.2_TEST_SPEC.md Test 2.9
 ///

@@ -78,9 +78,9 @@ impl TriggerRuntime {
                 }
                 .on_time(now);
             } else {
-                let _ =
-                    self.scheduler
-                        .schedule_cron(at, task, None, Some(Arc::clone(&active)));
+                let _ = self
+                    .scheduler
+                    .schedule_cron(at, task, None, Some(Arc::clone(&active)));
             }
         }
     }
@@ -88,7 +88,10 @@ impl TriggerRuntime {
     pub fn shutdown(&self) {
         self.started.store(false, Ordering::Release);
         // Deactivate current generation's tasks so old periodic loops become no-ops
-        self.active_flag.lock().unwrap().store(false, Ordering::Release);
+        self.active_flag
+            .lock()
+            .unwrap()
+            .store(false, Ordering::Release);
     }
 }
 
@@ -104,6 +107,8 @@ impl Schedulable for TriggerTask {
             return;
         }
         let ev = Event::new_with_data(timestamp, vec![AttributeValue::Long(timestamp)]);
-        self.junction.lock().unwrap().send_event(ev);
+        if let Err(e) = self.junction.lock().unwrap().send_event(ev) {
+            log::error!("Trigger failed to send event: {}", e);
+        }
     }
 }

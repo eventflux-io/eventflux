@@ -80,7 +80,7 @@ impl ExpressionExecutor for BuiltinScalarFunction {
 impl ScalarFunctionExecutor for BuiltinScalarFunction {
     fn init(
         &mut self,
-        args: &Vec<Box<dyn ExpressionExecutor>>,
+        args: &[Box<dyn ExpressionExecutor>],
         ctx: &Arc<EventFluxAppContext>,
     ) -> Result<(), String> {
         let cloned: Vec<Box<dyn ExpressionExecutor>> =

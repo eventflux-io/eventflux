@@ -204,7 +204,9 @@ impl StateHolder for MaxAggregatorStateHolder {
 
     fn reset_state(&self) {
         *self.value.lock().unwrap() = None;
-        self.base.restored.store(true, std::sync::atomic::Ordering::Release);
+        self.base
+            .restored
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 

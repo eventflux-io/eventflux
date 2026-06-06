@@ -26,14 +26,12 @@ use eventflux::core::event::stream::meta_stream_event::MetaStreamEvent;
 use eventflux::core::event::stream::stream_event::StreamEvent;
 use eventflux::core::event::value::AttributeValue;
 use eventflux::core::query::output::callback_processor::CallbackProcessor;
-use eventflux::core::query::processor::stream::join::{
-    JoinProcessor, JoinProcessorSide, JoinSide,
-};
+use eventflux::core::query::processor::stream::join::{JoinProcessor, JoinProcessorSide, JoinSide};
 use eventflux::core::query::processor::{ProcessingMode, Processor};
 use eventflux::core::stream::output::stream_callback::StreamCallback;
 use eventflux::core::stream::stream_junction::StreamJunction;
+use eventflux::core::util::parser::ExpressionParserContext;
 use eventflux::core::util::parser::QueryParser;
-use eventflux::core::util::parser::{parse_expression, ExpressionParserContext};
 use eventflux::query_api::definition::attribute::Type as AttrType;
 use eventflux::query_api::definition::StreamDefinition;
 use eventflux::query_api::execution::query::input::stream::{
@@ -243,14 +241,16 @@ fn test_inner_join_runtime() {
         let left = junctions.get("LeftStream").unwrap();
         left.lock()
             .unwrap()
-            .send_event(Event::new_with_data(0, vec![AttributeValue::Int(1)]));
+            .send_event(Event::new_with_data(0, vec![AttributeValue::Int(1)]))
+            .unwrap();
     }
     {
         let right = junctions.get("RightStream").unwrap();
         right
             .lock()
             .unwrap()
-            .send_event(Event::new_with_data(0, vec![AttributeValue::Int(1)]));
+            .send_event(Event::new_with_data(0, vec![AttributeValue::Int(1)]))
+            .unwrap();
     }
 
     let out = collected.lock().unwrap().clone();
@@ -279,7 +279,8 @@ fn test_left_outer_join_runtime() {
         let left = junctions.get("LeftStream").unwrap();
         left.lock()
             .unwrap()
-            .send_event(Event::new_with_data(0, vec![AttributeValue::Int(2)]));
+            .send_event(Event::new_with_data(0, vec![AttributeValue::Int(2)]))
+            .unwrap();
     }
 
     let out = collected.lock().unwrap().clone();
@@ -289,9 +290,11 @@ fn test_left_outer_join_runtime() {
     );
 }
 
+type JoinEventPairs = Vec<(Option<i32>, Option<i32>)>;
+
 #[derive(Debug)]
 struct CollectStateEvents {
-    events: Arc<Mutex<Vec<(Option<i32>, Option<i32>)>>>,
+    events: Arc<Mutex<JoinEventPairs>>,
 }
 
 impl Processor for CollectStateEvents {
@@ -302,13 +305,13 @@ impl Processor for CollectStateEvents {
             if let Some(se) = ce.as_any().downcast_ref::<StateEvent>() {
                 let l = se
                     .get_stream_event(0)
-                    .and_then(|e| match e.before_window_data.get(0) {
+                    .and_then(|e| match e.before_window_data.first() {
                         Some(AttributeValue::Int(v)) => Some(*v),
                         _ => None,
                     });
                 let r = se
                     .get_stream_event(1)
-                    .and_then(|e| match e.before_window_data.get(0) {
+                    .and_then(|e| match e.before_window_data.first() {
                         Some(AttributeValue::Int(v)) => Some(*v),
                         _ => None,
                     });
@@ -359,13 +362,11 @@ impl Processor for CollectStateEvents {
     }
 }
 
+type JoinSideHandle = Arc<Mutex<JoinProcessorSide>>;
+
 fn setup_state_join(
     join_type: JoinType,
-) -> (
-    Arc<Mutex<JoinProcessorSide>>,
-    Arc<Mutex<JoinProcessorSide>>,
-    Arc<Mutex<Vec<(Option<i32>, Option<i32>)>>>,
-) {
+) -> (JoinSideHandle, JoinSideHandle, Arc<Mutex<JoinEventPairs>>) {
     let eventflux_context = Arc::new(EventFluxContext::new());
     let app = Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
         "App".to_string(),
@@ -409,7 +410,7 @@ fn setup_state_join(
         Arc::new(mse.get_meta_stream_event(1).unwrap().clone()),
     );
 
-    let ctx = ExpressionParserContext {
+    let _ctx = ExpressionParserContext {
         eventflux_app_context: Arc::clone(&app_ctx),
         eventflux_query_context: Arc::clone(&query_ctx),
         stream_meta_map: stream_meta,

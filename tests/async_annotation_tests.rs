@@ -32,13 +32,11 @@
 // - Async configuration with SQL queries
 
 // Tests for async stream configuration via SQL WITH and YAML
-use eventflux::core::config::eventflux_context::EventFluxContext;
 use eventflux::core::eventflux_manager::EventFluxManager;
-use eventflux::query_api::definition::attribute::Type as AttributeType;
 
 #[tokio::test]
 async fn test_async_with_sql_basic() {
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
 
     // MIGRATED: @Async annotation replaced with SQL WITH clause
     let eventflux_app_string = r#"
@@ -92,7 +90,7 @@ async fn test_async_with_sql_basic() {
 
 #[tokio::test]
 async fn test_async_with_sql_minimal() {
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
 
     // MIGRATED: Minimal @Async replaced with async.enabled property
     let eventflux_app_string = r#"
@@ -192,7 +190,7 @@ async fn test_app_level_async_via_yaml() {
 
 #[tokio::test]
 async fn test_multiple_async_streams_with_sql() {
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
 
     // MIGRATED: Multiple @Async annotations replaced with SQL WITH clauses
     let eventflux_app_string = r#"
@@ -247,7 +245,7 @@ async fn test_multiple_async_streams_with_sql() {
 
 #[tokio::test]
 async fn test_async_with_sql_query() {
-    let mut manager = EventFluxManager::new();
+    let manager = EventFluxManager::new();
 
     // MIGRATED: @Async + EventFluxQL query replaced with SQL WITH + SQL query
     let eventflux_app_string = r#"

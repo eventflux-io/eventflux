@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 /// Application-specific configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ApplicationConfig {
     /// Per-stream configuration (input/output streams with sources/sinks)
     #[serde(default)]
@@ -52,22 +52,10 @@ pub struct ApplicationConfig {
     pub error_handling: Option<ErrorHandlingConfig>,
 }
 
-impl Default for ApplicationConfig {
-    fn default() -> Self {
-        Self {
-            streams: HashMap::new(),
-            definitions: HashMap::new(),
-            queries: HashMap::new(),
-            persistence: None,
-            monitoring: None,
-            error_handling: None,
-        }
-    }
-}
-
 /// Configuration for individual definitions (streams, tables, windows, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[allow(clippy::large_enum_variant)]
 pub enum DefinitionConfig {
     /// Stream definition configuration
     Stream(StreamConfig),

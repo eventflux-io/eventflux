@@ -149,7 +149,7 @@ pub trait SinkMapperFactory: Debug + Send + Sync {
     fn create_with_schema(
         &self,
         config: &HashMap<String, String>,
-        field_names: &[String],
+        _field_names: &[String],
     ) -> Result<Box<dyn SinkMapper>, EventFluxError> {
         // Default implementation ignores field names
         self.create_initialized(config)
@@ -554,7 +554,7 @@ impl SinkMapperFactory for BytesSinkMapperFactory {
         let field_index = match config.get("bytes.field-index") {
             Some(value) => value.parse::<usize>().map_err(|_| {
                 EventFluxError::invalid_parameter_with_details(
-                    &format!(
+                    format!(
                         "Invalid bytes.field-index value: '{}' is not a valid non-negative integer",
                         value
                     ),

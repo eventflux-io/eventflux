@@ -66,11 +66,7 @@ fn init_persistence_store(
 
     match persistence_config.backend_type {
         PersistenceBackendType::File => {
-            let path = persistence_config
-                .path
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("./snapshots");
+            let path = persistence_config.path.as_deref().unwrap_or("./snapshots");
 
             match FilePersistenceStore::new(path) {
                 Ok(s) => {
@@ -86,8 +82,7 @@ fn init_persistence_store(
         PersistenceBackendType::Sqlite => {
             let path = persistence_config
                 .path
-                .as_ref()
-                .map(|s| s.as_str())
+                .as_deref()
                 .unwrap_or("./eventflux.db");
 
             match SqlitePersistenceStore::new(path) {
@@ -104,8 +99,7 @@ fn init_persistence_store(
         PersistenceBackendType::Redis => {
             let url = persistence_config
                 .url
-                .as_ref()
-                .map(|s| s.as_str())
+                .as_deref()
                 .unwrap_or("redis://localhost:6379");
 
             eprintln!(

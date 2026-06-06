@@ -78,10 +78,10 @@ fn test_filter_with_cross_stream_reference_simple() {
         // Access e1 (position 0) from StateEvent
         if let Some(e1) = state_event.get_stream_event(0) {
             // Get e1.price (attribute index 0)
-            if let Some(AttributeValue::Float(e1_price)) = e1.before_window_data.get(0) {
+            if let Some(AttributeValue::Float(e1_price)) = e1.before_window_data.first() {
                 // Access e2 (position 1) from StateEvent
                 if let Some(e2) = state_event.get_stream_event(1) {
-                    if let Some(AttributeValue::Float(e2_price)) = e2.before_window_data.get(0) {
+                    if let Some(AttributeValue::Float(e2_price)) = e2.before_window_data.first() {
                         return e2_price > e1_price;
                     }
                 }
@@ -165,9 +165,9 @@ fn test_filter_cross_stream_percentage() {
     // Filter: price > e1.price * 1.1
     e2_processor.set_condition(|state_event| {
         if let Some(e1) = state_event.get_stream_event(0) {
-            if let Some(AttributeValue::Float(e1_price)) = e1.before_window_data.get(0) {
+            if let Some(AttributeValue::Float(e1_price)) = e1.before_window_data.first() {
                 if let Some(e2) = state_event.get_stream_event(1) {
-                    if let Some(AttributeValue::Float(e2_price)) = e2.before_window_data.get(0) {
+                    if let Some(AttributeValue::Float(e2_price)) = e2.before_window_data.first() {
                         let threshold = e1_price * 1.1;
                         return e2_price > &threshold;
                     }
@@ -247,9 +247,9 @@ fn test_filter_cross_stream_string_equality() {
     // Filter: userId == e1.userId
     e2_processor.set_condition(|state_event| {
         if let Some(e1) = state_event.get_stream_event(0) {
-            if let Some(AttributeValue::String(e1_user)) = e1.before_window_data.get(0) {
+            if let Some(AttributeValue::String(e1_user)) = e1.before_window_data.first() {
                 if let Some(e2) = state_event.get_stream_event(1) {
-                    if let Some(AttributeValue::String(e2_user)) = e2.before_window_data.get(0) {
+                    if let Some(AttributeValue::String(e2_user)) = e2.before_window_data.first() {
                         return e1_user == e2_user;
                     }
                 }
@@ -336,10 +336,10 @@ fn test_filter_cross_stream_three_events() {
     e3_processor.set_condition(|state_event| {
         // Access e3 (position 2) from StateEvent
         if let Some(e3) = state_event.get_stream_event(2) {
-            if let Some(AttributeValue::Int(e3_value)) = e3.before_window_data.get(0) {
+            if let Some(AttributeValue::Int(e3_value)) = e3.before_window_data.first() {
                 // Check e1.value
                 if let Some(e1) = state_event.get_stream_event(0) {
-                    if let Some(AttributeValue::Int(e1_value)) = e1.before_window_data.get(0) {
+                    if let Some(AttributeValue::Int(e1_value)) = e1.before_window_data.first() {
                         if e3_value <= e1_value {
                             return false;
                         }
@@ -352,7 +352,7 @@ fn test_filter_cross_stream_three_events() {
 
                 // Check e2.value
                 if let Some(e2) = state_event.get_stream_event(1) {
-                    if let Some(AttributeValue::Int(e2_value)) = e2.before_window_data.get(0) {
+                    if let Some(AttributeValue::Int(e2_value)) = e2.before_window_data.first() {
                         return e3_value > e2_value;
                     }
                 }
@@ -436,9 +436,9 @@ fn test_filter_cross_stream_null_handling() {
     // Filter references e1, but we'll pass StateEvent without e1
     e2_processor.set_condition(|state_event| {
         if let Some(e1) = state_event.get_stream_event(0) {
-            if let Some(AttributeValue::Float(e1_price)) = e1.before_window_data.get(0) {
+            if let Some(AttributeValue::Float(e1_price)) = e1.before_window_data.first() {
                 if let Some(e2) = state_event.get_stream_event(1) {
-                    if let Some(AttributeValue::Float(e2_price)) = e2.before_window_data.get(0) {
+                    if let Some(AttributeValue::Float(e2_price)) = e2.before_window_data.first() {
                         return e2_price > e1_price;
                     }
                 }
@@ -482,7 +482,7 @@ fn test_filter_without_cross_stream_reference() {
     // Simple filter: value > 100 (accesses from position 0)
     e1_processor.set_condition(|state_event| {
         if let Some(e1) = state_event.get_stream_event(0) {
-            if let Some(AttributeValue::Int(value)) = e1.before_window_data.get(0) {
+            if let Some(AttributeValue::Int(value)) = e1.before_window_data.first() {
                 return *value > 100;
             }
         }

@@ -24,14 +24,7 @@
 mod common;
 
 use common::pattern_chain_test_utils::*;
-use eventflux::core::event::stream::stream_event::StreamEvent;
-use eventflux::core::query::input::stream::state::pattern_chain_builder::{
-    PatternChainBuilder, PatternStepConfig, ProcessorChain,
-};
-use eventflux::core::query::input::stream::state::post_state_processor::PostStateProcessor;
 use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
-use eventflux::query_api::definition::stream_definition::StreamDefinition;
-use std::sync::{Arc, Mutex};
 
 // ============================================================================
 // PHASE 2b.4 TESTS: WITHIN Time Constraints
