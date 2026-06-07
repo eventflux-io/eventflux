@@ -166,4 +166,3 @@ codegen-units = 1
 [[bench]]
 name = "lock_contention_bench"
 harness = false
-
