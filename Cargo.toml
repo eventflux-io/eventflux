@@ -72,7 +72,7 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 toml = "0.8"
 tonic = { version = "0.11", features = ["tls"] }
 tower = "0.4"
-tungstenite = "0.24"
+tungstenite = "0.29"
 urlencoding = "2.1"
 uuid = { version = "1", features = ["v4"] }
 vault = { version = "10.1", optional = true }
