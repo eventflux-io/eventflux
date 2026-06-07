@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Design Discussion
+    url: https://github.com/eventflux-io/eventflux/discussions
+    about: For larger features that need design discussion first.

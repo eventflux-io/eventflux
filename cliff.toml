@@ -1,0 +1,23 @@
+[changelog]
+body = """
+## What's Changed
+{%- if version %} in {{ version }}{%- endif -%}
+{% for commit in commits %}
+  {% if commit.remote.pr_title -%}
+    {%- set commit_message = commit.remote.pr_title -%}
+  {%- else -%}
+    {%- set commit_message = commit.message -%}
+  {%- endif -%}
+  * {{ commit_message | split(pat="\n") | first | trim }}\
+    {% if commit.remote.username %} by @{{ commit.remote.username }}{%- endif -%}
+    {% if commit.remote.pr_number %} in \
+      [#{{ commit.remote.pr_number }}](https://github.com/eventflux-io/eventflux/pull/{{ commit.remote.pr_number }}) \
+    {%- endif %}
+{%- endfor -%}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+sort_commits = "newest"

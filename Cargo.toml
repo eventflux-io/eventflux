@@ -24,8 +24,6 @@ etcd = ["etcd-rs"]
 vault = ["dep:vault"]
 cloud-native = ["kubernetes", "consul", "etcd", "vault"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
@@ -89,6 +87,81 @@ custom_dyn_ext = { path = "tests/custom_dyn_ext" }
 serial_test = "3.0"
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+enum_glob_use = "allow"
+# Documentation lints — address incrementally
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+# Cast lints — common in systems/numeric code
+cast_lossless = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+# Style lints — subjective or too noisy for existing codebase
+assigning_clones = "allow"
+bool_to_int_with_if = "allow"
+default_trait_access = "allow"
+doc_link_with_quotes = "allow"
+explicit_into_iter_loop = "allow"
+explicit_iter_loop = "allow"
+float_cmp = "allow"
+fn_params_excessive_bools = "allow"
+if_not_else = "allow"
+implicit_hasher = "allow"
+items_after_statements = "allow"
+manual_let_else = "allow"
+map_unwrap_or = "allow"
+match_same_arms = "allow"
+match_wildcard_for_single_variants = "allow"
+module_name_repetitions = "allow"
+needless_pass_by_value = "allow"
+redundant_closure_for_method_calls = "allow"
+redundant_else = "allow"
+ref_option_ref = "allow"
+semicolon_if_nothing_returned = "allow"
+similar_names = "allow"
+single_char_pattern = "allow"
+single_match_else = "allow"
+struct_excessive_bools = "allow"
+struct_field_names = "allow"
+too_many_lines = "allow"
+trivially_copy_pass_by_ref = "allow"
+uninlined_format_args = "allow"
+unnecessary_wraps = "allow"
+unnested_or_patterns = "allow"
+unreadable_literal = "allow"
+unused_async = "allow"
+unused_self = "allow"
+used_underscore_binding = "allow"
+wildcard_imports = "allow"
+# Additional pedantic lints — fix incrementally
+checked_conversions = "allow"
+ignored_unit_patterns = "allow"
+implicit_clone = "allow"
+missing_fields_in_debug = "allow"
+option_as_ref_cloned = "allow"
+unchecked_duration_subtraction = "allow"
+unnecessary_literal_bound = "allow"
+used_underscore_items = "allow"
+stable_sort_primitive = "allow"
+ref_option = "allow"
+inefficient_to_string = "allow"
+manual_string_new = "allow"
+match_on_vec_items = "allow"
+needless_raw_string_hashes = "allow"
+# Nursery lints — suppressed because nursery is warn-level
+option_if_let_else = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
 
 [[bench]]
 name = "lock_contention_bench"

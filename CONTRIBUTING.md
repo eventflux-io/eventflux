@@ -42,16 +42,28 @@ All checks must pass before submitting:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets -- -D warnings -A clippy::nursery
 typos
 cargo machete
 cargo sort --workspace --check
-cargo test
+taplo fmt --check
+cargo nextest run        # or: cargo test
+cargo test --doc
 ```
 
-To auto-fix formatting: `cargo fmt --all`
+Or run everything at once with [just](https://github.com/casey/just):
 
-To auto-fix typos: `typos --write-changes`
+```bash
+just check-all
+```
+
+To auto-fix formatting and typos:
+
+```bash
+cargo fmt --all
+typos --write-changes
+taplo fmt
+```
 
 ### Typos
 
@@ -66,20 +78,29 @@ If a word is a valid domain term (e.g., SQL keywords, proper nouns), add an exce
 
 ### Pre-commit Hooks
 
-We use [prek](https://github.com/j178/prek) to run quality checks before each commit:
+We use [pre-commit](https://pre-commit.com/) to run quality checks automatically:
 
 ```bash
-cargo install prek
-prek install
+pip install pre-commit
+pre-commit install --install-hooks
 ```
 
-This installs git hooks that automatically run fmt, clippy, typos, machete, and sort checks on every commit. To run all hooks manually:
+This installs git hooks that run fast checks (fmt, sort, typos, taplo) on every commit and slow checks (clippy, machete) on push. To run all hooks manually:
 
 ```bash
-prek run --all-files
+pre-commit run --all-files
 ```
 
-> **Note**: `prek` is optional for local development. CI runs the same checks independently. The `.pre-commit-config.yaml` is also compatible with standard [pre-commit](https://pre-commit.com/) if you prefer that tool.
+### Test Runner
+
+We use [cargo-nextest](https://nexte.st/) for faster, parallelized test execution:
+
+```bash
+cargo install cargo-nextest
+cargo nextest run                          # run all tests
+cargo nextest run --nocapture -- test_name # run specific test with output
+cargo test --doc                           # doctests (nextest doesn't run these)
+```
 
 ## Code Style
 

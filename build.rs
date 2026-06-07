@@ -23,7 +23,7 @@ fn main() {
         .out_dir("src/core/distributed/grpc")
         .compile(&["proto/transport.proto"], &["proto"])
     {
-        eprintln!("Protobuf compilation failed: {}", e);
+        eprintln!("Protobuf compilation failed: {e}");
         // Don't exit here, as gRPC might be optional
     }
 }

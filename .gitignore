@@ -3,6 +3,11 @@
 **/*.rs.bk
 *.pdb
 
+# Fuzz testing artifacts
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+
 # Cargo.lock is committed for binaries but not libraries
 # Since this is a binary/application project, we keep Cargo.lock
 # Cargo.lock

@@ -5,6 +5,10 @@ extend-exclude = [
     "target/",
     "studio/webview/dist/",
     "*.lock",
+    "**/CHANGELOG.md",
+    "**/*.snap",
+    "**/fixtures/**",
+    "rust-project-quality-guide.md",
 ]
 
 [default.extend-identifiers]

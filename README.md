@@ -109,9 +109,10 @@ Active development. Core CEP works. 1,400+ tests passing. See [ROADMAP.md](ROADM
 ## Contributing
 
 ```bash
-cargo test        # run tests
-cargo clippy      # lint
-cargo fmt         # format
+cargo nextest run   # run tests
+just lint           # clippy
+cargo fmt           # format
+just check-all      # all quality checks
 ```
 
 See [DEV_GUIDE.md](DEV_GUIDE.md) for setup.
