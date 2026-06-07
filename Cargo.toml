@@ -64,7 +64,7 @@ serde_yaml = "0.9"
 snap = "1.1"
 # Using EventFlux fork with streaming SQL extensions
 sqlparser = { path = "vendor/datafusion-sqlparser-rs" }
-thiserror = "1.0"
+thiserror = "2.0"
 thread_local = "1.1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
