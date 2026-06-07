@@ -1628,19 +1628,17 @@ fn test_e2e_query_based_rabbitmq_processing() {
     );
 
     // Verify each output event has price_category
-    // Note: The JSON sink mapper uses generic field names (field_0, field_1, etc.)
-    // field_3 = price_category (4th field in the schema)
     for (i, event) in output_events.iter().enumerate() {
         let category = event
-            .get("field_3")
-            .expect("Output event should have field_3 (price_category)");
+            .get("price_category")
+            .expect("Output event should have price_category");
         assert!(
             category == "low" || category == "medium" || category == "high",
             "Event {} has invalid price_category: {:?}",
             i,
             category
         );
-        let symbol = event.get("field_0").unwrap();
+        let symbol = event.get("symbol").unwrap();
         println!("  [OK] Event {}: {} → {}", i, symbol, category);
     }
 

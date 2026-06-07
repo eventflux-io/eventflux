@@ -1,0 +1,17 @@
+[package]
+name = "eventflux-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sqlparser = { path = "../vendor/datafusion-sqlparser-rs" }
+
+[[bin]]
+name = "fuzz_sql_parser"
+path = "fuzz_targets/fuzz_sql_parser.rs"
+doc = false

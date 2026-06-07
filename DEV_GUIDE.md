@@ -52,7 +52,7 @@ cargo check
 cargo fmt
 
 # Run linter
-cargo clippy
+cargo clippy --all-targets -- -D warnings -A clippy::nursery
 ```
 
 ---
@@ -205,7 +205,7 @@ eventflux/
 ### Module Overview
 
 - `query_api`: Defines AST for EventFlux applications, streams, queries, expressions
-- `sql_compiler`: LALRPOP-based parser for EventFluxQL with streaming extensions
+- `sql_compiler`: SQL parser with EventFlux streaming extensions (vendored sqlparser-rs)
 - `core`: Runtime execution including processors, executors, state management
 
 ---
@@ -408,19 +408,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 2. Clone your fork
 3. Install pre-commit hooks:
    ```bash
-   cargo install prek
-   prek install
+   pip install pre-commit
+   pre-commit install --install-hooks
    ```
 4. Create a feature branch
 5. Make changes
 6. Run quality checks:
    ```bash
-   cargo fmt --all -- --check
-   cargo clippy --all-targets -- -D warnings
-   typos
-   cargo machete
-   cargo sort --workspace --check
-   cargo test
+   just check-all
+   cargo nextest run
+   cargo test --doc
    ```
 7. Submit pull request
 

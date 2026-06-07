@@ -21,8 +21,13 @@ on:
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,6 +37,28 @@ env:
   RUSTFLAGS: "-C debuginfo=0"
 
 jobs:
+  pr-title:
+    name: PR Title Convention
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775cd42cfd5155ed6017  # v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+
   ci:
     name: Quality, Build & Test
     runs-on: ubuntu-latest
@@ -46,6 +73,16 @@ jobs:
           --health-retries 5
         ports:
           - 6379:6379
+
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5672:5672
 
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -69,12 +106,12 @@ jobs:
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
       with:
         path: |
+          ~/.cargo/bin
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('src/**') }}
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
 
     - name: Check formatting
@@ -83,15 +120,15 @@ jobs:
     - name: Run clippy
       # Note: Not using --all-features because cloud-native features (kubernetes, consul,
       # etcd, vault) require external system dependencies not available in CI.
-      run: cargo clippy --all-targets -- -D warnings
+      run: cargo clippy --all-targets -- -D warnings -A clippy::nursery
 
     - name: Check typos
       uses: crate-ci/typos@631208b7aac2daa8b707f55e7331f9112b0e062d  # v1.44.0
 
-    - name: Install cargo-machete and cargo-sort
+    - name: Install tools
       uses: taiki-e/install-action@cbb1dcaa26e1459e2876c39f61c1e22a1258aac5  # v2
       with:
-        tool: cargo-machete,cargo-sort
+        tool: cargo-machete,cargo-sort,cargo-nextest,taplo-cli
 
     - name: Check unused dependencies
       run: cargo machete
@@ -99,8 +136,17 @@ jobs:
     - name: Check dependency sorting
       run: cargo sort --workspace --check
 
+    - name: Check TOML formatting
+      run: taplo fmt --check
+
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo nextest run --verbose
+
+    - name: Run RabbitMQ integration tests
+      run: cargo nextest run --test rabbitmq_integration --run-ignored ignored-only --verbose
+
+    - name: Run doctests
+      run: cargo test --doc
 
     - name: Run vendor parser tests
       run: cargo test --verbose

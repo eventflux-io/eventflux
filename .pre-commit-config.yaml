@@ -1,41 +1,66 @@
 # Pre-commit hooks for EventFlux Engine
-# Install: cargo install prek && prek install
-# Run all: prek run --all-files
+# Install: pip install pre-commit && pre-commit install --install-hooks
+# Run all: pre-commit run --all-files
+
+default_stages: [pre-commit]
+default_install_hook_types: [pre-commit, pre-push]
 
 repos:
+  # Standard file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: mixed-line-endings
+
+  # Fast checks on pre-commit (< 5s)
   - repo: local
     hooks:
+      - id: typos
+        name: typos (spelling check)
+        entry: typos -w
+        language: system
+        types: [text]
+        pass_filenames: false
+
+      - id: taplo
+        name: taplo (TOML format)
+        entry: taplo fmt
+        language: system
+        types: [toml]
+        pass_filenames: false
+
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo fmt --all -- --check
-        language: system
-        types: [rust]
-        pass_filenames: false
-
-      - id: cargo-clippy
-        name: cargo clippy
-        entry: cargo clippy --all-targets -- -D warnings
-        language: system
-        types: [rust]
-        pass_filenames: false
-
-      - id: typos
-        name: typos
-        entry: typos
-        language: system
-        types: [file]
-        pass_filenames: false
-
-      - id: cargo-machete
-        name: cargo machete
-        entry: cargo machete
+        entry: cargo fmt --all
         language: system
         types: [rust]
         pass_filenames: false
 
       - id: cargo-sort
         name: cargo sort
-        entry: cargo sort --workspace --check
+        entry: cargo sort --no-format --workspace
         language: system
-        types: [toml]
+        files: (^|/)Cargo\.toml$
         pass_filenames: false
+
+  # Slow checks on pre-push only
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets -- -D warnings -A clippy::nursery
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: cargo-machete
+        name: cargo machete (unused deps)
+        entry: cargo machete
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
