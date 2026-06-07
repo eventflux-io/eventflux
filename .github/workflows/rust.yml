@@ -74,6 +74,16 @@ jobs:
         ports:
           - 6379:6379
 
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5672:5672
+
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       with:
@@ -131,6 +141,9 @@ jobs:
 
     - name: Run tests
       run: cargo nextest run --verbose
+
+    - name: Run RabbitMQ integration tests
+      run: cargo nextest run --test rabbitmq_integration --run-ignored ignored-only --verbose
 
     - name: Run doctests
       run: cargo test --doc

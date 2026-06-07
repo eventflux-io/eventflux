@@ -740,17 +740,26 @@ impl Source for RabbitMQSource {
         let validate_future = async move {
             let uri = config.amqp_uri();
 
-            // Try to connect
-            let connection =
-                lapin::Connection::connect(&uri, lapin::ConnectionProperties::default())
-                    .await
-                    .map_err(|e| EventFluxError::ConnectionUnavailable {
-                        message: format!(
-                            "Failed to connect to RabbitMQ at {}:{}: {}",
-                            config.host, config.port, e
-                        ),
-                        source: Some(Box::new(e)),
-                    })?;
+            // Try to connect with a timeout to avoid hanging on unreachable brokers
+            let connection = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                lapin::Connection::connect(&uri, lapin::ConnectionProperties::default()),
+            )
+            .await
+            .map_err(|_| EventFluxError::ConnectionUnavailable {
+                message: format!(
+                    "Failed to connect to RabbitMQ at {}:{}: Connection timeout after 10s",
+                    config.host, config.port
+                ),
+                source: None,
+            })?
+            .map_err(|e| EventFluxError::ConnectionUnavailable {
+                message: format!(
+                    "Failed to connect to RabbitMQ at {}:{}: {}",
+                    config.host, config.port, e
+                ),
+                source: Some(Box::new(e)),
+            })?;
 
             // Create channel and check queue exists
             let channel = connection.create_channel().await.map_err(|e| {
