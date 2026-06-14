@@ -224,7 +224,8 @@ EventFlux merges configuration from 4 layers (highest to lowest priority):
 ### SQL WITH Clause
 
 ```sql
-CREATE STREAM Orders (
+CREATE
+STREAM Orders (
     orderId VARCHAR,
     amount DOUBLE,
     timestamp BIGINT
@@ -238,6 +239,7 @@ CREATE STREAM Orders (
 ```
 
 Key properties:
+
 - `'type'` - Required for streams: `'source'` or `'sink'`
 - `'extension'` - Required: connector type (`'kafka'`, `'http'`, `'mysql'`, `'file'`)
 - `'format'` - Data mapper (`'json'`, `'avro'`, `'csv'`, `'protobuf'`)
@@ -288,7 +290,8 @@ See [feat/configuration/CONFIGURATION.md](feat/configuration/CONFIGURATION.md) f
 ### Async Stream Configuration
 
 ```sql
-CREATE STREAM HighThroughputStream (
+CREATE
+STREAM HighThroughputStream (
     symbol STRING,
     price DOUBLE,
     volume BIGINT
@@ -300,6 +303,7 @@ CREATE STREAM HighThroughputStream (
 ```
 
 Properties:
+
 - `async.enabled` - Enable async processing (true/false)
 - `async.buffer_size` - Queue buffer size
 - `async.workers` - Throughput estimation hint
@@ -322,7 +326,7 @@ use std::sync::Arc;
 let manager = EventFluxManager::new();
 let ctx = manager.eventflux_context();
 let table: Arc<dyn Table> = Arc::new(InMemoryTable::new());
-table.insert(&[AttributeValue::Int(1)]);
+table.insert( & [AttributeValue::Int(1)]);
 ctx.add_table("MyTable".to_string(), table);
 ```
 
@@ -368,8 +372,8 @@ Extensions can be compiled as separate crates and loaded at runtime:
 let manager = EventFluxManager::new();
 let lib_path = custom_dyn_ext::library_path();
 manager
-    .set_extension("custom", lib_path.to_str().unwrap().to_string())
-    .unwrap();
+.set_extension("custom", lib_path.to_str().unwrap().to_string())
+.unwrap();
 ```
 
 The library should export registration functions:
@@ -472,14 +476,14 @@ use eventflux::core::persistence::RedisPersistenceStore;
 use eventflux::core::distributed::RedisConfig;
 
 let config = RedisConfig {
-    url: "redis://localhost:6379".to_string(),
-    max_connections: 10,
-    connection_timeout_ms: 5000,
-    key_prefix: "eventflux:".to_string(),
-    ttl_seconds: Some(3600),
+url: "redis://localhost:6379".to_string(),
+max_connections: 10,
+connection_timeout_ms: 5000,
+key_prefix: "eventflux:".to_string(),
+ttl_seconds: Some(3600),
 };
 
-let store = RedisPersistenceStore::new_with_config(config)?;
+let store = RedisPersistenceStore::new_with_config(config) ?;
 ```
 
 See [DOCKER_SETUP.md](DOCKER_SETUP.md) for details.
@@ -520,7 +524,6 @@ perf lock report
 
 ## Additional Resources
 
-- [ROADMAP.md](ROADMAP.md) - Implementation priorities
-- [MILESTONES.md](MILESTONES.md) - Release timeline
+- [ROADMAP.md](ROADMAP.md) - Verified roadmap with completed and upcoming work
 - [CLAUDE.md](CLAUDE.md) - AI-assisted development guide
 - [feat/](feat/) - Feature documentation and architecture
