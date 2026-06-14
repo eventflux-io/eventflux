@@ -30,6 +30,7 @@ fuzz/artifacts/
 *.pdb
 
 # Test artifacts
+test_lint
 tests/custom_dyn_ext/target/
 **/.tarpaulin
 
