@@ -123,7 +123,7 @@ jobs:
       run: cargo clippy --all-targets -- -D warnings -A clippy::nursery
 
     - name: Check typos
-      uses: crate-ci/typos@631208b7aac2daa8b707f55e7331f9112b0e062d  # v1.44.0
+      uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89  # v1.47.2
 
     - name: Install tools
       uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2
