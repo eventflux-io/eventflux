@@ -126,7 +126,7 @@ jobs:
       uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89  # v1.47.2
 
     - name: Install tools
-      uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2
+      uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9  # v2
       with:
         tool: cargo-machete,cargo-sort,cargo-nextest,taplo-cli
 
