@@ -79,7 +79,7 @@ vault = { version = "10.1", optional = true }
 zstd = "0.13"
 
 [build-dependencies]
-tonic-build = "0.11"
+tonic-build = "0.14"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
