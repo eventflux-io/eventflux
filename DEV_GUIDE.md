@@ -20,6 +20,7 @@ This guide covers building, testing, running, and contributing to EventFlux.
 
 - Rust 1.85 or later
 - Protocol Buffer Compiler (for gRPC features)
+- Git submodules (the SQL parser is vendored — see below)
 
 MSRV is enforced via `Cargo.toml` (`package.rust-version`) and CI. If you don’t want to install Rust locally, use the
 official Docker image (`ghcr.io/eventflux-io/eventflux:latest`) for running `.eventflux` queries.
@@ -34,6 +35,42 @@ apt-get install protobuf-compiler
 
 # Verify
 protoc --version
+```
+
+### Git Submodules (required)
+
+EventFlux depends on a **vendored fork** of `datafusion-sqlparser-rs`, wired in as a git submodule at
+`vendor/datafusion-sqlparser-rs`. `Cargo.toml` references it via a `path` dependency:
+
+```toml
+sqlparser = { path = "vendor/datafusion-sqlparser-rs" }
+```
+
+The fork lives at [`eventflux-io/datafusion-sqlparser-rs`](https://github.com/eventflux-io/datafusion-sqlparser-rs)
+and is pinned to the `eventflux-extensions` branch, which carries EventFlux's streaming SQL extensions (native
+`WINDOW` clause, `EventFluxDialect`, etc.). **`cargo build` fails with a missing-manifest error if the submodule
+is not checked out**, because the `path` target is an empty directory.
+
+```bash
+# Preferred: clone with submodules in one step
+git clone --recursive git@github.com:eventflux-io/eventflux.git
+
+# Already cloned without --recursive? Initialize the submodule:
+git submodule update --init --recursive
+
+# Verify it is populated (should list Cargo.toml, src/, etc.)
+ls vendor/datafusion-sqlparser-rs
+```
+
+Updating the pinned parser version (maintainers):
+
+```bash
+# Pull the latest commit on the tracked branch into the submodule
+git submodule update --remote vendor/datafusion-sqlparser-rs
+
+# Commit the new submodule pointer in the parent repo
+git add vendor/datafusion-sqlparser-rs
+git commit -m "Update vendored sqlparser submodule"
 ```
 
 ### Build Commands
@@ -409,7 +446,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 ### Development Setup
 
 1. Fork the repository
-2. Clone your fork
+2. Clone your fork with submodules: `git clone --recursive <your-fork-url>`
+   (or run `git submodule update --init --recursive` after cloning)
 3. Install pre-commit hooks:
    ```bash
    pip install pre-commit

@@ -32,6 +32,16 @@ These require design discussion in the issue before coding:
 
 Authors of PRs must run the code locally. "Relying on CI" is not acceptable.
 
+Clone with submodules — the SQL parser is a vendored submodule and the build fails without it:
+
+```bash
+git clone --recursive <your-fork-url>
+# or, if already cloned:
+git submodule update --init --recursive
+```
+
+See [DEV_GUIDE.md](DEV_GUIDE.md#git-submodules-required) for details.
+
 ### Single Purpose
 
 One PR = one thing. Bug fix, refactor, feature — separate PRs. Mixed PRs will be closed.
