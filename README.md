@@ -27,17 +27,24 @@ EventFlux runs as a single binary. No cluster. No JVM. No YAML manifests. Just S
 # Docker
 docker run -v ./app.sql:/app.sql ghcr.io/eventflux-io/eventflux /app.sql
 
-# Or build from source
-git clone https://github.com/eventflux-io/eventflux.git
+# Or build from source (--recursive pulls in the vendored SQL parser submodule)
+git clone --recursive https://github.com/eventflux-io/eventflux.git
 cd eventflux
 cargo build --release
 ./target/release/run_eventflux app.sql
+```
+
+Already cloned without `--recursive`? Fetch the submodule before building:
+
+```bash
+git submodule update --init --recursive
 ```
 
 ### Prerequisites (for building)
 
 - Rust 1.85+
 - Protocol Buffer compiler (for gRPC features)
+- Git submodules initialized (see above) — the SQL parser is a vendored submodule
 
 ## Example
 
