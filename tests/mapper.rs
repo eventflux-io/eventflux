@@ -59,15 +59,15 @@ impl SourceMapper for CsvSourceMapper {
 struct ConcatSinkMapper;
 
 impl SinkMapper for ConcatSinkMapper {
-    fn map(&self, events: &[Event]) -> Result<Vec<u8>, EventFluxError> {
-        let mut parts = Vec::new();
-        for e in events {
-            for v in &e.data {
-                if let AttributeValue::Int(i) = v {
-                    parts.push(i.to_string());
-                }
-            }
-        }
+    fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
+        let parts: Vec<String> = event
+            .data
+            .iter()
+            .filter_map(|v| match v {
+                AttributeValue::Int(i) => Some(i.to_string()),
+                _ => None,
+            })
+            .collect();
         Ok(parts.join(";").into_bytes())
     }
 
@@ -99,7 +99,11 @@ async fn test_source_and_sink_mapper_usage() {
         .iter()
         .map(|row| Event::new_with_data(0, row.clone()))
         .collect();
+    // One payload per event (per-event mapper contract)
     let sink_mapper = ConcatSinkMapper;
-    let bytes = sink_mapper.map(&out_events).expect("Mapper should succeed");
-    assert_eq!(bytes, b"1;2;3;4".to_vec());
+    let payloads: Vec<Vec<u8>> = out_events
+        .iter()
+        .map(|e| sink_mapper.map_event(e).expect("Mapper should succeed"))
+        .collect();
+    assert_eq!(payloads, vec![b"1;2".to_vec(), b"3;4".to_vec()]);
 }

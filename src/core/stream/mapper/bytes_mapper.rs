@@ -113,33 +113,10 @@ impl Default for BytesSinkMapper {
 }
 
 impl SinkMapper for BytesSinkMapper {
-    fn map(&self, events: &[Event]) -> Result<Vec<u8>, EventFluxError> {
-        if events.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Bytes mapper only supports single-event batches to preserve raw binary
-        // passthrough behavior. Binary data cannot be safely concatenated with
-        // separators as it would corrupt non-text formats like protobuf, msgpack,
-        // or other binary protocols.
-        //
-        // If you're seeing this error, ensure your sink receives events one at a
-        // time rather than in batches, or use a text-based format like JSON or CSV
-        // that can safely handle multiple events.
-        if events.len() > 1 {
-            return Err(EventFluxError::MappingFailed {
-                message: format!(
-                    "Bytes mapper received {} events but only supports single-event batches. \
-                    Binary data cannot be safely concatenated. Use JSON or CSV format for \
-                    batched events, or ensure events are sent individually.",
-                    events.len()
-                ),
-                source: None,
-            });
-        }
-
-        let event = &events[0];
-
+    fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
+        // One event = one binary payload. The per-event contract makes the old
+        // "cannot concatenate binary batches" failure mode structurally
+        // impossible — batches are iterated by SinkCallbackAdapter.
         if self.field_index >= event.data.len() {
             return Err(EventFluxError::MappingFailed {
                 message: format!(
@@ -226,7 +203,8 @@ mod tests {
 
         for input in test_cases {
             let events = source_mapper.map(&input).unwrap();
-            let output = sink_mapper.map(&events).unwrap();
+            assert_eq!(events.len(), 1);
+            let output = sink_mapper.map_event(&events[0]).unwrap();
             assert_eq!(
                 output, input,
                 "Binary data should round-trip exactly: {:?}",
@@ -261,7 +239,7 @@ mod tests {
         let raw_data = vec![0x00, 0xff, 0x80, 0x7f];
         let event = Event::new_with_data(123, vec![AttributeValue::Bytes(raw_data.clone())]);
 
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         assert_eq!(result, raw_data);
     }
 
@@ -270,7 +248,7 @@ mod tests {
         let mapper = BytesSinkMapper::new();
         let event = Event::new_with_data(123, vec![AttributeValue::String("Hello".to_string())]);
 
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         assert_eq!(result, b"Hello");
     }
 
@@ -279,38 +257,26 @@ mod tests {
         let mapper = BytesSinkMapper::new();
         let event = Event::new_with_data(123, vec![AttributeValue::Int(42)]);
 
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         assert_eq!(result, b"42");
     }
 
     #[test]
-    fn test_bytes_sink_mapper_multiple_events_errors() {
-        // Bytes mapper rejects multi-event batches to prevent silent data loss.
-        // Binary data cannot be safely concatenated, so batching must be handled
-        // at the sink level (sending events individually) rather than silently
-        // dropping events.
+    fn test_bytes_sink_mapper_events_map_independently() {
+        // With the per-event contract, each event in a batch maps to its own
+        // payload (SinkCallbackAdapter iterates) — the old "cannot concatenate
+        // binary batches" failure mode is structurally impossible.
         let mapper = BytesSinkMapper::new();
-        let events = vec![
+        let events = [
             Event::new_with_data(1, vec![AttributeValue::Bytes(b"First".to_vec())]),
             Event::new_with_data(2, vec![AttributeValue::Bytes(b"Second".to_vec())]),
         ];
 
-        let result = mapper.map(&events);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("only supports single-event batches"),
-            "Expected error about single-event batches, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_bytes_sink_mapper_empty() {
-        let mapper = BytesSinkMapper::new();
-        let result = mapper.map(&[]).unwrap();
-        assert!(result.is_empty());
+        let payloads: Vec<Vec<u8>> = events
+            .iter()
+            .map(|e| mapper.map_event(e).unwrap())
+            .collect();
+        assert_eq!(payloads, vec![b"First".to_vec(), b"Second".to_vec()]);
     }
 
     #[test]
@@ -324,7 +290,7 @@ mod tests {
             ],
         );
 
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         assert_eq!(result, b"extract_me");
     }
 
@@ -333,7 +299,7 @@ mod tests {
         let mapper = BytesSinkMapper::with_field_index(5);
         let event = Event::new_with_data(123, vec![AttributeValue::Bytes(b"only_one".to_vec())]);
 
-        let result = mapper.map(&[event]);
+        let result = mapper.map_event(&event);
         assert!(result.is_err());
     }
 }

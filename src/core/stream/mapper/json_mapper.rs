@@ -284,13 +284,7 @@ impl Default for JsonSinkMapper {
 }
 
 impl SinkMapper for JsonSinkMapper {
-    fn map(&self, events: &[Event]) -> Result<Vec<u8>, EventFluxError> {
-        if events.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let event = &events[0]; // Process first event (batching can be added later)
-
+    fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
         if let Some(template) = &self.template {
             // Use template rendering
             let rendered = render_template(template, event)?;
@@ -827,7 +821,7 @@ mod tests {
         );
 
         let mapper = JsonSinkMapper::new();
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         let json_str = String::from_utf8(result).unwrap();
 
         // Verify it's valid JSON
@@ -846,7 +840,7 @@ mod tests {
 
         let template = r#"{"id":"{{field_0}}","value":{{field_1}}}"#.to_string();
         let mapper = JsonSinkMapper::with_template(template);
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         let json_str = String::from_utf8(result).unwrap();
 
         assert!(json_str.contains("\"id\":\"test-id\""));

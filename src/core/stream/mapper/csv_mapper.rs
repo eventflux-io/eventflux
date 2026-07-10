@@ -352,20 +352,18 @@ impl Default for CsvSinkMapper {
 }
 
 impl SinkMapper for CsvSinkMapper {
-    fn map(&self, events: &[Event]) -> Result<Vec<u8>, EventFluxError> {
-        if events.is_empty() {
-            return Ok(Vec::new());
-        }
-
+    fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
         let mut output = String::new();
 
-        // Add header if configured
+        // Add header if configured. With one-event-per-message semantics the
+        // header is prepended to EVERY message; it is off by default and only
+        // emitted when explicitly enabled via `csv.include-header`.
         if self.include_header {
             if let Some(headers) = &self.header_names {
                 output.push_str(&headers.join(&self.delimiter.to_string()));
             } else {
                 // Generate default headers (field_0, field_1, etc.)
-                let field_count = events[0].data.len();
+                let field_count = event.data.len();
                 let headers: Vec<String> =
                     (0..field_count).map(|i| format!("field_{}", i)).collect();
                 output.push_str(&headers.join(&self.delimiter.to_string()));
@@ -373,12 +371,10 @@ impl SinkMapper for CsvSinkMapper {
             output.push('\n');
         }
 
-        // Add data rows
-        for event in events {
-            let fields: Vec<String> = event.data.iter().map(|v| self.format_field(v)).collect();
-            output.push_str(&fields.join(&self.delimiter.to_string()));
-            output.push('\n');
-        }
+        // Add the data row
+        let fields: Vec<String> = event.data.iter().map(|v| self.format_field(v)).collect();
+        output.push_str(&fields.join(&self.delimiter.to_string()));
+        output.push('\n');
 
         Ok(output.into_bytes())
     }
@@ -452,7 +448,7 @@ mod tests {
         );
 
         let mapper = CsvSinkMapper::new();
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         let csv_str = String::from_utf8(result).unwrap();
 
         assert!(csv_str.contains("42"));
@@ -473,7 +469,7 @@ mod tests {
         let mut mapper = CsvSinkMapper::new();
         mapper.set_include_header(true);
 
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         let csv_str = String::from_utf8(result).unwrap();
 
         let lines: Vec<&str> = csv_str.lines().collect();
@@ -490,7 +486,7 @@ mod tests {
         );
 
         let mapper = CsvSinkMapper::new();
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         let csv_str = String::from_utf8(result).unwrap();
 
         // Should be quoted due to commas
