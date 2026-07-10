@@ -726,7 +726,7 @@ mod tests {
             ],
         );
 
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         assert!(!result.is_empty());
     }
 
@@ -749,7 +749,7 @@ mod tests {
             ],
         );
 
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         let json_str = String::from_utf8(result).unwrap();
 
         assert!(json_str.contains("\"id\":\"test-id\""));
@@ -789,7 +789,7 @@ mod tests {
             ],
         );
 
-        let result = mapper.map(&[event]).unwrap();
+        let result = mapper.map_event(&event).unwrap();
         let csv_str = String::from_utf8(result).unwrap();
 
         assert!(csv_str.contains("field_0"));

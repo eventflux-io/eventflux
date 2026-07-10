@@ -93,12 +93,21 @@ impl Clone for Box<dyn SourceMapper> {
 /// Trait for mapping EventFlux events to raw bytes (for sink streams)
 ///
 /// Mappers are fully configured and ready to use when created via factories.
-/// The `map` method handles all serialization and template rendering.
+/// The `map_event` method handles all serialization and template rendering.
+///
+/// # One event = one transport message
+///
+/// Mappers serialize exactly ONE event into ONE payload. `SinkCallbackAdapter`
+/// iterates batches and calls `map_event` + `Sink::publish` per event, matching
+/// the per-record semantics of real transports (Kafka record, AMQP message,
+/// WebSocket frame). Sinks that want transport-level batching (e.g. HTTP batch
+/// POST) must buffer internally — batching is a transport concern, not a
+/// formatting concern.
 pub trait SinkMapper: Debug + Send + Sync {
-    /// Map EventFlux events to raw output bytes
+    /// Map ONE EventFlux event to one transport payload
     ///
     /// # Arguments
-    /// * `events` - EventFlux events to serialize (typically single event, but supports batching)
+    /// * `event` - EventFlux event to serialize
     ///
     /// # Returns
     /// * `Ok(Vec<u8>)` - Successfully serialized bytes ready for external sink
@@ -106,9 +115,8 @@ pub trait SinkMapper: Debug + Send + Sync {
     ///
     /// # Implementation Notes
     /// - Must handle template rendering errors gracefully
-    /// - Should support batch processing when applicable
     /// - Output format must match sink expectations
-    fn map(&self, events: &[Event]) -> Result<Vec<u8>, EventFluxError>;
+    fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError>;
 
     /// Clone this mapper into a boxed trait object
     fn clone_box(&self) -> Box<dyn SinkMapper>;

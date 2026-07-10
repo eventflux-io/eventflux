@@ -197,7 +197,7 @@ fn test_json_sink_simple_serialization() {
     let factory = JsonSinkMapperFactory;
     let mapper = factory.create_initialized(&config).unwrap();
 
-    let result = mapper.map(&[event]).unwrap();
+    let result = mapper.map_event(&event).unwrap();
     let json_str = String::from_utf8(result).unwrap();
 
     // Verify it's valid JSON
@@ -226,7 +226,7 @@ fn test_json_sink_template_rendering() {
     let factory = JsonSinkMapperFactory;
     let mapper = factory.create_initialized(&config).unwrap();
 
-    let result = mapper.map(&[event]).unwrap();
+    let result = mapper.map_event(&event).unwrap();
     let json_str = String::from_utf8(result).unwrap();
 
     assert!(json_str.contains("\"orderId\":\"ORDER-123\""));
@@ -253,7 +253,7 @@ fn test_json_sink_pretty_print() {
     let factory = JsonSinkMapperFactory;
     let mapper = factory.create_initialized(&config).unwrap();
 
-    let result = mapper.map(&[event]).unwrap();
+    let result = mapper.map_event(&event).unwrap();
     let json_str = String::from_utf8(result).unwrap();
 
     // Pretty-printed JSON should have newlines
@@ -320,7 +320,7 @@ fn test_csv_explicit_column_mapping() {
 
 #[test]
 fn test_csv_sink_with_header() {
-    let events = vec![
+    let events = [
         Event::new_with_data(
             123,
             vec![
@@ -345,14 +345,20 @@ fn test_csv_sink_with_header() {
     let registry = MapperFactoryRegistry::new();
     let mapper = registry.create_sink_mapper("csv", &config).unwrap();
 
-    let result = mapper.map(&events).unwrap();
-    let csv_str = String::from_utf8(result).unwrap();
+    // Per-event contract: each event maps to its own message (header + row)
+    let payloads: Vec<String> = events
+        .iter()
+        .map(|e| String::from_utf8(mapper.map_event(e).unwrap()).unwrap())
+        .collect();
+    assert_eq!(payloads.len(), 2);
 
-    let lines: Vec<&str> = csv_str.lines().collect();
-    assert_eq!(lines.len(), 3); // Header + 2 data rows
-    assert!(lines[0].contains("field_0"));
-    assert!(lines[1].contains("Alice"));
-    assert!(lines[2].contains("Bob"));
+    for payload in &payloads {
+        let lines: Vec<&str> = payload.lines().collect();
+        assert_eq!(lines.len(), 2); // Header + 1 data row per message
+        assert!(lines[0].contains("field_0"));
+    }
+    assert!(payloads[0].contains("Alice"));
+    assert!(payloads[1].contains("Bob"));
 }
 
 #[test]
@@ -511,7 +517,7 @@ fn test_end_to_end_json_workflow() {
     let sink_factory = JsonSinkMapperFactory;
     let sink_mapper = sink_factory.create_initialized(&sink_config).unwrap();
 
-    let output = sink_mapper.map(&events).unwrap();
+    let output = sink_mapper.map_event(&events[0]).unwrap();
     let output_str = String::from_utf8(output).unwrap();
 
     // Verify output
@@ -539,7 +545,7 @@ fn test_end_to_end_csv_workflow() {
     sink_config.insert("csv.include-header".to_string(), "true".to_string());
 
     let sink_mapper = registry.create_sink_mapper("csv", &sink_config).unwrap();
-    let output = sink_mapper.map(&events).unwrap();
+    let output = sink_mapper.map_event(&events[0]).unwrap();
     let output_str = String::from_utf8(output).unwrap();
 
     // Verify output

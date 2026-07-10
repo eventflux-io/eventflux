@@ -38,7 +38,7 @@ use crate::core::exception::EventFluxError;
 ///
 /// ```ignore
 /// let mapper = PassthroughMapper::new();
-/// let bytes = mapper.map(&events);
+/// let bytes = mapper.map_event(&event)?;
 /// let recovered: Vec<Event> = PassthroughMapper::deserialize(&bytes)?;
 /// ```
 #[derive(Debug, Clone)]
@@ -64,10 +64,11 @@ impl Default for PassthroughMapper {
 }
 
 impl SinkMapper for PassthroughMapper {
-    fn map(&self, events: &[Event]) -> Result<Vec<u8>, EventFluxError> {
-        // Use bincode for efficient binary serialization
-        bincode::serialize(events)
-            .map_err(|e| EventFluxError::app_runtime(format!("Failed to serialize events: {}", e)))
+    fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
+        // Serialize as a one-element slice so the payload stays a bincode
+        // sequence — `deserialize` (used by LogSink) returns Vec<Event>.
+        bincode::serialize(std::slice::from_ref(event))
+            .map_err(|e| EventFluxError::app_runtime(format!("Failed to serialize event: {}", e)))
     }
 
     fn clone_box(&self) -> Box<dyn SinkMapper> {
