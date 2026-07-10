@@ -13,7 +13,7 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-      - id: mixed-line-endings
+      - id: mixed-line-ending
 
   # Fast checks on pre-commit (< 5s)
   - repo: local
