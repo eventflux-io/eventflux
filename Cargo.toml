@@ -3,6 +3,9 @@ name = "eventflux"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
+# MSRV-aware dependency resolution: keep resolved versions compatible with
+# rust-version above so `cargo update` never pulls deps requiring newer rustc.
+resolver = "3"
 license = "Apache-2.0"
 repository = "https://github.com/eventflux-io/eventflux"
 homepage = "https://eventflux.io"
