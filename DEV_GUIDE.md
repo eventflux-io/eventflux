@@ -76,11 +76,14 @@ git commit -m "Update vendored sqlparser submodule"
 ### Build Commands
 
 ```bash
-# Development build
+# Development build (minimal — no external connectors)
 cargo build
 
-# Release build
-cargo build --release
+# Development build with all connectors (RabbitMQ, WebSocket, ...)
+cargo build --features connectors-all
+
+# Release build (shipped artifacts include all connectors)
+cargo build --release --features connectors-all
 
 # Check for compilation errors
 cargo check
@@ -88,9 +91,15 @@ cargo check
 # Format code
 cargo fmt
 
-# Run linter
-cargo clippy --all-targets -- -D warnings -A clippy::nursery
+# Run linter (CI runs this with connectors enabled)
+cargo clippy --all-targets --features connectors-all -- -D warnings -A clippy::nursery
 ```
+
+Connectors are cargo features named after their SQL extension name
+(`rabbitmq`, `websocket`, ...; umbrella: `connectors-all`). The default build
+is fully minimal. See the feature-flags table in [README.md](README.md) and
+the gating checklist in
+[docs/writing_extensions.md](docs/writing_extensions.md).
 
 ---
 
@@ -150,18 +159,24 @@ eventflux run app.sql --config config-prod.toml
 
 ### Running Tests
 
+Connector tests only compile with their feature enabled — run the full suite
+with `--features connectors-all` so nothing is silently skipped:
+
 ```bash
-# Run all tests
+# Run all tests (including connector code)
+cargo test --features connectors-all
+
+# Minimal-build tests (no connectors — guards the lightweight baseline)
 cargo test
 
 # Run with output visible
-cargo test -- --nocapture
+cargo test --features connectors-all -- --nocapture
 
 # Run specific test
-cargo test test_name
+cargo test --features connectors-all test_name
 
 # Run tests matching pattern
-cargo test pattern
+cargo test --features connectors-all pattern
 ```
 
 ### Performance Tests

@@ -51,7 +51,9 @@ repos:
     hooks:
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --all-targets -- -D warnings -A clippy::nursery
+        # connectors-all so feature-gated connector code is linted too —
+        # a plain clippy run would silently skip it.
+        entry: cargo clippy --all-targets --features connectors-all -- -D warnings -A clippy::nursery
         language: system
         types: [rust]
         pass_filenames: false

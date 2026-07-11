@@ -48,17 +48,23 @@ One PR = one thing. Bug fix, refactor, feature — separate PRs. Mixed PRs will 
 
 ### Quality Checks
 
-All checks must pass before submitting:
+All checks must pass before submitting. Connector code is feature-gated, so
+lint/test commands use `--features connectors-all` — without it, gated code is
+silently skipped:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings -A clippy::nursery
+cargo clippy --all-targets --features connectors-all -- -D warnings -A clippy::nursery
 typos
 cargo machete
 cargo sort --workspace --check
 taplo fmt --check
-cargo nextest run        # or: cargo test
-cargo test --doc
+cargo nextest run --features connectors-all        # or: cargo test --features connectors-all
+cargo nextest run                                  # minimal build tests (no connectors)
+cargo test --doc --features connectors-all
+cargo check --all-targets                          # minimal baseline compiles
+cargo check --all-targets --features rabbitmq      # each connector alone
+cargo check --all-targets --features websocket
 ```
 
 Or run everything at once with [just](https://github.com/casey/just):

@@ -65,7 +65,8 @@ RUN mkdir -p src/bin && \
     echo "pub fn lib() {}" > src/lib.rs
 
 # Build dependencies only (cached layer)
-RUN cargo build --release --locked --bin run_eventflux
+# Shipped images include every connector (connectors-all)
+RUN cargo build --release --locked --features connectors-all --bin run_eventflux
 
 # Remove dummy files
 RUN rm -rf src
@@ -79,7 +80,7 @@ COPY src/ src/
 RUN find src -type f -exec touch {} +
 
 # Build release binary with optimizations
-RUN cargo build --release --locked --bin run_eventflux && \
+RUN cargo build --release --locked --features connectors-all --bin run_eventflux && \
     strip /build/target/release/run_eventflux
 
 # Verify binary

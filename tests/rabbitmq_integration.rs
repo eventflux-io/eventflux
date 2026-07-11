@@ -17,8 +17,10 @@
 
 //! # RabbitMQ Integration Tests
 //!
+//! Requires building with the `rabbitmq` feature:
+//! `cargo test --features rabbitmq --test rabbitmq_integration -- --ignored`
+//!
 //! These tests require a running RabbitMQ broker and are marked with `#[ignore]`.
-//! Run with: `cargo test --test rabbitmq_integration -- --ignored`
 //!
 //! ## Setup
 //!
@@ -26,6 +28,8 @@
 //! ```bash
 //! docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
 //! ```
+
+#![cfg(feature = "rabbitmq")]
 
 #[path = "common/mod.rs"]
 mod common;

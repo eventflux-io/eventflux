@@ -27,6 +27,15 @@ etcd = ["etcd-rs"]
 vault = ["dep:vault"]
 cloud-native = ["kubernetes", "consul", "etcd", "vault"]
 
+# Connectors — one cargo feature per connector, named exactly after the SQL
+# extension name (WITH extension = '...'). The default set is fully minimal:
+# no connector ships in a plain `cargo build`. Release/Docker builds use
+# `--features connectors-all`. See docs/writing_extensions.md for the
+# per-connector gating checklist.
+rabbitmq = ["dep:lapin", "dep:urlencoding"]
+websocket = ["dep:tokio-tungstenite"]
+connectors-all = ["rabbitmq", "websocket"]
+
 [dependencies]
 async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
@@ -47,7 +56,7 @@ etcd-rs = { version = "1.0", optional = true }
 futures = "0.3"
 k8s-openapi = { version = "0.20", features = ["v1_28"], optional = true }
 kube = { version = "0.87", features = ["runtime", "derive"], optional = true }
-lapin = "2.3"
+lapin = { version = "2.3", optional = true }
 libloading = "0.8"
 log = "0.4"
 lz4 = "1.24"
@@ -71,12 +80,11 @@ thiserror = "2.0"
 thread_local = "1.1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"], optional = true }
 toml = "0.8"
 tonic = { version = "0.11", features = ["tls"] }
 tower = "0.4"
-tungstenite = "0.24"
-urlencoding = "2.1"
+urlencoding = { version = "2.1", optional = true }
 uuid = { version = "1", features = ["v4"] }
 vault = { version = "10.1", optional = true }
 zstd = "0.13"

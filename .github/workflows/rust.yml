@@ -120,7 +120,14 @@ jobs:
     - name: Run clippy
       # Note: Not using --all-features because cloud-native features (kubernetes, consul,
       # etcd, vault) require external system dependencies not available in CI.
-      run: cargo clippy --all-targets -- -D warnings -A clippy::nursery
+      run: cargo clippy --all-targets --features connectors-all -- -D warnings -A clippy::nursery
+
+    - name: Check per-connector feature gating
+      # Each connector alone (including test code) — catches missing #[cfg]s
+      # and accidental cross-feature dependencies.
+      run: |
+        cargo check --all-targets --features rabbitmq
+        cargo check --all-targets --features websocket
 
     - name: Check typos
       uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89  # v1.47.2
@@ -140,13 +147,19 @@ jobs:
       run: taplo fmt --check
 
     - name: Run tests
+      run: cargo nextest run --features connectors-all --verbose
+
+    - name: Run tests (minimal build, no connectors)
+      # The advertised lightweight baseline must not just compile — its test
+      # suite (including cfg(not(feature))-gated tests like the
+      # unavailable-extension hint) must pass.
       run: cargo nextest run --verbose
 
     - name: Run RabbitMQ integration tests
-      run: cargo nextest run --test rabbitmq_integration --run-ignored ignored-only --verbose
+      run: cargo nextest run --features rabbitmq --test rabbitmq_integration --run-ignored ignored-only --verbose
 
     - name: Run doctests
-      run: cargo test --doc
+      run: cargo test --doc --features connectors-all
 
     - name: Run vendor parser tests
       run: cargo test --verbose

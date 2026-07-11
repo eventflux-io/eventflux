@@ -15,8 +15,10 @@
  * limitations under the License.
  */
 
+#[cfg(feature = "rabbitmq")]
 pub mod rabbitmq_source;
 pub mod timer_source;
+#[cfg(feature = "websocket")]
 pub mod websocket_source;
 
 use crate::core::exception::EventFluxError;

@@ -185,6 +185,31 @@ pub fn initialize_stream(
     }
 }
 
+/// Connectors that exist in the codebase but were excluded from this build
+/// by cargo features. The feature is always named after the extension (see
+/// the `[features]` section in Cargo.toml), so one entry per gated connector.
+const GATED_OUT_EXTENSIONS: &[&str] = &[
+    #[cfg(not(feature = "rabbitmq"))]
+    "rabbitmq",
+    #[cfg(not(feature = "websocket"))]
+    "websocket",
+];
+
+/// Error for a failed connector factory lookup.
+///
+/// If the extension is known but compiled out, the error tells the user how
+/// to rebuild instead of reporting a bare "extension not found".
+fn connector_lookup_error(kind: &str, extension: &str) -> EventFluxError {
+    if GATED_OUT_EXTENSIONS.contains(&extension) {
+        EventFluxError::configuration(format!(
+            "Extension '{extension}' is supported by EventFlux but was not included in this \
+             build. Rebuild with `--features {extension}` (or `--features connectors-all`)."
+        ))
+    } else {
+        EventFluxError::extension_not_found(kind, extension)
+    }
+}
+
 /// Initialize a source stream with factory lookup and validation
 fn initialize_source_stream(
     context: &EventFluxContext,
@@ -197,7 +222,7 @@ fn initialize_source_stream(
 
     let source_factory = context
         .get_source_factory(extension)
-        .ok_or_else(|| EventFluxError::extension_not_found("source", extension))?;
+        .ok_or_else(|| connector_lookup_error("source", extension))?;
 
     // 2. Validate format support (if format is specified)
     let mapper_factory = if let Some(format) = stream_config.format() {
@@ -304,7 +329,7 @@ fn initialize_sink_stream_internal(
 
     let sink_factory = context
         .get_sink_factory(extension)
-        .ok_or_else(|| EventFluxError::extension_not_found("sink", extension))?;
+        .ok_or_else(|| connector_lookup_error("sink", extension))?;
 
     // 2. Validate format support (if format is specified)
     let mapper_factory = if let Some(format) = stream_config.format() {
@@ -995,6 +1020,27 @@ mod tests {
     use crate::core::config::stream_config::{FlatConfig, PropertySource};
     use crate::core::extension::example_factories::{HttpSinkFactory, KafkaSourceFactory};
     use crate::core::extension::{CsvSinkMapperFactory, JsonSourceMapperFactory};
+
+    #[test]
+    fn test_connector_lookup_error_unknown_extension() {
+        // Names not in the gated-out table keep the plain not-found error
+        let err = connector_lookup_error("source", "no-such-connector");
+        let msg = err.to_string();
+        assert!(msg.contains("no-such-connector"), "got: {msg}");
+        assert!(!msg.contains("--features"), "got: {msg}");
+    }
+
+    // Only meaningful in builds where the connector is compiled out
+    // (the default minimal build) — with the feature on, the extension is
+    // registered and the lookup never fails.
+    #[cfg(not(feature = "rabbitmq"))]
+    #[test]
+    fn test_connector_lookup_error_gated_out_extension_hints_feature() {
+        let err = connector_lookup_error("source", "rabbitmq");
+        let msg = err.to_string();
+        assert!(msg.contains("--features rabbitmq"), "got: {msg}");
+        assert!(msg.contains("connectors-all"), "got: {msg}");
+    }
 
     #[test]
     fn test_initialize_source_stream_success() {

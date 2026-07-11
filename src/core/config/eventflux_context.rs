@@ -426,9 +426,13 @@ impl EventFluxContext {
             OrAttributeAggregatorFactory, StdDevAttributeAggregatorFactory,
             SumAttributeAggregatorFactory,
         };
+        #[cfg(feature = "rabbitmq")]
         use crate::core::stream::input::source::rabbitmq_source::RabbitMQSourceFactory;
+        #[cfg(feature = "websocket")]
         use crate::core::stream::input::source::websocket_source::WebSocketSourceFactory;
+        #[cfg(feature = "rabbitmq")]
         use crate::core::stream::output::sink::rabbitmq_sink::RabbitMQSinkFactory;
+        #[cfg(feature = "websocket")]
         use crate::core::stream::output::sink::websocket_sink::WebSocketSinkFactory;
         use crate::core::table::{CacheTableFactory, InMemoryTableFactory, JdbcTableFactory};
 
@@ -524,10 +528,14 @@ impl EventFluxContext {
         self.add_table_factory("jdbc".to_string(), Box::new(JdbcTableFactory));
         self.add_table_factory("cache".to_string(), Box::new(CacheTableFactory));
         self.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
+        #[cfg(feature = "rabbitmq")]
         self.add_source_factory("rabbitmq".to_string(), Box::new(RabbitMQSourceFactory));
+        #[cfg(feature = "websocket")]
         self.add_source_factory("websocket".to_string(), Box::new(WebSocketSourceFactory));
         self.add_sink_factory("log".to_string(), Box::new(LogSinkFactory));
+        #[cfg(feature = "rabbitmq")]
         self.add_sink_factory("rabbitmq".to_string(), Box::new(RabbitMQSinkFactory));
+        #[cfg(feature = "websocket")]
         self.add_sink_factory("websocket".to_string(), Box::new(WebSocketSinkFactory));
 
         // Mapper factories for format = 'json' / 'csv' / 'bytes'

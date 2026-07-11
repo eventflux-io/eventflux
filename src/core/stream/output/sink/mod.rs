@@ -16,9 +16,11 @@
  */
 
 pub mod log_sink;
+#[cfg(feature = "rabbitmq")]
 pub mod rabbitmq_sink;
 pub mod sink_factory;
 pub mod sink_trait;
+#[cfg(feature = "websocket")]
 pub mod websocket_sink;
 
 use crate::core::event::event::Event;

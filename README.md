@@ -30,7 +30,7 @@ docker run -v ./app.sql:/app.sql ghcr.io/eventflux-io/eventflux /app.sql
 # Or build from source (--recursive pulls in the vendored SQL parser submodule)
 git clone --recursive https://github.com/eventflux-io/eventflux.git
 cd eventflux
-cargo build --release
+cargo build --release --features connectors-all
 ./target/release/run_eventflux app.sql
 ```
 
@@ -38,6 +38,26 @@ Already cloned without `--recursive`? Fetch the submodule before building:
 
 ```bash
 git submodule update --init --recursive
+```
+
+### Connector feature flags
+
+The default build is fully minimal — core engine plus the built-in `timer`
+source and `log` sink, no external connectors. Each connector is a cargo
+feature named after its SQL extension name:
+
+| Feature | Connector | In default build? |
+|---------|-----------|-------------------|
+| `rabbitmq` | RabbitMQ source + sink | No |
+| `websocket` | WebSocket source + sink | No |
+| `connectors-all` | All of the above | No |
+
+Docker images are built with `connectors-all`, so they include everything.
+Building from source, pick what you need:
+
+```bash
+cargo build --release --features rabbitmq          # just RabbitMQ
+cargo build --release --features connectors-all    # everything
 ```
 
 ### Prerequisites (for building)
