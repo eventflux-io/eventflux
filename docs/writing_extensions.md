@@ -51,6 +51,88 @@ using compiled values.
 Extensions for other storage engines can follow these examples to provide their
 own compiled condition formats.
 
+## Source Extensions
+
+A source extension implements the `Source` trait and provides a `SourceFactory`
+(see the RabbitMQ connector in `src/core/stream/input/source/rabbitmq_source.rs`
+for a complete reference implementation).
+
+### Worker thread lifecycle: use `SourceWorker`
+
+`Source::stop()` has a hard contract: **it must be synchronous**. When `stop()`
+returns, the worker thread must have terminated — no `SourceCallback` may fire
+afterwards, and repeated `stop()` calls must be no-ops. This is what makes
+application shutdown deterministic (no events delivered into a runtime that is
+tearing down).
+
+Do not hand-roll a `running: Arc<AtomicBool>` + `JoinHandle` pair. Embed a
+`SourceWorker` (from `core::stream::input::source`), which captures the pattern
+once and cannot be misused:
+
+```rust
+use eventflux::core::stream::input::source::{Source, SourceCallback, SourceWorker};
+
+pub struct MySource {
+    config: MyConfig,
+    worker: SourceWorker,
+}
+
+impl MySource {
+    pub fn new(config: MyConfig) -> Self {
+        Self {
+            config,
+            worker: SourceWorker::new("MySource"),
+        }
+    }
+}
+
+impl Source for MySource {
+    fn start(&mut self, callback: Arc<dyn SourceCallback>) {
+        let config = self.config.clone();
+        self.worker.start(move |running| {
+            while running.load(Ordering::SeqCst) {
+                // Read from the external system and deliver bytes:
+                //     callback.on_data(&bytes)
+                // Poll `running` at least every ~100ms so stop() is fast.
+            }
+        });
+    }
+
+    fn stop(&mut self) {
+        self.worker.stop(); // signals the flag + joins the thread (bounded)
+    }
+
+    fn clone_box(&self) -> Box<dyn Source> {
+        Box::new(Self {
+            config: self.config.clone(),
+            worker: self.worker.clone(), // clones as a fresh, unstarted worker
+        })
+    }
+}
+```
+
+What `SourceWorker` guarantees:
+
+- `stop()` signals the running flag and joins the thread, bounded by
+  `SOURCE_STOP_GRACE_PERIOD` (5s) — a worker stuck in slow I/O is detached
+  with a warning instead of hanging shutdown
+- `stop()` is idempotent (safe without `start()`, safe to call twice)
+- `Drop` calls `stop()` — a source dropped without being stopped still shuts
+  its worker down
+- `Clone` yields a fresh, unstarted worker, so runtime state never leaks into
+  clones
+
+The runtime stops sources in parallel during bulk shutdown, so a correct
+`stop()` is all a source needs to provide — total shutdown stays bounded by
+one grace period regardless of source count.
+
+The only obligation left on the implementer is inside the loop: **poll the
+`running` flag at least every ~100ms** — use a poll/read timeout around
+blocking I/O (as the RabbitMQ and WebSocket sources do), and
+`sleep_while_running(&running, interval)` instead of `thread::sleep` for waits
+between iterations (as TimerSource does), so long intervals never delay
+shutdown.
+
 ## Dynamic Extensions
 
 Extensions can also be distributed as separate crates compiled into dynamic

@@ -38,7 +38,7 @@
 //! let source = RabbitMQSource::from_properties(&properties, None, "RabbitMQStream")?;
 //! ```
 
-use super::{Source, SourceCallback};
+use super::{Source, SourceCallback, SourceWorker};
 use crate::core::error::handler::ErrorAction;
 use crate::core::error::source_support::{ErrorConfigBuilder, SourceErrorContext};
 use crate::core::event::value::AttributeValue;
@@ -48,11 +48,7 @@ use crate::core::extension::SourceFactory;
 use crate::core::stream::input::input_handler::InputHandler;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
-use std::thread;
+use std::sync::{atomic::Ordering, Arc, Mutex};
 use std::time::Duration;
 
 /// Configuration for RabbitMQ source
@@ -182,8 +178,8 @@ impl RabbitMQSourceConfig {
 pub struct RabbitMQSource {
     /// Configuration
     config: RabbitMQSourceConfig,
-    /// Running flag for graceful shutdown
-    running: Arc<AtomicBool>,
+    /// Worker thread lifecycle (spawn, signal, join on stop)
+    worker: SourceWorker,
     /// Optional error handling context (M5 integration)
     error_ctx: Option<SourceErrorContext>,
 }
@@ -193,7 +189,7 @@ impl RabbitMQSource {
     pub fn new(config: RabbitMQSourceConfig) -> Self {
         Self {
             config,
-            running: Arc::new(AtomicBool::new(false)),
+            worker: SourceWorker::new("RabbitMQSource"),
             error_ctx: None,
         }
     }
@@ -242,7 +238,7 @@ impl RabbitMQSource {
 
         Ok(Self {
             config,
-            running: Arc::new(AtomicBool::new(false)),
+            worker: SourceWorker::new("RabbitMQSource"),
             error_ctx,
         })
     }
@@ -252,22 +248,20 @@ impl Clone for RabbitMQSource {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            running: Arc::new(AtomicBool::new(false)),
-            error_ctx: None, // Error context contains runtime state, not cloneable
+            worker: self.worker.clone(), // Clones as a fresh, unstarted worker
+            error_ctx: None,             // Error context contains runtime state, not cloneable
         }
     }
 }
 
 impl Source for RabbitMQSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
-        let running = self.running.clone();
-        running.store(true, Ordering::SeqCst);
         let config = self.config.clone();
 
         // Move error_ctx into the thread
         let mut error_ctx = self.error_ctx.take();
 
-        thread::spawn(move || {
+        self.worker.start(move |running| {
             // Create a tokio runtime for lapin async operations
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
@@ -720,7 +714,7 @@ impl Source for RabbitMQSource {
 
     fn stop(&mut self) {
         log::info!("[RabbitMQSource] Stopping...");
-        self.running.store(false, Ordering::SeqCst);
+        self.worker.stop();
     }
 
     fn clone_box(&self) -> Box<dyn Source> {
@@ -1171,5 +1165,35 @@ mod tests {
             result.is_ok(),
             "Factory should accept DLQ strategy (junction wired later by stream_initializer)"
         );
+    }
+
+    // =========================================================================
+    // Shutdown Lifecycle Tests (no broker required)
+    // =========================================================================
+    // Idempotency and stop-without-start are covered by the SourceWorker
+    // tests in source/mod.rs; this test adds the connect-failure join path.
+
+    #[test]
+    fn test_start_stop_joins_worker() {
+        #[derive(Debug)]
+        struct NoopCallback;
+        impl SourceCallback for NoopCallback {
+            fn on_data(&self, _data: &[u8]) -> Result<(), EventFluxError> {
+                Ok(())
+            }
+        }
+
+        // Port 1 refuses connections immediately — the worker fails to connect
+        // and exits; stop() must join it without hanging.
+        let config = RabbitMQSourceConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            queue: "test".to_string(),
+            ..Default::default()
+        };
+        let mut source = RabbitMQSource::new(config);
+        source.start(Arc::new(NoopCallback));
+        source.stop();
+        source.stop(); // Second stop: handle already taken, must be a no-op
     }
 }

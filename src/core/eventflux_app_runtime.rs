@@ -605,10 +605,18 @@ impl EventFluxAppRuntime {
     }
 
     /// Stop all registered source handlers
+    ///
+    /// Joins run in parallel via scoped threads, so total shutdown is
+    /// bounded by one grace period instead of one per source — without
+    /// requiring anything from `Source` implementations beyond a correct
+    /// `stop()`.
     pub fn stop_all_sources(&self) {
-        for handler in self.source_handlers.read().unwrap().values() {
-            handler.stop();
-        }
+        let handlers = self.source_handlers.read().unwrap();
+        std::thread::scope(|s| {
+            for handler in handlers.values() {
+                s.spawn(|| handler.stop());
+            }
+        });
     }
 
     /// Start all registered sink handlers

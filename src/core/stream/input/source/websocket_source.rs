@@ -37,7 +37,7 @@
 //! let source = WebSocketSource::from_properties(&properties, None, "TradeStream")?;
 //! ```
 
-use super::{Source, SourceCallback};
+use super::{Source, SourceCallback, SourceWorker};
 use crate::core::error::handler::ErrorAction;
 use crate::core::error::source_support::{ErrorConfigBuilder, SourceErrorContext};
 use crate::core::event::value::AttributeValue;
@@ -53,7 +53,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::thread;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
@@ -167,8 +166,8 @@ impl WebSocketSourceConfig {
 pub struct WebSocketSource {
     /// Configuration
     config: WebSocketSourceConfig,
-    /// Running flag for graceful shutdown
-    running: Arc<AtomicBool>,
+    /// Worker thread lifecycle (spawn, signal, join on stop)
+    worker: SourceWorker,
     /// Optional error handling context (M5 integration)
     error_ctx: Option<SourceErrorContext>,
 }
@@ -178,7 +177,7 @@ impl WebSocketSource {
     pub fn new(config: WebSocketSourceConfig) -> Self {
         Self {
             config,
-            running: Arc::new(AtomicBool::new(false)),
+            worker: SourceWorker::new("WebSocketSource"),
             error_ctx: None,
         }
     }
@@ -249,7 +248,7 @@ impl WebSocketSource {
 
         Ok(Self {
             config,
-            running: Arc::new(AtomicBool::new(false)),
+            worker: SourceWorker::new("WebSocketSource"),
             error_ctx,
         })
     }
@@ -526,22 +525,20 @@ impl Clone for WebSocketSource {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            running: Arc::new(AtomicBool::new(false)),
-            error_ctx: None, // Error context contains runtime state, not cloneable
+            worker: self.worker.clone(), // Clones as a fresh, unstarted worker
+            error_ctx: None,             // Error context contains runtime state, not cloneable
         }
     }
 }
 
 impl Source for WebSocketSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
-        let running = self.running.clone();
-        running.store(true, Ordering::SeqCst);
         let config = self.config.clone();
 
         // Move error_ctx into the thread
         let error_ctx = self.error_ctx.take();
 
-        thread::spawn(move || {
+        self.worker.start(move |running| {
             // Create a tokio runtime for async WebSocket operations
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
@@ -557,7 +554,9 @@ impl Source for WebSocketSource {
 
     fn stop(&mut self) {
         log::info!("[WebSocketSource] Stopping...");
-        self.running.store(false, Ordering::SeqCst);
+        // A worker blocked in a connect attempt (10s timeout) is detached
+        // after the grace period.
+        self.worker.stop();
     }
 
     fn clone_box(&self) -> Box<dyn Source> {
@@ -919,4 +918,8 @@ mod tests {
         let result = factory.create_initialized(&config);
         assert!(result.is_ok(), "Factory should accept error.* config");
     }
+
+    // Shutdown lifecycle (stop-without-start, double-stop, join-on-stop) is
+    // covered by the SourceWorker tests in source/mod.rs — WebSocketSource
+    // delegates its lifecycle entirely to SourceWorker.
 }
