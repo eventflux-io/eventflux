@@ -41,7 +41,7 @@
 //! let source = TimerSource::from_properties(&properties, None, "TimerStream")?;
 //! ```
 
-use super::{Source, SourceCallback};
+use super::{sleep_while_running, Source, SourceCallback, SourceWorker};
 use crate::core::error::source_support::{ErrorConfigBuilder, SourceErrorContext};
 use crate::core::event::event::Event;
 use crate::core::event::value::AttributeValue;
@@ -50,11 +50,7 @@ use crate::core::stream::input::input_handler::InputHandler;
 use crate::core::stream::input::mapper::PassthroughMapper;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
-use std::thread;
+use std::sync::{atomic::Ordering, Arc, Mutex};
 use std::time::Duration;
 
 /// Timer source that generates tick events at regular intervals
@@ -68,8 +64,8 @@ use std::time::Duration;
 pub struct TimerSource {
     /// Interval between ticks in milliseconds
     interval_ms: u64,
-    /// Running flag for graceful shutdown
-    running: Arc<AtomicBool>,
+    /// Worker thread lifecycle (spawn, signal, join on stop)
+    worker: SourceWorker,
     /// Optional error handling context (M5 integration)
     error_ctx: Option<SourceErrorContext>,
     /// Optional simulated failure rate for testing (0.0 = never, 1.0 = always)
@@ -84,7 +80,7 @@ impl TimerSource {
     pub fn new(interval_ms: u64) -> Self {
         Self {
             interval_ms,
-            running: Arc::new(AtomicBool::new(false)),
+            worker: SourceWorker::new("TimerSource"),
             error_ctx: None,
             #[cfg(test)]
             simulate_failure_rate: 0.0,
@@ -144,7 +140,7 @@ impl TimerSource {
 
         Ok(Self {
             interval_ms,
-            running: Arc::new(AtomicBool::new(false)),
+            worker: SourceWorker::new("TimerSource"),
             error_ctx,
             #[cfg(test)]
             simulate_failure_rate: 0.0,
@@ -188,8 +184,8 @@ impl Clone for TimerSource {
     fn clone(&self) -> Self {
         Self {
             interval_ms: self.interval_ms,
-            running: Arc::new(AtomicBool::new(false)),
-            error_ctx: None, // Error context is not cloneable (contains runtime state)
+            worker: self.worker.clone(), // Clones as a fresh, unstarted worker
+            error_ctx: None,             // Error context is not cloneable (contains runtime state)
             #[cfg(test)]
             simulate_failure_rate: self.simulate_failure_rate,
         }
@@ -198,8 +194,6 @@ impl Clone for TimerSource {
 
 impl Source for TimerSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
-        let running = self.running.clone();
-        running.store(true, Ordering::SeqCst);
         let interval = self.interval_ms;
 
         // Move error_ctx into the thread (take ownership)
@@ -208,7 +202,7 @@ impl Source for TimerSource {
         #[cfg(test)]
         let failure_rate = self.simulate_failure_rate;
 
-        thread::spawn(move || {
+        self.worker.start(move |running| {
             while running.load(Ordering::SeqCst) {
                 // Create event
                 let event =
@@ -288,13 +282,14 @@ impl Source for TimerSource {
                     }
                 }
 
-                thread::sleep(Duration::from_millis(interval));
+                // Interruptible sleep: a long interval must not delay stop()
+                sleep_while_running(&running, Duration::from_millis(interval));
             }
         });
     }
 
     fn stop(&mut self) {
-        self.running.store(false, Ordering::SeqCst);
+        self.worker.stop();
     }
 
     fn clone_box(&self) -> Box<dyn Source> {
@@ -305,6 +300,7 @@ impl Source for TimerSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
 
     // Note: Full timer source tests with actual event delivery are in tests/source_sink.rs
     // These tests focus on error handling configuration
@@ -370,5 +366,51 @@ mod tests {
         // Verify error handling is configured
         assert!(source.error_ctx.is_some());
         assert_eq!(source.simulate_failure_rate, 0.3);
+    }
+
+    // =========================================================================
+    // Shutdown Lifecycle Tests
+    // =========================================================================
+
+    use std::sync::atomic::AtomicU64;
+
+    #[derive(Debug)]
+    struct CountingCallback {
+        count: Arc<AtomicU64>,
+    }
+
+    impl SourceCallback for CountingCallback {
+        fn on_data(&self, _data: &[u8]) -> Result<(), EventFluxError> {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    // Idempotency and stop-without-start are covered once at the mechanism
+    // level by the SourceWorker tests in source/mod.rs; this end-to-end test
+    // proves the delegation through the Source trait.
+    #[test]
+    fn test_no_callbacks_after_stop_returns() {
+        let count = Arc::new(AtomicU64::new(0));
+        let mut source = TimerSource::new(10);
+        source.start(Arc::new(CountingCallback {
+            count: Arc::clone(&count),
+        }));
+
+        // Let the worker deliver a few ticks
+        thread::sleep(Duration::from_millis(50));
+        source.stop();
+
+        // stop() joined the worker — the count must be frozen from here on.
+        // Before the join this assertion was racy: the worker could still be
+        // mid-iteration when stop() returned.
+        let count_at_stop = count.load(Ordering::SeqCst);
+        assert!(count_at_stop > 0, "worker should have delivered ticks");
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            count_at_stop,
+            "no callback may fire after stop() returns"
+        );
     }
 }
