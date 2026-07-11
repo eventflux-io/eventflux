@@ -11,6 +11,11 @@
 -- PREREQUISITES
 -- ============================================================================
 --
+-- 0. Build EventFlux with the RabbitMQ connector enabled:
+--
+--    cargo build --release --features rabbitmq
+--    (Docker images include all connectors already)
+--
 -- 1. Start RabbitMQ with Docker:
 --
 --    docker run -d --name rabbitmq \

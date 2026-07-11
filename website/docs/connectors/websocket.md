@@ -16,6 +16,16 @@ WebSocket is ideal for:
 - **Bidirectional communication**: Chat applications, collaborative tools
 - **Low-latency messaging**: Gaming, trading systems
 
+## Prerequisites
+
+The WebSocket connector is feature-gated. Build EventFlux with the
+`websocket` feature (Docker images already include all connectors):
+
+```bash
+cargo build --release --features websocket
+# or: cargo build --release --features connectors-all
+```
+
 ## WebSocket Source
 
 The WebSocket source connects to a WebSocket endpoint and consumes incoming messages as events for processing.

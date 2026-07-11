@@ -10,6 +10,16 @@ The RabbitMQ connector enables EventFlux to consume events from RabbitMQ queues 
 
 ## Prerequisites
 
+### Building with RabbitMQ Support
+
+The RabbitMQ connector is feature-gated. Build EventFlux with the `rabbitmq`
+feature (Docker images already include all connectors):
+
+```bash
+cargo build --release --features rabbitmq
+# or: cargo build --release --features connectors-all
+```
+
 ### Starting RabbitMQ
 
 The easiest way to run RabbitMQ is with Docker:
@@ -277,7 +287,7 @@ WHERE volume > 1000;
 
 3. **Run EventFlux:**
    ```bash
-   cargo run --bin run_eventflux your_query.eventflux
+   cargo run --features rabbitmq --bin run_eventflux your_query.eventflux
    ```
 
 4. **Publish test messages** via Management UI:

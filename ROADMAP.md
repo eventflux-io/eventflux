@@ -159,16 +159,20 @@ All have state holder implementations for checkpointing.
 
 ### M7: Connectors (In Progress - 2026)
 
-| Connector  | Source      | Sink        | Format           |
-|------------|-------------|-------------|------------------|
-| Timer      | Done        | —           | —                |
-| Log        | —           | Done        | —                |
-| RabbitMQ   | Done        | Done        | JSON, CSV, bytes |
-| WebSocket  | Done        | Done        | JSON, CSV, bytes |
-| Kafka      | Not started | Not started | —                |
-| HTTP       | Not started | Not started | —                |
-| File       | Not started | Not started | —                |
-| TCP/Socket | Not started | Not started | —                |
+| Connector  | Source      | Sink        | Format           | Feature flag     |
+|------------|-------------|-------------|------------------|------------------|
+| Timer      | Done        | —           | —                | (always built)   |
+| Log        | —           | Done        | —                | (always built)   |
+| RabbitMQ   | Done        | Done        | JSON, CSV, bytes | `rabbitmq`       |
+| WebSocket  | Done        | Done        | JSON, CSV, bytes | `websocket`      |
+| Kafka      | Not started | Not started | —                | `kafka` (planned)|
+| HTTP       | Not started | Not started | —                | —                |
+| File       | Not started | Not started | —                | —                |
+| TCP/Socket | Not started | Not started | —                | —                |
+
+Connectors are cargo features named after the SQL extension name; the default
+build is minimal and `connectors-all` enables everything (release/Docker
+builds use it).
 
 **Data mapping layer**: JSON, CSV, and bytes source/sink mappers registered.
 

@@ -133,6 +133,26 @@ blocking I/O (as the RabbitMQ and WebSocket sources do), and
 between iterations (as TimerSource does), so long intervals never delay
 shutdown.
 
+## Connector Feature Gating
+
+Every in-tree connector is gated behind a cargo feature **named exactly after
+its registered extension name** (the string used in SQL
+`WITH (extension = '...')`). The default build is fully minimal — no
+connectors — and release/Docker builds use `--features connectors-all`.
+
+When adding a new in-tree connector, touch exactly these points:
+
+| Point | Mechanism |
+|-------|-----------|
+| Dependency | `optional = true` in `[dependencies]`, `dep:` in the feature |
+| Feature | `[features]` entry named after the extension; add it to `connectors-all` |
+| Module declaration | `#[cfg(feature = "x")] pub mod x_source;` in `source/mod.rs` (same for the sink) |
+| Registration | `#[cfg(feature = "x")]` on the import and `add_source_factory`/`add_sink_factory` lines in `register_default_extensions()` |
+| Unavailable-extension hint | add the name to `GATED_OUT_EXTENSIONS` in `stream_initializer.rs` so builds without the feature report "rebuild with `--features x`" instead of "extension not found" |
+| Integration tests | `#![cfg(feature = "x")]` at the top of `tests/x_integration.rs` |
+| CI | add `cargo check --features x` to the per-connector gating check in `.github/workflows/rust.yml` |
+| Docs | feature-flags table in README.md; example files note the required feature |
+
 ## Dynamic Extensions
 
 Extensions can also be distributed as separate crates compiled into dynamic

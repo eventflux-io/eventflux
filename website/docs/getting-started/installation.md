@@ -25,23 +25,54 @@ cargo --version
 
 ## From Source
 
-Clone and build the repository:
+Clone and build the repository (`--recursive` pulls in the vendored SQL parser submodule):
 
 ```bash
-git clone https://github.com/eventflux-io/eventflux.git
+git clone --recursive https://github.com/eventflux-io/eventflux.git
 cd eventflux
-cargo build --release
+cargo build --release --features connectors-all
 ```
+
+### Connector Feature Flags
+
+The default build is **fully minimal** — the core engine plus the built-in
+`timer` source and `log` sink, with no external connectors. Each connector is
+a cargo feature named exactly after its SQL extension name:
+
+| Feature | Connector | In default build? |
+|---------|-----------|-------------------|
+| `rabbitmq` | RabbitMQ source + sink | No |
+| `websocket` | WebSocket source + sink | No |
+| `connectors-all` | All connectors | No |
+
+```bash
+cargo build --release                             # minimal: core engine only
+cargo build --release --features rabbitmq         # just RabbitMQ
+cargo build --release --features connectors-all   # everything
+```
+
+Docker images (`ghcr.io/eventflux-io/eventflux`) are built with
+`connectors-all`, so they include every connector out of the box.
+
+:::tip Helpful errors
+If a query references a connector that wasn't compiled in, EventFlux tells
+you exactly how to fix it:
+
+```
+Extension 'rabbitmq' is supported by EventFlux but was not included in this
+build. Rebuild with `--features rabbitmq` (or `--features connectors-all`).
+```
+:::
 
 ### Running Tests
 
 Verify your installation by running the test suite:
 
 ```bash
-cargo test
+cargo test --features connectors-all
 ```
 
-You should see **1,400+ passing tests**.
+You should see **3,000+ passing tests**.
 
 ### Build Artifacts
 
@@ -51,18 +82,19 @@ After building, you'll find:
 
 ## As a Dependency
 
-Add EventFlux to your `Cargo.toml`:
+Add EventFlux to your `Cargo.toml`. Enable the connector features your
+application needs (none are enabled by default):
 
 ```toml
 [dependencies]
-eventflux = { git = "https://github.com/eventflux-io/eventflux.git" }
+eventflux = { git = "https://github.com/eventflux-io/eventflux.git", features = ["connectors-all"] }
 ```
 
-Or with a specific revision:
+Or with a specific revision and only the connectors you use:
 
 ```toml
 [dependencies]
-eventflux = { git = "https://github.com/eventflux-io/eventflux.git", rev = "main" }
+eventflux = { git = "https://github.com/eventflux-io/eventflux.git", rev = "main", features = ["rabbitmq"] }
 ```
 
 ## Project Structure
@@ -107,15 +139,15 @@ Run it:
 cargo run
 ```
 
-## Optional Dependencies
+## Optional Features
 
-For specific features, you may need additional dependencies:
+Beyond connectors, EventFlux exposes additional opt-in cargo features:
 
-| Feature | Dependency | Purpose |
-|---------|------------|---------|
-| Redis State | `redis` | Distributed state backend |
-| Async Runtime | `tokio` | Async event processing |
-| Serialization | `serde` | Event serialization |
+| Feature | Purpose |
+|---------|---------|
+| `rabbitmq`, `websocket`, `connectors-all` | External connectors (see table above) |
+| `kubernetes`, `consul`, `etcd`, `vault`, `cloud-native` | Cloud-native integrations for distributed deployments |
+| `perf-tests` | Performance test suite |
 
 ## Troubleshooting
 
