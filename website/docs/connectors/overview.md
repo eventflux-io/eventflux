@@ -45,10 +45,13 @@ The connector system consists of three main components:
 
 **Sinks** publish processed events to external systems. They handle:
 
-- Connection pooling
+- Connection management
 - Delivery guarantees
-- Batching and buffering
 - Format serialization via mappers
+
+**One event = one message**: each event is serialized and published as its own
+transport message (AMQP message, WebSocket frame, ...). A failure to serialize
+or publish one event never drops the other events in the same batch.
 
 ### Mappers
 
@@ -91,15 +94,39 @@ CREATE STREAM StreamName (
 );
 ```
 
+## Building with Connectors
+
+Connectors are **opt-in cargo features**, named exactly after their SQL
+extension name. The default build is fully minimal (core engine plus the
+built-in `timer` source and `log` sink):
+
+```bash
+cargo build --release --features rabbitmq          # just RabbitMQ
+cargo build --release --features websocket         # just WebSocket
+cargo build --release --features connectors-all    # everything
+```
+
+Docker images are built with `connectors-all` and include every connector.
+
+If a query references a connector that wasn't compiled in, EventFlux fails
+fast with an actionable error:
+
+```
+Extension 'rabbitmq' is supported by EventFlux but was not included in this
+build. Rebuild with `--features rabbitmq` (or `--features connectors-all`).
+```
+
 ## Available Connectors
 
-| Connector | Source | Sink | Status | Description |
-|-----------|--------|------|--------|-------------|
-| **RabbitMQ** | Yes | Yes | Production Ready | AMQP 0-9-1 message broker |
-| **WebSocket** | Yes | Yes | Production Ready | Real-time bidirectional streaming |
-| **Kafka** | Planned | Planned | Roadmap | Apache Kafka streaming |
-| **HTTP** | Planned | Planned | Roadmap | REST/Webhook endpoints |
-| **File** | Planned | Planned | Roadmap | File-based input/output |
+| Connector | Source | Sink | Feature flag | Status | Description |
+|-----------|--------|------|--------------|--------|-------------|
+| **Timer** | Yes | — | (always built) | Production Ready | Periodic tick source |
+| **Log** | — | Yes | (always built) | Production Ready | Logging sink for debugging |
+| **RabbitMQ** | Yes | Yes | `rabbitmq` | Production Ready | AMQP 0-9-1 message broker |
+| **WebSocket** | Yes | Yes | `websocket` | Production Ready | Real-time bidirectional streaming |
+| **Kafka** | Planned | Planned | `kafka` (planned) | Roadmap | Apache Kafka streaming |
+| **HTTP** | Planned | Planned | — | Roadmap | REST/Webhook endpoints |
+| **File** | Planned | Planned | — | Roadmap | File-based input/output |
 
 ## Available Mappers
 

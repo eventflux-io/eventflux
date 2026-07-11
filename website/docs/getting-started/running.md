@@ -15,6 +15,13 @@ Before running EventFlux applications, ensure you have:
 1. **Rust toolchain** (1.85+): Install from [rustup.rs](https://rustup.rs/)
 2. **RabbitMQ** (for connector examples): See [RabbitMQ setup](#rabbitmq-setup)
 
+:::info Connector feature flags
+Connectors are opt-in cargo features (the default build is minimal). Any
+command that runs a query using a connector needs the matching feature, e.g.
+`--features rabbitmq` or `--features connectors-all`. See
+[Installation → Connector Feature Flags](/docs/getting-started/installation#connector-feature-flags).
+:::
+
 ## Method 1: Command Line Interface (CLI)
 
 The simplest way to run EventFlux is using the built-in CLI binary.
@@ -22,11 +29,11 @@ The simplest way to run EventFlux is using the built-in CLI binary.
 ### Basic Usage
 
 ```bash
-# Run a query file
+# Run a query file (no connectors needed)
 cargo run --bin run_eventflux <path-to-query-file>
 
-# Example with the RabbitMQ to Log example
-cargo run --bin run_eventflux examples/rabbitmq_to_log.eventflux
+# Example with the RabbitMQ to Log example (needs the rabbitmq feature)
+cargo run --features rabbitmq --bin run_eventflux examples/rabbitmq_to_log.eventflux
 ```
 
 ### CLI Options
@@ -49,21 +56,21 @@ cargo run --bin run_eventflux -- --help
 cargo run --bin run_eventflux examples/simple_filter.eventflux
 
 # With file-based persistence (using --set)
-cargo run --bin run_eventflux examples/rabbitmq.eventflux \
+cargo run --features rabbitmq --bin run_eventflux examples/rabbitmq.eventflux \
   --set eventflux.persistence.type=file \
   --set eventflux.persistence.path=./snapshots
 
 # With SQLite persistence (using --set)
-cargo run --bin run_eventflux examples/rabbitmq.eventflux \
+cargo run --features rabbitmq --bin run_eventflux examples/rabbitmq.eventflux \
   --set eventflux.persistence.type=sqlite \
   --set eventflux.persistence.path=./eventflux.db
 
 # With custom configuration file
-cargo run --bin run_eventflux examples/rabbitmq.eventflux \
+cargo run --features rabbitmq --bin run_eventflux examples/rabbitmq.eventflux \
   --config ./config/eventflux.yaml
 
 # Combine config file with overrides
-cargo run --bin run_eventflux examples/rabbitmq.eventflux \
+cargo run --features rabbitmq --bin run_eventflux examples/rabbitmq.eventflux \
   --config ./config/base.yaml \
   --set eventflux.runtime.performance.thread_pool_size=16
 
@@ -98,8 +105,8 @@ The `--set` flag supports dot-notation paths to override any configuration value
 ### Release Build (Recommended for Production)
 
 ```bash
-# Build release binary
-cargo build --release
+# Build release binary (include the connectors your queries use)
+cargo build --release --features connectors-all
 
 # Run with release binary
 ./target/release/run_eventflux examples/rabbitmq_to_log.eventflux
@@ -558,8 +565,8 @@ sleep 30
 # Management UI: http://localhost:15672 (guest/guest)
 # Create queue named: event-queue
 
-# 4. Run EventFlux
-cargo run --bin run_eventflux examples/rabbitmq_to_log.eventflux
+# 4. Run EventFlux (rabbitmq connector is feature-gated)
+cargo run --features rabbitmq --bin run_eventflux examples/rabbitmq_to_log.eventflux
 
 # 5. In another terminal, publish a test message via Management UI
 # or use the rabbitmqadmin CLI:

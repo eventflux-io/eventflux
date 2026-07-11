@@ -18,6 +18,14 @@ EventFlux provides three built-in mappers:
 | **CSV** | `format = 'csv'` | Yes | Yes | Log files, data exports |
 | **Bytes** | `format = 'bytes'` | Yes | Yes | Binary protocols (protobuf, msgpack), raw passthrough |
 
+### Sink mapping contract: one event = one message
+
+On the sink side, each event is mapped to its **own payload** and published as
+its **own transport message**. Even when a query emits several events at once
+(e.g. a batch window flush), the sink publishes one message per event — no
+events are ever merged into or dropped from a message. A mapping failure for
+one event is logged and does not affect the remaining events.
+
 ## JSON Mapper
 
 The JSON mapper is the most common choice for message queue integration. It handles automatic type conversion between JSON and EventFlux types.
@@ -271,7 +279,10 @@ CREATE STREAM RawMessages (
 
 ### Sink Mapper (Events → Bytes)
 
-The bytes sink mapper extracts raw bytes from the specified field and outputs them unchanged. **Only single-event batches are supported**—an error is returned if multiple events are received since binary data cannot be safely concatenated with separators:
+The bytes sink mapper extracts raw bytes from the specified field and outputs
+them unchanged. Because every event maps to its own message (see the
+[sink mapping contract](#sink-mapping-contract-one-event--one-message)),
+binary payloads are never concatenated:
 
 **Event Data:**
 ```

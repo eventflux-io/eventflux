@@ -74,6 +74,7 @@ const sidebars = {
         'rust-api/getting-started',
         'rust-api/configuration',
         'rust-api/testing',
+        'rust-api/custom-connectors',
       ],
     },
   ],

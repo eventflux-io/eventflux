@@ -10,20 +10,25 @@ This guide shows you how to embed EventFlux in your Rust applications for progra
 
 ## Installation
 
-Add EventFlux to your `Cargo.toml`:
+Add EventFlux to your `Cargo.toml`. Connectors (RabbitMQ, WebSocket, ...) are
+opt-in cargo features — enable the ones your application uses:
 
 ```toml
 [dependencies]
-eventflux = { git = "https://github.com/eventflux-io/eventflux.git" }
+eventflux = { git = "https://github.com/eventflux-io/eventflux.git", features = ["connectors-all"] }
 ```
 
-Or install from source:
+Or install from source (`--recursive` pulls in the vendored SQL parser
+submodule):
 
 ```bash
-git clone https://github.com/eventflux-io/eventflux.git
+git clone --recursive https://github.com/eventflux-io/eventflux.git
 cd eventflux
-cargo build --release
+cargo build --release --features connectors-all
 ```
+
+See [Installation → Connector Feature Flags](/docs/getting-started/installation#connector-feature-flags)
+for the full feature list.
 
 ## Basic Usage
 
