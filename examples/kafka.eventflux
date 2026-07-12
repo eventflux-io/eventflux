@@ -31,11 +31,12 @@
 --
 --    cargo run --features kafka --bin run_eventflux examples/kafka.eventflux
 --
--- 4. In another terminal, produce a test message:
+-- 4. In another terminal, produce a test message (pipe it into the
+--    console producer — it reads messages from stdin):
 --
---    docker exec -i kafka /opt/kafka/bin/kafka-console-producer.sh \
+--    echo '{"symbol":"AAPL","price":150.25,"volume":1000}' | \
+--      docker exec -i kafka /opt/kafka/bin/kafka-console-producer.sh \
 --      --bootstrap-server localhost:9092 --topic trades-in
---    {"symbol":"AAPL","price":150.25,"volume":1000}
 --
 -- 5. Watch the output topic:
 --
