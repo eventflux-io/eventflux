@@ -41,6 +41,7 @@ a cargo feature named exactly after its SQL extension name:
 
 | Feature | Connector | In default build? |
 |---------|-----------|-------------------|
+| `kafka` | Kafka source + sink (needs cmake to build) | No |
 | `rabbitmq` | RabbitMQ source + sink | No |
 | `websocket` | WebSocket source + sink | No |
 | `connectors-all` | All connectors | No |

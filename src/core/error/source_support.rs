@@ -108,6 +108,32 @@ impl SourceErrorContext {
         Ok(Self::new(error_config, dlq_junction, stream_name))
     }
 
+    /// Build from a raw `WITH`-clause properties map (convenience method).
+    ///
+    /// Returns `Ok(None)` when no `error.*` properties are configured —
+    /// exactly the optional-context shape every source stores. Collapses the
+    /// ErrorConfigBuilder/FlatConfig boilerplate previously copy-pasted into
+    /// each connector's `from_properties`.
+    pub fn from_properties(
+        properties: &std::collections::HashMap<String, String>,
+        dlq_junction: Option<Arc<Mutex<InputHandler>>>,
+        stream_name: &str,
+    ) -> Result<Option<Self>, String> {
+        if !ErrorConfigBuilder::from_properties(properties).is_configured() {
+            return Ok(None);
+        }
+
+        use crate::core::config::PropertySource;
+        let mut flat_config = FlatConfig::new();
+        for (key, value) in properties {
+            if key.starts_with("error.") {
+                flat_config.set(key.clone(), value.clone(), PropertySource::SqlWith);
+            }
+        }
+
+        Self::from_config(&flat_config, dlq_junction, stream_name.to_string()).map(Some)
+    }
+
     /// Handle an error and return whether to continue processing
     ///
     /// This method applies the error handling strategy and performs any
@@ -244,6 +270,70 @@ impl ErrorConfigBuilder {
     /// Build ErrorConfig with default if not configured
     pub fn build_or_default(&self) -> Result<ErrorConfig, String> {
         Ok(self.build()?.unwrap_or_default())
+    }
+}
+
+/// Outcome of delivering one payload through the error-handling strategy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryVerdict {
+    /// The pipeline accepted the payload
+    Delivered,
+    /// The error strategy disposed of it (drop or DLQ) — the record counts
+    /// as consumed and may be acknowledged/committed
+    Disposed,
+    /// Unrecoverable (fail strategy) — stop the source; do NOT acknowledge
+    /// or commit, so the record is redelivered after restart
+    Fail,
+}
+
+/// Deliver one payload to the pipeline, applying the source's error strategy.
+///
+/// Encapsulates the retry state machine every source needs: retry until
+/// success or a non-retry action, build a DLQ fallback event from the raw
+/// bytes, reset the error counter on success. Transport-specific
+/// acknowledgement stays with the caller, keyed off the verdict:
+/// `Delivered`/`Disposed` → ack/commit, `Fail` → don't ack, stop the source.
+pub fn deliver_with_error_handling(
+    callback: &dyn crate::core::stream::input::source::SourceCallback,
+    payload: &[u8],
+    error_ctx: &mut Option<SourceErrorContext>,
+    source_tag: &str,
+) -> DeliveryVerdict {
+    loop {
+        match callback.on_data(payload) {
+            Ok(()) => {
+                if let Some(ctx) = error_ctx {
+                    ctx.reset_errors();
+                }
+                return DeliveryVerdict::Delivered;
+            }
+            Err(e) => {
+                let action = if let Some(ctx) = error_ctx {
+                    // Fallback event from raw bytes for DLQ support — only
+                    // built when a strategy exists to consume it
+                    let fallback_event = Event::new_with_data(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0),
+                        vec![crate::core::event::value::AttributeValue::Bytes(
+                            payload.to_vec(),
+                        )],
+                    );
+                    ctx.handle_error_with_action(Some(&fallback_event), &e)
+                } else {
+                    log::error!("[{source_tag}] Callback error: {e}");
+                    ErrorAction::Drop
+                };
+
+                match action {
+                    // Delay already applied by handle_error_with_action
+                    ErrorAction::Retry { .. } => continue,
+                    ErrorAction::Drop | ErrorAction::SendToDlq => return DeliveryVerdict::Disposed,
+                    ErrorAction::Fail => return DeliveryVerdict::Fail,
+                }
+            }
+        }
     }
 }
 

@@ -189,6 +189,8 @@ pub fn initialize_stream(
 /// by cargo features. The feature is always named after the extension (see
 /// the `[features]` section in Cargo.toml), so one entry per gated connector.
 const GATED_OUT_EXTENSIONS: &[&str] = &[
+    #[cfg(not(feature = "kafka"))]
+    "kafka",
     #[cfg(not(feature = "rabbitmq"))]
     "rabbitmq",
     #[cfg(not(feature = "websocket"))]
@@ -1018,7 +1020,7 @@ impl QuerySourceExtractor for Query {
 mod tests {
     use super::*;
     use crate::core::config::stream_config::{FlatConfig, PropertySource};
-    use crate::core::extension::example_factories::{HttpSinkFactory, KafkaSourceFactory};
+    use crate::core::extension::example_factories::{ExampleSourceFactory, HttpSinkFactory};
     use crate::core::extension::{CsvSinkMapperFactory, JsonSourceMapperFactory};
 
     #[test]
@@ -1045,19 +1047,16 @@ mod tests {
     #[test]
     fn test_initialize_source_stream_success() {
         let context = EventFluxContext::new();
-        context.add_source_factory("kafka".to_string(), Box::new(KafkaSourceFactory));
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
         context.add_source_mapper_factory("json".to_string(), Box::new(JsonSourceMapperFactory));
 
         let mut config = HashMap::new();
-        config.insert(
-            "kafka.bootstrap.servers".to_string(),
-            "localhost:9092".to_string(),
-        );
-        config.insert("kafka.topic".to_string(), "test-topic".to_string());
+        config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        config.insert("example.topic".to_string(), "test-topic".to_string());
 
         let stream_config = StreamTypeConfig::new(
             StreamType::Source,
-            Some("kafka".to_string()),
+            Some("example".to_string()),
             Some("json".to_string()),
             config,
         )
@@ -1068,7 +1067,7 @@ mod tests {
 
         match result.unwrap() {
             InitializedStream::Source(source) => {
-                assert_eq!(source.extension, "kafka");
+                assert_eq!(source.extension, "example");
                 assert_eq!(source.format.as_deref(), Some("json"));
             }
             _ => panic!("Expected Source stream"),
@@ -1105,12 +1104,12 @@ mod tests {
     #[test]
     fn test_initialize_source_stream_unsupported_format() {
         let context = EventFluxContext::new();
-        context.add_source_factory("kafka".to_string(), Box::new(KafkaSourceFactory));
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
 
         let stream_config = StreamTypeConfig::new(
             StreamType::Source,
-            Some("kafka".to_string()),
-            Some("xml".to_string()), // Kafka doesn't support XML
+            Some("example".to_string()),
+            Some("xml".to_string()), // The example stub doesn't support XML
             HashMap::new(),
         )
         .unwrap();
@@ -1121,7 +1120,7 @@ mod tests {
         match result.unwrap_err() {
             EventFluxError::Configuration { message, .. } => {
                 assert!(message.contains("xml"));
-                assert!(message.contains("kafka"));
+                assert!(message.contains("example"));
             }
             e => panic!(
                 "Expected Configuration error for unsupported format, got {:?}",
@@ -1133,19 +1132,16 @@ mod tests {
     #[test]
     fn test_initialize_source_stream_mapper_not_found() {
         let context = EventFluxContext::new();
-        context.add_source_factory("kafka".to_string(), Box::new(KafkaSourceFactory));
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
         // Note: json/csv mappers are registered by default, use a non-existent format
 
         let mut config = HashMap::new();
-        config.insert(
-            "kafka.bootstrap.servers".to_string(),
-            "localhost:9092".to_string(),
-        );
-        config.insert("kafka.topic".to_string(), "test".to_string());
+        config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        config.insert("example.topic".to_string(), "test".to_string());
 
         let stream_config = StreamTypeConfig::new(
             StreamType::Source,
-            Some("kafka".to_string()),
+            Some("example".to_string()),
             Some("avro".to_string()), // avro mapper not registered
             config,
         )
@@ -1217,15 +1213,15 @@ mod tests {
     #[test]
     fn test_initialize_source_stream_invalid_config() {
         let context = EventFluxContext::new();
-        context.add_source_factory("kafka".to_string(), Box::new(KafkaSourceFactory));
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
         context.add_source_mapper_factory("json".to_string(), Box::new(JsonSourceMapperFactory));
 
-        // Missing required kafka.bootstrap.servers
+        // Missing required example.servers
         let config = HashMap::new();
 
         let stream_config = StreamTypeConfig::new(
             StreamType::Source,
-            Some("kafka".to_string()),
+            Some("example".to_string()),
             Some("json".to_string()),
             config,
         )
@@ -1238,7 +1234,7 @@ mod tests {
         match result.unwrap_err() {
             EventFluxError::InvalidParameter { parameter, .. } => {
                 if let Some(param) = parameter {
-                    assert!(param.contains("kafka.bootstrap.servers"));
+                    assert!(param.contains("example.servers"));
                 }
             }
             e => panic!(
@@ -1251,20 +1247,21 @@ mod tests {
     #[test]
     fn test_initialize_source_stream_missing_required_format() {
         let context = EventFluxContext::new();
-        context.add_source_factory("kafka".to_string(), Box::new(KafkaSourceFactory));
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
         // Don't add mapper factory - we're testing the format requirement validation
 
         let mut config = HashMap::new();
-        config.insert(
-            "kafka.bootstrap.servers".to_string(),
-            "localhost:9092".to_string(),
-        );
-        config.insert("kafka.topic".to_string(), "test-topic".to_string());
+        config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        config.insert("example.topic".to_string(), "test-topic".to_string());
 
-        // Kafka source WITHOUT format - should be rejected
-        let stream_config =
-            StreamTypeConfig::new(StreamType::Source, Some("kafka".to_string()), None, config)
-                .unwrap();
+        // Example source WITHOUT format - should be rejected
+        let stream_config = StreamTypeConfig::new(
+            StreamType::Source,
+            Some("example".to_string()),
+            None,
+            config,
+        )
+        .unwrap();
 
         let result = initialize_stream(&context, &stream_config);
         assert!(result.is_err());
@@ -1273,7 +1270,7 @@ mod tests {
         match result.unwrap_err() {
             EventFluxError::Configuration { message, .. } => {
                 assert!(message.contains("requires a format specification"));
-                assert!(message.contains("kafka"));
+                assert!(message.contains("example"));
                 assert!(message.contains("json"));
                 assert!(message.contains("data loss"));
             }

@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+#[cfg(feature = "kafka")]
+pub mod kafka_source;
 #[cfg(feature = "rabbitmq")]
 pub mod rabbitmq_source;
 pub mod timer_source;

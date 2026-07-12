@@ -51,6 +51,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'connectors/overview',
+        'connectors/kafka',
         'connectors/rabbitmq',
         'connectors/websocket',
         'connectors/mappers',

@@ -641,7 +641,7 @@ pub const REGISTER_SINK_MAPPERS_FN: &[u8] = b"register_sink_mappers";
 mod tests {
     use super::*;
     use crate::core::config::eventflux_context::EventFluxContext;
-    use crate::core::extension::example_factories::{HttpSinkFactory, KafkaSourceFactory};
+    use crate::core::extension::example_factories::{ExampleSourceFactory, HttpSinkFactory};
 
     #[test]
     fn test_factory_registration() {
@@ -658,13 +658,13 @@ mod tests {
     }
 
     #[test]
-    fn test_kafka_source_factory_registration() {
+    fn test_example_source_factory_registration() {
         let context = EventFluxContext::new();
-        context.add_source_factory("kafka".to_string(), Box::new(KafkaSourceFactory));
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
 
-        let factory = context.get_source_factory("kafka");
+        let factory = context.get_source_factory("example");
         assert!(factory.is_some());
-        assert_eq!(factory.unwrap().name(), "kafka");
+        assert_eq!(factory.unwrap().name(), "example");
     }
 
     #[test]
@@ -676,16 +676,16 @@ mod tests {
             "Timer should not support external formats (uses binary passthrough)"
         );
 
-        // Kafka supports external formats
-        let kafka_factory = KafkaSourceFactory;
-        assert!(kafka_factory.supported_formats().contains(&"json"));
-        assert!(kafka_factory.supported_formats().contains(&"avro"));
-        assert!(!kafka_factory.supported_formats().contains(&"xml"));
+        // The example stub advertises external formats
+        let example_factory = ExampleSourceFactory;
+        assert!(example_factory.supported_formats().contains(&"json"));
+        assert!(example_factory.supported_formats().contains(&"avro"));
+        assert!(!example_factory.supported_formats().contains(&"xml"));
     }
 
     #[test]
     fn test_create_initialized_missing_params() {
-        let factory = KafkaSourceFactory;
+        let factory = ExampleSourceFactory;
         let config = std::collections::HashMap::new();
 
         let result = factory.create_initialized(&config);
@@ -698,10 +698,10 @@ mod tests {
 
     #[test]
     fn test_create_initialized_invalid_config() {
-        let factory = KafkaSourceFactory;
+        let factory = ExampleSourceFactory;
         let mut config = std::collections::HashMap::new();
-        config.insert("kafka.bootstrap.servers".to_string(), "".to_string());
-        config.insert("kafka.topic".to_string(), "test".to_string());
+        config.insert("example.servers".to_string(), "".to_string());
+        config.insert("example.topic".to_string(), "test".to_string());
 
         let result = factory.create_initialized(&config);
         assert!(result.is_err());
@@ -713,13 +713,10 @@ mod tests {
 
     #[test]
     fn test_create_initialized_valid_config() {
-        let factory = KafkaSourceFactory;
+        let factory = ExampleSourceFactory;
         let mut config = std::collections::HashMap::new();
-        config.insert(
-            "kafka.bootstrap.servers".to_string(),
-            "localhost:9092".to_string(),
-        );
-        config.insert("kafka.topic".to_string(), "test-topic".to_string());
+        config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        config.insert("example.topic".to_string(), "test-topic".to_string());
 
         let result = factory.create_initialized(&config);
         assert!(result.is_ok());
@@ -775,10 +772,10 @@ mod tests {
     #[test]
     fn test_factory_lookup_and_validation() {
         let context = EventFluxContext::new();
-        context.add_source_factory("kafka".to_string(), Box::new(KafkaSourceFactory));
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
 
         // 1. Look up source factory by extension
-        let source_factory = context.get_source_factory("kafka");
+        let source_factory = context.get_source_factory("example");
         assert!(source_factory.is_some());
         let source_factory = source_factory.unwrap();
 
@@ -788,11 +785,8 @@ mod tests {
 
         // 3. Create fully initialized instances
         let mut source_config = std::collections::HashMap::new();
-        source_config.insert(
-            "kafka.bootstrap.servers".to_string(),
-            "localhost:9092".to_string(),
-        );
-        source_config.insert("kafka.topic".to_string(), "test".to_string());
+        source_config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        source_config.insert("example.topic".to_string(), "test".to_string());
 
         let source = source_factory.create_initialized(&source_config);
         assert!(source.is_ok());
@@ -800,10 +794,10 @@ mod tests {
 
     #[test]
     fn test_unsupported_format_detection() {
-        let factory = KafkaSourceFactory;
+        let factory = ExampleSourceFactory;
         let format = "xml";
 
-        // Kafka doesn't support XML format
+        // The example stub doesn't support XML format
         assert!(!factory.supported_formats().contains(&format));
     }
 
@@ -817,15 +811,13 @@ mod tests {
 
     #[test]
     fn test_source_factory_parameters() {
-        let factory = KafkaSourceFactory;
-        assert!(factory
-            .required_parameters()
-            .contains(&"kafka.bootstrap.servers"));
-        assert!(factory.required_parameters().contains(&"kafka.topic"));
+        let factory = ExampleSourceFactory;
+        assert!(factory.required_parameters().contains(&"example.servers"));
+        assert!(factory.required_parameters().contains(&"example.topic"));
         assert!(factory
             .optional_parameters()
-            .contains(&"kafka.consumer.group"));
-        assert!(factory.optional_parameters().contains(&"kafka.timeout"));
+            .contains(&"example.consumer.group"));
+        assert!(factory.optional_parameters().contains(&"example.timeout"));
     }
 
     #[test]

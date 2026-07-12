@@ -101,6 +101,7 @@ extension name. The default build is fully minimal (core engine plus the
 built-in `timer` source and `log` sink):
 
 ```bash
+cargo build --release --features kafka             # just Kafka
 cargo build --release --features rabbitmq          # just RabbitMQ
 cargo build --release --features websocket         # just WebSocket
 cargo build --release --features connectors-all    # everything
@@ -122,9 +123,9 @@ build. Rebuild with `--features rabbitmq` (or `--features connectors-all`).
 |-----------|--------|------|--------------|--------|-------------|
 | **Timer** | Yes | — | (always built) | Production Ready | Periodic tick source |
 | **Log** | — | Yes | (always built) | Production Ready | Logging sink for debugging |
+| **Kafka** | Yes | Yes | `kafka` | Production Ready | Apache Kafka streaming |
 | **RabbitMQ** | Yes | Yes | `rabbitmq` | Production Ready | AMQP 0-9-1 message broker |
 | **WebSocket** | Yes | Yes | `websocket` | Production Ready | Real-time bidirectional streaming |
-| **Kafka** | Planned | Planned | `kafka` (planned) | Roadmap | Apache Kafka streaming |
 | **HTTP** | Planned | Planned | — | Roadmap | REST/Webhook endpoints |
 | **File** | Planned | Planned | — | Roadmap | File-based input/output |
 
@@ -217,6 +218,7 @@ manager.context().add_sink_factory(
 
 ## Next Steps
 
+- **[Kafka Connector](/docs/connectors/kafka)** - Consume from and produce to Apache Kafka topics
 - **[RabbitMQ Connector](/docs/connectors/rabbitmq)** - Connect to RabbitMQ message broker
 - **[WebSocket Connector](/docs/connectors/websocket)** - Connect to WebSocket endpoints for real-time streaming
 - **[Mappers Reference](/docs/connectors/mappers)** - JSON, CSV, and bytes format handling

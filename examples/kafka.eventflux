@@ -1,0 +1,89 @@
+-- ============================================================================
+-- EventFlux Kafka Source/Sink Example
+-- ============================================================================
+--
+-- This example demonstrates end-to-end stream processing with Kafka:
+--   1. Kafka Source: Consumes JSON events from a topic
+--   2. EventFlux Query: Filters by volume and adds price_category via CASE
+--   3. Kafka Sink: Publishes processed events to another topic
+--
+-- ============================================================================
+-- PREREQUISITES
+-- ============================================================================
+--
+-- 0. Build EventFlux with the Kafka connector enabled:
+--
+--    cargo build --release --features kafka
+--    (Docker images include all connectors already)
+--
+-- 1. Start a single-node Kafka broker with Docker:
+--
+--    docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.1
+--
+-- 2. Create the topics (EventFlux validates they exist at startup):
+--
+--    docker exec kafka /opt/kafka/bin/kafka-topics.sh --create \
+--      --bootstrap-server localhost:9092 --topic trades-in
+--    docker exec kafka /opt/kafka/bin/kafka-topics.sh --create \
+--      --bootstrap-server localhost:9092 --topic trades-out
+--
+-- 3. Run this example:
+--
+--    cargo run --features kafka --bin run_eventflux examples/kafka.eventflux
+--
+-- 4. In another terminal, produce a test message:
+--
+--    docker exec -i kafka /opt/kafka/bin/kafka-console-producer.sh \
+--      --bootstrap-server localhost:9092 --topic trades-in
+--    {"symbol":"AAPL","price":150.25,"volume":1000}
+--
+-- 5. Watch the output topic:
+--
+--    docker exec -i kafka /opt/kafka/bin/kafka-console-consumer.sh \
+--      --bootstrap-server localhost:9092 --topic trades-out --from-beginning
+--
+-- ============================================================================
+
+CREATE STREAM TradeInput (
+    symbol STRING,
+    price DOUBLE,
+    volume INT
+) WITH (
+    type = 'source',
+    extension = 'kafka',
+    format = 'json',
+    "kafka.bootstrap.servers" = 'localhost:9092',
+    "kafka.topic" = 'trades-in',
+    "kafka.group.id" = 'eventflux-trades',
+    "kafka.auto.offset.reset" = 'earliest',
+    -- At-least-once: commit offsets only after pipeline delivery
+    "kafka.enable.auto.commit" = 'false'
+);
+
+CREATE STREAM TradeOutput (
+    symbol STRING,
+    price DOUBLE,
+    volume INT,
+    price_category STRING
+) WITH (
+    type = 'sink',
+    extension = 'kafka',
+    format = 'json',
+    "kafka.bootstrap.servers" = 'localhost:9092',
+    "kafka.topic" = 'trades-out',
+    "kafka.acks" = 'all',
+    "kafka.compression" = 'lz4'
+);
+
+INSERT INTO TradeOutput
+SELECT
+    symbol,
+    price,
+    volume,
+    CASE
+        WHEN price > 500 THEN 'HIGH'
+        WHEN price > 100 THEN 'MEDIUM'
+        ELSE 'LOW'
+    END AS price_category
+FROM TradeInput
+WHERE volume > 100;
