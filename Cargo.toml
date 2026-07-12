@@ -67,12 +67,15 @@ prost = "0.12"
 rand = "0.8"
 rayon = "1"
 # cmake-build compiles the vendored librdkafka (needs cmake + a C toolchain);
-# ssl-vendored statically links OpenSSL so SSL/SASL-SCRAM work everywhere;
+# ssl-vendored and curl-static statically link OpenSSL/libcurl so the build
+# is hermetic — no system dev packages needed (librdkafka's cmake otherwise
+# picks up a headerless system libcurl and fails, e.g. on ubuntu runners);
 # libz enables gzip and zstd enables zstd compression codecs (snappy and lz4
 # are bundled). Default features are off: they only add tokio async support,
 # which the sync BaseConsumer/ThreadedProducer connector does not use.
 rdkafka = { version = "0.39", default-features = false, features = [
     "cmake-build",
+    "curl-static",
     "libz",
     "ssl-vendored",
     "zstd",
