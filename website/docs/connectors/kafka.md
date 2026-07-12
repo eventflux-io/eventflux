@@ -121,7 +121,7 @@ CREATE STREAM TradeOutput (
 | `kafka.compression` | No | `none` | `none`, `gzip`, `snappy`, `lz4`, `zstd` |
 | `kafka.linger.ms` | No | `5` | Producer batching delay |
 | `kafka.batch.size` | No | librdkafka default | Max batch bytes |
-| `kafka.enable.idempotence` | No | `false` | No duplicates on producer retry |
+| `kafka.enable.idempotence` | No | `false` | No duplicates on producer retry (requires `kafka.acks = 'all'`) |
 | `kafka.message.timeout.ms` | No | `30000` | Total time to deliver a record before it's reported failed |
 | `kafka.delivery.sync` | No | `false` | `true`: `publish()` waits for delivery confirmation per record (strict, slow) |
 | `kafka.flush.timeout.ms` | No | `30000` | Bounds the shutdown flush, sync-mode flushes, and queue-full backpressure |
@@ -141,18 +141,107 @@ See [`examples/kafka.eventflux`](https://github.com/eventflux-io/eventflux/blob/
 
 ## Error Handling
 
-The source integrates with EventFlux's error handling strategies:
+The source integrates with EventFlux's error handling strategies (`WITH`
+clause options on the source stream):
 
-```sql
-"error.strategy" = 'retry',
-"error.retry.max-attempts" = '3',
-"error.retry.initial-delay-ms" = '100'
-```
+| Option | Default | Description |
+|--------|---------|-------------|
+| `error.strategy` | `drop` | What to do when the pipeline rejects a record: `drop`, `retry`, `dlq`, `fail` |
+| `error.retry.max-attempts` | `3` | Max retries before falling back to drop |
+| `error.retry.initial-delay-ms` | `100` | First retry delay |
+| `error.retry.max-delay-ms` | `10000` | Retry delay ceiling |
+| `error.retry.backoff-multiplier` | `2.0` | Exponential backoff factor |
+| `error.dlq.stream` | - | Dead-letter stream name (required when strategy is `dlq`) |
+
+Strategy semantics and their offset interaction:
 
 - `drop`: skip the failing record (offset committed)
 - `retry`: retry delivery with exponential backoff
 - `dlq`: route the raw payload to a dead-letter stream (offset committed)
 - `fail`: stop the source; the record is **not** committed and is redelivered after restart
+
+## More Configuration Examples
+
+### At-least-once source with retry and a dead-letter queue
+
+```sql
+CREATE STREAM Orders (order_id STRING, amount DOUBLE) WITH (
+    type = 'source',
+    extension = 'kafka',
+    format = 'json',
+    "kafka.bootstrap.servers" = 'localhost:9092',
+    "kafka.topic" = 'orders',
+    "kafka.group.id" = 'eventflux-orders',
+    "kafka.auto.offset.reset" = 'earliest',
+    "kafka.enable.auto.commit" = 'false',      -- at-least-once
+    "error.strategy" = 'retry',
+    "error.retry.max-attempts" = '5',
+    "error.retry.initial-delay-ms" = '200',
+    "error.retry.max-delay-ms" = '5000',
+    "error.retry.backoff-multiplier" = '2.0'
+);
+```
+
+### Secured cluster (SASL/SSL)
+
+`kafka.sasl.*` options require a `sasl_*` security protocol. Use environment
+variable substitution for secrets rather than inlining them:
+
+```sql
+CREATE STREAM SecureInput (id STRING, value DOUBLE) WITH (
+    type = 'source',
+    extension = 'kafka',
+    format = 'json',
+    "kafka.bootstrap.servers" = 'broker1:9093,broker2:9093',
+    "kafka.topic" = 'secure-events',
+    "kafka.security.protocol" = 'sasl_ssl',
+    "kafka.sasl.mechanism" = 'SCRAM-SHA-256',
+    "kafka.sasl.username" = '${KAFKA_USERNAME}',
+    "kafka.sasl.password" = '${KAFKA_PASSWORD}',
+    "kafka.ssl.ca.location" = '/etc/ssl/certs/kafka-ca.pem'
+);
+```
+
+### High-throughput sink with idempotence and librdkafka tuning
+
+`kafka.enable.idempotence` requires `kafka.acks = 'all'`. Any librdkafka
+setting without a first-class option goes through the `kafka.rdkafka.*`
+passthrough:
+
+```sql
+CREATE STREAM MetricsOut (name STRING, value DOUBLE) WITH (
+    type = 'sink',
+    extension = 'kafka',
+    format = 'json',
+    "kafka.bootstrap.servers" = 'localhost:9092',
+    "kafka.topic" = 'metrics',
+    "kafka.acks" = 'all',
+    "kafka.enable.idempotence" = 'true',
+    "kafka.compression" = 'zstd',
+    "kafka.linger.ms" = '50',
+    "kafka.batch.size" = '131072',
+    "kafka.rdkafka.queue.buffering.max.messages" = '500000'
+);
+```
+
+### Strict per-record confirmation sink
+
+For low-throughput pipelines where every publish must be confirmed before
+the next event is processed:
+
+```sql
+CREATE STREAM AuditLog (user_id STRING, action STRING) WITH (
+    type = 'sink',
+    extension = 'kafka',
+    format = 'json',
+    "kafka.bootstrap.servers" = 'localhost:9092',
+    "kafka.topic" = 'audit-log',
+    "kafka.key" = 'audit',
+    "kafka.delivery.sync" = 'true',
+    "kafka.flush.timeout.ms" = '10000',
+    "kafka.queue.full.strategy" = 'error'
+);
+```
 
 ## Connection Validation
 

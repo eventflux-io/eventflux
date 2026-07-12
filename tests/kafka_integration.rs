@@ -74,6 +74,8 @@ fn sink_props(topic: &str) -> HashMap<String, String> {
     props.insert("kafka.topic".to_string(), topic.to_string());
     // Deterministic delivery for test assertions
     props.insert("kafka.delivery.sync".to_string(), "true".to_string());
+    // Exercise the static record-key path
+    props.insert("kafka.key".to_string(), "test-key".to_string());
     props
 }
 
