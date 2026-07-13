@@ -18,6 +18,8 @@
 pub mod handler;
 pub mod input;
 pub mod junction_factory;
+#[cfg(feature = "kafka")]
+pub mod kafka_common;
 pub mod mapper;
 pub mod output;
 pub mod stream_initializer;

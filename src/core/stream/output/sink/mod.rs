@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+#[cfg(feature = "kafka")]
+pub mod kafka_sink;
 pub mod log_sink;
 #[cfg(feature = "rabbitmq")]
 pub mod rabbitmq_sink;

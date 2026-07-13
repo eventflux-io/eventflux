@@ -1,6 +1,7 @@
 # EventFlux Roadmap
 
-Last verified: 2026-06-14
+Last verified: 2026-07-10 (no `src/` changes since the prior 2026-06-14 verification — only CI/dependency
+bumps and docs have landed, so all feature-status claims below still hold)
 
 ---
 
@@ -163,9 +164,9 @@ All have state holder implementations for checkpointing.
 |------------|-------------|-------------|------------------|------------------|
 | Timer      | Done        | —           | —                | (always built)   |
 | Log        | —           | Done        | —                | (always built)   |
+| Kafka      | Done        | Done        | JSON, CSV, bytes | `kafka`          |
 | RabbitMQ   | Done        | Done        | JSON, CSV, bytes | `rabbitmq`       |
 | WebSocket  | Done        | Done        | JSON, CSV, bytes | `websocket`      |
-| Kafka      | Not started | Not started | —                | `kafka` (planned)|
 | HTTP       | Not started | Not started | —                | —                |
 | File       | Not started | Not started | —                | —                |
 | TCP/Socket | Not started | Not started | —                | —                |
@@ -332,14 +333,16 @@ registration over `inventory`/`linkme` crates for WASM compatibility.
 
 ## What's Next
 
-### Priority 1: Kafka Connector (Critical)
+### Priority 1: Kafka Connector — **DONE (2026-07)**
 
-The most requested connector for production viability.
+Implemented per `feat/kafka/README.md`: `kafka_source.rs` (BaseConsumer poll loop on `SourceWorker`,
+consumer groups, at-least-once via commit-after-delivery, `error.*` strategies, SASL/SSL) and
+`kafka_sink.rs` (ThreadedProducer, delivery reports, `kafka.delivery.sync`, backpressure on full
+queues). Feature-gated behind `kafka` (in `connectors-all`), `kafka.rdkafka.*` passthrough for
+librdkafka tuning, integration tests + CI broker service (apache/kafka:3.9.1), SQL example in
+`examples/kafka.eventflux`. Deferred: exactly-once transactions, per-event keys, Avro.
 
-- Kafka source: consumer groups, offset management, exactly-once semantics
-- Kafka sink: partitioning strategies, delivery guarantees
-- Configuration via SQL WITH clause
-- Dependency: `rdkafka` crate
+HTTP (Priority 2) is the next connector.
 
 ### Priority 2: HTTP Connector
 

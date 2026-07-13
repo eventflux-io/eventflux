@@ -20,10 +20,11 @@
 //! This module contains placeholder factories for demonstration purposes:
 //!
 //! ## Placeholder Factories (NOT production-ready)
-//! - `KafkaSourceFactory` - Placeholder for future Kafka integration
+//! - `ExampleSourceFactory` - Fictional source demonstrating the factory pattern
 //! - `HttpSinkFactory` - Placeholder for future HTTP sink
 //!
 //! ## Production-Ready Factories (in proper modules)
+//! - `KafkaSourceFactory`/`KafkaSinkFactory` in `kafka_source.rs`/`kafka_sink.rs`
 //! - `RabbitMQSourceFactory` in `src/core/stream/input/source/rabbitmq_source.rs`
 //! - `RabbitMQSinkFactory` in `src/core/stream/output/sink/rabbitmq_sink.rs`
 //! - `TimerSourceFactory` in `src/core/extension/mod.rs`
@@ -41,30 +42,30 @@ use crate::core::stream::output::sink::Sink;
 use std::collections::HashMap;
 
 // ============================================================================
-// Kafka Source Factory (Placeholder)
+// Example Source Factory (Placeholder)
 // ============================================================================
 
-/// Kafka-specific validated configuration (INTERNAL to KafkaSourceFactory)
+/// Example validated configuration (INTERNAL to ExampleSourceFactory)
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct KafkaSourceConfig {
+struct ExampleSourceConfig {
     bootstrap_servers: Vec<String>,
     topic: String,
     consumer_group: String,
     timeout_ms: u64,
 }
 
-impl KafkaSourceConfig {
+impl ExampleSourceConfig {
     /// Parse and validate raw config into typed config (PRIVATE helper)
     fn parse(raw_config: &HashMap<String, String>) -> Result<Self, EventFluxError> {
         // 1. Validate required parameters present
         let brokers_str = raw_config
-            .get("kafka.bootstrap.servers")
-            .ok_or_else(|| EventFluxError::missing_parameter("kafka.bootstrap.servers"))?;
+            .get("example.servers")
+            .ok_or_else(|| EventFluxError::missing_parameter("example.servers"))?;
 
         let topic = raw_config
-            .get("kafka.topic")
-            .ok_or_else(|| EventFluxError::missing_parameter("kafka.topic"))?;
+            .get("example.topic")
+            .ok_or_else(|| EventFluxError::missing_parameter("example.topic"))?;
 
         // 2. Parse comma-separated brokers list
         let bootstrap_servers: Vec<String> = brokers_str
@@ -75,20 +76,20 @@ impl KafkaSourceConfig {
 
         if bootstrap_servers.is_empty() {
             return Err(EventFluxError::configuration_with_key(
-                "kafka.bootstrap.servers cannot be empty",
-                "kafka.bootstrap.servers",
+                "example.servers cannot be empty",
+                "example.servers",
             ));
         }
 
         // 3. Parse optional integer
         let timeout_ms = raw_config
-            .get("kafka.timeout")
+            .get("example.timeout")
             .map(|s| s.parse::<u64>())
             .transpose()
             .map_err(|_| {
                 EventFluxError::invalid_parameter_with_details(
-                    "kafka.timeout must be a valid integer",
-                    "kafka.timeout",
+                    "example.timeout must be a valid integer",
+                    "example.timeout",
                     "positive integer (milliseconds)",
                 )
             })?
@@ -96,12 +97,12 @@ impl KafkaSourceConfig {
 
         // 4. Parse consumer group (with default)
         let consumer_group = raw_config
-            .get("kafka.consumer.group")
+            .get("example.consumer.group")
             .cloned()
             .unwrap_or_else(|| format!("eventflux-{}", topic));
 
         // 5. Return typed config
-        Ok(KafkaSourceConfig {
+        Ok(ExampleSourceConfig {
             bootstrap_servers,
             topic: topic.clone(),
             consumer_group,
@@ -110,46 +111,48 @@ impl KafkaSourceConfig {
     }
 }
 
-/// Placeholder Kafka Source (actual implementation would use rdkafka)
+/// Placeholder Source demonstrating the trait surface
 #[derive(Debug)]
-struct KafkaSource {
+struct ExampleSource {
     _topic: String,
     _bootstrap_servers: Vec<String>,
 }
 
-impl Source for KafkaSource {
+impl Source for ExampleSource {
     fn start(
         &mut self,
         _callback: std::sync::Arc<dyn crate::core::stream::input::source::SourceCallback>,
     ) {
         // Placeholder: actual implementation would:
-        // 1. Read bytes from Kafka
+        // 1. Read bytes from the external system
         // 2. Call callback.on_data(bytes)
         // 3. Callback handles parsing via SourceMapper
     }
 
     fn stop(&mut self) {
-        // Placeholder: actual implementation would stop Kafka consumer
+        // Placeholder: actual implementation would stop the worker
+        // (embed a SourceWorker — see docs/writing_extensions.md)
     }
 
     fn clone_box(&self) -> Box<dyn Source> {
-        Box::new(KafkaSource {
+        Box::new(ExampleSource {
             _topic: self._topic.clone(),
             _bootstrap_servers: self._bootstrap_servers.clone(),
         })
     }
 }
 
-/// Placeholder Kafka source factory.
+/// Placeholder source factory demonstrating metadata + validated creation.
 ///
-/// This is NOT production-ready. For a production implementation example,
-/// see `RabbitMQSourceFactory` in `rabbitmq_source.rs`.
+/// This is NOT production-ready. For production implementation examples,
+/// see `KafkaSourceFactory` in `kafka_source.rs` or `RabbitMQSourceFactory`
+/// in `rabbitmq_source.rs`.
 #[derive(Debug, Clone)]
-pub struct KafkaSourceFactory;
+pub struct ExampleSourceFactory;
 
-impl SourceFactory for KafkaSourceFactory {
+impl SourceFactory for ExampleSourceFactory {
     fn name(&self) -> &'static str {
-        "kafka"
+        "example"
     }
 
     fn supported_formats(&self) -> &[&str] {
@@ -157,11 +160,11 @@ impl SourceFactory for KafkaSourceFactory {
     }
 
     fn required_parameters(&self) -> &[&str] {
-        &["kafka.bootstrap.servers", "kafka.topic"]
+        &["example.servers", "example.topic"]
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        &["kafka.consumer.group", "kafka.timeout"]
+        &["example.consumer.group", "example.timeout"]
     }
 
     fn create_initialized(
@@ -169,16 +172,15 @@ impl SourceFactory for KafkaSourceFactory {
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
         // 1. Parse and validate configuration
-        let parsed = KafkaSourceConfig::parse(config)?;
+        let parsed = ExampleSourceConfig::parse(config)?;
 
-        // 2. Create Kafka source (in real implementation, would create rdkafka consumer)
-        // This is a placeholder - actual implementation would:
-        // - Create rdkafka consumer with parsed config
+        // 2. Create the source. A real implementation would:
+        // - Create the client with parsed config
         // - Test connectivity (fail-fast)
         // - Return fully initialized Source
 
         // 3. Return fully initialized Source
-        Ok(Box::new(KafkaSource {
+        Ok(Box::new(ExampleSource {
             _topic: parsed.topic,
             _bootstrap_servers: parsed.bootstrap_servers,
         }))
@@ -324,15 +326,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_kafka_source_config_parse() {
+    fn test_example_source_config_parse() {
         let mut config = HashMap::new();
-        config.insert(
-            "kafka.bootstrap.servers".to_string(),
-            "localhost:9092".to_string(),
-        );
-        config.insert("kafka.topic".to_string(), "test-topic".to_string());
+        config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        config.insert("example.topic".to_string(), "test-topic".to_string());
 
-        let parsed = KafkaSourceConfig::parse(&config).unwrap();
+        let parsed = ExampleSourceConfig::parse(&config).unwrap();
         assert_eq!(parsed.bootstrap_servers, vec!["localhost:9092"]);
         assert_eq!(parsed.topic, "test-topic");
         assert_eq!(parsed.consumer_group, "eventflux-test-topic");
@@ -340,9 +339,9 @@ mod tests {
     }
 
     #[test]
-    fn test_kafka_source_config_missing_required() {
+    fn test_example_source_config_missing_required() {
         let config = HashMap::new();
-        let result = KafkaSourceConfig::parse(&config);
+        let result = ExampleSourceConfig::parse(&config);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -351,18 +350,18 @@ mod tests {
     }
 
     #[test]
-    fn test_kafka_source_config_empty_brokers() {
+    fn test_example_source_config_empty_brokers() {
         let mut config = HashMap::new();
-        config.insert("kafka.bootstrap.servers".to_string(), "".to_string());
-        config.insert("kafka.topic".to_string(), "test".to_string());
+        config.insert("example.servers".to_string(), "".to_string());
+        config.insert("example.topic".to_string(), "test".to_string());
 
-        let result = KafkaSourceConfig::parse(&config);
+        let result = ExampleSourceConfig::parse(&config);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_kafka_factory_supported_formats() {
-        let factory = KafkaSourceFactory;
+    fn test_example_factory_supported_formats() {
+        let factory = ExampleSourceFactory;
         assert!(factory.supported_formats().contains(&"json"));
         assert!(factory.supported_formats().contains(&"avro"));
         assert!(!factory.supported_formats().contains(&"xml"));
@@ -395,13 +394,10 @@ mod tests {
 
     #[test]
     fn test_factory_create_initialized() {
-        let factory = KafkaSourceFactory;
+        let factory = ExampleSourceFactory;
         let mut config = HashMap::new();
-        config.insert(
-            "kafka.bootstrap.servers".to_string(),
-            "localhost:9092".to_string(),
-        );
-        config.insert("kafka.topic".to_string(), "test".to_string());
+        config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        config.insert("example.topic".to_string(), "test".to_string());
 
         let result = factory.create_initialized(&config);
         assert!(result.is_ok());
@@ -409,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_factory_create_initialized_missing_params() {
-        let factory = KafkaSourceFactory;
+        let factory = ExampleSourceFactory;
         let config = HashMap::new();
 
         let result = factory.create_initialized(&config);
