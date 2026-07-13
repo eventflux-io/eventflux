@@ -1,7 +1,7 @@
 # EventFlux Roadmap
 
-Last verified: 2026-07-10 (no `src/` changes since the prior 2026-06-14 verification — only CI/dependency
-bumps and docs have landed, so all feature-status claims below still hold)
+Last verified: 2026-07-13 (after the connector-infrastructure series #115–#117 and the Kafka
+connector #118 — sink/source status, test counts, and priorities below reflect that work)
 
 ---
 
@@ -19,7 +19,8 @@ EventFlux is a lightweight Complex Event Processing (CEP) engine written in Rust
 
 ## Current Status
 
-**Test suite**: 3,030 tests passing, 180 ignored, 0 failures
+**Test suite**: 3,085 tests passing, 189 ignored, 0 failures (`--features connectors-all`;
+the minimal no-connector build passes 2,978)
 **Architecture**: SQL-first CEP engine with vendored sqlparser-rs fork
 **License**: Apache-2.0
 
@@ -175,6 +176,13 @@ Connectors are cargo features named after the SQL extension name; the default
 build is minimal and `connectors-all` enables everything (release/Docker
 builds use it).
 
+**Connector infrastructure (2026-07, #115–#117)**: one-event-per-message sink
+semantics (`SinkMapper::map_event`), `SourceWorker` lifecycle (synchronous
+join-on-stop, RAII, parallel bulk shutdown), shared source helpers
+(`deliver_with_error_handling`, `SourceErrorContext::from_properties`), and
+the feature-gating framework with helpful rebuild errors. Kafka (#118) uses
+all of it; adoption in the older connectors is tracked in #130.
+
 **Data mapping layer**: JSON, CSV, and bytes source/sink mappers registered.
 
 **RabbitMQ tests**: 7 integration tests (require running broker, run with `--ignored`). CI has RabbitMQ service.
@@ -304,7 +312,7 @@ registration over `inventory`/`linkme` crates for WASM compatibility.
 
 ---
 
-## Ignored Tests Breakdown (180 total, including 49 doc tests)
+## Ignored Tests Breakdown (189 total, including 51 doc tests)
 
 | Category                            | Count | Notes                                                                  |
 |-------------------------------------|-------|------------------------------------------------------------------------|
@@ -316,6 +324,7 @@ registration over `inventory`/`linkme` crates for WASM compatibility.
 | Compatibility: joins                | 4     | Chained joins, GROUP BY with joins                                     |
 | Compatibility: functions            | 1     | Modulo operator                                                        |
 | RabbitMQ integration                | 7     | Require running broker (CI has service)                                |
+| Kafka integration                   | 7     | Require running broker (CI has service)                                |
 | Old EventFluxQL syntax              | 10    | Legacy syntax, not applicable to SQL-first engine                      |
 | DEFINE AGGREGATION                  | 7     | Incremental aggregation DDL not implemented                            |
 | PATTERN/SEQUENCE (app_runner)       | 4     | Pattern syntax in old test format                                      |
@@ -340,7 +349,9 @@ consumer groups, at-least-once via commit-after-delivery, `error.*` strategies, 
 `kafka_sink.rs` (ThreadedProducer, delivery reports, `kafka.delivery.sync`, backpressure on full
 queues). Feature-gated behind `kafka` (in `connectors-all`), `kafka.rdkafka.*` passthrough for
 librdkafka tuning, integration tests + CI broker service (apache/kafka:3.9.1), SQL example in
-`examples/kafka.eventflux`. Deferred: exactly-once transactions, per-event keys, Avro.
+`examples/kafka.eventflux`. Deferred items tracked as issues #125–#131 (exactly-once
+transactions, per-event keys/topics/headers, Avro, lag metrics, regex subscription,
+shared-helper adoption, source supervision).
 
 HTTP (Priority 2) is the next connector.
 
