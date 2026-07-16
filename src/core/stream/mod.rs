@@ -15,7 +15,10 @@
  * limitations under the License.
  */
 
+pub mod connector_util;
 pub mod handler;
+#[cfg(feature = "http")]
+pub mod http_common;
 pub mod input;
 pub mod junction_factory;
 #[cfg(feature = "kafka")]

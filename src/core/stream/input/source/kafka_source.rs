@@ -61,8 +61,9 @@ use crate::core::error::source_support::{
 };
 use crate::core::exception::EventFluxError;
 use crate::core::extension::SourceFactory;
+use crate::core::stream::connector_util::parse_or;
 use crate::core::stream::input::input_handler::InputHandler;
-use crate::core::stream::kafka_common::{parse_or, validate_topics_exist, KafkaConnectionConfig};
+use crate::core::stream::kafka_common::{validate_topics_exist, KafkaConnectionConfig};
 use rdkafka::client::ClientContext;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
 use rdkafka::message::Message;

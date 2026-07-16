@@ -32,13 +32,21 @@ cloud-native = ["kubernetes", "consul", "etcd", "vault"]
 # no connector ships in a plain `cargo build`. Release/Docker builds use
 # `--features connectors-all`. See docs/writing_extensions.md for the
 # per-connector gating checklist.
+http = ["dep:axum", "dep:ureq"]
 kafka = ["dep:rdkafka"]
 rabbitmq = ["dep:lapin", "dep:urlencoding"]
 websocket = ["dep:tokio-tungstenite"]
-connectors-all = ["kafka", "rabbitmq", "websocket"]
+connectors-all = ["http", "kafka", "rabbitmq", "websocket"]
 
 [dependencies]
 async-trait = "0.1"
+# Webhook listener for the HTTP connector (concurrent handlers on the
+# already-present tokio runtime). Default features add extractors/tracing
+# glue the connector doesn't use.
+axum = { version = "0.8", default-features = false, features = [
+    "http1",
+    "tokio",
+], optional = true }
 base64 = { version = "0.22", optional = true }
 bincode = "1.3"
 chrono = { version = "0.4", features = ["serde"] }
@@ -99,6 +107,9 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"], optional = tr
 toml = "0.8"
 tonic = { version = "0.11", features = ["tls"] }
 tower = "0.4"
+# Blocking HTTP client for the HTTP connector's sink and polling source;
+# rustls keeps the build hermetic (no system TLS)
+ureq = { version = "3.3", optional = true }
 urlencoding = { version = "2.1", optional = true }
 uuid = { version = "1", features = ["v4"] }
 vault = { version = "10.1", optional = true }
@@ -112,7 +123,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 custom_dyn_ext = { path = "tests/custom_dyn_ext" }
 serial_test = "3.5"
 tempfile = "3"
+# Canned-response servers and direct client for HTTP connector tests
+tiny_http = "0.12"
 tokio = { version = "1", features = ["full", "test-util"] }
+ureq = "3.3"
 
 [lints.clippy]
 pedantic = { level = "deny", priority = -1 }

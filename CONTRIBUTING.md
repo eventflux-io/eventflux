@@ -63,7 +63,8 @@ cargo nextest run --features connectors-all        # or: cargo test --features c
 cargo nextest run                                  # minimal build tests (no connectors)
 cargo test --doc --features connectors-all
 cargo check --all-targets                          # minimal baseline compiles
-cargo check --all-targets --features kafka         # each connector alone
+cargo check --all-targets --features http          # each connector alone
+cargo check --all-targets --features kafka
 cargo check --all-targets --features rabbitmq
 cargo check --all-targets --features websocket
 ```

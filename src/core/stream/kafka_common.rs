@@ -25,24 +25,7 @@ use crate::core::exception::EventFluxError;
 use rdkafka::client::{Client, ClientContext};
 use rdkafka::config::ClientConfig;
 use std::collections::HashMap;
-use std::fmt::Display;
-use std::str::FromStr;
 use std::time::Duration;
-
-/// Parse an optional property, falling back to `default` when absent.
-pub fn parse_or<T: FromStr>(
-    properties: &HashMap<String, String>,
-    key: &str,
-    default: T,
-) -> Result<T, String>
-where
-    T::Err: Display,
-{
-    match properties.get(key) {
-        Some(v) => v.parse().map_err(|e| format!("Invalid {key}: {e}")),
-        None => Ok(default),
-    }
-}
 
 /// Broker connection + security settings shared by source and sink configs
 #[derive(Debug, Clone)]
@@ -195,20 +178,6 @@ mod tests {
             "localhost:9092".to_string(),
         );
         props
-    }
-
-    #[test]
-    fn test_parse_or_default_and_value() {
-        let mut props = HashMap::new();
-        assert_eq!(parse_or(&props, "k", 5u64).unwrap(), 5);
-
-        props.insert("k".to_string(), "9".to_string());
-        assert_eq!(parse_or(&props, "k", 5u64).unwrap(), 9);
-
-        props.insert("k".to_string(), "no".to_string());
-        assert!(parse_or(&props, "k", 5u64)
-            .unwrap_err()
-            .contains("Invalid k"));
     }
 
     #[test]

@@ -231,21 +231,28 @@ pub fn exponential_backoff(
     initial_delay: Duration,
     max_delay: Duration,
 ) -> Duration {
+    exponential_backoff_with_multiplier(attempt, initial_delay, max_delay, 2.0)
+}
+
+/// Exponential backoff with a configurable growth factor (`multiplier >= 1`),
+/// capped at `max_delay`; overflow saturates at the cap. `attempt` is
+/// 1-based; attempt 0 returns zero.
+pub fn exponential_backoff_with_multiplier(
+    attempt: usize,
+    initial_delay: Duration,
+    max_delay: Duration,
+    multiplier: f64,
+) -> Duration {
     if attempt == 0 {
         return Duration::ZERO;
     }
 
-    // Calculate 2^(attempt-1) using checked operations to prevent overflow
-    let multiplier = 2u64.saturating_pow((attempt - 1) as u32);
-    let delay_ms = (initial_delay.as_millis() as u64).saturating_mul(multiplier);
+    let max_ms = max_delay.as_millis() as u64 as f64;
+    let factor = multiplier.powi((attempt - 1) as i32);
+    // Clamp in f64 space before the cast so overflow saturates at the cap
+    let delay_ms = (initial_delay.as_millis() as u64 as f64 * factor).min(max_ms);
 
-    let delay = Duration::from_millis(delay_ms);
-
-    if delay > max_delay {
-        max_delay
-    } else {
-        delay
-    }
+    Duration::from_millis(delay_ms as u64)
 }
 
 /// Calculate linear backoff delay for a retry attempt
