@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+#[cfg(feature = "http")]
+pub mod http_sink;
 #[cfg(feature = "kafka")]
 pub mod kafka_sink;
 pub mod log_sink;

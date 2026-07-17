@@ -753,3 +753,69 @@ impl AppRunner {
         self.runtime.query_aggregation(agg_id, within, per)
     }
 }
+
+// ============================================================================
+// Connector test helpers
+// ============================================================================
+
+/// Source callback that records every payload it receives, with a
+/// deadline-based wait — shared by connector integration tests.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct CollectingCallback {
+    payloads: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+}
+
+#[allow(dead_code)]
+impl CollectingCallback {
+    pub fn new() -> Self {
+        Self {
+            payloads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Wait until `count` payloads arrived or `timeout` elapsed; returns
+    /// whatever was collected.
+    pub fn wait_for(&self, count: usize, timeout: std::time::Duration) -> Vec<Vec<u8>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let payloads = self.payloads.lock().unwrap();
+            if payloads.len() >= count || std::time::Instant::now() >= deadline {
+                return payloads.clone();
+            }
+            drop(payloads);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+impl eventflux::core::stream::input::source::SourceCallback for CollectingCallback {
+    fn on_data(&self, data: &[u8]) -> Result<(), eventflux::core::exception::EventFluxError> {
+        self.payloads.lock().unwrap().push(data.to_vec());
+        Ok(())
+    }
+}
+
+/// A currently-free localhost port (racy by nature; fine for tests)
+#[allow(dead_code)]
+pub fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Block until something is accepting connections on the port (or panic
+/// after the deadline) — replaces fixed warm-up sleeps.
+#[allow(dead_code)]
+pub fn wait_listening(port: u16) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("nothing listening on 127.0.0.1:{port} within 10s");
+}

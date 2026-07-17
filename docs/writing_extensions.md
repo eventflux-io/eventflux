@@ -57,6 +57,20 @@ A source extension implements the `Source` trait and provides a `SourceFactory`
 (see the RabbitMQ connector in `src/core/stream/input/source/rabbitmq_source.rs`
 for a complete reference implementation).
 
+### Reserved injected properties
+
+Property keys beginning with an underscore are **reserved for the engine** —
+never define your own. `stream_initializer` injects them into the map passed
+to `create_initialized()`:
+
+| Key | Value |
+|-----|-------|
+| `_format` | The stream's declared `format` (e.g. `json`), when one is set |
+
+Connectors may read these to derive format-dependent settings — the HTTP sink
+derives its default Content-Type from `_format` (see
+`connector_util::INJECTED_FORMAT_KEY`).
+
 ### Worker thread lifecycle: use `SourceWorker`
 
 `Source::stop()` has a hard contract: **it must be synchronous**. When `stop()`
@@ -139,6 +153,10 @@ Every in-tree connector is gated behind a cargo feature **named exactly after
 its registered extension name** (the string used in SQL
 `WITH (extension = '...')`). The default build is fully minimal — no
 connectors — and release/Docker builds use `--features connectors-all`.
+
+A feature may own a *family* of related extensions (e.g. a future
+`http-response` sink under the `http` feature) — the SQL extension names stay
+distinct, but they gate together.
 
 When adding a new in-tree connector, touch exactly these points:
 

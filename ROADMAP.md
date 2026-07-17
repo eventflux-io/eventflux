@@ -165,10 +165,10 @@ All have state holder implementations for checkpointing.
 |------------|-------------|-------------|------------------|------------------|
 | Timer      | Done        | —           | —                | (always built)   |
 | Log        | —           | Done        | —                | (always built)   |
+| HTTP       | Done        | Done        | JSON, CSV, bytes | `http`           |
 | Kafka      | Done        | Done        | JSON, CSV, bytes | `kafka`          |
 | RabbitMQ   | Done        | Done        | JSON, CSV, bytes | `rabbitmq`       |
 | WebSocket  | Done        | Done        | JSON, CSV, bytes | `websocket`      |
-| HTTP       | Not started | Not started | —                | —                |
 | File       | Not started | Not started | —                | —                |
 | TCP/Socket | Not started | Not started | —                | —                |
 
@@ -355,10 +355,16 @@ shared-helper adoption, source supervision).
 
 HTTP (Priority 2) is the next connector.
 
-### Priority 2: HTTP Connector
+### Priority 2: HTTP Connector — **DONE (2026-07)**
 
-- HTTP source: REST polling, webhook listener
-- HTTP sink: webhooks, batch requests, retry with exponential backoff
+Implemented per `feat/http/README.md` (design: #133): dual-mode source (REST polling on an
+interruptible interval; concurrent axum webhook listener with auth/limits) and a webhook sink
+with exponential-backoff retry (transport errors and 408/429/5xx only). Blocking `ureq`
+client + async axum server — best tool per side. Feature-gated behind `http`; integration
+tests are self-hosting (no CI service needed). Deferred: request/response mode (#134),
+batched requests, connector-managed conditional GET, OAuth.
+
+File connector (Priority 3) is the next connector.
 
 ### Priority 3: File Connector
 

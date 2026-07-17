@@ -34,13 +34,17 @@
 
 #![cfg(feature = "kafka")]
 
+#[path = "common/mod.rs"]
+mod common;
+use common::CollectingCallback;
+
 use eventflux::core::exception::EventFluxError;
 use eventflux::core::stream::input::source::kafka_source::KafkaSource;
 use eventflux::core::stream::input::source::{Source, SourceCallback};
 use eventflux::core::stream::output::sink::kafka_sink::KafkaSink;
 use eventflux::core::stream::output::sink::Sink;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn broker() -> String {
@@ -77,39 +81,6 @@ fn sink_props(topic: &str) -> HashMap<String, String> {
     // Exercise the static record-key path
     props.insert("kafka.key".to_string(), "test-key".to_string());
     props
-}
-
-/// Callback that records every payload it receives
-#[derive(Debug, Clone)]
-struct CollectingCallback {
-    payloads: Arc<Mutex<Vec<Vec<u8>>>>,
-}
-
-impl CollectingCallback {
-    fn new() -> Self {
-        Self {
-            payloads: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    fn wait_for(&self, count: usize, timeout: Duration) -> Vec<Vec<u8>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let payloads = self.payloads.lock().unwrap();
-            if payloads.len() >= count || Instant::now() >= deadline {
-                return payloads.clone();
-            }
-            drop(payloads);
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-}
-
-impl SourceCallback for CollectingCallback {
-    fn on_data(&self, data: &[u8]) -> Result<(), EventFluxError> {
-        self.payloads.lock().unwrap().push(data.to_vec());
-        Ok(())
-    }
 }
 
 // Factory metadata and config-validation coverage lives in the in-module

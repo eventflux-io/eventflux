@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+#[cfg(feature = "http")]
+pub mod http_source;
 #[cfg(feature = "kafka")]
 pub mod kafka_source;
 #[cfg(feature = "rabbitmq")]

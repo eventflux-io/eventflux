@@ -44,10 +44,10 @@ impl SinkFactoryRegistry {
             factories: HashMap::new(),
         };
 
-        // Register default sink factories
+        // Register default sink factories. Connector sinks (http, kafka,
+        // rabbitmq, websocket) are registered on EventFluxContext via
+        // register_default_extensions(), not through this registry.
         registry.register("log", Box::new(LogSinkFactory));
-        // Future: registry.register("kafka", Box::new(KafkaSinkFactory));
-        // Future: registry.register("http", Box::new(HttpSinkFactory));
 
         registry
     }

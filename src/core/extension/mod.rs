@@ -641,7 +641,7 @@ pub const REGISTER_SINK_MAPPERS_FN: &[u8] = b"register_sink_mappers";
 mod tests {
     use super::*;
     use crate::core::config::eventflux_context::EventFluxContext;
-    use crate::core::extension::example_factories::{ExampleSourceFactory, HttpSinkFactory};
+    use crate::core::extension::example_factories::{ExampleSinkFactory, ExampleSourceFactory};
 
     #[test]
     fn test_factory_registration() {
@@ -743,25 +743,25 @@ mod tests {
     }
 
     #[test]
-    fn test_http_sink_factory_format_support() {
-        let factory = HttpSinkFactory;
+    fn test_example_sink_factory_format_support() {
+        let factory = ExampleSinkFactory;
         assert!(factory.supported_formats().contains(&"json"));
         assert!(factory.supported_formats().contains(&"xml"));
         assert!(!factory.supported_formats().contains(&"avro"));
     }
 
     #[test]
-    fn test_http_sink_factory_required_params() {
-        let factory = HttpSinkFactory;
-        assert_eq!(factory.required_parameters(), &["http.url"]);
+    fn test_example_sink_factory_required_params() {
+        let factory = ExampleSinkFactory;
+        assert_eq!(factory.required_parameters(), &["example.url"]);
     }
 
     #[test]
-    fn test_http_sink_factory_create() {
-        let factory = HttpSinkFactory;
+    fn test_example_sink_factory_create() {
+        let factory = ExampleSinkFactory;
         let mut config = std::collections::HashMap::new();
         config.insert(
-            "http.url".to_string(),
+            "example.url".to_string(),
             "http://localhost:8080/events".to_string(),
         );
 

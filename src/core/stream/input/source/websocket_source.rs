@@ -144,13 +144,10 @@ impl WebSocketSourceConfig {
         }
 
         // Parse custom headers (websocket.headers.*)
-        for (key, value) in properties {
-            if let Some(header_name) = key.strip_prefix("websocket.headers.") {
-                config
-                    .headers
-                    .insert(header_name.to_string(), value.clone());
-            }
-        }
+        config.headers =
+            crate::core::stream::connector_util::parse_prefixed(properties, "websocket.headers.")
+                .into_iter()
+                .collect();
 
         Ok(config)
     }

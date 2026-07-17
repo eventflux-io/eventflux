@@ -21,7 +21,7 @@
 //!
 //! ## Placeholder Factories (NOT production-ready)
 //! - `ExampleSourceFactory` - Fictional source demonstrating the factory pattern
-//! - `HttpSinkFactory` - Placeholder for future HTTP sink
+//! - `ExampleSinkFactory` - Fictional sink demonstrating the factory pattern
 //!
 //! ## Production-Ready Factories (in proper modules)
 //! - `KafkaSourceFactory`/`KafkaSinkFactory` in `kafka_source.rs`/`kafka_sink.rs`
@@ -192,47 +192,47 @@ impl SourceFactory for ExampleSourceFactory {
 }
 
 // ============================================================================
-// HTTP Sink Factory (Placeholder)
+// Example Sink Factory (Placeholder)
 // ============================================================================
 
-/// HTTP-specific validated configuration
+/// Example validated sink configuration
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct HttpSinkConfig {
+struct ExampleSinkConfig {
     url: String,
     method: String,
     headers: HashMap<String, String>,
     timeout_secs: u64,
 }
 
-impl HttpSinkConfig {
+impl ExampleSinkConfig {
     fn parse(raw_config: &HashMap<String, String>) -> Result<Self, EventFluxError> {
         let url = raw_config
-            .get("http.url")
-            .ok_or_else(|| EventFluxError::missing_parameter("http.url"))?;
+            .get("example.url")
+            .ok_or_else(|| EventFluxError::missing_parameter("example.url"))?;
 
         let method = raw_config
-            .get("http.method")
+            .get("example.method")
             .cloned()
             .unwrap_or_else(|| "POST".to_string());
 
-        // Validate HTTP method
+        // Validate the method against an allowlist
         if !["GET", "POST", "PUT", "DELETE", "PATCH"].contains(&method.to_uppercase().as_str()) {
             return Err(EventFluxError::invalid_parameter_with_details(
-                format!("Invalid HTTP method: {}", method),
-                "http.method",
+                format!("Invalid example.method: {}", method),
+                "example.method",
                 "one of: GET, POST, PUT, DELETE, PATCH",
             ));
         }
 
         let timeout_secs = raw_config
-            .get("http.timeout")
+            .get("example.timeout")
             .map(|s| s.parse::<u64>())
             .transpose()
             .map_err(|_| {
                 EventFluxError::invalid_parameter_with_details(
-                    "http.timeout must be a valid integer",
-                    "http.timeout",
+                    "example.timeout must be a valid integer",
+                    "example.timeout",
                     "positive integer (seconds)",
                 )
             })?
@@ -241,7 +241,7 @@ impl HttpSinkConfig {
         // Parse headers (simple implementation)
         let headers = HashMap::new(); // Placeholder for header parsing
 
-        Ok(HttpSinkConfig {
+        Ok(ExampleSinkConfig {
             url: url.clone(),
             method: method.to_uppercase(),
             headers,
@@ -250,43 +250,40 @@ impl HttpSinkConfig {
     }
 }
 
-/// Placeholder HTTP Sink
+/// Placeholder Sink demonstrating the trait surface
 #[derive(Debug)]
-struct HttpSink {
+struct ExampleSink {
     _url: String,
     _method: String,
 }
 
-impl Sink for HttpSink {
+impl Sink for ExampleSink {
     fn publish(&self, _payload: &[u8]) -> Result<(), EventFluxError> {
-        // Placeholder: actual implementation would send HTTP request
-        // Example:
-        // let client = reqwest::blocking::Client::new();
-        // client.post(&self._url)
-        //     .body(payload.to_vec())
-        //     .header("Content-Type", "application/json")
-        //     .send()?;
+        // Placeholder: actual implementation would send the payload to the
+        // external system — see `HttpSinkFactory` in `http_sink.rs` for a
+        // production example
         Ok(())
     }
 
     fn clone_box(&self) -> Box<dyn Sink> {
-        Box::new(HttpSink {
+        Box::new(ExampleSink {
             _url: self._url.clone(),
             _method: self._method.clone(),
         })
     }
 }
 
-/// Placeholder HTTP sink factory.
+/// Placeholder sink factory demonstrating metadata + validated creation.
 ///
-/// This is NOT production-ready. For a production implementation example,
-/// see `RabbitMQSinkFactory` in `rabbitmq_sink.rs`.
+/// This is NOT production-ready. For production implementation examples,
+/// see `HttpSinkFactory` in `http_sink.rs` or `RabbitMQSinkFactory` in
+/// `rabbitmq_sink.rs`.
 #[derive(Debug, Clone)]
-pub struct HttpSinkFactory;
+pub struct ExampleSinkFactory;
 
-impl SinkFactory for HttpSinkFactory {
+impl SinkFactory for ExampleSinkFactory {
     fn name(&self) -> &'static str {
-        "http"
+        "example"
     }
 
     fn supported_formats(&self) -> &[&str] {
@@ -294,20 +291,20 @@ impl SinkFactory for HttpSinkFactory {
     }
 
     fn required_parameters(&self) -> &[&str] {
-        &["http.url"]
+        &["example.url"]
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        &["http.method", "http.headers", "http.timeout"]
+        &["example.method", "example.headers", "example.timeout"]
     }
 
     fn create_initialized(
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Sink>, EventFluxError> {
-        let parsed = HttpSinkConfig::parse(config)?;
+        let parsed = ExampleSinkConfig::parse(config)?;
 
-        Ok(Box::new(HttpSink {
+        Ok(Box::new(ExampleSink {
             _url: parsed.url,
             _method: parsed.method,
         }))
@@ -368,27 +365,30 @@ mod tests {
     }
 
     #[test]
-    fn test_http_sink_config_parse() {
+    fn test_example_sink_config_parse() {
         let mut config = HashMap::new();
         config.insert(
-            "http.url".to_string(),
+            "example.url".to_string(),
             "http://localhost:8080/api".to_string(),
         );
-        config.insert("http.method".to_string(), "POST".to_string());
+        config.insert("example.method".to_string(), "POST".to_string());
 
-        let parsed = HttpSinkConfig::parse(&config).unwrap();
+        let parsed = ExampleSinkConfig::parse(&config).unwrap();
         assert_eq!(parsed.url, "http://localhost:8080/api");
         assert_eq!(parsed.method, "POST");
         assert_eq!(parsed.timeout_secs, 30);
     }
 
     #[test]
-    fn test_http_sink_config_invalid_method() {
+    fn test_example_sink_config_invalid_method() {
         let mut config = HashMap::new();
-        config.insert("http.url".to_string(), "http://localhost:8080".to_string());
-        config.insert("http.method".to_string(), "INVALID".to_string());
+        config.insert(
+            "example.url".to_string(),
+            "http://localhost:8080".to_string(),
+        );
+        config.insert("example.method".to_string(), "INVALID".to_string());
 
-        let result = HttpSinkConfig::parse(&config);
+        let result = ExampleSinkConfig::parse(&config);
         assert!(result.is_err());
     }
 

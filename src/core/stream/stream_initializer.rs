@@ -189,6 +189,8 @@ pub fn initialize_stream(
 /// by cargo features. The feature is always named after the extension (see
 /// the `[features]` section in Cargo.toml), so one entry per gated connector.
 const GATED_OUT_EXTENSIONS: &[&str] = &[
+    #[cfg(not(feature = "http"))]
+    "http",
     #[cfg(not(feature = "kafka"))]
     "kafka",
     #[cfg(not(feature = "rabbitmq"))]
@@ -210,6 +212,23 @@ fn connector_lookup_error(kind: &str, extension: &str) -> EventFluxError {
     } else {
         EventFluxError::extension_not_found(kind, extension)
     }
+}
+
+/// Properties handed to source/sink factories: the user's map plus
+/// engine-injected reserved keys (leading underscore). Currently `_format`
+/// carries the stream's declared format so connectors can derive
+/// format-dependent settings (e.g. the HTTP sink's Content-Type).
+fn factory_properties(
+    stream_config: &StreamTypeConfig,
+) -> std::collections::HashMap<String, String> {
+    let mut properties = stream_config.properties.clone();
+    if let Some(format) = stream_config.format() {
+        properties.insert(
+            crate::core::stream::connector_util::INJECTED_FORMAT_KEY.to_string(),
+            format.to_string(),
+        );
+    }
+    properties
 }
 
 /// Initialize a source stream with factory lookup and validation
@@ -277,7 +296,8 @@ fn initialize_source_stream(
     }
 
     // 5. Create fully initialized instances (fail-fast validation)
-    let source = source_factory.create_initialized(&stream_config.properties)?;
+    let factory_properties = factory_properties(stream_config);
+    let source = source_factory.create_initialized(&factory_properties)?;
     let mapper = mapper_factory
         .map(|factory| factory.create_initialized(&stream_config.properties))
         .transpose()?;
@@ -384,7 +404,8 @@ fn initialize_sink_stream_internal(
     }
 
     // 5. Create fully initialized instances (fail-fast validation)
-    let sink = sink_factory.create_initialized(&stream_config.properties)?;
+    let factory_properties = factory_properties(stream_config);
+    let sink = sink_factory.create_initialized(&factory_properties)?;
 
     // Create mapper with field names if provided, otherwise use standard initialization
     let mapper = mapper_factory
@@ -1020,7 +1041,7 @@ impl QuerySourceExtractor for Query {
 mod tests {
     use super::*;
     use crate::core::config::stream_config::{FlatConfig, PropertySource};
-    use crate::core::extension::example_factories::{ExampleSourceFactory, HttpSinkFactory};
+    use crate::core::extension::example_factories::{ExampleSinkFactory, ExampleSourceFactory};
     use crate::core::extension::{CsvSinkMapperFactory, JsonSourceMapperFactory};
 
     #[test]
@@ -1165,18 +1186,18 @@ mod tests {
     #[test]
     fn test_initialize_sink_stream_success() {
         let context = EventFluxContext::new();
-        context.add_sink_factory("http".to_string(), Box::new(HttpSinkFactory));
+        context.add_sink_factory("example-sink".to_string(), Box::new(ExampleSinkFactory));
         context.add_sink_mapper_factory("json".to_string(), Box::new(CsvSinkMapperFactory)); // Using CSV as placeholder
 
         let mut config = HashMap::new();
         config.insert(
-            "http.url".to_string(),
+            "example.url".to_string(),
             "http://localhost:8080/events".to_string(),
         );
 
         let stream_config = StreamTypeConfig::new(
             StreamType::Sink,
-            Some("http".to_string()),
+            Some("example-sink".to_string()),
             Some("json".to_string()),
             config,
         )
@@ -1187,7 +1208,7 @@ mod tests {
 
         match result.unwrap() {
             InitializedStream::Sink(sink) => {
-                assert_eq!(sink.extension, "http");
+                assert_eq!(sink.extension, "example-sink");
                 assert_eq!(sink.format.as_deref(), Some("json"));
             }
             _ => panic!("Expected Sink stream"),
@@ -1284,18 +1305,22 @@ mod tests {
     #[test]
     fn test_initialize_sink_stream_missing_required_format() {
         let context = EventFluxContext::new();
-        context.add_sink_factory("http".to_string(), Box::new(HttpSinkFactory));
+        context.add_sink_factory("example-sink".to_string(), Box::new(ExampleSinkFactory));
 
         let mut config = HashMap::new();
         config.insert(
-            "http.url".to_string(),
+            "example.url".to_string(),
             "http://localhost:8080/events".to_string(),
         );
 
-        // HTTP sink WITHOUT format - should be rejected
-        let stream_config =
-            StreamTypeConfig::new(StreamType::Sink, Some("http".to_string()), None, config)
-                .unwrap();
+        // Example sink WITHOUT format - should be rejected
+        let stream_config = StreamTypeConfig::new(
+            StreamType::Sink,
+            Some("example-sink".to_string()),
+            None,
+            config,
+        )
+        .unwrap();
 
         let result = initialize_stream(&context, &stream_config);
         assert!(result.is_err());
@@ -1304,7 +1329,7 @@ mod tests {
         match result.unwrap_err() {
             EventFluxError::Configuration { message, .. } => {
                 assert!(message.contains("requires a format specification"));
-                assert!(message.contains("http"));
+                assert!(message.contains("example-sink"));
                 assert!(message.contains("json"));
                 assert!(message.contains("data loss"));
             }

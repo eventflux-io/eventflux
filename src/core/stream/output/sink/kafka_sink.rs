@@ -45,7 +45,8 @@
 use super::sink_trait::Sink;
 use crate::core::exception::EventFluxError;
 use crate::core::extension::SinkFactory;
-use crate::core::stream::kafka_common::{parse_or, validate_topics_exist, KafkaConnectionConfig};
+use crate::core::stream::connector_util::parse_or;
+use crate::core::stream::kafka_common::{validate_topics_exist, KafkaConnectionConfig};
 use rdkafka::client::ClientContext;
 use rdkafka::error::KafkaError;
 use rdkafka::producer::{BaseRecord, Producer, ProducerContext, ThreadedProducer};
