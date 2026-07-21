@@ -864,25 +864,29 @@ impl EventFluxAppRuntime {
             )));
         }
 
-        // 4. Execution phase - start all components (with rollback on error)
-        // Start all registered sources
-        if let Err(e) = self.start_all_sources() {
-            log::error!("Failed to start sources: {}", e);
-            self.rollback_startup();
-            *self.state.write().unwrap() = RuntimeState::Failed;
-            return Err(EventFluxError::app_runtime(format!(
-                "Failed to start sources: {}",
-                e
-            )));
-        }
-
-        // Start all registered sinks
+        // 4. Execution phase - start all components (with rollback on error).
+        // Downstream-first: sinks start before sources so that when the
+        // first event is consumed, every sink is subscribed and connected.
+        // The reverse order lost events published into not-yet-ready sink
+        // streams (#136). Shutdown mirrors this (sources stop first,
+        // sinks last).
         if let Err(e) = self.start_all_sinks() {
             log::error!("Failed to start sinks: {}", e);
             self.rollback_startup();
             *self.state.write().unwrap() = RuntimeState::Failed;
             return Err(EventFluxError::app_runtime(format!(
                 "Failed to start sinks: {}",
+                e
+            )));
+        }
+
+        // Sources start last — this is what begins event consumption
+        if let Err(e) = self.start_all_sources() {
+            log::error!("Failed to start sources: {}", e);
+            self.rollback_startup();
+            *self.state.write().unwrap() = RuntimeState::Failed;
+            return Err(EventFluxError::app_runtime(format!(
+                "Failed to start sources: {}",
                 e
             )));
         }
@@ -1212,7 +1216,8 @@ impl EventFluxAppRuntime {
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - Source successfully attached and started
+    /// * `Ok(())` - Source successfully attached (it is started later by
+    ///   `start_all_sources` in the execution phase)
     /// * `Err(EventFluxError)` - Detailed error with context
     fn attach_source_common(
         &self,
@@ -1225,9 +1230,7 @@ impl EventFluxAppRuntime {
         use crate::core::stream::stream_initializer::{initialize_stream, InitializedStream};
 
         // Check if handler already registered (idempotent operation)
-        if let Some(existing_handler) = self.get_source_handler(stream_name) {
-            // Handler already exists - just ensure it's started
-            existing_handler.start()?;
+        if self.get_source_handler(stream_name).is_some() {
             return Ok(());
         }
 
@@ -1275,16 +1278,13 @@ impl EventFluxAppRuntime {
             stream_name.to_string(),
         ));
 
-        // Register handler in runtime
-        self.register_source_handler(stream_name.to_string(), Arc::clone(&handler));
-
-        // Start the source
-        handler.start().map_err(|e| {
-            EventFluxError::app_runtime(format!(
-                "Failed to start {} source '{}': {}",
-                context_label, stream_name, e
-            ))
-        })?;
+        // Register handler in runtime. The source is NOT started here:
+        // attachment only wires components. Consumption begins in the
+        // execution phase (start_all_sources), which runs after every sink
+        // is subscribed and started — a source that consumed at attach time
+        // could publish into a sink stream that has no subscriber yet,
+        // silently dropping events (#136).
+        self.register_source_handler(stream_name.to_string(), handler);
 
         Ok(())
     }
