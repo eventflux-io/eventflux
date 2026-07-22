@@ -33,6 +33,7 @@ lint:
 # Feature-gating honesty: minimal build and each connector alone must compile
 check-minimal:
   cargo check --all-targets
+  cargo check --all-targets --features file
   cargo check --all-targets --features http
   cargo check --all-targets --features kafka
   cargo check --all-targets --features rabbitmq

@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 4
 title: Kafka Connector
 description: Consume from and produce to Apache Kafka topics
 ---
@@ -148,10 +148,12 @@ clause options on the source stream):
 |--------|---------|-------------|
 | `error.strategy` | `drop` | What to do when the pipeline rejects a record: `drop`, `retry`, `dlq`, `fail` |
 | `error.retry.max-attempts` | `3` | Max retries before falling back to drop |
-| `error.retry.initial-delay-ms` | `100` | First retry delay |
-| `error.retry.max-delay-ms` | `10000` | Retry delay ceiling |
-| `error.retry.backoff-multiplier` | `2.0` | Exponential backoff factor |
+| `error.retry.backoff` | `exponential` | Backoff strategy: `exponential`, `linear`, or `fixed` |
+| `error.retry.initial-delay` | `100ms` | First retry delay (duration string) |
+| `error.retry.max-delay` | `30s` | Retry delay ceiling (duration string) |
+| `error.log-level` | `warn` | Log level for handled errors |
 | `error.dlq.stream` | - | Dead-letter stream name (required when strategy is `dlq`) |
+| `error.dlq.fallback-strategy` | `log` | What to do when DLQ delivery itself fails |
 
 Strategy semantics and their offset interaction:
 
@@ -176,9 +178,9 @@ CREATE STREAM Orders (order_id STRING, amount DOUBLE) WITH (
     "kafka.enable.auto.commit" = 'false',      -- at-least-once
     "error.strategy" = 'retry',
     "error.retry.max-attempts" = '5',
-    "error.retry.initial-delay-ms" = '200',
-    "error.retry.max-delay-ms" = '5000',
-    "error.retry.backoff-multiplier" = '2.0'
+    "error.retry.initial-delay" = '200ms',
+    "error.retry.max-delay" = '5s',
+    "error.retry.backoff" = 'exponential'
 );
 ```
 

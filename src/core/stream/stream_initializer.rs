@@ -189,6 +189,8 @@ pub fn initialize_stream(
 /// by cargo features. The feature is always named after the extension (see
 /// the `[features]` section in Cargo.toml), so one entry per gated connector.
 const GATED_OUT_EXTENSIONS: &[&str] = &[
+    #[cfg(not(feature = "file"))]
+    "file",
     #[cfg(not(feature = "http"))]
     "http",
     #[cfg(not(feature = "kafka"))]

@@ -27,6 +27,17 @@ use std::str::FromStr;
 /// accept it from user configuration under another meaning.
 pub const INJECTED_FORMAT_KEY: &str = "_format";
 
+/// Fetch a required property, rejecting missing or blank values.
+pub fn parse_required(properties: &HashMap<String, String>, key: &str) -> Result<String, String> {
+    let value = properties
+        .get(key)
+        .ok_or_else(|| format!("Missing required property: {key}"))?;
+    if value.trim().is_empty() {
+        return Err(format!("{key} cannot be empty"));
+    }
+    Ok(value.clone())
+}
+
 /// Parse an optional property, falling back to `default` when absent.
 pub fn parse_or<T: FromStr>(
     properties: &HashMap<String, String>,
@@ -75,6 +86,20 @@ mod tests {
         assert!(parse_or(&props, "k", 5u64)
             .unwrap_err()
             .contains("Invalid k"));
+    }
+
+    #[test]
+    fn test_parse_required() {
+        let mut props = HashMap::new();
+        assert!(parse_required(&props, "k")
+            .unwrap_err()
+            .contains("Missing required property: k"));
+
+        props.insert("k".to_string(), "  ".to_string());
+        assert!(parse_required(&props, "k").unwrap_err().contains("empty"));
+
+        props.insert("k".to_string(), "v".to_string());
+        assert_eq!(parse_required(&props, "k").unwrap(), "v");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 5
 title: RabbitMQ Connector
 description: Connect EventFlux to RabbitMQ message broker for real-time event streaming
 ---

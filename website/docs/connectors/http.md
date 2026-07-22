@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 3
 title: HTTP Connector
 description: REST polling, webhook ingestion, and webhook delivery
 ---

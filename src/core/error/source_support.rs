@@ -63,6 +63,26 @@ use crate::core::config::FlatConfig;
 use crate::core::error::ErrorConfig;
 use crate::core::event::Event;
 use crate::core::exception::EventFluxError;
+
+/// Optional configuration keys consumed by
+/// [`SourceErrorContext::from_properties`] (via `ErrorConfig`). Source
+/// factories append these to their `optional_parameters()` list, so the
+/// error-handling surface is defined in exactly one place.
+///
+/// Delays are duration strings (`100ms`, `30s`); `error.retry.backoff` is a
+/// strategy name (`exponential`/`linear`/`fixed`). The DLQ fallback retry
+/// family (`error.dlq.fallback-retry.*`) is a prefix, represented here by
+/// its strategy key.
+pub const SOURCE_ERROR_PARAMETERS: &[&str] = &[
+    "error.strategy",
+    "error.log-level",
+    "error.retry.max-attempts",
+    "error.retry.backoff",
+    "error.retry.initial-delay",
+    "error.retry.max-delay",
+    "error.dlq.stream",
+    "error.dlq.fallback-strategy",
+];
 use crate::core::stream::input::input_handler::InputHandler;
 use std::sync::{Arc, Mutex};
 use std::thread;

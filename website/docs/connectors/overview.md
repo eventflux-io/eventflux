@@ -101,6 +101,7 @@ extension name. The default build is fully minimal (core engine plus the
 built-in `timer` source and `log` sink):
 
 ```bash
+cargo build --release --features file              # just File
 cargo build --release --features http              # just HTTP
 cargo build --release --features kafka             # just Kafka
 cargo build --release --features rabbitmq          # just RabbitMQ
@@ -124,11 +125,11 @@ build. Rebuild with `--features rabbitmq` (or `--features connectors-all`).
 |-----------|--------|------|--------------|--------|-------------|
 | **Timer** | Yes | — | (always built) | Production Ready | Periodic tick source |
 | **Log** | — | Yes | (always built) | Production Ready | Logging sink for debugging |
+| **File** | Yes | Yes | `file` | Production Ready | Replay/follow files, rotating output |
 | **HTTP** | Yes | Yes | `http` | Production Ready | REST polling, webhooks in/out |
 | **Kafka** | Yes | Yes | `kafka` | Production Ready | Apache Kafka streaming |
 | **RabbitMQ** | Yes | Yes | `rabbitmq` | Production Ready | AMQP 0-9-1 message broker |
 | **WebSocket** | Yes | Yes | `websocket` | Production Ready | Real-time bidirectional streaming |
-| **File** | Planned | Planned | — | Roadmap | File-based input/output |
 
 ## Available Mappers
 
@@ -219,6 +220,7 @@ manager.context().add_sink_factory(
 
 ## Next Steps
 
+- **[File Connector](/docs/connectors/file)** - Replay and follow files, rotating line-delimited output
 - **[HTTP Connector](/docs/connectors/http)** - REST polling, webhook ingestion and delivery
 - **[Kafka Connector](/docs/connectors/kafka)** - Consume from and produce to Apache Kafka topics
 - **[RabbitMQ Connector](/docs/connectors/rabbitmq)** - Connect to RabbitMQ message broker

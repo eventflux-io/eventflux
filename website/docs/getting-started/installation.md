@@ -41,6 +41,7 @@ a cargo feature named exactly after its SQL extension name:
 
 | Feature | Connector | In default build? |
 |---------|-----------|-------------------|
+| `file` | File source (replay + follow) + sink (rotation) | No |
 | `http` | HTTP source (polling + webhook) + sink | No |
 | `kafka` | Kafka source + sink (needs cmake to build) | No |
 | `rabbitmq` | RabbitMQ source + sink | No |
@@ -147,7 +148,7 @@ Beyond connectors, EventFlux exposes additional opt-in cargo features:
 
 | Feature | Purpose |
 |---------|---------|
-| `rabbitmq`, `websocket`, `connectors-all` | External connectors (see table above) |
+| `file`, `http`, `kafka`, `rabbitmq`, `websocket`, `connectors-all` | External connectors (see table above) |
 | `kubernetes`, `consul`, `etcd`, `vault`, `cloud-native` | Cloud-native integrations for distributed deployments |
 | `perf-tests` | Performance test suite |
 

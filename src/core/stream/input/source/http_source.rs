@@ -596,29 +596,31 @@ impl SourceFactory for HttpSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        &[
-            // poll mode
-            "http.url",
-            "http.poll.interval.ms",
-            "http.method",
-            "http.timeout.ms",
-            // webhook mode
-            "http.host",
-            "http.port",
-            "http.path",
-            "http.auth.header",
-            "http.auth.token",
-            "http.max.concurrent.requests",
-            "http.max.body.bytes",
-            // http.headers.<Name> passthrough is also accepted
-            // Error handling options
-            "error.strategy",
-            "error.retry.max-attempts",
-            "error.retry.initial-delay-ms",
-            "error.retry.max-delay-ms",
-            "error.retry.backoff-multiplier",
-            "error.dlq.stream",
-        ]
+        // Connector keys + the shared error-handling keys (owned by
+        // SourceErrorContext) — concatenated once, on first use
+        static PARAMS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+            [
+                &[
+                    // poll mode
+                    "http.url",
+                    "http.poll.interval.ms",
+                    "http.method",
+                    "http.timeout.ms",
+                    // webhook mode
+                    "http.host",
+                    "http.port",
+                    "http.path",
+                    "http.auth.header",
+                    "http.auth.token",
+                    "http.max.concurrent.requests",
+                    "http.max.body.bytes",
+                    // http.headers.<Name> passthrough is also accepted
+                ][..],
+                crate::core::error::source_support::SOURCE_ERROR_PARAMETERS,
+            ]
+            .concat()
+        });
+        &PARAMS
     }
 
     fn create_initialized(

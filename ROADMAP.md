@@ -165,11 +165,11 @@ All have state holder implementations for checkpointing.
 |------------|-------------|-------------|------------------|------------------|
 | Timer      | Done        | —           | —                | (always built)   |
 | Log        | —           | Done        | —                | (always built)   |
+| File       | Done        | Done        | JSON, CSV, bytes | `file`           |
 | HTTP       | Done        | Done        | JSON, CSV, bytes | `http`           |
 | Kafka      | Done        | Done        | JSON, CSV, bytes | `kafka`          |
 | RabbitMQ   | Done        | Done        | JSON, CSV, bytes | `rabbitmq`       |
 | WebSocket  | Done        | Done        | JSON, CSV, bytes | `websocket`      |
-| File       | Not started | Not started | —                | —                |
 | TCP/Socket | Not started | Not started | —                | —                |
 
 Connectors are cargo features named after the SQL extension name; the default
@@ -364,12 +364,18 @@ client + async axum server — best tool per side. Feature-gated behind `http`; 
 tests are self-hosting (no CI service needed). Deferred: request/response mode (#134),
 batched requests, connector-managed conditional GET, OAuth.
 
-File connector (Priority 3) is the next connector.
+### Priority 3: File Connector — **DONE (2026-07)**
 
-### Priority 3: File Connector
+Implemented per `feat/file/README.md`: an always-following source (replay existing content
+per `file.start.position`, then keep observing — EOF is not completion) with `tail -F`
+rotation/truncation handling and held partial lines, and a line-per-event sink with
+size/time rotation and zstd-compressed rolls. Adds no new dependencies (zstd/chrono are
+already core). Fully self-hosting integration tests (temp files, nothing ignored). Deferred:
+directory spool mode, offset checkpointing (StateHolder follow-up), native FS watching,
+gzip rolls.
 
-- File source: CSV, JSON, tail mode
-- File sink: rotation, compression
+TCP/Socket is the remaining connector; Pattern Processing Gaps (Priority 4) is the next
+priority.
 
 ### Priority 4: Pattern Processing Gaps
 
