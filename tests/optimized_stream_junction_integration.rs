@@ -19,6 +19,12 @@
 //!
 //! Tests the crossbeam pipeline-based StreamJunction implementation
 //! for correctness, performance, and compatibility with existing code.
+//!
+//! Functional assertions (event counts, ordering, error/drop accounting)
+//! always run. Wall-clock performance thresholds (throughput floors,
+//! latency ceilings) only run under `--features perf-tests` — on loaded
+//! shared CI runners a single scheduling stall can miss them, which says
+//! nothing about correctness (#139).
 
 use eventflux::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_context::EventFluxContext,
@@ -215,10 +221,17 @@ fn test_optimized_junction_basic_functionality() {
         events_received, num_events
     );
     assert_eq!(events_received, num_events as usize);
+    #[cfg(feature = "perf-tests")]
     assert!(throughput > 1000.0, "Should handle >1K events/sec");
 
     let metrics = junction.get_performance_metrics();
+    // is_healthy() includes wall-clock thresholds (>1K events/sec floor,
+    // <10ms max publish latency) — perf-tests only. The functional parts
+    // (error/drop rates) are asserted directly below for every run.
+    #[cfg(feature = "perf-tests")]
     assert!(metrics.is_healthy());
+    assert!(metrics.pipeline_metrics.error_rate < 0.01);
+    assert!(metrics.pipeline_metrics.drop_rate < 0.05);
     assert_eq!(metrics.events_processed, num_events as u64);
 }
 
@@ -479,6 +492,7 @@ fn test_concurrent_publishers_optimized_junction() {
         "Should successfully process >80% of events, got {:.1}%",
         success_rate * 100.0
     );
+    #[cfg(feature = "perf-tests")]
     assert!(
         throughput > 5000.0,
         "Should handle >5K events/sec in concurrent scenario"
@@ -486,6 +500,7 @@ fn test_concurrent_publishers_optimized_junction() {
 
     let metrics = junction.lock().unwrap().get_performance_metrics();
     println!("Junction metrics: {:?}", metrics);
+    #[cfg(feature = "perf-tests")]
     assert!(metrics.pipeline_metrics.throughput_events_per_sec > 1000.0);
 }
 
