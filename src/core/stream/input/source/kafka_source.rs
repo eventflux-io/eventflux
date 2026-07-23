@@ -491,25 +491,27 @@ impl SourceFactory for KafkaSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        &[
-            "kafka.group.id",
-            "kafka.auto.offset.reset",
-            "kafka.enable.auto.commit",
-            "kafka.poll.timeout.ms",
-            "kafka.security.protocol",
-            "kafka.sasl.mechanism",
-            "kafka.sasl.username",
-            "kafka.sasl.password",
-            "kafka.ssl.ca.location",
-            // kafka.rdkafka.<prop> passthrough is also accepted
-            // Error handling options
-            "error.strategy",
-            "error.retry.max-attempts",
-            "error.retry.initial-delay-ms",
-            "error.retry.max-delay-ms",
-            "error.retry.backoff-multiplier",
-            "error.dlq.stream",
-        ]
+        // Connector keys + the shared error-handling keys (owned by
+        // SourceErrorContext) — concatenated once, on first use
+        static PARAMS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+            [
+                &[
+                    "kafka.group.id",
+                    "kafka.auto.offset.reset",
+                    "kafka.enable.auto.commit",
+                    "kafka.poll.timeout.ms",
+                    "kafka.security.protocol",
+                    "kafka.sasl.mechanism",
+                    "kafka.sasl.username",
+                    "kafka.sasl.password",
+                    "kafka.ssl.ca.location",
+                    // kafka.rdkafka.<prop> passthrough is also accepted
+                ][..],
+                crate::core::error::source_support::SOURCE_ERROR_PARAMETERS,
+            ]
+            .concat()
+        });
+        &PARAMS
     }
 
     fn create_initialized(

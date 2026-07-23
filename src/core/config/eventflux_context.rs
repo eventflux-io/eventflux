@@ -426,6 +426,8 @@ impl EventFluxContext {
             OrAttributeAggregatorFactory, StdDevAttributeAggregatorFactory,
             SumAttributeAggregatorFactory,
         };
+        #[cfg(feature = "file")]
+        use crate::core::stream::input::source::file_source::FileSourceFactory;
         #[cfg(feature = "http")]
         use crate::core::stream::input::source::http_source::HttpSourceFactory;
         #[cfg(feature = "kafka")]
@@ -434,6 +436,8 @@ impl EventFluxContext {
         use crate::core::stream::input::source::rabbitmq_source::RabbitMQSourceFactory;
         #[cfg(feature = "websocket")]
         use crate::core::stream::input::source::websocket_source::WebSocketSourceFactory;
+        #[cfg(feature = "file")]
+        use crate::core::stream::output::sink::file_sink::FileSinkFactory;
         #[cfg(feature = "http")]
         use crate::core::stream::output::sink::http_sink::HttpSinkFactory;
         #[cfg(feature = "kafka")]
@@ -536,6 +540,8 @@ impl EventFluxContext {
         self.add_table_factory("jdbc".to_string(), Box::new(JdbcTableFactory));
         self.add_table_factory("cache".to_string(), Box::new(CacheTableFactory));
         self.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
+        #[cfg(feature = "file")]
+        self.add_source_factory("file".to_string(), Box::new(FileSourceFactory));
         #[cfg(feature = "http")]
         self.add_source_factory("http".to_string(), Box::new(HttpSourceFactory));
         #[cfg(feature = "kafka")]
@@ -545,6 +551,8 @@ impl EventFluxContext {
         #[cfg(feature = "websocket")]
         self.add_source_factory("websocket".to_string(), Box::new(WebSocketSourceFactory));
         self.add_sink_factory("log".to_string(), Box::new(LogSinkFactory));
+        #[cfg(feature = "file")]
+        self.add_sink_factory("file".to_string(), Box::new(FileSinkFactory));
         #[cfg(feature = "http")]
         self.add_sink_factory("http".to_string(), Box::new(HttpSinkFactory));
         #[cfg(feature = "kafka")]

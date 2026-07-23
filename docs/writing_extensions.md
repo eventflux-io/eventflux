@@ -168,7 +168,7 @@ When adding a new in-tree connector, touch exactly these points:
 | Registration | `#[cfg(feature = "x")]` on the import and `add_source_factory`/`add_sink_factory` lines in `register_default_extensions()` |
 | Unavailable-extension hint | add the name to `GATED_OUT_EXTENSIONS` in `stream_initializer.rs` so builds without the feature report "rebuild with `--features x`" instead of "extension not found" |
 | Integration tests | `#![cfg(feature = "x")]` at the top of `tests/x_integration.rs` |
-| CI | add `cargo check --features x` to the per-connector gating check in `.github/workflows/rust.yml` |
+| CI | add `cargo check --all-targets --features x` to the per-connector gating checks in `.github/workflows/rust.yml`, `justfile` (`check-minimal`), and the CONTRIBUTING.md command list — all three must stay in sync |
 | Docs | feature-flags table in README.md; example files note the required feature |
 
 ## Dynamic Extensions

@@ -137,6 +137,7 @@ jobs:
       # Each connector alone (including test code) — catches missing #[cfg]s
       # and accidental cross-feature dependencies.
       run: |
+        cargo check --all-targets --features file
         cargo check --all-targets --features http
         cargo check --all-targets --features kafka
         cargo check --all-targets --features rabbitmq

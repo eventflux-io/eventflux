@@ -48,6 +48,7 @@ feature named after its SQL extension name:
 
 | Feature | Connector | In default build? |
 |---------|-----------|-------------------|
+| `file` | File source (replay + follow) + sink (rotation) | No |
 | `http` | HTTP source (polling + webhook) + sink | No |
 | `kafka` | Kafka source + sink (needs cmake to build) | No |
 | `rabbitmq` | RabbitMQ source + sink | No |
@@ -103,7 +104,7 @@ Full docs at **[eventflux.io](https://eventflux.io)**:
 
 - [Getting Started](https://eventflux.io/docs/getting-started/installation) — install and run your first query
 - [SQL Reference](https://eventflux.io/docs/sql-reference/queries) — windows, joins, patterns, aggregations
-- [Connectors](https://eventflux.io/docs/connectors/overview) — Kafka, RabbitMQ, WebSocket, HTTP
+- [Connectors](https://eventflux.io/docs/connectors/overview) — File, HTTP, Kafka, RabbitMQ, WebSocket
 - [Examples](https://eventflux.io/docs/demo/crypto-trading) — real-world use cases
 - [Architecture](https://eventflux.io/docs/architecture/overview) — how it works under the hood
 

@@ -652,21 +652,23 @@ impl SourceFactory for WebSocketSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        &[
-            "websocket.reconnect",
-            "websocket.reconnect.delay.ms",
-            "websocket.reconnect.max.delay.ms",
-            "websocket.reconnect.max.attempts",
-            "websocket.subprotocol",
-            // Headers are dynamic: websocket.headers.*
-            // Error handling options
-            "error.strategy",
-            "error.retry.max-attempts",
-            "error.retry.initial-delay-ms",
-            "error.retry.max-delay-ms",
-            "error.retry.backoff-multiplier",
-            "error.dlq.stream",
-        ]
+        // Connector keys + the shared error-handling keys (owned by
+        // SourceErrorContext) — concatenated once, on first use
+        static PARAMS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+            [
+                &[
+                    "websocket.reconnect",
+                    "websocket.reconnect.delay.ms",
+                    "websocket.reconnect.max.delay.ms",
+                    "websocket.reconnect.max.attempts",
+                    "websocket.subprotocol",
+                    // Headers are dynamic: websocket.headers.*
+                ][..],
+                crate::core::error::source_support::SOURCE_ERROR_PARAMETERS,
+            ]
+            .concat()
+        });
+        &PARAMS
     }
 
     fn create_initialized(

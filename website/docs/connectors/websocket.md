@@ -1,5 +1,5 @@
 ---
-sidebar_position: 3
+sidebar_position: 6
 title: WebSocket Connector
 description: Connect EventFlux to WebSocket endpoints for real-time bidirectional streaming
 ---

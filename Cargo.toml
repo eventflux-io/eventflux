@@ -32,11 +32,14 @@ cloud-native = ["kubernetes", "consul", "etcd", "vault"]
 # no connector ships in a plain `cargo build`. Release/Docker builds use
 # `--features connectors-all`. See docs/writing_extensions.md for the
 # per-connector gating checklist.
+# The file connector is std-only (zstd for rolled files is already a root
+# dependency) — the feature exists for the uniform gating convention.
+file = []
 http = ["dep:axum", "dep:ureq"]
 kafka = ["dep:rdkafka"]
 rabbitmq = ["dep:lapin", "dep:urlencoding"]
 websocket = ["dep:tokio-tungstenite"]
-connectors-all = ["http", "kafka", "rabbitmq", "websocket"]
+connectors-all = ["file", "http", "kafka", "rabbitmq", "websocket"]
 
 [dependencies]
 async-trait = "0.1"

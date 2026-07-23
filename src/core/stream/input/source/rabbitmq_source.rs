@@ -883,23 +883,25 @@ impl SourceFactory for RabbitMQSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        &[
-            "rabbitmq.port",
-            "rabbitmq.vhost",
-            "rabbitmq.username",
-            "rabbitmq.password",
-            "rabbitmq.prefetch",
-            "rabbitmq.consumer.tag",
-            "rabbitmq.auto.ack",
-            "rabbitmq.declare.queue",
-            // Error handling options
-            "error.strategy",
-            "error.retry.max-attempts",
-            "error.retry.initial-delay-ms",
-            "error.retry.max-delay-ms",
-            "error.retry.backoff-multiplier",
-            "error.dlq.stream",
-        ]
+        // Connector keys + the shared error-handling keys (owned by
+        // SourceErrorContext) — concatenated once, on first use
+        static PARAMS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+            [
+                &[
+                    "rabbitmq.port",
+                    "rabbitmq.vhost",
+                    "rabbitmq.username",
+                    "rabbitmq.password",
+                    "rabbitmq.prefetch",
+                    "rabbitmq.consumer.tag",
+                    "rabbitmq.auto.ack",
+                    "rabbitmq.declare.queue",
+                ][..],
+                crate::core::error::source_support::SOURCE_ERROR_PARAMETERS,
+            ]
+            .concat()
+        });
+        &PARAMS
     }
 
     fn create_initialized(
@@ -1141,10 +1143,7 @@ mod tests {
         // Add error handling config
         config.insert("error.strategy".to_string(), "retry".to_string());
         config.insert("error.retry.max-attempts".to_string(), "3".to_string());
-        config.insert(
-            "error.retry.initial-delay-ms".to_string(),
-            "100".to_string(),
-        );
+        config.insert("error.retry.initial-delay".to_string(), "100ms".to_string());
 
         let result = factory.create_initialized(&config);
         assert!(result.is_ok(), "Factory should accept error.* config");

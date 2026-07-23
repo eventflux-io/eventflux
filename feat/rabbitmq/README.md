@@ -51,9 +51,9 @@ Consumes messages from a RabbitMQ queue and delivers them to the EventFlux pipel
 | `rabbitmq.auto.ack` | No | true | Auto-acknowledge messages |
 | `error.strategy` | No | - | Error handling strategy (drop, retry, dlq, fail) |
 | `error.retry.max-attempts` | No | 3 | Max retry attempts |
-| `error.retry.initial-delay-ms` | No | 100 | Initial retry delay in ms |
-| `error.retry.max-delay-ms` | No | 10000 | Max retry delay in ms |
-| `error.retry.backoff-multiplier` | No | 2.0 | Backoff multiplier |
+| `error.retry.backoff` | No | exponential | Backoff strategy: exponential/linear/fixed |
+| `error.retry.initial-delay` | No | 100ms | Initial retry delay (duration string) |
+| `error.retry.max-delay` | No | 30s | Max retry delay (duration string) |
 | `error.dlq.stream` | No | - | DLQ stream name (required when strategy=dlq) |
 
 ### Usage Example

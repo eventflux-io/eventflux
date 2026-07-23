@@ -1,0 +1,73 @@
+-- ============================================================================
+-- EventFlux File Source/Sink Example
+-- ============================================================================
+--
+-- This example demonstrates end-to-end stream processing over files:
+--   1. File Source: replays an existing JSONL file, then keeps following it
+--   2. EventFlux Query: keeps only high-volume trades
+--   3. File Sink: appends matches to an output JSONL file
+--
+-- Everything is testable with printf/echo/tail alone — no external infrastructure.
+--
+-- ============================================================================
+-- PREREQUISITES
+-- ============================================================================
+--
+-- 0. Build EventFlux with the file connector enabled:
+--
+--    cargo build --release --features file
+--    (Docker images include all connectors already)
+--
+-- 1. Create the input file with some existing trades:
+--
+--    printf '%s\n' \
+--      '{"symbol":"AAPL","price":185.5,"volume":5000}' \
+--      '{"symbol":"GOOGL","price":142.3,"volume":800}' \
+--      > /tmp/trades.jsonl
+--
+-- 2. Run this example:
+--
+--    cargo run --features file --bin run_eventflux examples/file.eventflux
+--
+--    The AAPL trade (volume > 1000) appears in /tmp/high_volume.jsonl
+--    immediately; GOOGL is filtered out.
+--
+-- 3. The source keeps observing — append more trades from another terminal:
+--
+--    echo '{"symbol":"MSFT","price":378.25,"volume":1500}' >> /tmp/trades.jsonl
+--
+-- 4. Watch the output grow:
+--
+--    tail -f /tmp/high_volume.jsonl
+--
+-- ============================================================================
+
+CREATE STREAM Trades (
+    symbol STRING,
+    price DOUBLE,
+    volume INT
+) WITH (
+    type = 'source',
+    extension = 'file',
+    format = 'json',
+    "file.path" = '/tmp/trades.jsonl',
+    -- Replay existing content, then follow appends (this is the default)
+    "file.start.position" = 'beginning',
+    "file.poll.interval.ms" = '200'
+);
+
+CREATE STREAM HighVolume (
+    symbol STRING,
+    price DOUBLE,
+    volume INT
+) WITH (
+    type = 'sink',
+    extension = 'file',
+    format = 'json',
+    "file.path" = '/tmp/high_volume.jsonl'
+);
+
+INSERT INTO HighVolume
+SELECT symbol, price, volume
+FROM Trades
+WHERE volume > 1000;

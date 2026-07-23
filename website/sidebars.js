@@ -51,6 +51,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'connectors/overview',
+        'connectors/file',
         'connectors/http',
         'connectors/kafka',
         'connectors/rabbitmq',

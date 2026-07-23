@@ -16,6 +16,9 @@ extend-exclude = [
 WHENs = "WHENs"
 WINDOWs = "WINDOWs"
 
+# The gzip crate is really named flate2
+flate2 = "flate2"
+
 [default.extend-words]
 # HashiCorp proper noun (substring match)
 Hashi = "Hashi"
