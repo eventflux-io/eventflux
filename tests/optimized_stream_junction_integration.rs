@@ -504,74 +504,11 @@ fn test_concurrent_publishers_optimized_junction() {
     assert!(metrics.pipeline_metrics.throughput_events_per_sec > 1000.0);
 }
 
-/// Slow processor that introduces delays to trigger backpressure
-#[derive(Debug)]
-struct SlowTestProcessor {
-    delay_us: u64,
-    name: String,
-}
-
-impl SlowTestProcessor {
-    fn new(name: String, delay_us: u64) -> Self {
-        Self { delay_us, name }
-    }
-}
-
-impl Processor for SlowTestProcessor {
-    fn process(&self, mut chunk: Option<Box<dyn ComplexEvent>>) {
-        while let Some(mut ce) = chunk {
-            chunk = ce.set_next(None);
-            // Introduce delay to slow down consumption and trigger backpressure
-            if self.delay_us > 0 {
-                thread::sleep(Duration::from_micros(self.delay_us));
-            }
-        }
-    }
-
-    fn next_processor(&self) -> Option<Arc<Mutex<dyn Processor>>> {
-        None
-    }
-
-    fn set_next_processor(&mut self, _n: Option<Arc<Mutex<dyn Processor>>>) {}
-
-    fn clone_processor(&self, _c: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
-        Box::new(SlowTestProcessor::new(self.name.clone(), self.delay_us))
-    }
-
-    fn get_eventflux_app_context(&self) -> Arc<EventFluxAppContext> {
-        Arc::new(EventFluxAppContext::new(
-            Arc::new(EventFluxContext::new()),
-            "TestApp".to_string(),
-            Arc::new(eventflux::query_api::eventflux_app::EventFluxApp::new(
-                "TestApp".to_string(),
-            )),
-            String::new(),
-        ))
-    }
-
-    fn get_eventflux_query_context(&self) -> Arc<EventFluxQueryContext> {
-        Arc::new(EventFluxQueryContext::new(
-            self.get_eventflux_app_context(),
-            "TestQuery".to_string(),
-            None,
-        ))
-    }
-
-    fn get_processing_mode(&self) -> ProcessingMode {
-        ProcessingMode::DEFAULT
-    }
-
-    fn is_stateful(&self) -> bool {
-        false
-    }
-}
-
 #[test]
 fn test_junction_backpressure_handling() {
     let (app_ctx, stream_def) = setup_test_context();
 
-    // Create junction with minimum buffer size and Drop backpressure strategy
-    // This ensures immediate failure when buffer is full (deterministic behavior)
+    // Minimum buffer size + Drop strategy: a full buffer drops immediately
     let junction = StreamJunction::new_with_backpressure(
         "BackpressureTest".to_string(),
         stream_def,
@@ -583,25 +520,25 @@ fn test_junction_backpressure_handling() {
     )
     .unwrap();
 
-    // Add a slow processor to create backpressure
-    // With Drop strategy, any events sent when buffer is full will be dropped immediately
-    let processor = Arc::new(Mutex::new(SlowTestProcessor::new(
-        "SlowProcessor".to_string(),
-        1000, // 1ms delay per event
+    let processor = Arc::new(Mutex::new(PerformanceTestProcessor::new(
+        "BackpressureProcessor".to_string(),
     )));
+    let events_received = processor.lock().unwrap().events_received.clone();
     junction.subscribe(processor);
-    junction.start_processing().unwrap();
 
-    // Flood with events to trigger backpressure
-    // With 1ms delay per event and 64-element buffer, producer fills buffer
-    // almost instantly while consumer processes ~1000 events/second
-    let mut success_count = 0;
-    let mut dropped_count = 0;
-    let num_events = 500;
+    // Flood BEFORE start_processing(): with no consumer loop draining the
+    // queue, it fills at exactly its capacity and the Drop strategy must
+    // reject the overflow. (A "slow consumer" variant is inherently racy —
+    // the consumer loop hands events to an unbounded executor queue as fast
+    // as it can pop, so whether the 64-slot queue ever fills depends on
+    // thread scheduling: that race is what made this test flaky in CI, #139.)
+    let mut success_count: usize = 0;
+    let mut dropped_count: usize = 0;
+    let num_events: usize = 500;
 
     for i in 0..num_events {
         let event = Event::new_with_data(
-            i,
+            i as i64,
             vec![
                 AttributeValue::Int(i as i32),
                 AttributeValue::String(format!("flood_event_{}", i)),
@@ -614,26 +551,41 @@ fn test_junction_backpressure_handling() {
         }
     }
 
-    // Short wait then stop
-    thread::sleep(Duration::from_millis(100));
-    junction.stop_processing();
-
     println!(
         "Backpressure test - Success: {}, Dropped: {}",
         success_count, dropped_count
     );
 
-    // Should have both successful sends and drops due to backpressure
-    assert!(success_count > 0, "Some events should be processed");
+    // Deterministic: every send either filled a buffer slot or dropped
+    assert_eq!(success_count + dropped_count, num_events);
+    assert!(
+        success_count > 0,
+        "The buffer must accept up to its capacity"
+    );
     assert!(
         dropped_count > 0,
-        "Some events should be dropped due to backpressure"
+        "Flooding {num_events} events into a 64-slot buffer with no \
+         consumer running must drop the overflow"
     );
 
     let metrics = junction.get_performance_metrics();
     assert!(
         metrics.events_dropped > 0,
         "Metrics should show dropped events"
+    );
+
+    // Now start processing: every accepted event must still be delivered
+    junction.start_processing().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while events_received.load(Ordering::Relaxed) < success_count && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    junction.stop_processing();
+
+    assert_eq!(
+        events_received.load(Ordering::Relaxed),
+        success_count,
+        "every accepted event must be delivered once processing starts"
     );
 }
 
