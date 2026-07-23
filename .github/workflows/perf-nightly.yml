@@ -1,0 +1,80 @@
+# Copyright 2025-2026 EventFlux.io
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Nightly performance signal (#139): wall-clock assertions are excluded from
+# the PR-blocking suite because shared runners make them flaky, but perf
+# regressions still deserve automated visibility. This job runs the
+# perf-tests-gated assertions (and the criterion bench) on a schedule; a
+# failure notifies without ever blocking a merge.
+
+name: Perf Nightly
+
+on:
+  schedule:
+    # 02:17 UTC daily — off the top of the hour to dodge scheduler load spikes
+    - cron: '17 2 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-C debuginfo=0"
+
+jobs:
+  perf:
+    name: Perf Tests & Bench
+    runs-on: ubuntu-latest
+    # Perf numbers on shared runners are indicative, not authoritative —
+    # give slow runs room instead of failing on the clock (the release-mode
+    # backpressure perf test alone runs ~12 minutes)
+    timeout-minutes: 90
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      with:
+        submodules: recursive
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7  # stable
+      with:
+        toolchain: 1.85
+
+    - name: Cache cargo registry and target
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: |
+          ~/.cargo/bin
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-perf-
+          ${{ runner.os }}-cargo-
+
+    - name: Run perf-gated tests
+      # Only the perf test binaries — the full suite needs broker services
+      # this job deliberately doesn't carry. Release mode: the thresholds
+      # encode production expectations; debug-build numbers would fail them
+      # for the wrong reason.
+      run: |
+        cargo test --release --features perf-tests --test performance_tests -- --nocapture
+        cargo test --release --features perf-tests --test optimized_stream_junction_integration -- --nocapture
+
+    - name: Run criterion bench
+      run: cargo bench --bench lock_contention_bench
