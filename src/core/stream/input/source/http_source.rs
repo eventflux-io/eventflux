@@ -42,7 +42,7 @@ use crate::core::error::source_support::{
 };
 use crate::core::exception::EventFluxError;
 use crate::core::extension::SourceFactory;
-use crate::core::stream::connector_util::parse_or;
+use crate::core::stream::connector_util::{parse_or, Redacted};
 use crate::core::stream::http_common::{
     build_agent, build_request, constant_time_eq, parse_headers, parse_method, parse_url,
     probe_reachability,
@@ -67,8 +67,8 @@ pub struct HttpPollConfig {
     pub interval_ms: u64,
     /// `GET` (default) or `POST` (some APIs poll via POST)
     pub method: String,
-    /// Request headers from `http.headers.<Name>`
-    pub headers: Vec<(String, String)>,
+    /// Request headers from `http.headers.<Name>` (values redacted in Debug)
+    pub headers: Vec<(String, Redacted)>,
     /// Per-request timeout (default 30000)
     pub timeout_ms: u64,
 }
@@ -82,8 +82,9 @@ pub struct HttpWebhookConfig {
     pub port: u16,
     /// Request path to accept (default "/")
     pub path: String,
-    /// Optional inbound auth: required header name + exact value
-    pub auth: Option<(String, String)>,
+    /// Optional inbound auth: required header name + exact value (the
+    /// token is redacted in Debug output)
+    pub auth: Option<(String, Redacted)>,
     /// Concurrency cap (default 256)
     pub max_concurrent: usize,
     /// Payload size cap in bytes (default 1 MiB); oversized → 413
@@ -150,7 +151,7 @@ impl HttpSourceMode {
                                 "Invalid http.auth.header '{header}': not a valid HTTP header name"
                             ));
                         }
-                        Some((header.clone(), token.clone()))
+                        Some((header.clone(), Redacted::new(token.clone())))
                     }
                     (None, None) => None,
                     _ => {
@@ -205,7 +206,7 @@ type DeliveryJob = (
 
 /// Shared state for concurrent webhook handlers
 struct WebhookState {
-    auth: Option<(String, String)>,
+    auth: Option<(String, Redacted)>,
     /// Payload size cap — enforced while reading the body, after auth
     max_body_bytes: usize,
     /// Bounded queue to the single delivery thread — `send().await`
@@ -232,7 +233,7 @@ async fn webhook_handler(State(state): State<Arc<WebhookState>>, request: Reques
             .headers()
             .get(name.as_str())
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| constant_time_eq(v.as_bytes(), token.as_bytes()));
+            .is_some_and(|v| constant_time_eq(v.as_bytes(), token.expose().as_bytes()));
         if !authorized {
             return StatusCode::UNAUTHORIZED;
         }
@@ -696,7 +697,7 @@ mod tests {
         assert_eq!(config.timeout_ms, 2000);
         assert_eq!(
             config.headers,
-            vec![("X-Api-Key".to_string(), "k".to_string())]
+            vec![("X-Api-Key".to_string(), Redacted::new("k"))]
         );
     }
 
@@ -731,10 +732,11 @@ mod tests {
         };
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.path, "/hooks/alerts");
-        assert_eq!(
-            config.auth,
-            Some(("X-Token".to_string(), "secret".to_string()))
-        );
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("secret"), "leaked: {debug}");
+        let (auth_header, auth_token) = config.auth.expect("auth configured");
+        assert_eq!(auth_header, "X-Token");
+        assert_eq!(auth_token.expose(), "secret");
         assert_eq!(config.max_concurrent, 16);
         assert_eq!(config.max_body_bytes, 1024);
     }

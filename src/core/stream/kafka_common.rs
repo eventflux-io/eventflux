@@ -37,7 +37,8 @@ pub struct KafkaConnectionConfig {
     /// `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512`
     pub sasl_mechanism: Option<String>,
     pub sasl_username: Option<String>,
-    pub sasl_password: Option<String>,
+    /// Redacted in Debug output — call `.expose()` at the point of use
+    pub sasl_password: Option<crate::core::stream::connector_util::Redacted>,
     /// CA certificate path
     pub ssl_ca_location: Option<String>,
     /// Verbatim librdkafka overrides from `kafka.rdkafka.<prop>`
@@ -65,7 +66,9 @@ impl KafkaConnectionConfig {
         let security_protocol = properties.get("kafka.security.protocol").cloned();
         let sasl_mechanism = properties.get("kafka.sasl.mechanism").cloned();
         let sasl_username = properties.get("kafka.sasl.username").cloned();
-        let sasl_password = properties.get("kafka.sasl.password").cloned();
+        let sasl_password = properties
+            .get("kafka.sasl.password")
+            .map(|v| crate::core::stream::connector_util::Redacted::new(v.clone()));
         let ssl_ca_location = properties.get("kafka.ssl.ca.location").cloned();
 
         // SASL credentials only make sense with a SASL security protocol.
@@ -120,7 +123,7 @@ impl KafkaConnectionConfig {
             config.set("sasl.username", v);
         }
         if let Some(v) = &self.sasl_password {
-            config.set("sasl.password", v);
+            config.set("sasl.password", v.expose());
         }
         if let Some(v) = &self.ssl_ca_location {
             config.set("ssl.ca.location", v);
@@ -230,6 +233,22 @@ mod tests {
         props.insert("kafka.sasl.username".to_string(), "user".to_string());
 
         assert!(KafkaConnectionConfig::from_properties(&props, &[]).is_ok());
+    }
+
+    #[test]
+    fn test_debug_never_leaks_the_sasl_password() {
+        let mut props = base_props();
+        props.insert(
+            "kafka.security.protocol".to_string(),
+            "sasl_ssl".to_string(),
+        );
+        props.insert("kafka.sasl.password".to_string(), "hunter2".to_string());
+
+        let config = KafkaConnectionConfig::from_properties(&props, &[]).unwrap();
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("hunter2"), "leaked: {debug}");
+        assert!(debug.contains("***"));
+        assert_eq!(config.sasl_password.unwrap().expose(), "hunter2");
     }
 
     #[test]

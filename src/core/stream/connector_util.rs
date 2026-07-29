@@ -21,6 +21,49 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
 
+/// A secret configuration value (password, token, credential-bearing header)
+/// whose `Debug`/`Display` output is always `***`. The raw value must be
+/// requested explicitly via [`Redacted::expose`], so a `{:?}` of a connector
+/// config can never leak credentials into logs (#143).
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct Redacted(String);
+
+impl Redacted {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// The actual secret — call only at the point of use (connection
+    /// building, header injection), never in log/format paths.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Redacted {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for Redacted {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl std::fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("***")
+    }
+}
+
+impl Display for Redacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("***")
+    }
+}
+
 /// Key injected by `stream_initializer` into the properties map passed to
 /// source/sink factories, carrying the stream's `format` (e.g. "json").
 /// The leading underscore marks it as reserved/injected — factories must not
@@ -86,6 +129,15 @@ mod tests {
         assert!(parse_or(&props, "k", 5u64)
             .unwrap_err()
             .contains("Invalid k"));
+    }
+
+    #[test]
+    fn test_redacted_never_prints_the_secret() {
+        let secret = Redacted::new("hunter2");
+        assert_eq!(format!("{secret}"), "***");
+        assert_eq!(format!("{secret:?}"), "***");
+        assert_eq!(format!("{:?}", Some(&secret)), "Some(***)");
+        assert_eq!(secret.expose(), "hunter2");
     }
 
     #[test]

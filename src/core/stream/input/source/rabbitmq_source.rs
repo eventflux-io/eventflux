@@ -64,8 +64,9 @@ pub struct RabbitMQSourceConfig {
     pub queue: String,
     /// Username for authentication (default: "guest")
     pub username: String,
-    /// Password for authentication (default: "guest")
-    pub password: String,
+    /// Password for authentication (default: "guest"); redacted in Debug
+    /// output — call `.expose()` at the point of use
+    pub password: crate::core::stream::connector_util::Redacted,
     /// Prefetch count for consumer (default: 10)
     pub prefetch_count: u16,
     /// Consumer tag (auto-generated if not specified)
@@ -86,7 +87,7 @@ impl Default for RabbitMQSourceConfig {
             vhost: "/".to_string(),
             queue: String::new(),
             username: "guest".to_string(),
-            password: "guest".to_string(),
+            password: "guest".into(),
             prefetch_count: 10,
             consumer_tag: None,
             auto_ack: true,
@@ -102,7 +103,11 @@ impl RabbitMQSourceConfig {
         let encoded_vhost = urlencoding::encode(&self.vhost);
         format!(
             "amqp://{}:{}@{}:{}/{}",
-            self.username, self.password, self.host, self.port, encoded_vhost
+            self.username,
+            self.password.expose(),
+            self.host,
+            self.port,
+            encoded_vhost
         )
     }
 
@@ -139,7 +144,7 @@ impl RabbitMQSourceConfig {
         }
 
         if let Some(password) = properties.get("rabbitmq.password") {
-            config.password = password.clone();
+            config.password = password.clone().into();
         }
 
         if let Some(prefetch) = properties.get("rabbitmq.prefetch") {
@@ -947,7 +952,7 @@ mod tests {
         assert_eq!(config.port, 5672);
         assert_eq!(config.vhost, "/");
         assert_eq!(config.username, "guest");
-        assert_eq!(config.password, "guest");
+        assert_eq!(config.password.expose(), "guest");
         assert_eq!(config.prefetch_count, 10);
     }
 
@@ -976,7 +981,10 @@ mod tests {
         assert_eq!(config.port, 5673);
         assert_eq!(config.vhost, "production");
         assert_eq!(config.username, "admin");
-        assert_eq!(config.password, "secret");
+        assert_eq!(config.password.expose(), "secret");
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("secret"), "leaked: {debug}");
+        assert!(debug.contains("***"));
         assert_eq!(config.prefetch_count, 50);
         assert_eq!(config.consumer_tag, Some("my-consumer".to_string()));
         assert!(!config.auto_ack);
@@ -1010,7 +1018,7 @@ mod tests {
             vhost: "/".to_string(),
             queue: "test".to_string(),
             username: "guest".to_string(),
-            password: "guest".to_string(),
+            password: "guest".into(),
             ..Default::default()
         };
 
@@ -1026,7 +1034,7 @@ mod tests {
             vhost: "my-vhost".to_string(),
             queue: "test".to_string(),
             username: "admin".to_string(),
-            password: "secret".to_string(),
+            password: "secret".into(),
             ..Default::default()
         };
 
