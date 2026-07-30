@@ -62,8 +62,9 @@ pub struct RabbitMQSinkConfig {
     pub routing_key: String,
     /// Username for authentication (default: "guest")
     pub username: String,
-    /// Password for authentication (default: "guest")
-    pub password: String,
+    /// Password for authentication (default: "guest"); redacted in Debug
+    /// output — call `.expose()` at the point of use
+    pub password: crate::core::stream::connector_util::Redacted,
     /// Whether messages should be persistent (default: true)
     pub persistent: bool,
     /// Content type header for messages (default: "application/octet-stream")
@@ -86,7 +87,7 @@ impl Default for RabbitMQSinkConfig {
             exchange: String::new(),
             routing_key: String::new(),
             username: "guest".to_string(),
-            password: "guest".to_string(),
+            password: "guest".into(),
             persistent: true,
             content_type: None,
             declare_exchange: false,
@@ -103,7 +104,11 @@ impl RabbitMQSinkConfig {
         let encoded_vhost = urlencoding::encode(&self.vhost);
         format!(
             "amqp://{}:{}@{}:{}/{}",
-            self.username, self.password, self.host, self.port, encoded_vhost
+            self.username,
+            self.password.expose(),
+            self.host,
+            self.port,
+            encoded_vhost
         )
     }
 
@@ -140,7 +145,7 @@ impl RabbitMQSinkConfig {
         }
 
         if let Some(password) = properties.get("rabbitmq.password") {
-            config.password = password.clone();
+            config.password = password.clone().into();
         }
 
         if let Some(routing_key) = properties.get("rabbitmq.routing.key") {
@@ -743,7 +748,7 @@ mod tests {
         assert_eq!(config.port, 5673);
         assert_eq!(config.vhost, "production");
         assert_eq!(config.username, "admin");
-        assert_eq!(config.password, "secret");
+        assert_eq!(config.password.expose(), "secret");
         assert_eq!(config.routing_key, "mykey");
         assert!(!config.persistent);
         assert_eq!(config.content_type, Some("application/json".to_string()));
@@ -779,7 +784,7 @@ mod tests {
             vhost: "/".to_string(),
             exchange: "test".to_string(),
             username: "guest".to_string(),
-            password: "guest".to_string(),
+            password: "guest".into(),
             ..Default::default()
         };
 
@@ -795,7 +800,7 @@ mod tests {
             vhost: "my-vhost".to_string(),
             exchange: "test".to_string(),
             username: "admin".to_string(),
-            password: "secret".to_string(),
+            password: "secret".into(),
             ..Default::default()
         };
 

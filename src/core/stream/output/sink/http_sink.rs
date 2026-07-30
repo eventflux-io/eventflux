@@ -33,7 +33,7 @@
 use super::sink_trait::Sink;
 use crate::core::exception::EventFluxError;
 use crate::core::extension::SinkFactory;
-use crate::core::stream::connector_util::{parse_or, INJECTED_FORMAT_KEY};
+use crate::core::stream::connector_util::{parse_or, Redacted, INJECTED_FORMAT_KEY};
 use crate::core::stream::http_common::{
     build_agent, build_request, is_retryable_status, parse_headers, parse_method, parse_url,
     probe_reachability, HttpRetryConfig,
@@ -50,8 +50,8 @@ pub struct HttpSinkConfig {
     pub url: String,
     /// `POST` (default), `PUT`, or `PATCH`
     pub method: String,
-    /// Request headers from `http.headers.<Name>`
-    pub headers: Vec<(String, String)>,
+    /// Request headers from `http.headers.<Name>` (values redacted in Debug)
+    pub headers: Vec<(String, Redacted)>,
     /// Content-Type: explicit `http.content.type`, else derived from the
     /// stream format (json/csv/bytes); `None` when a
     /// `http.headers.Content-Type` entry supplies it verbatim instead
@@ -372,8 +372,11 @@ mod tests {
         assert_eq!(config.validation_method, "NONE");
         assert_eq!(
             config.headers,
-            vec![("Authorization".to_string(), "Bearer tok".to_string())]
+            vec![("Authorization".to_string(), Redacted::new("Bearer tok"))]
         );
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("Bearer tok"), "leaked: {debug}");
+        assert!(debug.contains("Authorization"), "names stay visible");
     }
 
     #[test]
@@ -415,7 +418,7 @@ mod tests {
         assert_eq!(config.content_type, None);
         assert_eq!(
             config.headers,
-            vec![("Content-Type".to_string(), "application/xml".to_string())]
+            vec![("Content-Type".to_string(), Redacted::new("application/xml"))]
         );
 
         // Both mechanisms at once is ambiguous — rejected

@@ -74,7 +74,9 @@ pub struct WebSocketSourceConfig {
     /// Maximum reconnect attempts (-1 = unlimited, default: -1)
     pub reconnect_max_attempts: i32,
     /// Custom headers for connection (e.g., Authorization)
-    pub headers: HashMap<String, String>,
+    /// Custom handshake headers (values redacted in Debug — they may
+    /// carry Authorization tokens)
+    pub headers: HashMap<String, crate::core::stream::connector_util::Redacted>,
     /// WebSocket subprotocol for negotiation
     pub subprotocol: Option<String>,
 }
@@ -147,6 +149,7 @@ impl WebSocketSourceConfig {
         config.headers =
             crate::core::stream::connector_util::parse_prefixed(properties, "websocket.headers.")
                 .into_iter()
+                .map(|(name, value)| (name, value.into()))
                 .collect();
 
         Ok(config)
@@ -190,7 +193,7 @@ impl WebSocketSource {
 
         // Add custom headers
         for (name, value) in &config.headers {
-            request = request.header(name.as_str(), value.as_str());
+            request = request.header(name.as_str(), value.expose());
         }
 
         // Add subprotocol header if configured
@@ -754,12 +757,12 @@ mod tests {
         assert_eq!(config.subprotocol, Some("graphql-ws".to_string()));
         assert_eq!(
             config.headers.get("Authorization"),
-            Some(&"Bearer token123".to_string())
+            Some(&"Bearer token123".into())
         );
-        assert_eq!(
-            config.headers.get("X-Custom"),
-            Some(&"custom-value".to_string())
-        );
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("token123"), "leaked: {debug}");
+        assert!(debug.contains("Authorization"), "names stay visible");
+        assert_eq!(config.headers.get("X-Custom"), Some(&"custom-value".into()));
     }
 
     #[test]

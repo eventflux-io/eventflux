@@ -18,16 +18,21 @@
 //! Configuration and client helpers shared by the HTTP source and sink.
 
 use crate::core::exception::EventFluxError;
-use crate::core::stream::connector_util::{parse_or, parse_prefixed};
+use crate::core::stream::connector_util::{parse_or, parse_prefixed, Redacted};
 use std::collections::HashMap;
 use std::time::Duration;
 
 /// Request headers from `http.headers.<Name>` properties.
 ///
+/// Values are wrapped in [`Redacted`] — headers routinely carry credentials
+/// (`Authorization`, API keys), so a Debug of a config prints names only.
 /// Secrets belong in environment variables:
 /// `"http.headers.Authorization" = 'Bearer ${TOKEN}'`.
-pub fn parse_headers(properties: &HashMap<String, String>) -> Vec<(String, String)> {
+pub fn parse_headers(properties: &HashMap<String, String>) -> Vec<(String, Redacted)> {
     parse_prefixed(properties, "http.headers.")
+        .into_iter()
+        .map(|(name, value)| (name, Redacted::new(value)))
+        .collect()
 }
 
 /// Validate an `http://` or `https://` URL property.
@@ -109,12 +114,12 @@ pub fn parse_method(
 pub fn build_request(
     method: &str,
     url: &str,
-    headers: &[(String, String)],
+    headers: &[(String, Redacted)],
 ) -> ureq::http::request::Builder {
     // ureq re-exports the exact `http` crate version its API expects
     let mut request = ureq::http::Request::builder().method(method).uri(url);
     for (name, value) in headers {
-        request = request.header(name, value);
+        request = request.header(name, value.expose());
     }
     request
 }
@@ -162,7 +167,7 @@ pub fn probe_reachability(
     agent: &ureq::Agent,
     method: &str,
     url: &str,
-    headers: &[(String, String)],
+    headers: &[(String, Redacted)],
 ) -> Result<(), EventFluxError> {
     let request = build_request(method, url, headers).body(()).map_err(|e| {
         EventFluxError::configuration(format!("Failed to build probe request for '{url}': {e}"))

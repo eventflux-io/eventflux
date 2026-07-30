@@ -97,7 +97,9 @@ pub struct WebSocketSinkConfig {
     /// Message type: text or binary (default: text)
     pub message_type: MessageType,
     /// Custom headers for connection (e.g., Authorization)
-    pub headers: HashMap<String, String>,
+    /// Custom handshake headers (values redacted in Debug — they may
+    /// carry Authorization tokens)
+    pub headers: HashMap<String, crate::core::stream::connector_util::Redacted>,
     /// WebSocket subprotocol for negotiation
     pub subprotocol: Option<String>,
 }
@@ -175,6 +177,7 @@ impl WebSocketSinkConfig {
         config.headers =
             crate::core::stream::connector_util::parse_prefixed(properties, "websocket.headers.")
                 .into_iter()
+                .map(|(name, value)| (name, value.into()))
                 .collect();
 
         Ok(config)
@@ -232,7 +235,7 @@ impl WebSocketSink {
 
         // Add custom headers
         for (name, value) in &config.headers {
-            request = request.header(name.as_str(), value.as_str());
+            request = request.header(name.as_str(), value.expose());
         }
 
         // Add subprotocol header if configured
@@ -706,7 +709,7 @@ mod tests {
         assert_eq!(config.subprotocol, Some("graphql-ws".to_string()));
         assert_eq!(
             config.headers.get("Authorization"),
-            Some(&"Bearer token".to_string())
+            Some(&"Bearer token".into())
         );
     }
 
