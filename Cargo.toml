@@ -75,7 +75,7 @@ lz4 = "1.24"
 num_cpus = "1"
 once_cell = "1"
 prost = "0.12"
-rand = "0.8"
+rand = "0.9"
 rayon = "1"
 # cmake-build compiles the vendored librdkafka (needs cmake + a C toolchain);
 # ssl-vendored and curl-static statically link OpenSSL/libcurl so the build
