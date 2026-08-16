@@ -109,7 +109,7 @@ tokio-stream = "0.1"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"], optional = true }
 toml = "0.8"
 tonic = { version = "0.11", features = ["tls"] }
-tower = "0.4"
+tower = "0.5"
 # Blocking HTTP client for the HTTP connector's sink and polling source;
 # rustls keeps the build hermetic (no system TLS)
 ureq = { version = "3.3", optional = true }
