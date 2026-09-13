@@ -84,8 +84,10 @@ pub const SOURCE_ERROR_PARAMETERS: &[&str] = &[
     "error.dlq.fallback-strategy",
 ];
 use crate::core::stream::input::input_handler::InputHandler;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 /// Source error handling context
 ///
@@ -94,6 +96,11 @@ use std::thread;
 pub struct SourceErrorContext {
     /// The error handler
     handler: ErrorHandler,
+    /// The owning worker's running flag, bound at `start()`. Retry backoff
+    /// sleeps are sliced against it so `stop()` interrupts them instead of
+    /// waiting out user-configured delays (#141); unbound contexts sleep
+    /// uninterruptibly (factory-time / test use).
+    running: Option<Arc<AtomicBool>>,
 }
 
 impl SourceErrorContext {
@@ -110,7 +117,35 @@ impl SourceErrorContext {
     ) -> Self {
         Self {
             handler: ErrorHandler::new(error_config, dlq_junction, stream_name),
+            running: None,
         }
+    }
+
+    /// A fresh context with the same configuration, DLQ wiring, and stream
+    /// name, but zeroed runtime state (error counters, cancellation
+    /// binding). Sources call this per `start()` instead of `take()`ing the
+    /// stored context, so the configured strategy survives stop→start
+    /// cycles (#142) and clones.
+    pub fn fresh(&self) -> Self {
+        Self::new(
+            self.handler.config().clone(),
+            self.handler.dlq_junction(),
+            self.handler.stream_name().to_string(),
+        )
+    }
+
+    /// Bind the owning worker's running flag (call at the top of the worker
+    /// closure). Once bound, retry backoff aborts promptly when the flag
+    /// clears, and the delivery loop stops re-invoking the callback.
+    pub fn bind_cancellation(&mut self, running: Arc<AtomicBool>) {
+        self.running = Some(running);
+    }
+
+    /// Whether the bound worker has been told to stop
+    pub fn is_cancelled(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|r| !r.load(Ordering::SeqCst))
     }
 
     /// Create from FlatConfig (convenience method)
@@ -195,9 +230,23 @@ impl SourceErrorContext {
         let action = self.handler.handle_error(event, error);
 
         if let ErrorAction::Retry { delay } = &action {
-            // Note: This runs on blocking source threads (spawn_blocking), not the async executor.
-            // thread::sleep is intentional here — sources are synchronous.
-            thread::sleep(*delay);
+            // Blocking sleep is intentional (sources are synchronous), but
+            // it is sliced against the bound running flag: a user-configured
+            // delay must never hold `stop()` past the worker grace period.
+            const SLICE: Duration = Duration::from_millis(50);
+            let mut remaining = *delay;
+            while !remaining.is_zero() {
+                if self.is_cancelled() {
+                    log::info!(
+                        "[{}] Stop requested during retry backoff — aborting retries",
+                        self.handler.stream_name()
+                    );
+                    return ErrorAction::Fail;
+                }
+                let slice = remaining.min(SLICE);
+                thread::sleep(slice);
+                remaining -= slice;
+            }
         }
 
         action
@@ -320,6 +369,11 @@ pub fn deliver_with_error_handling(
     source_tag: &str,
 ) -> DeliveryVerdict {
     loop {
+        // A stopping worker must not deliver again — the record stays
+        // unacknowledged and is redelivered after restart
+        if error_ctx.as_ref().is_some_and(|ctx| ctx.is_cancelled()) {
+            return DeliveryVerdict::Fail;
+        }
         match callback.on_data(payload) {
             Ok(()) => {
                 if let Some(ctx) = error_ctx {
@@ -448,6 +502,100 @@ mod tests {
         // Reset
         ctx.reset_errors();
         assert_eq!(ctx.error_count(), 0);
+    }
+
+    fn retry_ctx(initial_delay: std::time::Duration) -> SourceErrorContext {
+        use crate::core::error::{ErrorStrategy, LogLevel};
+        let retry_config = RetryConfig {
+            max_attempts: 5,
+            backoff: BackoffStrategy::Fixed,
+            initial_delay,
+            max_delay: initial_delay,
+        };
+        let error_config = ErrorConfig::new(
+            ErrorStrategy::Retry,
+            LogLevel::Warn,
+            Some(retry_config),
+            None,
+            None,
+        )
+        .unwrap();
+        SourceErrorContext::new(error_config, None, "TestStream".to_string())
+    }
+
+    #[test]
+    fn test_fresh_keeps_config_and_zeroes_counters() {
+        let mut ctx = retry_ctx(std::time::Duration::from_millis(1));
+        let error = EventFluxError::ConnectionUnavailable {
+            message: "x".to_string(),
+            source: None,
+        };
+        ctx.handle_error(None, &error);
+        assert_eq!(ctx.error_count(), 1);
+
+        let fresh = ctx.fresh();
+        assert_eq!(fresh.error_count(), 0, "runtime state is zeroed");
+        assert_eq!(fresh.handler().stream_name(), "TestStream");
+        assert!(
+            !fresh.is_cancelled(),
+            "cancellation binding is not inherited"
+        );
+    }
+
+    #[test]
+    fn test_retry_backoff_aborts_promptly_on_stop() {
+        // Regression (#141): a user-configured delay must not hold stop()
+        // past the worker grace period
+        let mut ctx = retry_ctx(std::time::Duration::from_secs(30));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        ctx.bind_cancellation(Arc::clone(&running));
+
+        let handle = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let action = ctx.handle_error_with_action(
+                None,
+                &EventFluxError::ConnectionUnavailable {
+                    message: "down".to_string(),
+                    source: None,
+                },
+            );
+            (action, started.elapsed())
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        running.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (action, elapsed) = handle.join().unwrap();
+
+        assert!(matches!(action, ErrorAction::Fail), "stop maps to Fail");
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "a 30s backoff must abort within the stop window, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_delivery_refuses_after_cancellation() {
+        #[derive(Debug)]
+        struct FailingCallback;
+        impl crate::core::stream::input::source::SourceCallback for FailingCallback {
+            fn on_data(&self, _data: &[u8]) -> Result<(), EventFluxError> {
+                Err(EventFluxError::Other("pipeline down".to_string()))
+            }
+        }
+
+        let mut ctx = retry_ctx(std::time::Duration::from_millis(10));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(false)); // already stopped
+        ctx.bind_cancellation(Arc::clone(&running));
+        let mut error_ctx = Some(ctx);
+
+        let verdict =
+            deliver_with_error_handling(&FailingCallback, b"payload", &mut error_ctx, "TestSource");
+        assert_eq!(
+            verdict,
+            DeliveryVerdict::Fail,
+            "a stopping worker must not keep invoking the callback; Fail \
+             leaves the record unacknowledged for redelivery"
+        );
     }
 
     #[test]

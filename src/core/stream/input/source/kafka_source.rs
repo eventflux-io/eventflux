@@ -289,7 +289,8 @@ impl Clone for KafkaSource {
         Self {
             config: self.config.clone(),
             worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            error_ctx: None,             // Error context contains runtime state, not cloneable
+            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
 }
@@ -297,9 +298,12 @@ impl Clone for KafkaSource {
 impl Source for KafkaSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
         let config = self.config.clone();
-        let mut error_ctx = self.error_ctx.take();
+        let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         self.worker.start(move |running| {
+            if let Some(ctx) = &mut error_ctx {
+                ctx.bind_cancellation(Arc::clone(&running));
+            }
             // Setup failures (create/subscribe) are all reported the same way
             let report_fatal = |error_ctx: &mut Option<SourceErrorContext>, err: EventFluxError| {
                 if let Some(ctx) = error_ctx {
@@ -713,7 +717,9 @@ mod tests {
         let source = KafkaSource::from_properties(&props, None, "TestStream").unwrap();
         let cloned = source.clone();
         assert_eq!(cloned.config.topics, vec!["events"]);
-        assert!(cloned.error_ctx.is_none()); // runtime state not cloned
+        // The configured strategy survives cloning (fresh runtime state)
+        let ctx = cloned.error_ctx.expect("clone keeps the error strategy");
+        assert_eq!(ctx.error_count(), 0); // runtime state not cloned
     }
 
     // =========================================================================

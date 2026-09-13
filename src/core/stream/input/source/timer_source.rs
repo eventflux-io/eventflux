@@ -185,7 +185,8 @@ impl Clone for TimerSource {
         Self {
             interval_ms: self.interval_ms,
             worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            error_ctx: None,             // Error context is not cloneable (contains runtime state)
+            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
             #[cfg(test)]
             simulate_failure_rate: self.simulate_failure_rate,
         }
@@ -197,12 +198,15 @@ impl Source for TimerSource {
         let interval = self.interval_ms;
 
         // Move error_ctx into the thread (take ownership)
-        let mut error_ctx = self.error_ctx.take();
+        let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         #[cfg(test)]
         let failure_rate = self.simulate_failure_rate;
 
         self.worker.start(move |running| {
+            if let Some(ctx) = &mut error_ctx {
+                ctx.bind_cancellation(Arc::clone(&running));
+            }
             while running.load(Ordering::SeqCst) {
                 // Create event
                 let event =

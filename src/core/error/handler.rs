@@ -115,6 +115,21 @@ impl ErrorHandler {
         }
     }
 
+    /// The error configuration this handler was built from
+    pub fn config(&self) -> &ErrorConfig {
+        &self.config
+    }
+
+    /// The DLQ junction, if one is wired
+    pub fn dlq_junction(&self) -> Option<Arc<Mutex<InputHandler>>> {
+        self.dlq_junction.clone()
+    }
+
+    /// The source stream name used for DLQ events
+    pub fn stream_name(&self) -> &str {
+        &self.stream_name
+    }
+
     /// Handle an error and return the action to take
     ///
     /// This is the main entry point for error handling. It applies the

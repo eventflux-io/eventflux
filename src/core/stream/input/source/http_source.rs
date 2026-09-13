@@ -351,9 +351,12 @@ impl HttpSource {
     }
 
     fn start_poll(&mut self, config: HttpPollConfig, callback: Arc<dyn SourceCallback>) {
-        let mut error_ctx = self.error_ctx.take();
+        let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         self.worker.start(move |running| {
+            if let Some(ctx) = &mut error_ctx {
+                ctx.bind_cancellation(Arc::clone(&running));
+            }
             let agent = build_agent(config.timeout_ms);
             let interval = Duration::from_millis(config.interval_ms);
             let mut polls_delivered: u64 = 0;
@@ -436,9 +439,12 @@ impl HttpSource {
     }
 
     fn start_webhook(&mut self, config: HttpWebhookConfig, callback: Arc<dyn SourceCallback>) {
-        let error_ctx = self.error_ctx.take();
+        let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         self.worker.start(move |running| {
+            if let Some(ctx) = &mut error_ctx {
+                ctx.bind_cancellation(Arc::clone(&running));
+            }
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(e) => {
@@ -518,7 +524,8 @@ impl Clone for HttpSource {
         Self {
             mode: self.mode.clone(),
             worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            error_ctx: None,             // Error context contains runtime state, not cloneable
+            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
 }
@@ -852,7 +859,9 @@ mod tests {
         props.insert("error.strategy".to_string(), "drop".to_string());
         let source = HttpSource::from_properties(&props, None, "TestStream").unwrap();
         let cloned = source.clone();
-        assert!(cloned.error_ctx.is_none());
+        // The configured strategy survives cloning (fresh runtime state)
+        let ctx = cloned.error_ctx.expect("clone keeps the error strategy");
+        assert_eq!(ctx.error_count(), 0);
     }
 
     // =========================================================================
