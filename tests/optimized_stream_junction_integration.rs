@@ -38,6 +38,9 @@ use eventflux::core::query::processor::{ProcessingMode, Processor};
 use eventflux::core::stream::{
     BackpressureStrategy, JunctionConfig, StreamJunction, StreamJunctionFactory,
 };
+use eventflux::core::util::pipeline::{
+    BackpressureStrategy as PipelineBackpressure, EventPipeline, PipelineConfig, PipelineResult,
+};
 use eventflux::query_api::definition::attribute::Type as AttrType;
 use eventflux::query_api::definition::StreamDefinition;
 use std::sync::{
@@ -505,10 +508,51 @@ fn test_concurrent_publishers_optimized_junction() {
 }
 
 #[test]
-fn test_junction_backpressure_handling() {
+fn test_pipeline_drop_backpressure_is_exact() {
+    // The deterministic pin for Drop-on-full semantics (#139): a standalone
+    // EventPipeline has NO consumers (the junction spawns those at its own
+    // construction), so publishing past capacity cannot race anything —
+    // exactly `capacity` publishes succeed and the rest are rejected.
+    let capacity = 64;
+    let pipeline = EventPipeline::new(PipelineConfig {
+        capacity,
+        backpressure: PipelineBackpressure::Drop,
+        ..PipelineConfig::default()
+    })
+    .unwrap();
+
+    let num_events = 500;
+    let mut success = 0;
+    let mut full = 0;
+    for i in 0..num_events {
+        let event = StreamEvent::new_with_data(i as i64, vec![AttributeValue::Int(i as i32)]);
+        match pipeline.publish(event) {
+            PipelineResult::Success { .. } => success += 1,
+            PipelineResult::Full => full += 1,
+            other => panic!("unexpected publish outcome: {other:?}"),
+        }
+    }
+
+    assert_eq!(success, capacity, "exactly the buffer capacity is accepted");
+    assert_eq!(
+        full,
+        num_events - capacity,
+        "every overflow event is rejected"
+    );
+}
+
+#[test]
+fn test_junction_backpressure_invariants() {
+    // At the junction level the flood outcome is inherently racy: async
+    // consumers start at junction CONSTRUCTION and drain the bounded queue
+    // into the executor as fast as they can pop, so how many sends observe
+    // a full queue depends on thread scheduling. (Two prior versions of
+    // this test asserted `dropped > 0` and both flaked — #139.) What IS
+    // guaranteed, and asserted here: every send either succeeds or reports
+    // a drop, the metrics agree with the send-side outcomes, and every
+    // accepted event is delivered exactly once.
     let (app_ctx, stream_def) = setup_test_context();
 
-    // Minimum buffer size + Drop strategy: a full buffer drops immediately
     let junction = StreamJunction::new_with_backpressure(
         "BackpressureTest".to_string(),
         stream_def,
@@ -525,13 +569,8 @@ fn test_junction_backpressure_handling() {
     )));
     let events_received = processor.lock().unwrap().events_received.clone();
     junction.subscribe(processor);
+    junction.start_processing().unwrap();
 
-    // Flood BEFORE start_processing(): with no consumer loop draining the
-    // queue, it fills at exactly its capacity and the Drop strategy must
-    // reject the overflow. (A "slow consumer" variant is inherently racy —
-    // the consumer loop hands events to an unbounded executor queue as fast
-    // as it can pop, so whether the 64-slot queue ever fills depends on
-    // thread scheduling: that race is what made this test flaky in CI, #139.)
     let mut success_count: usize = 0;
     let mut dropped_count: usize = 0;
     let num_events: usize = 500;
@@ -552,30 +591,18 @@ fn test_junction_backpressure_handling() {
     }
 
     println!(
-        "Backpressure test - Success: {}, Dropped: {}",
+        "Backpressure invariants - Success: {}, Dropped: {}",
         success_count, dropped_count
     );
 
-    // Deterministic: every send either filled a buffer slot or dropped
+    // Every send is accounted for, one way or the other
     assert_eq!(success_count + dropped_count, num_events);
     assert!(
         success_count > 0,
-        "The buffer must accept up to its capacity"
-    );
-    assert!(
-        dropped_count > 0,
-        "Flooding {num_events} events into a 64-slot buffer with no \
-         consumer running must drop the overflow"
+        "a 64-slot buffer accepts at least one event"
     );
 
-    let metrics = junction.get_performance_metrics();
-    assert!(
-        metrics.events_dropped > 0,
-        "Metrics should show dropped events"
-    );
-
-    // Now start processing: every accepted event must still be delivered
-    junction.start_processing().unwrap();
+    // Every accepted event must be delivered
     let deadline = Instant::now() + Duration::from_secs(10);
     while events_received.load(Ordering::Relaxed) < success_count && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
@@ -585,8 +612,12 @@ fn test_junction_backpressure_handling() {
     assert_eq!(
         events_received.load(Ordering::Relaxed),
         success_count,
-        "every accepted event must be delivered once processing starts"
+        "every accepted event must be delivered exactly once"
     );
+
+    // The junction's drop metric agrees with the send-side outcomes
+    let metrics = junction.get_performance_metrics();
+    assert_eq!(metrics.events_dropped, dropped_count as u64);
 }
 
 #[test]

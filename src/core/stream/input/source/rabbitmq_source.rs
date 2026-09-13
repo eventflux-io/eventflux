@@ -254,7 +254,8 @@ impl Clone for RabbitMQSource {
         Self {
             config: self.config.clone(),
             worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            error_ctx: None,             // Error context contains runtime state, not cloneable
+            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
 }
@@ -264,9 +265,12 @@ impl Source for RabbitMQSource {
         let config = self.config.clone();
 
         // Move error_ctx into the thread
-        let mut error_ctx = self.error_ctx.take();
+        let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         self.worker.start(move |running| {
+            if let Some(ctx) = &mut error_ctx {
+                ctx.bind_cancellation(Arc::clone(&running));
+            }
             // Create a tokio runtime for lapin async operations
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
@@ -654,6 +658,26 @@ impl Source for RabbitMQSource {
                                         log::error!(
                                             "[RabbitMQSource] Unrecoverable error, stopping"
                                         );
+                                        should_stop = true;
+                                    }
+                                    ErrorAction::Cancelled => {
+                                        // Ordinary shutdown mid-retry: the
+                                        // message is innocent — requeue it
+                                        // for redelivery after restart
+                                        if !config.auto_ack {
+                                            if let Err(e) = delivery
+                                                .nack(lapin::options::BasicNackOptions {
+                                                    requeue: true,
+                                                    ..Default::default()
+                                                })
+                                                .await
+                                            {
+                                                log::warn!(
+                                                    "[RabbitMQSource] Failed to requeue message: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
                                         should_stop = true;
                                     }
                                     ErrorAction::Drop | ErrorAction::SendToDlq => {

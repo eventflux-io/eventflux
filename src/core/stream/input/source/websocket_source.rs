@@ -503,6 +503,11 @@ impl WebSocketSource {
                             log::error!("[WebSocketSource] Unrecoverable error, stopping");
                             return MessageResult::Stop;
                         }
+                        ErrorAction::Cancelled => {
+                            // Stop requested mid-retry — no ack concept here,
+                            // just stop promptly
+                            return MessageResult::Stop;
+                        }
                         _ => {
                             // Drop, DLQ, or other actions - continue processing
                             return MessageResult::Continue;
@@ -526,7 +531,8 @@ impl Clone for WebSocketSource {
         Self {
             config: self.config.clone(),
             worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            error_ctx: None,             // Error context contains runtime state, not cloneable
+            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
 }
@@ -536,9 +542,12 @@ impl Source for WebSocketSource {
         let config = self.config.clone();
 
         // Move error_ctx into the thread
-        let error_ctx = self.error_ctx.take();
+        let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         self.worker.start(move |running| {
+            if let Some(ctx) = &mut error_ctx {
+                ctx.bind_cancellation(Arc::clone(&running));
+            }
             // Create a tokio runtime for async WebSocket operations
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,

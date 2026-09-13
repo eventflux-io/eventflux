@@ -72,6 +72,13 @@ pub enum ErrorAction {
 
     /// Fail the source/sink (stop processing)
     Fail,
+
+    /// The worker was told to stop while the strategy was retrying — stop
+    /// processing, but leave the in-flight record unacknowledged/uncommitted
+    /// so it is redelivered after restart. Distinct from [`Fail`]: `Fail` is
+    /// a poison-message verdict (RabbitMQ nacks it without requeue), while
+    /// `Cancelled` must never discard the record.
+    Cancelled,
 }
 
 /// Runtime error handler that applies error strategies
@@ -113,6 +120,21 @@ impl ErrorHandler {
             stream_name,
             consecutive_errors: 0,
         }
+    }
+
+    /// The error configuration this handler was built from
+    pub fn config(&self) -> &ErrorConfig {
+        &self.config
+    }
+
+    /// The DLQ junction, if one is wired
+    pub fn dlq_junction(&self) -> Option<Arc<Mutex<InputHandler>>> {
+        self.dlq_junction.clone()
+    }
+
+    /// The source stream name used for DLQ events
+    pub fn stream_name(&self) -> &str {
+        &self.stream_name
     }
 
     /// Handle an error and return the action to take

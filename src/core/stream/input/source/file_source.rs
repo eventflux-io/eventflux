@@ -186,7 +186,8 @@ impl Clone for FileSource {
         Self {
             config: self.config.clone(),
             worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            error_ctx: None,             // Error context contains runtime state, not cloneable
+            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
 }
@@ -412,9 +413,12 @@ fn salvage_tail(
 impl Source for FileSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
         let config = self.config.clone();
-        let mut error_ctx = self.error_ctx.take();
+        let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         self.worker.start(move |running| {
+            if let Some(ctx) = &mut error_ctx {
+                ctx.bind_cancellation(Arc::clone(&running));
+            }
             let interval = Duration::from_millis(config.poll_interval_ms);
             let mut reader: Option<TailReader> = None;
             // start.position applies only to the file present at startup; a
@@ -819,7 +823,40 @@ mod tests {
         props.insert("error.strategy".to_string(), "drop".to_string());
         let source = FileSource::from_properties(&props, None, "TestStream").unwrap();
         let cloned = source.clone();
-        assert!(cloned.error_ctx.is_none());
+        // The configured strategy survives cloning (fresh runtime state)
+        let ctx = cloned.error_ctx.expect("clone keeps the error strategy");
+        assert_eq!(ctx.error_count(), 0);
+    }
+
+    #[test]
+    fn test_restart_preserves_error_strategy() {
+        // Regression (#142): start() used to take() the context, so a
+        // stop→start cycle silently lost the configured strategy
+        #[derive(Debug)]
+        struct NoopCallback;
+        impl crate::core::stream::input::source::SourceCallback for NoopCallback {
+            fn on_data(&self, _data: &[u8]) -> Result<(), EventFluxError> {
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("in.jsonl");
+        std::fs::write(&path, "").unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("file.path".to_string(), path.display().to_string());
+        props.insert("error.strategy".to_string(), "fail".to_string());
+
+        let mut source = FileSource::from_properties(&props, None, "TestStream").unwrap();
+        for _ in 0..2 {
+            source.start(Arc::new(NoopCallback));
+            source.stop();
+            assert!(
+                source.error_ctx.is_some(),
+                "the configured error strategy must survive stop() for the next start()"
+            );
+        }
     }
 
     #[test]
