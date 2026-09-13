@@ -72,6 +72,13 @@ pub enum ErrorAction {
 
     /// Fail the source/sink (stop processing)
     Fail,
+
+    /// The worker was told to stop while the strategy was retrying — stop
+    /// processing, but leave the in-flight record unacknowledged/uncommitted
+    /// so it is redelivered after restart. Distinct from [`Fail`]: `Fail` is
+    /// a poison-message verdict (RabbitMQ nacks it without requeue), while
+    /// `Cancelled` must never discard the record.
+    Cancelled,
 }
 
 /// Runtime error handler that applies error strategies

@@ -503,6 +503,11 @@ impl WebSocketSource {
                             log::error!("[WebSocketSource] Unrecoverable error, stopping");
                             return MessageResult::Stop;
                         }
+                        ErrorAction::Cancelled => {
+                            // Stop requested mid-retry — no ack concept here,
+                            // just stop promptly
+                            return MessageResult::Stop;
+                        }
                         _ => {
                             // Drop, DLQ, or other actions - continue processing
                             return MessageResult::Continue;

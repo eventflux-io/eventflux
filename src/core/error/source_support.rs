@@ -203,7 +203,7 @@ impl SourceErrorContext {
     /// * `false` - Stop processing (fail strategy or unrecoverable error)
     pub fn handle_error(&mut self, event: Option<&Event>, error: &EventFluxError) -> bool {
         let action = self.handle_error_with_action(event, error);
-        !matches!(action, ErrorAction::Fail)
+        !matches!(action, ErrorAction::Fail | ErrorAction::Cancelled)
     }
 
     /// Handle an error and return the action taken
@@ -241,7 +241,10 @@ impl SourceErrorContext {
                         "[{}] Stop requested during retry backoff — aborting retries",
                         self.handler.stream_name()
                     );
-                    return ErrorAction::Fail;
+                    // NOT Fail: Fail is a poison-message verdict (RabbitMQ
+                    // rejects without requeue). Cancellation must leave the
+                    // record for redelivery.
+                    return ErrorAction::Cancelled;
                 }
                 let slice = remaining.min(SLICE);
                 thread::sleep(slice);
@@ -404,7 +407,10 @@ pub fn deliver_with_error_handling(
                     // Delay already applied by handle_error_with_action
                     ErrorAction::Retry { .. } => continue,
                     ErrorAction::Drop | ErrorAction::SendToDlq => return DeliveryVerdict::Disposed,
-                    ErrorAction::Fail => return DeliveryVerdict::Fail,
+                    // Both stop the source without acknowledging; connectors
+                    // with a distinct poison-message path (RabbitMQ) branch
+                    // on the action before it reaches a verdict
+                    ErrorAction::Fail | ErrorAction::Cancelled => return DeliveryVerdict::Fail,
                 }
             }
         }
@@ -566,7 +572,10 @@ mod tests {
         running.store(false, std::sync::atomic::Ordering::SeqCst);
         let (action, elapsed) = handle.join().unwrap();
 
-        assert!(matches!(action, ErrorAction::Fail), "stop maps to Fail");
+        assert!(
+            matches!(action, ErrorAction::Cancelled),
+            "stop maps to Cancelled, never poison-message Fail"
+        );
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "a 30s backoff must abort within the stop window, took {elapsed:?}"

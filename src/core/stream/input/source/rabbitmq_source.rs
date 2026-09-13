@@ -660,6 +660,26 @@ impl Source for RabbitMQSource {
                                         );
                                         should_stop = true;
                                     }
+                                    ErrorAction::Cancelled => {
+                                        // Ordinary shutdown mid-retry: the
+                                        // message is innocent — requeue it
+                                        // for redelivery after restart
+                                        if !config.auto_ack {
+                                            if let Err(e) = delivery
+                                                .nack(lapin::options::BasicNackOptions {
+                                                    requeue: true,
+                                                    ..Default::default()
+                                                })
+                                                .await
+                                            {
+                                                log::warn!(
+                                                    "[RabbitMQSource] Failed to requeue message: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                        should_stop = true;
+                                    }
                                     ErrorAction::Drop | ErrorAction::SendToDlq => {
                                         // Error was handled (dropped or sent to DLQ)
                                         // ACK the message to remove it from the queue
