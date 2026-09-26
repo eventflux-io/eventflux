@@ -115,7 +115,7 @@ tower = "0.4"
 ureq = { version = "3.3", optional = true }
 urlencoding = { version = "2.1", optional = true }
 uuid = { version = "1", features = ["v4"] }
-vault = { version = "10.1", optional = true }
+vault = { version = "11.0", optional = true }
 zstd = "0.13"
 
 [build-dependencies]
