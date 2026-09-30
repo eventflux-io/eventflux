@@ -51,7 +51,10 @@ axum = { version = "0.8", default-features = false, features = [
     "tokio",
 ], optional = true }
 base64 = { version = "0.22", optional = true }
-bincode = "1.3"
+# bincode 2.x (serde feature for the existing derive-based types).
+# NOTE: bincode 3.0.0 on crates.io is a protest release containing only a
+# compile_error! — do not "upgrade" to it.
+bincode = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 consul = { version = "0.4", optional = true }
@@ -61,7 +64,10 @@ crossbeam-channel = "0.5"
 crossbeam-queue = "0.3"
 crossbeam-utils = "0.8"
 dashmap = "6.2"
-deadpool-redis = "0.18"
+# The redis crate is consumed exclusively through deadpool-redis's
+# re-export (deadpool_redis::redis), which keeps the pool and client
+# versions in lockstep — no direct redis dependency.
+deadpool-redis = { version = "0.23", features = ["connection-manager"] }
 dirs = "5.0"
 env_logger = "0.11"
 etcd-rs = { version = "1.0", optional = true }
@@ -91,7 +97,6 @@ rdkafka = { version = "0.39", default-features = false, features = [
     "ssl-vendored",
     "zstd",
 ], optional = true }
-redis = { version = "0.27", features = ["aio", "tokio-comp", "connection-manager"] }
 regex = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

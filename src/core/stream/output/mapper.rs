@@ -53,7 +53,8 @@ impl PassthroughMapper {
     ///
     /// Used by debug sinks that need to recover Events from binary format.
     pub fn deserialize(bytes: &[u8]) -> Result<Vec<Event>, String> {
-        bincode::deserialize(bytes).map_err(|e| format!("Failed to deserialize events: {}", e))
+        crate::core::util::serialization::from_bytes(bytes)
+            .map_err(|e| format!("Failed to deserialize events: {}", e))
     }
 }
 
@@ -67,7 +68,7 @@ impl SinkMapper for PassthroughMapper {
     fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
         // Serialize as a one-element slice so the payload stays a bincode
         // sequence — `deserialize` (used by LogSink) returns Vec<Event>.
-        bincode::serialize(std::slice::from_ref(event))
+        crate::core::util::serialization::to_bytes(std::slice::from_ref(event))
             .map_err(|e| EventFluxError::app_runtime(format!("Failed to serialize event: {}", e)))
     }
 

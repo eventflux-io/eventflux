@@ -38,7 +38,7 @@ use crate::core::exception::EventFluxError;
 ///
 /// ```ignore
 /// let mapper = PassthroughMapper::new();
-/// let bytes = bincode::serialize(&events)?;
+/// let bytes = eventflux::core::util::serialization::to_bytes(&events)?;
 /// let recovered: Vec<Event> = mapper.map(&bytes);
 /// ```
 #[derive(Debug, Clone)]
@@ -54,7 +54,8 @@ impl PassthroughMapper {
     /// Used by sources that generate Events internally and need to convert
     /// them to binary format for the mapper pipeline.
     pub fn serialize(events: &[Event]) -> Result<Vec<u8>, String> {
-        bincode::serialize(events).map_err(|e| format!("Failed to serialize events: {}", e))
+        crate::core::util::serialization::to_bytes(events)
+            .map_err(|e| format!("Failed to serialize events: {}", e))
     }
 }
 
@@ -67,9 +68,11 @@ impl Default for PassthroughMapper {
 impl SourceMapper for PassthroughMapper {
     fn map(&self, input: &[u8]) -> Result<Vec<Event>, EventFluxError> {
         // Use bincode for efficient binary deserialization
-        bincode::deserialize(input).map_err(|e| EventFluxError::MappingFailed {
-            message: format!("Failed to deserialize events from binary format: {}", e),
-            source: Some(Box::new(e)),
+        crate::core::util::serialization::from_bytes(input).map_err(|e| {
+            EventFluxError::MappingFailed {
+                message: format!("Failed to deserialize events from binary format: {}", e),
+                source: Some(Box::new(e)),
+            }
         })
     }
 

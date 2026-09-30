@@ -25,7 +25,6 @@
 
 use super::{DistributedError, DistributedResult};
 use async_trait::async_trait;
-use bincode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -257,10 +256,11 @@ impl TcpTransport {
         message: &Message,
     ) -> DistributedResult<()> {
         // Serialize the message
-        let serialized =
-            bincode::serialize(message).map_err(|e| DistributedError::TransportError {
+        let serialized = crate::core::util::serialization::to_bytes(message).map_err(|e| {
+            DistributedError::TransportError {
                 message: format!("Failed to serialize message: {}", e),
-            })?;
+            }
+        })?;
 
         // Check message size
         if serialized.len() > self.config.max_message_size {
@@ -333,8 +333,10 @@ impl TcpTransport {
             })?;
 
         // Deserialize the message
-        let message = bincode::deserialize(&buf).map_err(|e| DistributedError::TransportError {
-            message: format!("Failed to deserialize message: {}", e),
+        let message = crate::core::util::serialization::from_bytes(&buf).map_err(|e| {
+            DistributedError::TransportError {
+                message: format!("Failed to deserialize message: {}", e),
+            }
         })?;
 
         Ok(message)

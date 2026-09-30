@@ -122,10 +122,10 @@ mod tests {
     fn test_apply_operation_to_simple_window_insert() {
         let mut buffer = VecDeque::new();
         let event = create_test_event(100, 42);
-        let serialized = bincode::serialize(&event).unwrap();
+        let serialized = crate::core::util::serialization::to_bytes(&event).unwrap();
 
         let deserialize_fn = |data: &[u8]| {
-            bincode::deserialize::<StreamEvent>(data).map_err(|_| {
+            crate::core::util::serialization::from_bytes::<StreamEvent>(data).map_err(|_| {
                 StateError::DeserializationError {
                     message: "Failed".to_string(),
                 }
@@ -149,10 +149,10 @@ mod tests {
         let event = create_test_event(100, 42);
         buffer.push_back(Arc::new(event.clone()));
 
-        let serialized = bincode::serialize(&event).unwrap();
+        let serialized = crate::core::util::serialization::to_bytes(&event).unwrap();
 
         let deserialize_fn = |data: &[u8]| {
-            bincode::deserialize::<StreamEvent>(data).map_err(|_| {
+            crate::core::util::serialization::from_bytes::<StreamEvent>(data).map_err(|_| {
                 StateError::DeserializationError {
                     message: "Failed".to_string(),
                 }

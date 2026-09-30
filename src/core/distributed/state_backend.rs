@@ -25,8 +25,8 @@
 
 use super::{DistributedError, DistributedResult};
 use async_trait::async_trait;
+use deadpool_redis::redis::{self, AsyncCommands, RedisResult};
 use deadpool_redis::{Config, Pool, Runtime};
-use redis::{AsyncCommands, RedisResult};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
