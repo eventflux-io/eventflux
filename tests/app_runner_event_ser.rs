@@ -61,8 +61,8 @@ async fn test_clone_and_serialize_stream_event() {
         panic!("not stream event");
     }
 
-    let bytes = bincode::serialize(&se1).unwrap();
-    let de: StreamEvent = bincode::deserialize(&bytes).unwrap();
+    let bytes = eventflux::core::util::serialization::to_bytes(&se1).unwrap();
+    let de: StreamEvent = eventflux::core::util::serialization::from_bytes(&bytes).unwrap();
     assert_eq!(de.output_data.as_ref().unwrap()[0], AttributeValue::Int(1));
 }
 
@@ -72,8 +72,8 @@ async fn test_serialize_state_event() {
     se.output_data.as_mut().unwrap()[0] = AttributeValue::Int(3);
     let mut state = StateEvent::new(1, 1);
     state.stream_events[0] = Some(se);
-    let bytes = bincode::serialize(&state).unwrap();
-    let de: StateEvent = bincode::deserialize(&bytes).unwrap();
+    let bytes = eventflux::core::util::serialization::to_bytes(&state).unwrap();
+    let de: StateEvent = eventflux::core::util::serialization::from_bytes(&bytes).unwrap();
     assert_eq!(
         de.stream_events[0]
             .as_ref()

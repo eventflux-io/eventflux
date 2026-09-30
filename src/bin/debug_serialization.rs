@@ -109,7 +109,7 @@ fn main() {
 
     println!("About to serialize...");
 
-    match bincode::serialize(&state) {
+    match eventflux::core::util::serialization::to_bytes(&state) {
         Ok(data) => {
             println!("Serialization successful! {} bytes", data.len());
         }

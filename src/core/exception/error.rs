@@ -198,7 +198,7 @@ pub enum EventFluxError {
 
     /// Serialization errors
     #[error("Serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
+    Serialization(#[from] crate::core::util::serialization::SerdeError),
 
     /// Database errors from rusqlite
     #[error("SQLite error: {0}")]
