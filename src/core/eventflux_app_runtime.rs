@@ -30,12 +30,15 @@ use crate::core::stream::input::input_handler::InputHandler;
 use crate::core::stream::input::input_manager::InputManager;
 use crate::core::stream::output::sink::SinkCallbackAdapter;
 use crate::core::stream::output::stream_callback::StreamCallback; // The trait
-use crate::core::stream::stream_junction::StreamJunction;
+use crate::core::stream::stream_junction::{
+    JunctionDrainHandle, StreamJunction, DRAIN_POLL_INTERVAL, JUNCTION_DRAIN_TIMEOUT,
+};
 use crate::core::trigger::TriggerRuntime;
 use crate::core::util::parser::eventflux_app_parser::EventFluxAppParser; // For EventFluxAppParser::parse_eventflux_app_runtime_builder
 use crate::core::window::WindowRuntime;
 use crate::query_api::EventFluxApp as ApiEventFluxApp; // From query_api
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use std::collections::HashMap;
@@ -865,6 +868,21 @@ impl EventFluxAppRuntime {
         }
 
         // 4. Execution phase - start all components (with rollback on error).
+        // Junctions first: shutdown() leaves sticky shutdown flags on every
+        // junction (sync and async), so a restarted runtime must clear them
+        // before anything can flow. No-op on first start.
+        for junction in self.stream_junction_map.values() {
+            if let Err(e) = junction.lock().unwrap().restart_processing() {
+                log::error!("Failed to restart stream junction: {}", e);
+                self.rollback_startup();
+                *self.state.write().unwrap() = RuntimeState::Failed;
+                return Err(EventFluxError::app_runtime(format!(
+                    "Failed to restart stream junction: {}",
+                    e
+                )));
+            }
+        }
+
         // Downstream-first: sinks start before sources so that when the
         // first event is consumed, every sink is subscribed and connected.
         // The reverse order lost events published into not-yet-ready sink
@@ -914,6 +932,53 @@ impl EventFluxAppRuntime {
         Ok(())
     }
 
+    /// Drain timeout for async junctions, overridable via
+    /// `EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS` (same pattern as
+    /// `EVENTFLUX_EXECUTOR_THREADS`).
+    fn junction_drain_timeout() -> Duration {
+        std::env::var("EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(JUNCTION_DRAIN_TIMEOUT)
+    }
+
+    /// Poll until every async junction is quiescent for two consecutive passes
+    /// with an unchanged total published count, or the deadline passes.
+    /// Returns whether global quiescence was reached.
+    ///
+    /// The ΣP-stability requirement closes cross-junction races: a cascading
+    /// tracked dispatch increments junction B's published count before its
+    /// guard decrements junction A's in-flight count, so a single
+    /// all-quiescent pass can be stale. With sources stopped, ΣP is finite and
+    /// monotone, so two matching quiescent passes mean nothing is moving.
+    fn poll_junctions_quiescent(handles: &[JunctionDrainHandle], deadline: Instant) -> bool {
+        if handles.is_empty() {
+            return true;
+        }
+        let mut quiescent_streak = 0u32;
+        let mut last_total_published: Option<u64> = None;
+        loop {
+            let total_published: u64 = handles.iter().map(|h| h.published()).sum();
+            let all_quiescent = handles.iter().all(|h| h.is_quiescent());
+            if all_quiescent && last_total_published == Some(total_published) {
+                quiescent_streak += 1;
+            } else if all_quiescent {
+                quiescent_streak = 1;
+            } else {
+                quiescent_streak = 0;
+            }
+            if quiescent_streak >= 2 {
+                return true;
+            }
+            last_total_published = Some(total_published);
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(DRAIN_POLL_INTERVAL);
+        }
+    }
+
     pub fn shutdown(&self) {
         // Guard: only shutdown if Running, Starting, or Failed
         {
@@ -932,12 +997,50 @@ impl EventFluxAppRuntime {
         }
         self.stop_all_sources();
 
-        // Flush remaining events through the pipeline so state is stable
+        // Drain async junctions before touching sinks (#138). With sources
+        // stopped, wait for natural quiescence WITHOUT setting shutdown flags:
+        // flagging junctions first breaks cascades, because an event drained
+        // from junction A flows through a query into junction B, whose flag
+        // would reject it.
+        let drain_handles: Vec<_> = self
+            .stream_junction_map
+            .values()
+            .map(|j| j.lock().unwrap().drain_handle())
+            .filter(|h| h.is_async())
+            .collect();
+        let drain_deadline = Instant::now() + Self::junction_drain_timeout();
+        Self::poll_junctions_quiescent(&drain_handles, drain_deadline);
+
+        // Flush remaining events through the pipeline so state is stable.
+        // Runs after the first drain so flushes see the drained events; flush
+        // outputs can cascade into async junctions, hence the second drain.
         for qr in &self.query_runtimes {
             qr.flush();
         }
+        let drained = Self::poll_junctions_quiescent(&drain_handles, drain_deadline);
 
-        // Auto-persist after pipeline is quiesced
+        // Queues are empty (or the deadline passed) — now the sticky shutdown
+        // flags are safe to set; consumer loops exit promptly.
+        for junction in self.stream_junction_map.values() {
+            junction.lock().unwrap().stop_processing();
+        }
+
+        if !drained {
+            let mut abandoned = 0u64;
+            for junction in self.stream_junction_map.values() {
+                abandoned += junction.lock().unwrap().abandon_pending();
+            }
+            log::warn!(
+                "EventFluxAppRuntime '{}' drain timed out after {:?}; abandoned {} queued event(s)",
+                self.name,
+                Self::junction_drain_timeout(),
+                abandoned
+            );
+        }
+
+        // Auto-persist after the drain so the snapshot includes the effects of
+        // every event the runtime accepted, not just those processed before
+        // shutdown was called.
         if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
             if service.persistence_store.is_some() {
                 match self.persist() {

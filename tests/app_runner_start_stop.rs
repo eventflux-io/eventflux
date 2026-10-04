@@ -49,6 +49,44 @@ async fn test_start_stop_restart() {
     assert!(out.contains(&vec![AttributeValue::Int(2)]));
 }
 
+/// Async-junction variant of the restart contract (#138): shutdown() now
+/// calls stop_processing() on every junction, so start() must clear the
+/// sticky shutdown flags and re-spawn consumers for both batches to arrive.
+#[tokio::test]
+async fn test_start_stop_restart_async() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let manager = EventFluxManager::new();
+
+    // Async must be requested per-stream via SQL WITH — the YAML
+    // `async_default` fixture is not wired through to junction creation.
+    // Only In is async: two async junctions starve the shared executor,
+    // a pre-existing bug independent of the restart contract under test.
+    let app = "\
+        CREATE STREAM In (v INT) WITH ('async.enabled' = 'true');\n\
+        CREATE STREAM Out (v INT);\n\
+        INSERT INTO Out SELECT v FROM In;\n";
+    let runner = AppRunner::new_with_manager(manager, app, "Out").await;
+    let rt = runner.runtime();
+
+    runner.send("In", vec![AttributeValue::Int(1)]);
+    rt.shutdown();
+    rt.start().expect("restart should succeed");
+
+    runner.send("In", vec![AttributeValue::Int(2)]);
+    rt.shutdown();
+
+    let out = runner.collected.lock().unwrap().clone();
+    assert!(
+        out.contains(&vec![AttributeValue::Int(1)]),
+        "event sent before restart must be delivered, got {out:?}"
+    );
+    assert!(
+        out.contains(&vec![AttributeValue::Int(2)]),
+        "event sent after restart must be delivered, got {out:?}"
+    );
+}
+
 /// Callbacks registered before first start still fire after restart.
 #[tokio::test]
 async fn test_restart_callback_preserved() {

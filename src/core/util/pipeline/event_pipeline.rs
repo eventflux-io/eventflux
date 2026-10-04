@@ -329,6 +329,13 @@ impl EventPipeline {
         self.shutdown.load(Ordering::Acquire)
     }
 
+    /// Clear the shutdown flag so the pipeline can be reused after a
+    /// `shutdown()`. Consumers must be re-spawned by the caller — any consumer
+    /// that already observed the flag has exited.
+    pub fn clear_shutdown(&self) {
+        self.shutdown.store(false, Ordering::Release);
+    }
+
     /// Reset pipeline metrics
     pub fn reset_metrics(&self) {
         self.metrics.reset();
