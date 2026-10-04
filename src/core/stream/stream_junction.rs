@@ -27,7 +27,7 @@ use crate::core::event::stream::StreamEvent;
 use crate::core::exception::EventFluxError;
 use crate::core::query::processor::Processor;
 use crate::core::stream::input::input_handler::InputProcessor;
-use crate::core::util::executor_service::ExecutorService;
+use crate::core::util::executor_service::{ExecutorService, TaskTracker};
 use crate::core::util::pipeline::{
     BackpressureStrategy, EventPipeline, EventPool, MetricsSnapshot, PipelineBuilder,
     PipelineConfig, PipelineResult,
@@ -40,6 +40,14 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex, RwLock,
 };
+use std::time::{Duration, Instant};
+
+/// How long `EventFluxAppRuntime::shutdown()` waits for async junctions to
+/// drain before abandoning queued events (mirrors `SOURCE_STOP_GRACE_PERIOD`).
+pub const JUNCTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Poll interval for quiescence checks during the shutdown drain.
+pub const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Error handling strategies for StreamJunction
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -88,6 +96,11 @@ pub struct StreamJunction {
 
     // Executor service for async processing
     executor_service: Arc<ExecutorService>,
+
+    // In-flight subscriber dispatches (async non-inline mode only).
+    // Consumer loops themselves are deliberately NOT tracked here — they run
+    // until shutdown, so counting them would make quiescence unreachable.
+    dispatch_tracker: Arc<TaskTracker>,
 }
 
 impl Debug for StreamJunction {
@@ -135,7 +148,7 @@ impl StreamJunction {
     /// - Guarantees temporal correctness and event causality
     /// - Throughput: ~1K-10K events/sec depending on processing complexity
     ///
-    /// **Async Mode (`is_async: true`):**  
+    /// **Async Mode (`is_async: true`):**
     /// - Events are processed concurrently using lock-free pipeline
     /// - Non-blocking, high-throughput processing with object pooling
     /// - **⚠️ WARNING: May process events out of arrival order**
@@ -301,6 +314,7 @@ impl StreamJunction {
             events_dropped: Arc::new(CachePadded::new(AtomicU64::new(0))),
             processing_errors: Arc::new(CachePadded::new(AtomicU64::new(0))),
             executor_service,
+            dispatch_tracker: Arc::new(TaskTracker::new()),
         };
 
         // Automatically start async consumer if in async mode
@@ -386,6 +400,110 @@ impl StreamJunction {
         self.shutdown.store(true, Ordering::Release);
         self.event_pipeline.shutdown();
         self.started.store(false, Ordering::Release);
+    }
+
+    /// Undo a previous `stop_processing()` so the junction accepts events
+    /// again. Both shutdown flags are sticky, so this must run on every
+    /// runtime restart — for sync junctions too, or `send_event` rejects
+    /// forever after the first shutdown.
+    pub fn restart_processing(&self) -> Result<(), String> {
+        self.shutdown.store(false, Ordering::Release);
+        self.event_pipeline.clear_shutdown();
+        // The old consumers exited when they observed the shutdown flag;
+        // start_processing's CAS re-admits a fresh set for async junctions.
+        self.start_processing()
+    }
+
+    /// Lock-free handle for polling this junction's drain state without
+    /// holding the junction's Mutex (shutdown polls many junctions at 1ms).
+    pub fn drain_handle(&self) -> JunctionDrainHandle {
+        JunctionDrainHandle {
+            stream_id: self.stream_id.clone(),
+            is_async: self.is_async,
+            pipeline: Arc::clone(&self.event_pipeline),
+            dispatch_tracker: Arc::clone(&self.dispatch_tracker),
+        }
+    }
+
+    /// True when no event accepted by this junction is still queued or being
+    /// dispatched to subscribers. Sync junctions dispatch inline and are
+    /// always quiescent. See `JunctionDrainHandle::is_quiescent` for the
+    /// predicate details.
+    pub fn is_quiescent(&self) -> bool {
+        self.drain_handle().is_quiescent()
+    }
+
+    /// Published-event count of the underlying pipeline (async mode).
+    pub fn pipeline_published(&self) -> u64 {
+        self.event_pipeline.metrics().events_published_count()
+    }
+
+    /// Consumed-event count of the underlying pipeline (async mode).
+    pub fn pipeline_consumed(&self) -> u64 {
+        self.event_pipeline.metrics().events_consumed_count()
+    }
+
+    /// Best-effort estimate of undrained work: `(queued, in_flight)` where
+    /// `queued` counts events still in the pipeline and `in_flight` counts
+    /// subscriber dispatches handed to the executor but not yet finished.
+    pub fn pending_drain_estimate(&self) -> (u64, u64) {
+        let consumed = self.pipeline_consumed();
+        let published = self.pipeline_published();
+        (
+            published.saturating_sub(consumed),
+            self.dispatch_tracker.in_flight(),
+        )
+    }
+
+    /// Poll until this junction is quiescent for two consecutive passes with
+    /// an unchanged published count, or `timeout` elapses. Returns whether
+    /// quiescence was reached. Only meaningful once producers have stopped.
+    pub fn wait_quiescent(&self, timeout: Duration) -> bool {
+        let handle = self.drain_handle();
+        let deadline = Instant::now() + timeout;
+        // Two stable passes close the race where a dispatch publishes into
+        // this junction just before its guard decrements elsewhere.
+        let mut quiescent_streak = 0u32;
+        let mut last_published: Option<u64> = None;
+        loop {
+            let published = handle.published();
+            if handle.is_quiescent() && last_published == Some(published) {
+                quiescent_streak += 1;
+            } else if handle.is_quiescent() {
+                quiescent_streak = 1;
+            } else {
+                quiescent_streak = 0;
+            }
+            if quiescent_streak >= 2 {
+                return true;
+            }
+            last_published = Some(published);
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(DRAIN_POLL_INTERVAL);
+        }
+    }
+
+    /// Give up on undrained events after a drain timeout: count still-queued
+    /// events as dropped and warn. In-flight dispatches are logged but not
+    /// counted dropped — those events already reached their subscribers.
+    /// Returns the number of abandoned (queued) events.
+    pub fn abandon_pending(&self) -> u64 {
+        if !self.is_async {
+            return 0;
+        }
+        let (queued, in_flight) = self.pending_drain_estimate();
+        if queued > 0 || in_flight > 0 {
+            self.events_dropped.fetch_add(queued, Ordering::Relaxed);
+            log::warn!(
+                "[{}] Drain timeout: abandoning {} queued event(s) at shutdown ({} subscriber dispatch(es) still in flight)",
+                self.stream_id,
+                queued,
+                in_flight
+            );
+        }
+        queued
     }
 
     /// Send a single event through the pipeline
@@ -630,6 +748,7 @@ impl StreamJunction {
         let error_counter = Arc::clone(&self.processing_errors);
         let events_processed = Arc::clone(&self.events_processed);
         let executor_service = Arc::clone(&self.executor_service);
+        let dispatch_tracker = Arc::clone(&self.dispatch_tracker);
         let stream_id = self.stream_id.clone();
 
         // CRITICAL: Prevent executor thread starvation
@@ -672,6 +791,7 @@ impl StreamJunction {
             let error_counter_clone = Arc::clone(&error_counter);
             let events_processed_clone = Arc::clone(&events_processed);
             let executor_service_clone = Arc::clone(&executor_service);
+            let dispatch_tracker_clone = Arc::clone(&dispatch_tracker);
             let stream_id_clone = stream_id.clone();
             let executor_for_consumer = Arc::clone(&executor_service);
 
@@ -728,7 +848,9 @@ impl StreamJunction {
                             let executor_clone = Arc::clone(&executor_service_clone);
                             let error_counter_clone2 = Arc::clone(&error_counter_clone);
 
-                            executor_clone.execute(move || match subscriber_clone.lock() {
+                            // Tracked so the shutdown drain can wait for
+                            // in-flight subscriber work (see is_quiescent()).
+                            executor_clone.execute_tracked(&dispatch_tracker_clone, move || match subscriber_clone.lock() {
                                 Ok(processor) => {
                                     processor.process(event_for_sub);
                                 }
@@ -945,6 +1067,61 @@ impl StreamJunction {
         } else {
             None
         }
+    }
+}
+
+/// Lock-free view of a junction's drain state for shutdown polling.
+///
+/// Snapshot this once (requires the junction Mutex), then poll freely —
+/// all reads go through Arcs to atomics, never back through the Mutex.
+#[derive(Clone)]
+pub struct JunctionDrainHandle {
+    pub stream_id: String,
+    is_async: bool,
+    pipeline: Arc<EventPipeline>,
+    dispatch_tracker: Arc<TaskTracker>,
+}
+
+impl JunctionDrainHandle {
+    pub fn is_async(&self) -> bool {
+        self.is_async
+    }
+
+    /// Published-event count (Acquire). Monotone once sources are stopped.
+    pub fn published(&self) -> u64 {
+        self.pipeline.metrics().events_published_count()
+    }
+
+    /// Quiescence predicate:
+    /// `!is_async || (queue empty && published == consumed && in_flight == 0)`
+    ///
+    /// `published` increments only on successful queue push; `consumed` only
+    /// after the consumer handler returns (i.e. after all subscriber
+    /// dispatches for that event were issued and tracked). Read order is
+    /// consumed → published → is_empty → in_flight so a concurrent event
+    /// can only make us see *less* progress, never false quiescence.
+    /// Inline-processing mode (pool_size == 1) is covered by
+    /// `published == consumed` alone since dispatch happens in the handler.
+    pub fn is_quiescent(&self) -> bool {
+        if !self.is_async {
+            return true;
+        }
+        let consumed = self.pipeline.metrics().events_consumed_count();
+        let published = self.pipeline.metrics().events_published_count();
+        let empty = self.pipeline.is_empty();
+        let in_flight = self.dispatch_tracker.in_flight();
+        empty && published == consumed && in_flight == 0
+    }
+
+    /// Best-effort `(queued, in_flight)` estimate; see
+    /// `StreamJunction::pending_drain_estimate`.
+    pub fn pending_drain_estimate(&self) -> (u64, u64) {
+        let consumed = self.pipeline.metrics().events_consumed_count();
+        let published = self.pipeline.metrics().events_published_count();
+        (
+            published.saturating_sub(consumed),
+            self.dispatch_tracker.in_flight(),
+        )
     }
 }
 

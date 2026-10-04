@@ -68,7 +68,9 @@ impl PipelineMetrics {
 
     /// Record a successful publish operation
     pub fn record_publish_success(&self, latency: Duration) {
-        self.events_published.fetch_add(1, Ordering::Relaxed);
+        // Release pairs with the Acquire loads in events_published_count() so
+        // shutdown-drain polling observes the push that preceded this count.
+        self.events_published.fetch_add(1, Ordering::Release);
 
         let latency_ns = latency.as_nanos() as u64;
         self.total_publish_latency_ns
@@ -91,7 +93,9 @@ impl PipelineMetrics {
 
     /// Record a successful consume operation
     pub fn record_consume_success(&self, latency: Duration) {
-        self.events_consumed.fetch_add(1, Ordering::Relaxed);
+        // Release: the consumer handler (including any subscriber dispatches it
+        // issued) must be visible before the count that covers it.
+        self.events_consumed.fetch_add(1, Ordering::Release);
 
         let latency_ns = latency.as_nanos() as u64;
         self.total_consume_latency_ns
@@ -116,7 +120,7 @@ impl PipelineMetrics {
     pub fn record_batch_success(&self, batch_size: usize, latency: Duration) {
         self.batches_processed.fetch_add(1, Ordering::Relaxed);
         self.events_consumed
-            .fetch_add(batch_size as u64, Ordering::Relaxed);
+            .fetch_add(batch_size as u64, Ordering::Release);
 
         let latency_ns = latency.as_nanos() as u64;
         self.total_consume_latency_ns
@@ -142,7 +146,7 @@ impl PipelineMetrics {
         self.queue_full_events.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment pool exhausted counter  
+    /// Increment pool exhausted counter
     pub fn increment_pool_exhausted(&self) {
         self.pool_exhausted_events.fetch_add(1, Ordering::Relaxed);
     }
@@ -221,6 +225,18 @@ impl PipelineMetrics {
 
         let dropped = self.events_dropped.load(Ordering::Relaxed);
         dropped as f64 / total_attempts as f64
+    }
+
+    /// Raw published-event count. Cheap (single Acquire load) — safe to call
+    /// from a tight polling loop, unlike `snapshot()`.
+    pub fn events_published_count(&self) -> u64 {
+        self.events_published.load(Ordering::Acquire)
+    }
+
+    /// Raw consumed-event count. Cheap (single Acquire load) — safe to call
+    /// from a tight polling loop, unlike `snapshot()`.
+    pub fn events_consumed_count(&self) -> u64 {
+        self.events_consumed.load(Ordering::Acquire)
     }
 
     /// Get comprehensive metrics snapshot

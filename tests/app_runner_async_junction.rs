@@ -61,3 +61,59 @@ async fn async_junction_concurrent_dispatch() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 2000);
 }
+
+/// Second subscriber on Out whose per-event sleep keeps the executor busy, so
+/// a backlog of subscriber dispatches reliably exists when shutdown() runs.
+#[derive(Debug)]
+struct SlowCallback;
+
+impl eventflux::core::stream::output::stream_callback::StreamCallback for SlowCallback {
+    fn receive_events(&self, events: &[eventflux::core::event::event::Event]) {
+        for _ in events {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// Regression test for #138: shutdown() must drain async junctions before
+/// stopping sinks. Identical burst to the test above but with NO sleep before
+/// shutdown — every accepted event must still reach the output.
+#[tokio::test]
+async fn async_junction_shutdown_drains_queued_events() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let manager = EventFluxManager::new();
+
+    // NOTE: async must be requested per-stream via SQL WITH — the YAML
+    // `async_default` fixture is not wired through to junction creation.
+    // Only In is async: two async junctions starve the shared executor
+    // (each junction spawns num_cpus/2 consumers), a pre-existing bug
+    // independent of the shutdown drain.
+    let app = "\
+        CREATE STREAM In (v INT) WITH ('async.enabled' = 'true', 'async.buffer_size' = '4096');\n\
+        CREATE STREAM Out (v INT);\n\
+        INSERT INTO Out SELECT v FROM In;\n";
+
+    let runner = Arc::new(AppRunner::new_with_manager(manager, app, "Out").await);
+    runner
+        .runtime()
+        .add_callback("Out", Box::new(SlowCallback))
+        .expect("add slow callback");
+    let mut handles = Vec::new();
+    for i in 0..4 {
+        let r = Arc::clone(&runner);
+        handles.push(thread::spawn(move || {
+            for k in 0..500 {
+                r.send("In", vec![AttributeValue::Int(i * 500 + k)]);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    // Shutdown immediately — events are still queued in the async junction
+    // and in-flight on the executor. The drain must deliver all of them.
+    let runner = Arc::try_unwrap(runner).unwrap();
+    let out = runner.shutdown();
+    assert_eq!(out.len(), 2000);
+}
