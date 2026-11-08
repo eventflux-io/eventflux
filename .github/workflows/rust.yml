@@ -144,7 +144,7 @@ jobs:
         cargo check --all-targets --features websocket
 
     - name: Check typos
-      uses: crate-ci/typos@512fc24f32f44ab01972217aaaf3dc86ec234d53  # v1.50.2
+      uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85  # v1.52.0
 
     - name: Install tools
       uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e  # v2
