@@ -643,6 +643,19 @@ mod tests {
     }
 
     #[test]
+    fn test_csv_schema_case_variant_fields_do_not_share_a_column() {
+        // Schema (foo, FOO) with only mapping.FOO must be rejected, not map
+        // both fields to the same column
+        let mut mappings = HashMap::new();
+        mappings.insert("FOO".to_string(), 0usize);
+        let mut mapper = CsvSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["foo".to_string(), "FOO".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("'foo'"), "got: {}", err);
+    }
+
+    #[test]
     fn test_csv_schema_without_mappings_stays_positional() {
         // CSV auto-mapping is inherently positional; schema names are unused
         let mut mapper = CsvSourceMapper::new();

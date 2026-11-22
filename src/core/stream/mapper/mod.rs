@@ -86,8 +86,10 @@ pub(crate) fn alphabetical_mappings<V: Clone>(mappings: &HashMap<String, V>) -> 
 
 /// Order explicit `mapping.*` entries by stream schema, validating fail-fast.
 ///
-/// Each schema field is matched to a mapping key exactly first, then ASCII
-/// case-insensitively. Fails if a schema field has no mapping, or if a
+/// All exact key matches are resolved first; remaining fields then match
+/// ASCII case-insensitively, but only against keys no other field has
+/// claimed, so case-variant schema names (e.g. `foo` and `FOO`) can never
+/// share one mapping. Fails if a schema field has no mapping, or if a
 /// mapping key matches no schema field (typo or stale entry).
 /// `format` is the property prefix (e.g. "json") used in error messages.
 pub(crate) fn schema_ordered_mappings<V: Clone>(
@@ -96,18 +98,21 @@ pub(crate) fn schema_ordered_mappings<V: Clone>(
     format: &str,
 ) -> Result<Vec<(String, V)>, EventFluxError> {
     let mut unused: Vec<&String> = mappings.keys().collect();
-    let mut ordered = Vec::with_capacity(field_names.len());
 
-    for field_name in field_names {
-        let key = if mappings.contains_key(field_name) {
-            Some(field_name)
-        } else {
-            unused
-                .iter()
-                .copied()
-                .find(|k| k.eq_ignore_ascii_case(field_name))
-        };
-        let Some(key) = key else {
+    let mut keys: Vec<Option<&String>> = field_names
+        .iter()
+        .map(|name| mappings.get_key_value(name).map(|(key, _)| key))
+        .collect();
+    unused.retain(|k| !keys.contains(&Some(*k)));
+
+    for (slot, field_name) in keys.iter_mut().zip(field_names) {
+        if slot.is_some() {
+            continue;
+        }
+        let Some(pos) = unused
+            .iter()
+            .position(|k| k.eq_ignore_ascii_case(field_name))
+        else {
             return Err(EventFluxError::Configuration {
                 message: format!(
                     "No mapping configured for stream field '{field_name}'. When any \
@@ -117,9 +122,17 @@ pub(crate) fn schema_ordered_mappings<V: Clone>(
                 config_key: Some(format!("{format}.mapping.{field_name}")),
             });
         };
-        unused.retain(|k| *k != key);
-        ordered.push((field_name.clone(), mappings[key].clone()));
+        *slot = Some(unused.remove(pos));
     }
+
+    let ordered: Vec<(String, V)> = keys
+        .into_iter()
+        .zip(field_names)
+        .map(|(key, field_name)| {
+            let key = key.expect("every field is resolved or returned an error above");
+            (field_name.clone(), mappings[key].clone())
+        })
+        .collect();
 
     if let Some(stray) = unused.first() {
         return Err(EventFluxError::Configuration {

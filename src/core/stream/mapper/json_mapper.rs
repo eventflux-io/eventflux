@@ -1488,6 +1488,44 @@ mod tests {
     }
 
     #[test]
+    fn test_schema_explicit_mappings_case_variant_fields_do_not_share_a_key() {
+        // Schema (foo, FOO) with only mapping.FOO: FOO takes its exact key,
+        // and foo must not reuse it through the case-insensitive fallback
+        let mut mappings = HashMap::new();
+        mappings.insert("FOO".to_string(), "$.a".to_string());
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["foo".to_string(), "FOO".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("'foo'"), "got: {}", err);
+
+        // With a mapping for each, both resolve exactly to their own path
+        let mut mappings = HashMap::new();
+        mappings.insert("foo".to_string(), "$.a".to_string());
+        mappings.insert("FOO".to_string(), "$.b".to_string());
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        mapper
+            .set_field_names(vec!["foo".to_string(), "FOO".to_string()])
+            .unwrap();
+        let events = mapper.map(br#"{"a": 1, "b": 2}"#).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(2)));
+    }
+
+    #[test]
+    fn test_schema_explicit_mappings_case_insensitive_key_used_once() {
+        // Neither field matches exactly; the single "Foo" key goes to the
+        // first field, and the second is reported as unmapped
+        let mut mappings = HashMap::new();
+        mappings.insert("Foo".to_string(), "$.a".to_string());
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["foo".to_string(), "FOO".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("'FOO'"), "got: {}", err);
+    }
+
+    #[test]
     fn test_schema_explicit_mappings_stray_key_fails_at_config_time() {
         // A mapping key matching no stream field (typo, stale entry) is a
         // configuration error, not a silently dead key
