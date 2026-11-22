@@ -131,22 +131,15 @@ impl EventFluxManager {
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_app_str_opt: Option<String>,
     ) -> Result<Arc<EventFluxAppRuntime>, String> {
-        // Load the configuration once for the global reads below
-        // (get_config() deep-clones the cached EventFluxConfig per call).
-        let loaded_config = match self.get_config().await {
-            Ok(config) => Some(config),
-            Err(e) => {
-                log::warn!(
-                    "Failed to load configuration, proceeding with defaults \
-                     (application name fallback, async_default=false): {}",
-                    e
-                );
-                None
-            }
-        };
-        let application_global = loaded_config
-            .as_ref()
-            .and_then(|config| config.eventflux.application.as_ref());
+        // Load the configuration once for the reads below (get_config()
+        // deep-clones the cached EventFluxConfig per call). A load failure
+        // fails app creation: starting a misconfigured engine with silent
+        // defaults is worse than a startup error.
+        let loaded_config = self
+            .get_config()
+            .await
+            .map_err(|e| format!("Failed to load configuration: {e}"))?;
+        let application_global = loaded_config.eventflux.application.as_ref();
 
         // Determine app name using config-based naming (not annotations)
         // Priority: YAML config.eventflux.application.name > api_eventflux_app.name > generated UUID
@@ -176,21 +169,17 @@ impl EventFluxManager {
 
         // Apply global stream defaults (eventflux.application.async_default)
         // to the shared context before parsing, so junction creation sees
-        // them. Always resolved (missing key or load failure → false) so one
-        // config's setting cannot leak into the next app created on this
-        // manager after the config changes.
+        // them. Always resolved (missing key → false) so one config's setting
+        // cannot leak into the next app created on this manager after the
+        // config changes.
         let async_default = application_global
             .and_then(|app| app.async_default)
             .unwrap_or(false);
         self.eventflux_context.set_default_async_mode(async_default);
 
-        // Get application-specific configuration from the already-loaded
-        // config (a get_application_config call would re-load and re-clone the
-        // whole config — and propagate a load error, defeating the
-        // proceed-with-defaults fallback above).
-        let app_config = loaded_config
-            .as_ref()
-            .and_then(|config| config.applications.get(&app_name).cloned());
+        // Application-specific configuration from the already-loaded config
+        // (a get_application_config call would re-load and re-clone it all).
+        let app_config = loaded_config.applications.get(&app_name).cloned();
 
         // EventFluxAppRuntime::new now handles creation of EventFluxAppContext and parsing
         let runtime = Arc::new(EventFluxAppRuntime::new_with_config(

@@ -680,7 +680,10 @@ impl EventFluxAppRuntime {
     fn rollback_startup(&self) {
         log::warn!("Rolling back runtime startup for '{}'", self.name);
 
-        // Stop in reverse order (best effort, don't propagate errors)
+        // Stop in reverse order (best effort, don't propagate errors).
+        // NOTE: must not clear restored state — a retried start() enters via
+        // the Failed arm with restarting=false and skips auto-restore, so it
+        // relies on the state from the failed attempt surviving the rollback.
         for pr in self.partition_runtimes.iter().rev() {
             pr.shutdown();
         }
@@ -694,6 +697,15 @@ impl EventFluxAppRuntime {
 
         // Stop sources
         self.stop_all_sources();
+
+        // Stop junctions: start() restarts them before sinks/sources, so a
+        // failure after that point would otherwise leave consumers live and
+        // junctions accepting events into a rolled-back topology (and leak
+        // the consumer threads if the runtime is then discarded). A retried
+        // start() clears these flags again via restart_processing.
+        for junction in self.stream_junction_map.values() {
+            junction.lock().unwrap().stop_processing();
+        }
 
         log::info!("Rollback completed for '{}'", self.name);
     }

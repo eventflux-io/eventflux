@@ -324,7 +324,11 @@ impl EventPipeline {
     /// already reported as abandoned/dropped. Returns the number discarded.
     pub fn purge(&self) -> u64 {
         let mut purged = 0u64;
-        while let Some(pooled_event) = self.event_queue.pop() {
+        while let Some(mut pooled_event) = self.event_queue.pop() {
+            // Drop the payload before returning the slot — a released slot
+            // sits in the pool until reused, and a purged backlog of large
+            // events would otherwise stay resident indefinitely.
+            drop(pooled_event.take_event());
             self.event_pool.release(pooled_event);
             purged += 1;
         }

@@ -94,7 +94,7 @@ pub fn poll_quiescent(handles: &[JunctionDrainHandle], deadline: Instant) -> boo
     }
     let mut quiescent_streak = 0u32;
     let mut last_total_published: Option<u64> = None;
-    let mut grace_pass_used = false;
+    let mut grace_passes = 0u32;
     loop {
         let previous_streak = quiescent_streak;
         let total_published: u64 = handles.iter().map(|h| h.published()).sum();
@@ -111,14 +111,17 @@ pub fn poll_quiescent(handles: &[JunctionDrainHandle], deadline: Instant) -> boo
         }
         last_total_published = Some(total_published);
         if Instant::now() >= deadline {
-            // A quiescent first pass deserves its confirming re-read even at
-            // the deadline — otherwise an exhausted budget reports "timed out"
-            // for an already-idle system (e.g. the post-flush drain reusing
-            // the first drain's deadline). One grace pass bounds this.
-            if quiescent_streak == 0 || grace_pass_used {
+            // A quiescent pass deserves its confirming re-read even at the
+            // deadline — otherwise an exhausted budget reports "timed out" for
+            // an already-idle system (e.g. the post-flush drain reusing the
+            // first drain's deadline). A few grace passes (each costs only a
+            // handful of atomic reads) also cover the final cascade event
+            // completing ON the grace pass; the cap keeps a genuinely moving
+            // system from looping past the deadline.
+            if quiescent_streak == 0 || grace_passes >= 3 {
                 return false;
             }
-            grace_pass_used = true;
+            grace_passes += 1;
             continue;
         }
         // Only skip the sleep when this pass ADVANCED the streak (the
@@ -497,6 +500,10 @@ impl StreamJunction {
                 // iteration) and un-latch `started`. A retry must go through
                 // restart_processing, which waits for them and clears flags.
                 self.halt_processing();
+                // Keep the halted-implies-counted invariant that restart's
+                // purge relies on: anything queued here would otherwise be
+                // discarded later without ever showing up in events_dropped.
+                self.abandon_pending();
                 return Err(e);
             }
         }
@@ -533,28 +540,39 @@ impl StreamJunction {
     /// unblocks, and the restart can be retried.
     pub fn restart_processing(&self) -> Result<(), String> {
         if self.shutdown.load(Ordering::Acquire) {
-            // Consumers exit promptly here (queue drained, or halted), so this
-            // normally completes in well under a millisecond.
+            // Consumers exit promptly here (queue drained, or halted) and
+            // their dispatches are single subscriber invocations, so this
+            // normally completes in well under a millisecond. Waiting on BOTH
+            // trackers matters: a consumer set can be fully gone while its
+            // dispatched work is still queued on the executor — restarting
+            // then would interleave stale-run deliveries with the new run.
             if !self
                 .active_consumers
                 .wait_for_zero(CONSUMER_EXIT_TIMEOUT, DRAIN_POLL_INTERVAL)
+                || !self
+                    .dispatch_tracker
+                    .wait_for_zero(CONSUMER_EXIT_TIMEOUT, DRAIN_POLL_INTERVAL)
             {
                 return Err(format!(
-                    "[{}] {} consumer(s) from the previous run still live after {:?} (wedged subscriber?); not restarting — retry once they exit",
+                    "[{}] previous run not settled after {:?} ({} consumer(s), {} dispatch(es) still live — wedged subscriber?); not restarting — retry once they exit",
                     self.stream_id,
+                    CONSUMER_EXIT_TIMEOUT,
                     self.active_consumers.in_flight(),
-                    CONSUMER_EXIT_TIMEOUT
+                    self.dispatch_tracker.in_flight()
                 ));
             }
-            // After a timed-out drain the leftover queue was already counted
-            // as abandoned/dropped — discard it so the restarted app does not
-            // replay events the operator was told were dropped (and before
-            // sinks reconnect, which would repeat the #136 lost-event window).
+            // A halted queue was already counted as abandoned/dropped (every
+            // halt path runs abandon_pending) — discard it so the restarted
+            // app does not replay events the operator was told were dropped
+            // (and before sinks reconnect, which would repeat the #136
+            // lost-event window). Producers racing the halt flag can slip an
+            // event in after the abandon count; that sliver is discarded
+            // uncounted and bounded by in-flight publishers.
             if self.event_pipeline.is_halted() {
                 let purged = self.event_pipeline.purge();
                 if purged > 0 {
                     log::info!(
-                        "[{}] discarded {} event(s) abandoned by the previous shutdown",
+                        "[{}] discarded {} stale event(s) left by the previous run (counted dropped when abandoned)",
                         self.stream_id,
                         purged
                     );

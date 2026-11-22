@@ -151,8 +151,15 @@ impl DistributedRuntime {
             *state = RuntimeState::Stopping;
         }
 
-        // Stop core runtime
-        self.core_runtime.shutdown();
+        // Stop core runtime off the async executor: shutdown() drains async
+        // junctions with bounded sleeps (up to the drain + settle timeouts)
+        // and would otherwise stall this tokio worker for seconds.
+        let core_runtime = Arc::clone(&self.core_runtime);
+        tokio::task::spawn_blocking(move || core_runtime.shutdown())
+            .await
+            .map_err(|e| DistributedError::StateError {
+                message: format!("core runtime shutdown task failed: {e}"),
+            })?;
 
         // Shutdown mode manager
         {

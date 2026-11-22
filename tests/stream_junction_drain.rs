@@ -173,27 +173,43 @@ fn test_wait_quiescent_drains_slow_subscriber() {
 }
 
 /// A subscriber too slow for the timeout: quiescence fails, and after
-/// halt_processing the leftover queue is frozen (not drained behind the
-/// caller's back) and counted via abandon_pending.
+/// halt_processing + settle the frozen backlog is counted via abandon_pending
+/// (mirroring the runtime's timeout path: halt → settle → abandon).
 #[test]
 fn test_drain_timeout_halts_and_abandons_pending() {
     // Single-threaded executor forces inline subscriber processing, so the
-    // 200ms/event subscriber backs the queue up deterministically.
+    // slow subscriber backs the queue up deterministically. The junction
+    // spawns num_cpus/2 consumer threads, each of which may hold one popped
+    // event at halt time — size the burst well past that so a backlog is
+    // guaranteed to remain on any machine.
+    let consumers = std::thread::available_parallelism()
+        .map(|n| (n.get() / 2).max(1))
+        .unwrap_or(1) as u64;
+    let total_events = consumers * 4 + 20;
     let executor = Arc::new(ExecutorService::new("drain-timeout-test", 1));
-    let (junction, _processor) = make_junction(Some(executor), Duration::from_millis(200));
+    let (junction, _processor) = make_junction(Some(executor), Duration::from_millis(20));
 
-    let events: Vec<_> = (0..50)
-        .map(|i| Event::new_with_data(1000 + i, vec![AttributeValue::Int(i as i32)]))
+    let events: Vec<_> = (0..total_events)
+        .map(|i| Event::new_with_data(1000 + i as i64, vec![AttributeValue::Int(i as i32)]))
         .collect();
     junction.send_events(events).unwrap();
 
     assert!(
         !junction.wait_quiescent(Duration::from_millis(10)),
-        "10ms cannot drain 50 events at 200ms each"
+        "10ms cannot drain {total_events} events at 20ms each"
     );
 
-    // Mirrors the runtime's timeout path: halt (no further draining), then count
+    // Mirrors the runtime's timeout path: halt (no further popping), settle
+    // (each consumer finishes the one event it already holds — they serialize
+    // on the subscriber Mutex), then count the frozen backlog.
     junction.halt_processing();
+    assert!(
+        eventflux::core::stream::stream_junction::poll_settled(
+            &[junction.drain_handle()],
+            std::time::Instant::now() + Duration::from_secs(10),
+        ),
+        "halted consumers must settle once their in-flight events finish"
+    );
     let abandoned = junction.abandon_pending();
     assert!(
         abandoned > 0,
@@ -206,30 +222,14 @@ fn test_drain_timeout_halts_and_abandons_pending() {
         "abandoned events must be counted in events_dropped"
     );
 
-    // Halted means consumers stop popping. Each consumer may still finish the
-    // one event it already popped (and they serialize on the subscriber
-    // Mutex, 200ms apiece), so wait for the backlog to stop moving, then
-    // require it frozen with events remaining. A consumer that ignored the
-    // halt would keep decrementing the backlog every 200ms until empty.
-    let (mut queued, _) = junction.pending_drain_estimate();
-    let mut stable_samples = 0;
-    for _ in 0..40 {
-        thread::sleep(Duration::from_millis(200));
-        let (now, _) = junction.pending_drain_estimate();
-        if now == queued {
-            stable_samples += 1;
-            if stable_samples >= 4 {
-                break;
-            }
-        } else {
-            stable_samples = 0;
-            queued = now;
-        }
-    }
-    assert!(
-        stable_samples >= 4 && queued > 0,
-        "halted junction must not keep draining abandoned events \
-         (abandoned {abandoned}, backlog settled at {queued} with {stable_samples} stable samples)"
+    // Settled + halted means the backlog is frozen: nothing may deliver the
+    // abandoned events behind the caller's back.
+    thread::sleep(Duration::from_millis(200));
+    let (queued, in_flight) = junction.pending_drain_estimate();
+    assert_eq!(
+        (queued, in_flight),
+        (abandoned, 0),
+        "halted junction must not keep draining abandoned events"
     );
 
     // Restarting after an abandoned drain must discard the backlog (it was

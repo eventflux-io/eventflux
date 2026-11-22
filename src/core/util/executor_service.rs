@@ -56,13 +56,14 @@ impl TaskTracker {
 
     /// Poll until `in_flight` reaches zero or `timeout` elapses, sleeping
     /// `poll_interval` between checks. Returns whether zero was reached.
+    /// Callers passing user-supplied timeouts must cap them (`Instant + huge
+    /// Duration` panics); in-crate callers pass small constants.
     pub fn wait_for_zero(
         &self,
         timeout: std::time::Duration,
         poll_interval: std::time::Duration,
     ) -> bool {
-        let deadline =
-            std::time::Instant::now() + timeout.min(std::time::Duration::from_secs(86_400));
+        let deadline = std::time::Instant::now() + timeout;
         while self.in_flight() != 0 {
             if std::time::Instant::now() >= deadline {
                 return false;
