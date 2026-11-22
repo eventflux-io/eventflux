@@ -1371,14 +1371,16 @@ impl EventFluxAppRuntime {
 
     /// Common helper for attaching source streams
     ///
-    /// This method contains the shared logic between YAML and SQL source attachment.
-    /// It performs the actual source creation, handler registration, and startup.
+    /// Shared by the resolved-config (SQL WITH + YAML) and YAML-only paths:
+    /// creates the source and mapper, builds the handler and registers it.
+    /// Callers check for an already-registered handler before building the
+    /// config.
     ///
     /// # Arguments
     ///
     /// * `stream_name` - Name of the stream to attach
     /// * `stream_type_config` - Already-constructed StreamTypeConfig
-    /// * `context_label` - Label for error messages ("YAML", "SQL", etc.)
+    /// * `context_label` - Label for error messages ("YAML", "resolved")
     ///
     /// # Returns
     ///
@@ -1393,14 +1395,7 @@ impl EventFluxAppRuntime {
     ) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::exception::EventFluxError;
         use crate::core::stream::handler::SourceStreamHandler;
-        use crate::core::stream::stream_initializer::{
-            initialize_source_stream, InitializedStream,
-        };
-
-        // Check if handler already registered (idempotent operation)
-        if self.get_source_handler(stream_name).is_some() {
-            return Ok(());
-        }
+        use crate::core::stream::stream_initializer::initialize_source_stream;
 
         let field_names = self.stream_field_names(stream_name);
 
@@ -1412,23 +1407,14 @@ impl EventFluxAppRuntime {
         )
         .map_err(|e| {
             EventFluxError::app_creation(format!(
-                "Failed to initialize {} source '{}': {}",
-                context_label, stream_name, e
+                "Failed to initialize {} source '{}' (extension={}, format={:?}): {}",
+                context_label,
+                stream_name,
+                stream_type_config.extension().unwrap_or("<none>"),
+                stream_type_config.format(),
+                e
             ))
         })?;
-
-        // Extract source and mapper from initialized stream
-        let (source, mapper) = match initialized {
-            InitializedStream::Source(init_source) => {
-                (init_source.source, init_source.mapper)  // mapper is already Option
-            }
-            _ => {
-                return Err(EventFluxError::app_creation(format!(
-                    "Expected source stream initialization for {} stream '{}', got different stream type",
-                    context_label, stream_name
-                )))
-            }
-        };
 
         // Get or create InputHandler for this stream
         let input_handler = self
@@ -1443,8 +1429,8 @@ impl EventFluxAppRuntime {
 
         // Create SourceStreamHandler
         let handler = Arc::new(SourceStreamHandler::new(
-            source,
-            mapper,
+            initialized.source,
+            initialized.mapper,
             input_handler,
             stream_name.to_string(),
         ));
@@ -1472,7 +1458,7 @@ impl EventFluxAppRuntime {
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - Source successfully attached and started
+    /// * `Ok(())` - Source successfully attached (started later by `start_all_sources`)
     /// * `Err(EventFluxError)` - Detailed error with context
     fn attach_source_from_resolved_config(
         &self,
@@ -1481,6 +1467,11 @@ impl EventFluxAppRuntime {
         use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
         use crate::core::config::ElementType;
         use crate::core::exception::EventFluxError;
+
+        // Check if handler already registered (idempotent operation)
+        if self.get_source_handler(stream_name).is_some() {
+            return Ok(());
+        }
 
         // Get pre-resolved config (computed at construction time)
         let resolved = self
@@ -1530,6 +1521,68 @@ impl EventFluxAppRuntime {
         Ok(())
     }
 
+    /// Common helper for attaching sink streams
+    ///
+    /// Sink counterpart of [`Self::attach_source_common`], shared by the
+    /// resolved-config and YAML-only paths: creates the sink and mapper,
+    /// builds the handler, registers it and subscribes it to the stream's
+    /// junction. Callers check for an already-registered handler before
+    /// building the config.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - Name of the stream to attach
+    /// * `stream_type_config` - Already-constructed StreamTypeConfig
+    /// * `context_label` - Label for error messages ("YAML", "resolved")
+    fn attach_sink_common(
+        &self,
+        stream_name: &str,
+        stream_type_config: &crate::core::config::stream_config::StreamTypeConfig,
+        context_label: &str,
+    ) -> Result<(), crate::core::exception::EventFluxError> {
+        use crate::core::exception::EventFluxError;
+        use crate::core::stream::handler::SinkStreamHandler;
+        use crate::core::stream::stream_initializer::initialize_sink_stream;
+
+        // Schema field names give format mappers proper output keys
+        // (e.g. JSON "symbol" instead of "field_0")
+        let field_names = self.stream_field_names(stream_name);
+
+        let initialized = initialize_sink_stream(
+            &self.eventflux_app_context.eventflux_context,
+            stream_type_config,
+            &field_names,
+        )
+        .map_err(|e| {
+            EventFluxError::app_creation(format!(
+                "Failed to initialize {} sink '{}' (extension={}, format={:?}): {}",
+                context_label,
+                stream_name,
+                stream_type_config.extension().unwrap_or("<none>"),
+                stream_type_config.format(),
+                e
+            ))
+        })?;
+
+        let handler = Arc::new(SinkStreamHandler::new(
+            initialized.sink,
+            initialized.mapper,
+            stream_name.to_string(),
+        ));
+
+        // Register handler in runtime
+        self.register_sink_handler(stream_name.to_string(), Arc::clone(&handler));
+
+        // Attach sink to junction for event delivery
+        self.attach_sink_to_junction(stream_name, handler)
+            .map_err(|e| {
+                EventFluxError::app_creation(format!(
+                    "Failed to attach {} sink '{}' to its stream junction: {}",
+                    context_label, stream_name, e
+                ))
+            })
+    }
+
     /// Attach a single sink stream using pre-resolved configuration
     ///
     /// Uses the pre-resolved configuration (YAML base + SQL WITH merged at construction time)
@@ -1551,8 +1604,6 @@ impl EventFluxAppRuntime {
         use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
         use crate::core::config::ElementType;
         use crate::core::exception::EventFluxError;
-        use crate::core::stream::handler::SinkStreamHandler;
-        use crate::core::stream::stream_initializer::InitializedStream;
 
         // Check if handler already registered (idempotent operation)
         if self.get_sink_handler(stream_name).is_some() {
@@ -1593,44 +1644,8 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        let field_names = self.stream_field_names(stream_name);
-
-        // Use stream_initializer to create sink with mapper (using field names for JSON output)
-        let initialized = crate::core::stream::stream_initializer::initialize_sink_stream(
-            &self.eventflux_app_context.eventflux_context,
-            &stream_type_config,
-            &field_names,
-        )
-        .map_err(|e| {
-            EventFluxError::app_creation(format!(
-                "Failed to initialize sink '{}' (extension={}, format={:?}): {}",
-                stream_name, extension, resolved.format, e
-            ))
-        })?;
-
-        // Extract sink and mapper from initialized stream
-        let (sink, mapper) = match initialized {
-            InitializedStream::Sink(init_sink) => (init_sink.sink, init_sink.mapper),
-            _ => {
-                return Err(EventFluxError::app_creation(format!(
-                    "Expected sink stream initialization for '{}', got different stream type",
-                    stream_name
-                )))
-            }
-        };
-
-        // Create SinkStreamHandler
-        let handler = Arc::new(SinkStreamHandler::new(
-            sink,
-            mapper,
-            stream_name.to_string(),
-        ));
-
-        // Register handler in runtime
-        self.register_sink_handler(stream_name.to_string(), Arc::clone(&handler));
-
-        // Attach sink to junction for event delivery
-        self.attach_sink_to_junction(stream_name, Arc::clone(&handler))?;
+        // Delegate to common helper for actual attachment
+        self.attach_sink_common(stream_name, &stream_type_config, "resolved")?;
 
         log::info!(
             "[EventFluxAppRuntime] Attached sink '{}' (extension={}, format={:?}) [{}]",
@@ -1650,7 +1665,7 @@ impl EventFluxAppRuntime {
     /// and mapper support.
     ///
     /// This operation is idempotent - if a source handler is already registered for a stream,
-    /// it will be skipped (only started if not already running).
+    /// it will be skipped.
     ///
     /// # Production Features
     ///
@@ -1665,9 +1680,9 @@ impl EventFluxAppRuntime {
     /// 2. Skip if handler already registered (idempotent)
     /// 3. Convert SourceConfig to StreamTypeConfig
     /// 4. Use stream_initializer to create source with mapper
-    /// 5. Create SourceStreamHandler and register it
-    /// 6. Start the source
-    /// 7. Collect successes and failures
+    /// 5. Create SourceStreamHandler and register it (started later by
+    ///    `start_all_sources`)
+    /// 6. Collect successes and failures
     ///
     /// # Arguments
     ///
@@ -1729,6 +1744,13 @@ impl EventFluxAppRuntime {
     ) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
         use crate::core::exception::EventFluxError;
+
+        // Check if handler already registered (idempotent operation). Done
+        // before parsing the YAML so a stream already attached from its
+        // resolved config is skipped rather than re-validated.
+        if self.get_source_handler(stream_name).is_some() {
+            return Ok(());
+        }
 
         // Convert SourceConfig to StreamTypeConfig
         let mut properties = self
@@ -1894,7 +1916,7 @@ impl EventFluxAppRuntime {
 
     /// Attach a single sink stream handler
     ///
-    /// Converts YAML SinkConfig to StreamTypeConfig and creates SinkStreamHandler.
+    /// Converts YAML SinkConfig to StreamTypeConfig and delegates to common helper.
     /// All errors are properly typed as EventFluxError with context.
     fn attach_single_sink(
         &self,
@@ -1903,8 +1925,6 @@ impl EventFluxAppRuntime {
     ) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
         use crate::core::exception::EventFluxError;
-        use crate::core::stream::handler::SinkStreamHandler;
-        use crate::core::stream::stream_initializer::{initialize_sink_stream, InitializedStream};
 
         // Check if sink handler already registered (idempotent operation)
         if self.get_sink_handler(stream_name).is_some() {
@@ -1942,52 +1962,8 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        let field_names = self.stream_field_names(stream_name);
-
-        // Use stream_initializer to create sink with mapper
-        // This properly uses EventFluxContext's registered factories!
-        let initialized = initialize_sink_stream(
-            &self.eventflux_app_context.eventflux_context,
-            &stream_type_config,
-            &field_names,
-        )
-        .map_err(|e| {
-            EventFluxError::app_runtime(format!(
-                "Failed to initialize YAML sink '{}' (type={}): {}",
-                stream_name, sink_config.sink_type, e
-            ))
-        })?;
-
-        // Extract sink and mapper from initialized stream
-        let (sink, mapper) = match initialized {
-            InitializedStream::Sink(init_sink) => {
-                (init_sink.sink, init_sink.mapper) // mapper is already Option
-            }
-            _ => {
-                return Err(EventFluxError::app_runtime(format!(
-                    "Expected sink stream initialization for YAML stream '{}', got different stream type",
-                    stream_name
-                )))
-            }
-        };
-
-        // Create SinkStreamHandler
-        let handler = Arc::new(SinkStreamHandler::new(
-            sink,
-            mapper,
-            stream_name.to_string(),
-        ));
-
-        // Register handler in runtime
-        self.register_sink_handler(stream_name.to_string(), Arc::clone(&handler));
-
-        // Attach sink to junction for event delivery
-        self.attach_sink_to_junction(stream_name, Arc::clone(&handler))
-            .map_err(|e| {
-                EventFluxError::app_runtime(format!("Failed to attach sink to junction: {}", e))
-            })?;
-
-        Ok(())
+        // Delegate to common helper for actual attachment
+        self.attach_sink_common(stream_name, &stream_type_config, "YAML")
     }
 
     /// Auto-attach tables from configuration
@@ -2061,7 +2037,7 @@ impl EventFluxAppRuntime {
         table_config: &crate::core::config::types::application_config::TableConfig,
     ) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::exception::EventFluxError;
-        use crate::core::stream::stream_initializer::{initialize_table, InitializedStream};
+        use crate::core::stream::stream_initializer::initialize_table;
 
         // Convert TableConfig to TableTypeConfig
         let table_type_config = Self::convert_table_config(table_config).map_err(|e| {
@@ -2072,7 +2048,7 @@ impl EventFluxAppRuntime {
         })?;
 
         // Initialize table using factory
-        let initialized = initialize_table(
+        let table = initialize_table(
             &self.eventflux_app_context.eventflux_context,
             &table_type_config,
             table_name,
@@ -2082,18 +2058,8 @@ impl EventFluxAppRuntime {
                 "Failed to initialize table '{}' (extension={}): {}",
                 table_name, table_config.store.store_type, e
             ))
-        })?;
-
-        // Extract table from initialized result
-        let table = match initialized {
-            InitializedStream::Table(init_table) => init_table.table,
-            _ => {
-                return Err(EventFluxError::app_creation(format!(
-                    "Expected table initialization for '{}', got different type",
-                    table_name
-                )))
-            }
-        };
+        })?
+        .table;
 
         // Register table in runtime
         self.register_table_handler(table_name.to_string(), table);

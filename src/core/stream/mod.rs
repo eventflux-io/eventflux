@@ -36,8 +36,8 @@ pub use self::junction_factory::{
 };
 pub use self::output::{LogSink, Sink, StreamCallback};
 pub use self::stream_initializer::{
-    initialize_sink_stream, initialize_source_stream, initialize_streams, InitializedSink,
-    InitializedSource, InitializedStream, InitializedStreamHandler, StreamHandlers,
+    initialize_sink_stream, initialize_source_stream, initialize_table, InitializedSink,
+    InitializedSource, InitializedTable,
 };
 pub use self::stream_junction::{
     JunctionPerformanceMetrics, OnErrorAction, Publisher, StreamJunction,

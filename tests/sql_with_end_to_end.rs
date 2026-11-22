@@ -553,3 +553,63 @@ async fn test_sql_with_properties_reach_factory() {
 
     runner.shutdown();
 }
+
+/// A source attached from its resolved config (SQL WITH merged over YAML)
+/// must be skipped by the YAML-only pass before its YAML is re-parsed.
+///
+/// The YAML-only converter (`extract_connection_config`) rejects nested
+/// mappings that the resolver accepts, so re-parsing an already attached
+/// stream used to fail `start()` with "Invalid connection config" on every
+/// attempt.
+#[tokio::test]
+async fn test_yaml_source_pass_skips_stream_attached_from_sql() {
+    use eventflux::core::config::types::global_config::ApplicationGlobalConfig;
+    use eventflux::core::config::{ApplicationConfig, EventFluxConfig};
+
+    let app_config: ApplicationConfig = serde_yaml::from_str(
+        r#"
+streams:
+  TimerInput:
+    source:
+      type: timer
+      timer:
+        interval: 100
+"#,
+    )
+    .expect("valid application config");
+
+    let mut config = EventFluxConfig::default();
+    config.eventflux.application = Some(ApplicationGlobalConfig {
+        name: Some("YamlGuardApp".to_string()),
+        ..Default::default()
+    });
+    config
+        .applications
+        .insert("YamlGuardApp".to_string(), app_config);
+
+    let manager = EventFluxManager::new_with_config(config);
+    manager.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
+
+    let sql = r#"
+        CREATE STREAM TimerInput (tick STRING) WITH (
+            type = 'source',
+            extension = 'timer',
+            "timer.interval" = '100'
+        );
+
+        CREATE STREAM TimerOutput (tick STRING);
+
+        INSERT INTO TimerOutput
+        SELECT tick FROM TimerInput;
+    "#;
+
+    // Panics if start() fails
+    let runner = AppRunner::new_with_manager(manager, sql, "TimerOutput").await;
+    sleep(Duration::from_millis(350)).await;
+    let out = runner.shutdown();
+
+    assert!(
+        !out.is_empty(),
+        "timer source attached from SQL should produce events"
+    );
+}
