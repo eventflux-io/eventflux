@@ -33,6 +33,7 @@ pub mod query_helpers;
 
 pub use circular_dependency::detect_circular_dependencies;
 pub use dlq_validation::{
-    validate_dlq_schema, validate_dlq_stream_name, validate_no_recursive_dlq,
+    source_dlq_stream, validate_dlq_reference, validate_dlq_schema, validate_dlq_stream_name,
+    validate_no_recursive_dlq, validate_source_dlq_configs,
 };
 pub use query_helpers::QuerySourceExtractor;

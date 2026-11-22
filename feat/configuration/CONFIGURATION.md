@@ -991,11 +991,11 @@ EventFlux provides configurable error handling for runtime failures (connection 
 | Strategy | Behavior | Use Case |
 |----------|----------|----------|
 | `drop` | Log error and discard event | **Default** - Lossy, high throughput |
-| `retry` | Retry with exponential backoff, then drop | Transient failures, eventually consistent |
+| `retry` | Retry with exponential backoff, then drop (or send to the DLQ if `error.dlq.stream` is set) | Transient failures, eventually consistent |
 | `dlq` | Send to dead-letter queue stream | Audit trail, manual review |
 | `fail` | Fail application immediately | Critical data, zero tolerance |
 
-**Note on Hybrid Behavior**: For retry with DLQ fallback, use `strategy = "dlq"` with `dlq.fallback-strategy = "retry"` (see DLQ Fallback Strategies below).
+**Note on Hybrid Behavior**: For retry with DLQ fallback, use `strategy = "retry"` with `dlq.stream` set: events whose retries are exhausted (or whose error is not retriable) go to the DLQ (see DLQ Pattern 1 below). `dlq.fallback-strategy` controls what happens when DLQ delivery itself fails (see DLQ Fallback Strategies below).
 
 #### Configuration Examples
 

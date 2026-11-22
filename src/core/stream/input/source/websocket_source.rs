@@ -572,10 +572,16 @@ impl Source for WebSocketSource {
         Box::new(self.clone())
     }
 
-    fn set_error_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>) {
+    fn set_error_dlq_junction(
+        &mut self,
+        stream_name: &str,
+        junction: Arc<Mutex<InputHandler>>,
+    ) -> Result<(), EventFluxError> {
+        // Without error.strategy the source drops failures; no DLQ to wire
         if let Some(ref mut ctx) = self.error_ctx {
-            ctx.set_dlq_junction(junction);
+            ctx.set_dlq_junction(stream_name, junction);
         }
+        Ok(())
     }
 
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
@@ -687,7 +693,9 @@ impl SourceFactory for WebSocketSourceFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
-        // Use the URL as the stream identifier for error context
+        // DLQ junction is None initially — the runtime calls
+        // set_error_dlq_junction() on attachment, which also sets the stream
+        // name. Until then the URL identifies the stream in error context.
         let stream_name = config
             .get("websocket.url")
             .cloned()

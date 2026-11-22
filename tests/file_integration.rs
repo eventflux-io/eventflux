@@ -779,3 +779,290 @@ async fn test_e2e_sql_json_source_duplicate_field_names_fail_at_creation() {
     };
     assert!(err.contains("more than once"), "got: {err}");
 }
+
+// ============================================================================
+// E2E: SQL app — DLQ error strategy (#207)
+// ============================================================================
+
+/// Columns every DLQ stream must declare, exactly
+const DLQ_COLUMNS: &str = "originalEvent STRING, errorMessage STRING, errorType STRING, \
+                           timestamp LONG, attemptCount INT, streamName STRING";
+
+/// An `Orders` JSON file source with `error.strategy = strategy` that names
+/// `dlq_stream` as its DLQ
+fn orders_source(input: &Path, strategy: &str, dlq_stream: &str) -> String {
+    format!(
+        r#"
+        CREATE STREAM Orders (id STRING, amount DOUBLE) WITH (
+            type = 'source', extension = 'file', format = 'json',
+            "file.path" = '{input}',
+            "file.poll.interval.ms" = '20',
+            "error.strategy" = '{strategy}',
+            "error.dlq.stream" = '{dlq_stream}'
+        );
+    "#,
+        input = input.display(),
+    )
+}
+
+/// An `Orders` JSON file source that routes failures to `dlq_stream`
+fn orders_source_with_dlq(input: &Path, dlq_stream: &str) -> String {
+    orders_source(input, "dlq", dlq_stream)
+}
+
+/// One malformed record between two valid ones
+fn write_orders_with_malformed_record(input: &Path) {
+    fs::write(
+        input,
+        concat!(
+            "{\"id\":\"o1\",\"amount\":10.5}\n",
+            "this is not json\n",
+            "{\"id\":\"o2\",\"amount\":20.0}\n",
+        ),
+    )
+    .unwrap();
+}
+
+/// Assert `dlq_rows` holds exactly the dead-lettered malformed record
+fn assert_single_dlq_row_for_malformed_record(dlq_rows: &[serde_json::Value]) {
+    assert_eq!(
+        dlq_rows.len(),
+        1,
+        "exactly the malformed record is dead-lettered"
+    );
+    let row = &dlq_rows[0];
+    assert_eq!(row["streamName"], "Orders");
+    assert_eq!(row["attemptCount"], 1);
+    assert!(
+        !row["errorType"].as_str().unwrap_or_default().is_empty(),
+        "errorType must be set: {row}"
+    );
+    assert!(
+        !row["errorMessage"].as_str().unwrap_or_default().is_empty(),
+        "errorMessage must be set: {row}"
+    );
+    assert!(row["timestamp"].as_i64().unwrap_or_default() > 0, "{row}");
+
+    // originalEvent is the serialized fallback event carrying the raw bytes
+    use eventflux::core::event::{event::Event, value::AttributeValue};
+    let original: Event = serde_json::from_str(row["originalEvent"].as_str().unwrap())
+        .expect("originalEvent is a serialized Event");
+    assert_eq!(
+        original.data,
+        vec![AttributeValue::Bytes(b"this is not json".to_vec())],
+        "originalEvent must carry the failed payload"
+    );
+}
+
+/// Regression test for https://github.com/eventflux-io/eventflux/issues/207:
+/// a record the mapper rejects must land in the DLQ stream (here a file
+/// sink) instead of being logged and dropped, while valid records flow on.
+#[tokio::test]
+async fn test_e2e_sql_dlq_receives_malformed_record() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+    let output = dir.path().join("out.jsonl");
+    let dlq = dir.path().join("errors.jsonl");
+    write_orders_with_malformed_record(&input);
+
+    let sql = format!(
+        r#"
+        {source}
+        CREATE STREAM OrderErrors ({DLQ_COLUMNS}) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{dlq}'
+        );
+        CREATE STREAM Out (id STRING, amount DOUBLE) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{output}'
+        );
+        INSERT INTO Out SELECT * FROM Orders;
+    "#,
+        source = orders_source_with_dlq(&input, "OrderErrors"),
+        dlq = dlq.display(),
+        output = output.display(),
+    );
+
+    let manager = EventFluxManager::new();
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(&sql)
+        .await
+        .expect("runtime");
+    runtime.start().expect("start");
+
+    await_jsonl_lines(&output, 2);
+    await_jsonl_lines(&dlq, 1);
+    runtime.shutdown();
+
+    let out_rows = read_jsonl(&output);
+    assert_eq!(out_rows.len(), 2, "valid records still flow");
+    assert_eq!(out_rows[0]["id"], "o1");
+    assert_eq!(out_rows[1]["id"], "o2");
+
+    assert_single_dlq_row_for_malformed_record(&read_jsonl(&dlq));
+}
+
+/// The DLQ stream may be a plain internal stream processed by queries
+/// (documented "internal DLQ" pattern): dead-lettered events flow through it.
+#[tokio::test]
+async fn test_e2e_sql_dlq_internal_stream_feeds_queries() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+    let dlq_out = dir.path().join("errors.jsonl");
+    write_orders_with_malformed_record(&input);
+
+    let sql = format!(
+        r#"
+        {source}
+        CREATE STREAM OrderErrors ({DLQ_COLUMNS});
+        CREATE STREAM ErrorSink ({DLQ_COLUMNS}) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{dlq_out}'
+        );
+        INSERT INTO ErrorSink SELECT * FROM OrderErrors;
+    "#,
+        source = orders_source_with_dlq(&input, "OrderErrors"),
+        dlq_out = dlq_out.display(),
+    );
+
+    let manager = EventFluxManager::new();
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(&sql)
+        .await
+        .expect("runtime");
+    runtime.start().expect("start");
+
+    await_jsonl_lines(&dlq_out, 1);
+    runtime.shutdown();
+
+    assert_single_dlq_row_for_malformed_record(&read_jsonl(&dlq_out));
+}
+
+/// strategy=retry with a DLQ stream: once retries are exhausted (here at
+/// once, since a mapping error is not retriable) the record is dead-lettered
+/// instead of dropped (documented "retry, then DLQ" pattern).
+#[tokio::test]
+async fn test_e2e_sql_retry_then_dlq_receives_malformed_record() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+    let output = dir.path().join("out.jsonl");
+    let dlq = dir.path().join("errors.jsonl");
+    write_orders_with_malformed_record(&input);
+
+    let sql = format!(
+        r#"
+        {source}
+        CREATE STREAM OrderErrors ({DLQ_COLUMNS}) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{dlq}'
+        );
+        CREATE STREAM Out (id STRING, amount DOUBLE) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{output}'
+        );
+        INSERT INTO Out SELECT * FROM Orders;
+    "#,
+        source = orders_source(&input, "retry", "OrderErrors"),
+        dlq = dlq.display(),
+        output = output.display(),
+    );
+
+    let manager = EventFluxManager::new();
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(&sql)
+        .await
+        .expect("runtime");
+    runtime.start().expect("start");
+
+    await_jsonl_lines(&output, 2);
+    await_jsonl_lines(&dlq, 1);
+    runtime.shutdown();
+
+    assert_eq!(read_jsonl(&output).len(), 2, "valid records still flow");
+    assert_single_dlq_row_for_malformed_record(&read_jsonl(&dlq));
+}
+
+/// Create an app that must be rejected at creation (not at start) and
+/// return the creation error
+async fn creation_error(sql: &str) -> String {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    match EventFluxManager::new()
+        .create_eventflux_app_runtime_from_string(sql)
+        .await
+    {
+        Ok(runtime) => {
+            runtime.shutdown();
+            panic!("app with an invalid DLQ configuration must fail at creation");
+        }
+        Err(e) => e.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_sql_dlq_missing_stream_fails_at_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+
+    // The reference names a stream that is not defined (the DLQ stream is
+    // OrderErrors)
+    let sql = format!(
+        "{source}\nCREATE STREAM OrderErrors ({DLQ_COLUMNS});",
+        source = orders_source_with_dlq(&input, "OrderDeadLetters"),
+    );
+
+    let err = creation_error(&sql).await;
+    assert!(err.contains("'OrderDeadLetters'"), "got: {err}");
+    assert!(err.contains("does not exist"), "got: {err}");
+}
+
+#[tokio::test]
+async fn test_e2e_sql_dlq_wrong_schema_fails_at_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+
+    // attemptCount is missing
+    let sql = format!(
+        r#"{source}
+        CREATE STREAM OrderErrors (originalEvent STRING, errorMessage STRING,
+            errorType STRING, timestamp LONG, streamName STRING);"#,
+        source = orders_source_with_dlq(&input, "OrderErrors"),
+    );
+
+    let err = creation_error(&sql).await;
+    assert!(err.contains("'OrderErrors'"), "got: {err}");
+    assert!(err.contains("exactly 6 required"), "got: {err}");
+}
+
+#[tokio::test]
+async fn test_e2e_sql_dlq_stream_with_own_dlq_fails_at_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+    let errors_input = dir.path().join("errors.jsonl");
+
+    // OrderErrors is a source that itself routes failures to a DLQ
+    let sql = format!(
+        r#"{source}
+        CREATE STREAM OrderErrors ({DLQ_COLUMNS}) WITH (
+            type = 'source', extension = 'file', format = 'json',
+            "file.path" = '{errors_input}',
+            "error.strategy" = 'dlq',
+            "error.dlq.stream" = 'MoreErrors'
+        );
+        CREATE STREAM MoreErrors ({DLQ_COLUMNS});"#,
+        source = orders_source_with_dlq(&input, "OrderErrors"),
+        errors_input = errors_input.display(),
+    );
+
+    let err = creation_error(&sql).await;
+    assert!(
+        err.contains("'OrderErrors' cannot have its own DLQ"),
+        "got: {err}"
+    );
+}

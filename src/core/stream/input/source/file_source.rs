@@ -641,10 +641,16 @@ impl Source for FileSource {
         Box::new(self.clone())
     }
 
-    fn set_error_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>) {
+    fn set_error_dlq_junction(
+        &mut self,
+        stream_name: &str,
+        junction: Arc<Mutex<InputHandler>>,
+    ) -> Result<(), EventFluxError> {
+        // Without error.strategy the source drops failures; no DLQ to wire
         if let Some(ref mut ctx) = self.error_ctx {
-            ctx.set_dlq_junction(junction);
+            ctx.set_dlq_junction(stream_name, junction);
         }
+        Ok(())
     }
 
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
@@ -737,9 +743,10 @@ impl SourceFactory for FileSourceFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
-        // DLQ junction is None initially — stream_initializer calls
-        // set_error_dlq_junction() after creation. The path identifies the
-        // stream in error-context log messages.
+        // DLQ junction is None initially — the runtime calls
+        // set_error_dlq_junction() on attachment, which also sets the stream
+        // name. Until then the path identifies the stream in error-context
+        // log messages.
         let stream_tag = config.get("file.path").cloned().unwrap_or_default();
         FileSource::from_properties(config, None, &stream_tag)
             .map(|source| Box::new(source) as Box<dyn Source>)

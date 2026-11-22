@@ -515,8 +515,7 @@ impl EventFluxAppRuntime {
         element_type: crate::core::config::ElementType,
         name: &str,
     ) -> Option<&crate::core::config::ResolvedElementConfig> {
-        let key = format!("{}:{}", element_type, name);
-        self.resolved_configs.get(&key)
+        self.resolved_configs.get(&element_type.config_key(name))
     }
 
     /// Attach sink handler to junction for event delivery
@@ -1369,6 +1368,40 @@ impl EventFluxAppRuntime {
             .unwrap_or_default()
     }
 
+    /// Resolve the `InputHandler` of the DLQ stream that `stream_name`'s
+    /// source routes failed events to.
+    ///
+    /// The reference is validated again here, though app creation already
+    /// checked every resolved source config. The YAML-only attachment path
+    /// builds its properties outside the resolver, so this keeps every
+    /// attachment path covered.
+    fn dlq_input_handler(
+        &self,
+        stream_name: &str,
+        dlq_stream: &str,
+    ) -> Result<Arc<Mutex<InputHandler>>, crate::core::exception::EventFluxError> {
+        use crate::core::exception::EventFluxError;
+        use crate::core::validation::{source_dlq_stream, validate_dlq_reference};
+
+        validate_dlq_reference(
+            stream_name,
+            dlq_stream,
+            source_dlq_stream(&self.resolved_configs, dlq_stream),
+            &self.eventflux_app.stream_definition_map,
+        )?;
+
+        // Junctions exist for every defined stream before attachment, so the
+        // DLQ stream needs no initialization ordering
+        self.input_manager
+            .construct_input_handler(dlq_stream)
+            .map_err(|e| {
+                EventFluxError::app_creation(format!(
+                    "Failed to resolve DLQ stream '{}' for source stream '{}': {}",
+                    dlq_stream, stream_name, e
+                ))
+            })
+    }
+
     /// Common helper for attaching source streams
     ///
     /// Shared by the resolved-config (SQL WITH + YAML) and YAML-only paths:
@@ -1393,6 +1426,7 @@ impl EventFluxAppRuntime {
         stream_type_config: &crate::core::config::stream_config::StreamTypeConfig,
         context_label: &str,
     ) -> Result<(), crate::core::exception::EventFluxError> {
+        use crate::core::error::DLQ_STREAM_KEY;
         use crate::core::exception::EventFluxError;
         use crate::core::stream::handler::SourceStreamHandler;
         use crate::core::stream::stream_initializer::initialize_source_stream;
@@ -1400,7 +1434,7 @@ impl EventFluxAppRuntime {
         let field_names = self.stream_field_names(stream_name);
 
         // Use stream_initializer to create source with mapper
-        let initialized = initialize_source_stream(
+        let mut initialized = initialize_source_stream(
             &self.eventflux_app_context.eventflux_context,
             stream_type_config,
             &field_names,
@@ -1426,6 +1460,25 @@ impl EventFluxAppRuntime {
                     context_label, stream_name, e
                 ))
             })?;
+
+        // Factories build sources without a DLQ junction; wire it now so
+        // failed events reach the DLQ stream instead of being dropped (#207)
+        if let Some(dlq_stream) = stream_type_config.properties.get(DLQ_STREAM_KEY) {
+            let dlq_handler = self.dlq_input_handler(stream_name, dlq_stream)?;
+            initialized
+                .source
+                .set_error_dlq_junction(stream_name, dlq_handler)
+                .map_err(|e| {
+                    EventFluxError::app_creation(format!(
+                        "Cannot route {} source '{}' (extension={}) failures to DLQ stream '{}': {}",
+                        context_label,
+                        stream_name,
+                        stream_type_config.extension().unwrap_or("<none>"),
+                        dlq_stream,
+                        e
+                    ))
+                })?;
+        }
 
         // Create SourceStreamHandler
         let handler = Arc::new(SourceStreamHandler::new(

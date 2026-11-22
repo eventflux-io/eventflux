@@ -750,10 +750,16 @@ impl Source for RabbitMQSource {
         Box::new(self.clone())
     }
 
-    fn set_error_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>) {
+    fn set_error_dlq_junction(
+        &mut self,
+        stream_name: &str,
+        junction: Arc<Mutex<InputHandler>>,
+    ) -> Result<(), EventFluxError> {
+        // Without error.strategy the source drops failures; no DLQ to wire
         if let Some(ref mut ctx) = self.error_ctx {
-            ctx.set_dlq_junction(junction);
+            ctx.set_dlq_junction(stream_name, junction);
         }
+        Ok(())
     }
 
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
@@ -938,10 +944,11 @@ impl SourceFactory for RabbitMQSourceFactory {
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
         // Use from_properties to parse both RabbitMQ config and error handling config
-        // DLQ junction will be None initially - stream_initializer calls
-        // set_error_dlq_junction() after creation to wire the DLQ stream.
+        // DLQ junction will be None initially - the runtime calls
+        // set_error_dlq_junction() on attachment to wire the DLQ stream and
+        // set the stream name.
         //
-        // Use the queue name as the stream identifier for error context.
+        // Until then, use the queue name as the stream identifier for error context.
         // This uniquely identifies each RabbitMQ source stream and is more useful
         // for debugging than a generic placeholder.
         let queue_name = config
@@ -1183,7 +1190,7 @@ mod tests {
 
     #[test]
     fn test_factory_accepts_dlq_strategy() {
-        // DLQ strategy is accepted by factory - stream_initializer will wire the junction later
+        // DLQ strategy is accepted by factory - the runtime wires the junction on attachment
         let factory = RabbitMQSourceFactory;
         let mut config = HashMap::new();
         config.insert("rabbitmq.host".to_string(), "localhost".to_string());
@@ -1194,7 +1201,7 @@ mod tests {
         let result = factory.create_initialized(&config);
         assert!(
             result.is_ok(),
-            "Factory should accept DLQ strategy (junction wired later by stream_initializer)"
+            "Factory should accept DLQ strategy (junction wired later by the runtime)"
         );
     }
 

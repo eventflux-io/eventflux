@@ -80,7 +80,7 @@ pub const SOURCE_ERROR_PARAMETERS: &[&str] = &[
     "error.retry.backoff",
     "error.retry.initial-delay",
     "error.retry.max-delay",
-    "error.dlq.stream",
+    super::dlq::DLQ_STREAM_KEY,
     "error.dlq.fallback-strategy",
 ];
 use crate::core::stream::input::input_handler::InputHandler;
@@ -283,13 +283,14 @@ impl SourceErrorContext {
     ///
     /// This method allows setting the DLQ junction after context creation,
     /// which is needed when the factory creates a source before the DLQ
-    /// junction is available (stream_initializer wires it later).
+    /// junction is available (the runtime wires it on attachment).
     ///
     /// # Arguments
+    /// * `stream_name` - Name of the stream whose failures are dead-lettered
     /// * `junction` - The InputHandler for the DLQ stream
     #[inline]
-    pub fn set_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>) {
-        self.handler.set_dlq_junction(junction);
+    pub fn set_dlq_junction(&mut self, stream_name: &str, junction: Arc<Mutex<InputHandler>>) {
+        self.handler.set_dlq_junction(stream_name, junction);
     }
 }
 

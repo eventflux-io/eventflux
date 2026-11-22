@@ -29,6 +29,10 @@ use crate::core::exception::EventFluxError;
 
 use super::retry::RetryConfig;
 
+/// Stream property naming the DLQ stream that receives a source's failed
+/// events.
+pub const DLQ_STREAM_KEY: &str = "error.dlq.stream";
+
 /// Fallback strategy when DLQ stream is unavailable or delivery fails
 ///
 /// Determines what action to take when the DLQ itself cannot receive failed events.
@@ -138,7 +142,7 @@ impl DlqConfig {
     /// - error.dlq.fallback-retry.* (if fallback-strategy is retry)
     pub fn from_flat_config(config: &FlatConfig) -> Result<Self, String> {
         let stream = config
-            .get("error.dlq.stream")
+            .get(DLQ_STREAM_KEY)
             .ok_or("error.strategy='dlq' requires 'error.dlq.stream' property")?
             .clone();
 
