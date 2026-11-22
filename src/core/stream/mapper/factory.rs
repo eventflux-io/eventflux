@@ -55,7 +55,7 @@
 use super::bytes_mapper::{BytesSinkMapper, BytesSourceMapper};
 use super::csv_mapper::{CsvSinkMapper, CsvSourceMapper};
 use super::json_mapper::{JsonSinkMapper, JsonSourceMapper};
-use super::{SinkMapper, SourceMapper};
+use super::{ensure_unique_field_names, SinkMapper, SourceMapper};
 use crate::core::exception::EventFluxError;
 use std::collections::HashMap;
 
@@ -347,6 +347,9 @@ impl SinkMapperFactory for JsonSinkMapperFactory {
         let mut mapper = if let Some(template) = mapper_config.template {
             JsonSinkMapper::with_template(template)
         } else {
+            // Named output keys: a duplicate field name would make one value
+            // silently overwrite the other in the output object
+            ensure_unique_field_names(field_names, "json")?;
             JsonSinkMapper::new()
         };
 
@@ -835,6 +838,26 @@ mod tests {
             AttributeValue::String(ref s) if s == "AAPL"
         ));
         assert!(matches!(events[0].data[1], AttributeValue::Double(a) if (a - 42.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn test_json_sink_factory_rejects_duplicate_field_names() {
+        // Two "id" fields would write one output key twice, silently
+        // dropping a value
+        let factory = JsonSinkMapperFactory;
+        let field_names = vec!["id".to_string(), "id".to_string()];
+        let err = factory
+            .create_with_schema(&HashMap::new(), &field_names)
+            .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "got: {}", err);
+
+        // Template output does not use field names, so it is unaffected
+        let mut config = HashMap::new();
+        config.insert(
+            "json.template".to_string(),
+            r#"{"a":{{field_0}},"b":{{field_1}}}"#.to_string(),
+        );
+        assert!(factory.create_with_schema(&config, &field_names).is_ok());
     }
 
     #[test]

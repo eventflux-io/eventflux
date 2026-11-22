@@ -84,10 +84,42 @@ pub(crate) fn alphabetical_mappings<V: Clone>(mappings: &HashMap<String, V>) -> 
     ordered
 }
 
+/// First field name declared more than once (exact match), if any.
+fn first_duplicate(field_names: &[String]) -> Option<&str> {
+    field_names
+        .iter()
+        .enumerate()
+        .find(|(i, name)| field_names[..*i].contains(name))
+        .map(|(_, name)| name.as_str())
+}
+
+/// Reject a schema that declares the same field name twice.
+///
+/// Stream definitions only warn about duplicate attribute names, but
+/// name-based mapping cannot tell the two positions apart: one JSON key or
+/// `mapping.*` entry would feed both, or one output key would overwrite the
+/// other. Called when a mapper is configured, so the app fails at creation.
+pub(crate) fn ensure_unique_field_names(
+    field_names: &[String],
+    format: &str,
+) -> Result<(), EventFluxError> {
+    match first_duplicate(field_names) {
+        Some(name) => Err(EventFluxError::Configuration {
+            message: format!(
+                "Stream field '{name}' is declared more than once; the '{format}' mapper \
+                 maps fields by name and cannot tell the duplicates apart. Rename one of them."
+            ),
+            config_key: None,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// Match schema field names to keys (JSON object keys or `mapping.*` keys)
 /// one-to-one, returning the matched key for each field in schema order.
 ///
-/// Exact matches are resolved first. A remaining field then matches a key
+/// Field names must be unique (duplicates are rejected). Exact matches are
+/// resolved first. A remaining field then matches a key
 /// ASCII case-insensitively only when the pairing is unambiguous in both
 /// directions: the field has exactly one unclaimed candidate key, and that
 /// key matches no other unresolved field. Anything else is reported as an
@@ -97,6 +129,10 @@ pub(crate) fn match_field_names<'k>(
     field_names: &[String],
     keys: &[&'k str],
 ) -> Result<Vec<Option<&'k str>>, String> {
+    if let Some(name) = first_duplicate(field_names) {
+        return Err(format!("stream field '{name}' is declared more than once"));
+    }
+
     let mut matched: Vec<Option<&'k str>> = field_names
         .iter()
         .map(|name| keys.iter().copied().find(|key| *key == name))
@@ -151,14 +187,17 @@ pub(crate) fn match_field_names<'k>(
 /// Order explicit `mapping.*` entries by stream schema, validating fail-fast.
 ///
 /// Fields are paired with mapping keys by [`match_field_names`]. Fails if a
-/// schema field has no mapping, if a pairing is ambiguous, or if a mapping
-/// key matches no schema field (typo or stale entry).
+/// field name is declared twice, if a schema field has no mapping, if a
+/// pairing is ambiguous, or if a mapping key matches no schema field (typo
+/// or stale entry).
 /// `format` is the property prefix (e.g. "json") used in error messages.
 pub(crate) fn schema_ordered_mappings<V: Clone>(
     field_names: &[String],
     mappings: &HashMap<String, V>,
     format: &str,
 ) -> Result<Vec<(String, V)>, EventFluxError> {
+    ensure_unique_field_names(field_names, format)?;
+
     let config_error = |message: String, key: &str| EventFluxError::Configuration {
         message,
         config_key: Some(format!("{format}.mapping.{key}")),
@@ -272,7 +311,22 @@ impl Clone for Box<dyn SinkMapper> {
 
 #[cfg(test)]
 mod tests {
-    use super::match_field_names;
+    use super::{ensure_unique_field_names, match_field_names};
+
+    #[test]
+    fn test_match_rejects_duplicate_field_names() {
+        // (id, id) must never map one key into both positions
+        let fields = names(&["id", "id"]);
+        let err = match_field_names(&fields, &["id"]).unwrap_err();
+        assert!(err.contains("more than once"), "got: {err}");
+    }
+
+    #[test]
+    fn test_ensure_unique_field_names() {
+        assert!(ensure_unique_field_names(&names(&["id", "ID", "name"]), "json").is_ok());
+        let err = ensure_unique_field_names(&names(&["a", "id", "b", "id"]), "json").unwrap_err();
+        assert!(err.to_string().contains("'id'"), "got: {err}");
+    }
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()

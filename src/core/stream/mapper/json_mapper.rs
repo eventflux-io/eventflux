@@ -45,8 +45,8 @@
 //! ```
 
 use super::{
-    alphabetical_mappings, match_field_names, now_millis, schema_ordered_mappings, SinkMapper,
-    SourceMapper,
+    alphabetical_mappings, ensure_unique_field_names, match_field_names, now_millis,
+    schema_ordered_mappings, SinkMapper, SourceMapper,
 };
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
@@ -120,6 +120,7 @@ impl JsonSourceMapper {
             self.field_names = None;
             return Ok(());
         }
+        ensure_unique_field_names(&names, "json")?;
         if !self.mappings.is_empty() {
             self.ordered_mappings = schema_ordered_mappings(&names, &self.mappings, "json")?;
         }
@@ -1356,6 +1357,26 @@ mod tests {
         let mapper = schema_mapper(&["id"]);
         let events = mapper.map(br#"{"Id": 9, "id": 1, "ID": 8}"#).unwrap();
         assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
+    }
+
+    #[test]
+    fn test_schema_duplicate_field_names_rejected_at_config_time() {
+        // Schema (id, id): {"id": 1} would otherwise fill both positions.
+        // Rejected when the mapper is configured, for auto-mapping...
+        let mut mapper = JsonSourceMapper::new();
+        let err = mapper
+            .set_field_names(vec!["id".to_string(), "id".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "got: {}", err);
+
+        // ...and for explicit mappings, where one mapping.id would feed both
+        let mut mappings = HashMap::new();
+        mappings.insert("id".to_string(), "$.id".to_string());
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["id".to_string(), "id".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "got: {}", err);
     }
 
     #[test]

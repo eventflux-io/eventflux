@@ -670,6 +670,27 @@ mod tests {
     }
 
     #[test]
+    fn test_csv_schema_duplicate_field_names() {
+        // With explicit mappings, one csv.mapping.id would feed both fields
+        let mut mappings = HashMap::new();
+        mappings.insert("id".to_string(), 0usize);
+        let mut mapper = CsvSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["id".to_string(), "id".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "got: {}", err);
+
+        // Without mappings CSV is positional, so duplicate names are harmless
+        let mut mapper = CsvSourceMapper::new();
+        mapper
+            .set_field_names(vec!["id".to_string(), "id".to_string()])
+            .unwrap();
+        let events = mapper.map(b"1,2").unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(2)));
+    }
+
+    #[test]
     fn test_csv_schema_without_mappings_stays_positional() {
         // CSV auto-mapping is inherently positional; schema names are unused
         let mut mapper = CsvSourceMapper::new();

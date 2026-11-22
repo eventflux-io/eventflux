@@ -736,3 +736,46 @@ async fn test_e2e_sql_json_fields_map_case_insensitive() {
     assert_eq!(lines[0]["symbol"], "AAPL");
     assert_eq!(lines[0]["volume"], 5000);
 }
+
+/// A JSON source whose schema declares the same field twice cannot be
+/// mapped by name ({"id": 1} would fill both positions), so the app must
+/// fail at creation instead of starting and corrupting events.
+#[tokio::test]
+async fn test_e2e_sql_json_source_duplicate_field_names_fail_at_creation() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.jsonl");
+    let output = dir.path().join("out.jsonl");
+    fs::write(&input, "{\"id\":1}\n").unwrap();
+
+    let sql = format!(
+        r#"
+        CREATE STREAM Src (id INT, id INT) WITH (
+            type = 'source', extension = 'file', format = 'json',
+            "file.path" = '{input}'
+        );
+        CREATE STREAM Out (a INT, b INT) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{output}'
+        );
+        INSERT INTO Out SELECT * FROM Src;
+    "#,
+        input = input.display(),
+        output = output.display(),
+    );
+
+    let manager = EventFluxManager::new();
+    let result = match manager.create_eventflux_app_runtime_from_string(&sql).await {
+        Ok(runtime) => runtime.start().map(|_| runtime).map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    let err = match result {
+        Ok(runtime) => {
+            runtime.shutdown();
+            panic!("app with duplicate source field names must not start");
+        }
+        Err(e) => e,
+    };
+    assert!(err.contains("more than once"), "got: {err}");
+}
