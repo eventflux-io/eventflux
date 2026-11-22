@@ -52,19 +52,32 @@ impl InsertIntoStreamProcessor {
 
 impl Processor for InsertIntoStreamProcessor {
     fn process(&self, complex_event_chunk: Option<Box<dyn ComplexEvent>>) {
-        // StreamJunction now handles ComplexEvent conversion properly
-        // It will handle both StreamEvent and StateEvent types correctly
-        if let Err(e) = self
+        // One guard for the send AND the error handling. Re-locking the
+        // junction in the error arm would self-deadlock: the scrutinee
+        // temporary of an `if let` lives until the end of the whole
+        // statement, so the first guard would still be held.
+        let junction = self
             .output_stream_junction
             .lock()
-            .expect("Output StreamJunction Mutex poisoned")
-            .send_complex_event_chunk(complex_event_chunk)
-        {
-            eprintln!(
-                "Error sending event chunk to output stream junction '{}': {}",
-                self.output_stream_junction.lock().unwrap().stream_id,
-                e
-            );
+            .expect("Output StreamJunction Mutex poisoned");
+        match junction.send_complex_event_chunk(complex_event_chunk) {
+            Ok(()) => {}
+            Err(crate::core::exception::error::EventFluxError::ShutdownRejected { count }) => {
+                // Fire-and-forget edge: nobody upstream retries, so events
+                // rejected by a shutting-down junction would vanish from the
+                // delivered/dropped ledger unless counted here.
+                junction.record_cascade_drop(count as u64);
+                log::debug!(
+                    "[{}] dropped {count} query-output event(s): junction is shutting down",
+                    junction.stream_id
+                );
+            }
+            Err(e) => {
+                log::error!(
+                    "Error sending event chunk to output stream junction '{}': {e}",
+                    junction.stream_id
+                );
+            }
         }
     }
 

@@ -248,6 +248,7 @@ pub fn create_dlq_event(
         EventFluxError::CannotLoadClass { .. } => "CannotLoadClass",
         EventFluxError::ParseError { .. } => "ParseError",
         EventFluxError::SendError { .. } => "SendError",
+        EventFluxError::ShutdownRejected { .. } => "ShutdownRejected",
         EventFluxError::ProcessorError { .. } => "ProcessorError",
         EventFluxError::Other(_) => "Other",
         EventFluxError::Sqlite(_) => "Sqlite",

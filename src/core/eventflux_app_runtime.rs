@@ -30,12 +30,16 @@ use crate::core::stream::input::input_handler::InputHandler;
 use crate::core::stream::input::input_manager::InputManager;
 use crate::core::stream::output::sink::SinkCallbackAdapter;
 use crate::core::stream::output::stream_callback::StreamCallback; // The trait
-use crate::core::stream::stream_junction::StreamJunction;
+use crate::core::stream::stream_junction::{
+    poll_quiescent, poll_settled, StreamJunction, HALT_SETTLE_TIMEOUT, JUNCTION_DRAIN_TIMEOUT,
+    MAX_DRAIN_TIMEOUT,
+};
 use crate::core::trigger::TriggerRuntime;
 use crate::core::util::parser::eventflux_app_parser::EventFluxAppParser; // For EventFluxAppParser::parse_eventflux_app_runtime_builder
 use crate::core::window::WindowRuntime;
 use crate::query_api::EventFluxApp as ApiEventFluxApp; // From query_api
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use std::collections::HashMap;
@@ -113,6 +117,12 @@ pub struct EventFluxAppRuntime {
     /// Callback tracking for removal support.
     /// See `add_callback()` and `remove_callback()` for usage.
     pub callback_map: CallbackMap,
+
+    /// Serializes start() and shutdown() bodies. The RuntimeState guard alone
+    /// is not enough: shutdown() accepts the Starting state, and two drivers
+    /// interleaving junction restart/stop calls would leave a zombie "Running"
+    /// runtime whose junctions all reject events.
+    pub(crate) lifecycle: Mutex<()>,
 }
 
 impl EventFluxAppRuntime {
@@ -676,7 +686,10 @@ impl EventFluxAppRuntime {
     fn rollback_startup(&self) {
         log::warn!("Rolling back runtime startup for '{}'", self.name);
 
-        // Stop in reverse order (best effort, don't propagate errors)
+        // Stop in reverse order (best effort, don't propagate errors).
+        // NOTE: must not clear restored state — a retried start() enters via
+        // the Failed arm with restarting=false and skips auto-restore, so it
+        // relies on the state from the failed attempt surviving the rollback.
         for pr in self.partition_runtimes.iter().rev() {
             pr.shutdown();
         }
@@ -691,11 +704,40 @@ impl EventFluxAppRuntime {
         // Stop sources
         self.stop_all_sources();
 
+        // Halt junctions: start() restarts them before sinks/sources, so a
+        // failure after that point would otherwise leave consumers live and
+        // junctions accepting events into a rolled-back topology (and leak the
+        // consumer threads if the runtime is then discarded). Halt — not a
+        // graceful stop — because the sinks above are already stopped: letting
+        // consumers drain the backlog now would deliver into dead sinks (the
+        // #136 window) while counting the events as processed. Settle, then
+        // count the frozen backlog as dropped; a retried start() purges it and
+        // clears the flags via restart_processing.
+        let rollback_handles: Vec<_> = self
+            .stream_junction_map
+            .values()
+            .map(|j| j.lock().unwrap().drain_handle())
+            .filter(|h| h.is_async())
+            .collect();
+        for junction in self.stream_junction_map.values() {
+            junction.lock().unwrap().halt_processing();
+        }
+        poll_settled(&rollback_handles, Instant::now() + HALT_SETTLE_TIMEOUT);
+        for junction in self.stream_junction_map.values() {
+            junction.lock().unwrap().abandon_pending();
+        }
+
         log::info!("Rollback completed for '{}'", self.name);
     }
 
     pub fn start(&self) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::exception::EventFluxError;
+
+        // Serialize against shutdown(): without this, a concurrent shutdown
+        // (legal from the Starting state) interleaves junction stop calls with
+        // our restart calls and can leave a "Running" runtime whose junctions
+        // all reject events.
+        let _lifecycle = self.lifecycle.lock().expect("lifecycle mutex poisoned");
 
         // 1. State validation - idempotent start
         let restarting;
@@ -865,6 +907,21 @@ impl EventFluxAppRuntime {
         }
 
         // 4. Execution phase - start all components (with rollback on error).
+        // Junctions first: shutdown() leaves sticky shutdown flags on every
+        // junction (sync and async), so a restarted runtime must clear them
+        // before anything can flow. No-op on first start.
+        for junction in self.stream_junction_map.values() {
+            if let Err(e) = junction.lock().unwrap().restart_processing() {
+                log::error!("Failed to restart stream junction: {}", e);
+                self.rollback_startup();
+                *self.state.write().unwrap() = RuntimeState::Failed;
+                return Err(EventFluxError::app_runtime(format!(
+                    "Failed to restart stream junction: {}",
+                    e
+                )));
+            }
+        }
+
         // Downstream-first: sinks start before sources so that when the
         // first event is consumed, every sink is subscribed and connected.
         // The reverse order lost events published into not-yet-ready sink
@@ -914,7 +971,25 @@ impl EventFluxAppRuntime {
         Ok(())
     }
 
+    /// Drain timeout for async junctions, overridable via
+    /// `EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS` (same pattern as
+    /// `EVENTFLUX_EXECUTOR_THREADS`). Capped so `Instant + timeout` cannot
+    /// overflow on absurd override values.
+    fn junction_drain_timeout() -> Duration {
+        std::env::var("EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(JUNCTION_DRAIN_TIMEOUT)
+            .min(MAX_DRAIN_TIMEOUT)
+    }
+
     pub fn shutdown(&self) {
+        // Serialize against start(); see the `lifecycle` field. A shutdown
+        // issued during a concurrent start() waits for the start to finish,
+        // then tears the runtime down cleanly.
+        let _lifecycle = self.lifecycle.lock().expect("lifecycle mutex poisoned");
+
         // Guard: only shutdown if Running, Starting, or Failed
         {
             let mut state = self.state.write().unwrap();
@@ -926,34 +1001,115 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Deactivate triggers and stop sources to fully quiesce the pipeline
+        // Deactivate every producer BEFORE the drain: triggers, the scheduler
+        // (its ticks — timer windows, rate limiters — publish into junctions
+        // and are covered by no tracker, so a tick firing mid- or post-drain
+        // would be invisible to the quiescence poll and stranded uncounted),
+        // and finally the sources.
         for tr in &self.trigger_runtimes {
             tr.shutdown();
         }
+        if let Some(scheduler) = &self.scheduler {
+            scheduler.shutdown();
+        }
         self.stop_all_sources();
 
-        // Flush remaining events through the pipeline so state is stable
+        // Drain async junctions before touching sinks (#138). With sources
+        // stopped, wait for natural quiescence WITHOUT setting shutdown flags:
+        // flagging junctions first breaks cascades, because an event drained
+        // from junction A flows through a query into junction B, whose flag
+        // would reject it.
+        let drain_handles: Vec<_> = self
+            .stream_junction_map
+            .values()
+            .map(|j| j.lock().unwrap().drain_handle())
+            .filter(|h| h.is_async())
+            .collect();
+        let drain_timeout = Self::junction_drain_timeout();
+        let drain_deadline = Instant::now() + drain_timeout;
+        // The first drain's result is intentionally unused: the second drain
+        // re-establishes global quiescence after the flush; this pass only
+        // ensures the flush sees drained events.
+        poll_quiescent(&drain_handles, drain_deadline);
+
+        // Flush remaining events through the pipeline so state is stable.
+        // Runs after the first drain so flushes see the drained events; flush
+        // outputs can cascade into async junctions, hence the second drain.
         for qr in &self.query_runtimes {
             qr.flush();
         }
+        let drained = poll_quiescent(&drain_handles, drain_deadline);
 
-        // Auto-persist after pipeline is quiesced
-        if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
-            if service.persistence_store.is_some() {
-                match self.persist() {
-                    Ok(report) => {
-                        log::info!("Auto-persisted on shutdown (revision: {})", report.revision)
+        let settled;
+        if drained {
+            // Queues are empty — the sticky shutdown flags are safe to set;
+            // consumer loops exit promptly.
+            for junction in self.stream_junction_map.values() {
+                junction.lock().unwrap().stop_processing();
+            }
+            // Settle before persisting even on the clean path: a producer that
+            // raced the flags may have slipped one more event in, and the
+            // exiting consumers would deliver it concurrently with the
+            // snapshot below. Normally instant (queues already empty).
+            settled = poll_settled(&drain_handles, Instant::now() + HALT_SETTLE_TIMEOUT);
+        } else {
+            // Timed out with a backlog. Halt consumers (no further draining)
+            // BEFORE counting the leftovers: a graceful stop would let them
+            // keep delivering the "abandoned" events concurrently with the
+            // persist below and into sinks that are about to stop.
+            for junction in self.stream_junction_map.values() {
+                junction.lock().unwrap().halt_processing();
+            }
+            // Let live consumers finish their current event and in-flight
+            // dispatches complete, so the abandoned counts below are exact and
+            // the persist snapshot sees no concurrent mutation. Bounded: a
+            // wedged subscriber can't hold shutdown hostage twice over.
+            settled = poll_settled(&drain_handles, Instant::now() + HALT_SETTLE_TIMEOUT);
+            if !settled {
+                log::warn!(
+                    "EventFluxAppRuntime '{}': subscriber work still in flight {:?} after halt; abandoned counts may include events that are also delivered",
+                    self.name,
+                    HALT_SETTLE_TIMEOUT
+                );
+            }
+            let mut abandoned = 0u64;
+            for junction in self.stream_junction_map.values() {
+                abandoned += junction.lock().unwrap().abandon_pending();
+            }
+            log::warn!(
+                "EventFluxAppRuntime '{}' drain timed out after {:?}; abandoned {} queued event(s)",
+                self.name,
+                drain_timeout,
+                abandoned
+            );
+        }
+
+        // Auto-persist after the drain so the snapshot includes the effects of
+        // every event the runtime accepted, not just those processed before
+        // shutdown was called. Skipped when subscriber work is still mutating
+        // state (unsettled): persisting a torn snapshot is worse than keeping
+        // the previous revision, which auto-restore will fall back to.
+        if settled {
+            if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
+                if service.persistence_store.is_some() {
+                    match self.persist() {
+                        Ok(report) => {
+                            log::info!("Auto-persisted on shutdown (revision: {})", report.revision)
+                        }
+                        Err(e) => log::warn!("Auto-persist on shutdown failed: {}", e),
                     }
-                    Err(e) => log::warn!("Auto-persist on shutdown failed: {}", e),
                 }
             }
+        } else {
+            log::warn!(
+                "EventFluxAppRuntime '{}': skipping auto-persist — subscriber work was still running after the settle timeout and the snapshot could be torn; the previous revision remains the restore point",
+                self.name
+            );
         }
 
         self.stop_all_sinks();
 
-        if let Some(scheduler) = &self.scheduler {
-            scheduler.shutdown();
-        }
+        // (Scheduler already shut down before the drain, with the triggers.)
         for pr in &self.partition_runtimes {
             pr.shutdown();
         }

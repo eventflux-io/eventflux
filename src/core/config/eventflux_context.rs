@@ -93,8 +93,10 @@ pub struct EventFluxContext {
     /// Default buffer size for StreamJunctions created when parsing EventFlux apps.
     default_junction_buffer_size: usize,
     /// Whether StreamJunctions should run asynchronously by default when no
-    /// annotation overrides the mode.
-    default_junction_async: bool,
+    /// annotation overrides the mode. Atomic so YAML/TOML `async_default` can
+    /// be applied through the shared `Arc<EventFluxContext>` once the manager
+    /// loads its configuration.
+    default_junction_async: std::sync::atomic::AtomicBool,
 
     // Actual fields for extensions and data sources
     /// Stores factories for User-Defined Scalar Functions. Key: "namespace:name" or "name", Value: cloneable factory instance.
@@ -169,7 +171,7 @@ impl EventFluxContext {
             default_disrupter_exception_handler: "DefaultDisruptorExceptionHandler".to_string(),
             // Increased default async buffer to handle high throughput tests
             default_junction_buffer_size: 4096,
-            default_junction_async: false,
+            default_junction_async: std::sync::atomic::AtomicBool::new(false),
             dummy_field_eventflux_context_extensions: String::new(),
         };
         let default_threads = crate::core::util::executor_service::pool_size_from_env(
@@ -351,10 +353,16 @@ impl EventFluxContext {
 
     pub fn get_default_async_mode(&self) -> bool {
         self.default_junction_async
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn set_default_async_mode(&mut self, mode: bool) {
-        self.default_junction_async = mode;
+    /// NOTE: `EventFluxManager` re-resolves this from its configuration
+    /// (`eventflux.application.async_default`, defaulting to false) at every
+    /// app creation, overwriting manual calls. To make streams async, set the
+    /// YAML key or per-stream SQL `WITH ('async.enabled' = 'true')` instead.
+    pub fn set_default_async_mode(&self, mode: bool) {
+        self.default_junction_async
+            .store(mode, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn get_attributes(
@@ -900,7 +908,9 @@ impl Clone for EventFluxContext {
             record_table_handler_manager: self.record_table_handler_manager.clone(),
             default_disrupter_exception_handler: self.default_disrupter_exception_handler.clone(),
             default_junction_buffer_size: self.default_junction_buffer_size,
-            default_junction_async: self.default_junction_async,
+            default_junction_async: std::sync::atomic::AtomicBool::new(
+                self.get_default_async_mode(),
+            ),
             dummy_field_eventflux_context_extensions: self
                 .dummy_field_eventflux_context_extensions
                 .clone(),
