@@ -46,7 +46,7 @@
 
 use super::{
     alphabetical_mappings, ensure_unique_field_names, match_field_names, now_millis,
-    schema_ordered_mappings, SinkMapper, SourceMapper,
+    order_mappings, SinkMapper, SourceMapper,
 };
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
@@ -109,22 +109,21 @@ impl JsonSourceMapper {
     /// Enables name-based auto-mapping: each schema field is resolved from the
     /// JSON object by exact key match, then ASCII case-insensitive match; when
     /// no schema field matches any JSON key, values fall back to positional
-    /// order. An empty list is treated as "no schema" (unset).
+    /// order. An empty list clears the schema: auto-mapping returns to JSON
+    /// key order and explicit mappings return to alphabetical order.
     ///
     /// With explicit `mapping.*` properties configured, this validates the
     /// configuration fail-fast: every schema field must have a mapping
     /// (matched exactly or case-insensitively) and every mapping key must
     /// correspond to a schema field. Output follows schema order.
+    ///
+    /// On error the mapper is left unchanged.
     pub fn set_field_names(&mut self, names: Vec<String>) -> Result<(), EventFluxError> {
-        if names.is_empty() {
-            self.field_names = None;
-            return Ok(());
-        }
         ensure_unique_field_names(&names, "json")?;
-        if !self.mappings.is_empty() {
-            self.ordered_mappings = schema_ordered_mappings(&names, &self.mappings, "json")?;
-        }
-        self.field_names = Some(names);
+        let ordered_mappings = order_mappings(&names, &self.mappings, "json")?;
+
+        self.ordered_mappings = ordered_mappings;
+        self.field_names = (!names.is_empty()).then_some(names);
         Ok(())
     }
 
@@ -1377,6 +1376,69 @@ mod tests {
             .set_field_names(vec!["id".to_string(), "id".to_string()])
             .unwrap_err();
         assert!(err.to_string().contains("more than once"), "got: {}", err);
+    }
+
+    fn explicit_mapper() -> JsonSourceMapper {
+        let mut mappings = HashMap::new();
+        mappings.insert("symbol".to_string(), "$.s".to_string());
+        mappings.insert("amount".to_string(), "$.a".to_string());
+        JsonSourceMapper::with_mappings(mappings)
+    }
+
+    fn first_two(mapper: &JsonSourceMapper) -> (AttributeValue, AttributeValue) {
+        let events = mapper.map(br#"{"s": "AAPL", "a": 5}"#).unwrap();
+        (events[0].data[0].clone(), events[0].data[1].clone())
+    }
+
+    #[test]
+    fn test_clearing_schema_restores_alphabetical_mapping_order() {
+        let mut mapper = explicit_mapper();
+        mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap();
+        assert!(matches!(first_two(&mapper).0, AttributeValue::String(_)));
+
+        // Cleared: no stale schema order; alphabetical (amount, symbol)
+        mapper.set_field_names(Vec::new()).unwrap();
+        let (first, second) = first_two(&mapper);
+        assert!(matches!(first, AttributeValue::Int(5)), "got {first:?}");
+        assert!(
+            matches!(second, AttributeValue::String(_)),
+            "got {second:?}"
+        );
+    }
+
+    #[test]
+    fn test_replacing_schema_recomputes_mapping_order() {
+        let mut mapper = explicit_mapper();
+        mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap();
+        mapper
+            .set_field_names(vec!["amount".to_string(), "symbol".to_string()])
+            .unwrap();
+        assert!(matches!(first_two(&mapper).0, AttributeValue::Int(5)));
+    }
+
+    #[test]
+    fn test_failed_set_field_names_leaves_mapper_unchanged() {
+        let mut mapper = explicit_mapper();
+        mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap();
+
+        // Invalid schemas (missing mapping, duplicate name) are rejected...
+        assert!(mapper.set_field_names(vec!["symbol".to_string()]).is_err());
+        assert!(mapper
+            .set_field_names(vec!["symbol".to_string(), "symbol".to_string()])
+            .is_err());
+
+        // ...and the previously configured schema order still applies
+        assert!(matches!(first_two(&mapper).0, AttributeValue::String(_)));
+        assert_eq!(
+            mapper.field_names,
+            Some(vec!["symbol".to_string(), "amount".to_string()])
+        );
     }
 
     #[test]

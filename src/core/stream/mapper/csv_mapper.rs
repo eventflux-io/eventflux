@@ -53,7 +53,7 @@
 //! csv.include-header = "true"
 //! ```
 
-use super::{alphabetical_mappings, now_millis, schema_ordered_mappings, SinkMapper, SourceMapper};
+use super::{alphabetical_mappings, now_millis, order_mappings, SinkMapper, SourceMapper};
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
 use std::collections::HashMap;
@@ -115,12 +115,11 @@ impl CsvSourceMapper {
     /// a mapping (matched exactly or ASCII case-insensitively) and every
     /// mapping key must correspond to a stream field. Without explicit
     /// mappings, CSV mapping stays positional and the names are unused.
-    /// An empty list is a no-op.
+    /// An empty list clears the schema and restores alphabetical mapping order.
+    ///
+    /// On error the mapper is left unchanged.
     pub fn set_field_names(&mut self, names: Vec<String>) -> Result<(), EventFluxError> {
-        if names.is_empty() || self.mappings.is_empty() {
-            return Ok(());
-        }
-        self.ordered_mappings = schema_ordered_mappings(&names, &self.mappings, "csv")?;
+        self.ordered_mappings = order_mappings(&names, &self.mappings, "csv")?;
         Ok(())
     }
 
@@ -688,6 +687,37 @@ mod tests {
         let events = mapper.map(b"1,2").unwrap();
         assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
         assert!(matches!(events[0].data[1], AttributeValue::Int(2)));
+    }
+
+    #[test]
+    fn test_csv_schema_lifecycle_never_leaves_stale_order() {
+        let mut mappings = HashMap::new();
+        mappings.insert("symbol".to_string(), 0usize);
+        mappings.insert("amount".to_string(), 1usize);
+        let mut mapper = CsvSourceMapper::with_mappings(mappings);
+        let first = |m: &CsvSourceMapper| m.map(b"AAPL,5").unwrap()[0].data[0].clone();
+
+        mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap();
+        assert!(matches!(first(&mapper), AttributeValue::String(_)));
+
+        // Failed update leaves the current schema order in place
+        assert!(mapper.set_field_names(vec!["symbol".to_string()]).is_err());
+        assert!(matches!(first(&mapper), AttributeValue::String(_)));
+
+        // Replaced schema is recomputed
+        mapper
+            .set_field_names(vec!["amount".to_string(), "symbol".to_string()])
+            .unwrap();
+        assert!(matches!(first(&mapper), AttributeValue::Int(5)));
+
+        // Cleared schema restores alphabetical order (amount, symbol)
+        mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap();
+        mapper.set_field_names(Vec::new()).unwrap();
+        assert!(matches!(first(&mapper), AttributeValue::Int(5)));
     }
 
     #[test]

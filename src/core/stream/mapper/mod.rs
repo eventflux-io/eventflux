@@ -184,6 +184,27 @@ pub(crate) fn match_field_names<'k>(
     Ok(matched)
 }
 
+/// Output order for explicit `mapping.*` entries, derived from scratch.
+///
+/// Schema order when `field_names` is non-empty (validated, see
+/// [`schema_ordered_mappings`]), alphabetical when there is no schema, and
+/// empty when there are no explicit mappings. Mappers recompute their order
+/// through this on every schema change, so a cleared or replaced schema can
+/// never leave a stale order behind.
+pub(crate) fn order_mappings<V: Clone>(
+    field_names: &[String],
+    mappings: &HashMap<String, V>,
+    format: &str,
+) -> Result<Vec<(String, V)>, EventFluxError> {
+    if mappings.is_empty() {
+        Ok(Vec::new())
+    } else if field_names.is_empty() {
+        Ok(alphabetical_mappings(mappings))
+    } else {
+        schema_ordered_mappings(field_names, mappings, format)
+    }
+}
+
 /// Order explicit `mapping.*` entries by stream schema, validating fail-fast.
 ///
 /// Fields are paired with mapping keys by [`match_field_names`]. Fails if a
@@ -191,7 +212,7 @@ pub(crate) fn match_field_names<'k>(
 /// pairing is ambiguous, or if a mapping key matches no schema field (typo
 /// or stale entry).
 /// `format` is the property prefix (e.g. "json") used in error messages.
-pub(crate) fn schema_ordered_mappings<V: Clone>(
+fn schema_ordered_mappings<V: Clone>(
     field_names: &[String],
     mappings: &HashMap<String, V>,
     format: &str,
