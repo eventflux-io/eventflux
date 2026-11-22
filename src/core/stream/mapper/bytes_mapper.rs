@@ -42,11 +42,10 @@
 //! );
 //! ```
 
-use super::{SinkMapper, SourceMapper};
+use super::{now_millis, SinkMapper, SourceMapper};
 use crate::core::event::AttributeValue;
 use crate::core::event::Event;
 use crate::core::exception::EventFluxError;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Source mapper for raw binary payloads
 ///
@@ -63,14 +62,8 @@ impl BytesSourceMapper {
 
 impl SourceMapper for BytesSourceMapper {
     fn map(&self, input: &[u8]) -> Result<Vec<Event>, EventFluxError> {
-        // Create timestamp
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-
         // Store raw bytes directly in AttributeValue::Bytes
-        let event = Event::new_with_data(timestamp, vec![AttributeValue::Bytes(input.to_vec())]);
+        let event = Event::new_with_data(now_millis(), vec![AttributeValue::Bytes(input.to_vec())]);
 
         Ok(vec![event])
     }

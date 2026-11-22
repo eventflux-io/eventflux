@@ -53,7 +53,7 @@
 //! csv.include-header = "true"
 //! ```
 
-use super::{SinkMapper, SourceMapper};
+use super::{alphabetical_mappings, now_millis, schema_ordered_mappings, SinkMapper, SourceMapper};
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
 use std::collections::HashMap;
@@ -74,6 +74,10 @@ pub struct CsvSourceMapper {
     max_input_size: usize,
     /// Maximum number of fields per row (default: 1000)
     max_fields: usize,
+    /// Explicit mappings as (field name, column index) in output order.
+    /// Precomputed at configuration time: schema order when field names are
+    /// set, alphabetical otherwise (HashMap iteration is non-deterministic).
+    ordered_mappings: Vec<(String, usize)>,
 }
 
 impl CsvSourceMapper {
@@ -86,11 +90,13 @@ impl CsvSourceMapper {
             ignore_parse_errors: false,
             max_input_size: 10 * 1024 * 1024, // 10 MB default
             max_fields: 1000,                 // 1000 fields default
+            ordered_mappings: Vec::new(),
         }
     }
 
     /// Create a CSV source mapper with explicit column mappings
     pub fn with_mappings(mappings: HashMap<String, usize>) -> Self {
+        let ordered_mappings = alphabetical_mappings(&mappings);
         Self {
             mappings,
             delimiter: ',',
@@ -98,7 +104,24 @@ impl CsvSourceMapper {
             ignore_parse_errors: false,
             max_input_size: 10 * 1024 * 1024, // 10 MB default
             max_fields: 1000,                 // 1000 fields default
+            ordered_mappings,
         }
+    }
+
+    /// Set the stream schema field names (in schema order).
+    ///
+    /// With explicit `mapping.*` properties configured, re-orders the output
+    /// to schema order and validates fail-fast: every stream field must have
+    /// a mapping (matched exactly or ASCII case-insensitively) and every
+    /// mapping key must correspond to a stream field. Without explicit
+    /// mappings, CSV mapping stays positional and the names are unused.
+    /// An empty list is a no-op.
+    pub fn set_field_names(&mut self, names: Vec<String>) -> Result<(), EventFluxError> {
+        if names.is_empty() || self.mappings.is_empty() {
+            return Ok(());
+        }
+        self.ordered_mappings = schema_ordered_mappings(&names, &self.mappings, "csv")?;
+        Ok(())
     }
 
     /// Set the CSV delimiter
@@ -254,28 +277,21 @@ impl SourceMapper for CsvSourceMapper {
                 // Auto-map: use all columns in order
                 fields.iter().map(|f| self.parse_field(f)).collect()
             } else {
-                // Explicit mapping: extract specific columns
-                let mut sorted_mappings: Vec<_> = self.mappings.iter().collect();
-                sorted_mappings.sort_by_key(|(field_name, _)| *field_name);
-
-                sorted_mappings
+                // Explicit mapping: extract columns in the order precomputed
+                // at configuration time (schema order when available,
+                // alphabetical otherwise)
+                self.ordered_mappings
                     .iter()
-                    .map(|(_, &col_idx)| {
+                    .map(|(_, col_idx)| {
                         fields
-                            .get(col_idx)
+                            .get(*col_idx)
                             .map(|f| self.parse_field(f))
                             .unwrap_or(AttributeValue::Null)
                     })
                     .collect()
             };
 
-            // Use current timestamp
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            events.push(Event::new_with_data(timestamp, event_data));
+            events.push(Event::new_with_data(now_millis(), event_data));
         }
 
         Ok(events)
@@ -574,5 +590,68 @@ mod tests {
 
         // Should succeed since it's within limit
         assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // Schema-Aware Explicit Mapping Tests (#201)
+    // ========================================================================
+
+    #[test]
+    fn test_csv_schema_explicit_mappings_follow_schema_order() {
+        // Schema order: symbol, amount — alphabetical ordering would emit
+        // amount first and silently swap the fields
+        let mut mappings = HashMap::new();
+        mappings.insert("symbol".to_string(), 0usize);
+        mappings.insert("amount".to_string(), 1usize);
+
+        let mut mapper = CsvSourceMapper::with_mappings(mappings);
+        mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap();
+
+        let events = mapper.map(b"AAPL,42.5").unwrap();
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[1], AttributeValue::Double(a) if (a - 42.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn test_csv_schema_explicit_mappings_missing_field_fails_at_config_time() {
+        let mut mappings = HashMap::new();
+        mappings.insert("symbol".to_string(), 0usize);
+
+        let mut mapper = CsvSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("amount"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_csv_schema_explicit_mappings_stray_key_fails_at_config_time() {
+        let mut mappings = HashMap::new();
+        mappings.insert("symbol".to_string(), 0usize);
+        mappings.insert("stale_field".to_string(), 1usize);
+
+        let mut mapper = CsvSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["symbol".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("stale_field"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_csv_schema_without_mappings_stays_positional() {
+        // CSV auto-mapping is inherently positional; schema names are unused
+        let mut mapper = CsvSourceMapper::new();
+        mapper
+            .set_field_names(vec!["a".to_string(), "b".to_string()])
+            .unwrap();
+
+        let events = mapper.map(b"1,2").unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(2)));
     }
 }

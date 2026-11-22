@@ -89,7 +89,6 @@ pub struct InitializedTable {
 pub enum InitializedStream {
     Source(InitializedSource),
     Sink(InitializedSink),
-    Internal,
     Table(InitializedTable),
 }
 
@@ -124,64 +123,8 @@ impl std::fmt::Debug for InitializedStream {
         match self {
             InitializedStream::Source(s) => f.debug_tuple("Source").field(s).finish(),
             InitializedStream::Sink(s) => f.debug_tuple("Sink").field(s).finish(),
-            InitializedStream::Internal => write!(f, "Internal"),
             InitializedStream::Table(t) => f.debug_tuple("Table").field(t).finish(),
         }
-    }
-}
-
-/// Initialize a stream from configuration using the factory system
-///
-/// This is the main integration point between the factory registry and stream runtime.
-/// It performs the following steps:
-///
-/// 1. Look up the appropriate factory by extension name
-/// 2. Validate that the factory supports the requested format
-/// 3. Look up the mapper factory by format name
-/// 4. Create fully initialized instances with fail-fast validation
-/// 5. Return wired components guaranteed to be in valid state
-///
-/// # Arguments
-///
-/// * `context` - EventFlux context containing factory registries
-/// * `stream_config` - Typed stream configuration with validation
-///
-/// # Returns
-///
-/// * `Ok(InitializedStream)` - Fully initialized and validated stream components
-/// * `Err(EventFluxError)` - If factory not found, format unsupported, or initialization fails
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use eventflux::core::stream::stream_initializer::initialize_stream;
-/// use eventflux::core::config::stream_config::StreamTypeConfig;
-///
-/// let context = EventFluxContext::new();
-/// let stream_config = StreamTypeConfig::new(
-///     StreamType::Source,
-///     Some("kafka".to_string()),
-///     Some("json".to_string()),
-///     config_map,
-/// )?;
-///
-/// let initialized = initialize_stream(&context, &stream_config)?;
-/// match initialized {
-///     InitializedStream::Source(source) => {
-///         // Source and mapper are ready to use
-///         source.source.start(handler);
-///     }
-///     _ => {}
-/// }
-/// ```
-pub fn initialize_stream(
-    context: &EventFluxContext,
-    stream_config: &StreamTypeConfig,
-) -> Result<InitializedStream, EventFluxError> {
-    match stream_config.stream_type {
-        StreamType::Source => initialize_source_stream(context, stream_config),
-        StreamType::Sink => initialize_sink_stream(context, stream_config),
-        StreamType::Internal => Ok(InitializedStream::Internal),
     }
 }
 
@@ -216,6 +159,22 @@ fn connector_lookup_error(kind: &str, extension: &str) -> EventFluxError {
     }
 }
 
+/// Reject a stream configuration whose type isn't the one being initialized
+/// (e.g. a sink config passed to source initialization).
+fn ensure_stream_type(
+    stream_config: &StreamTypeConfig,
+    expected: StreamType,
+) -> Result<(), EventFluxError> {
+    if stream_config.stream_type == expected {
+        return Ok(());
+    }
+    Err(EventFluxError::configuration(format!(
+        "Expected a {} stream configuration, got '{}'",
+        expected.as_str(),
+        stream_config.stream_type.as_str()
+    )))
+}
+
 /// Properties handed to source/sink factories: the user's map plus
 /// engine-injected reserved keys (leading underscore). Currently `_format`
 /// carries the stream's declared format so connectors can derive
@@ -233,11 +192,28 @@ fn factory_properties(
     properties
 }
 
-/// Initialize a source stream with factory lookup and validation
-fn initialize_source_stream(
+/// Initialize a source stream with factory lookup and fail-fast validation
+///
+/// This is the main integration point between the factory registry and the
+/// stream runtime for sources:
+///
+/// 1. Look up the appropriate source factory by extension name
+/// 2. Validate that the factory supports the requested format
+/// 3. Look up the mapper factory by format name
+/// 4. Create fully initialized instances with fail-fast validation
+/// 5. Return wired components guaranteed to be in valid state
+///
+/// `field_names` is the stream's schema in declaration order; it lets format
+/// mappers (e.g. JSON) match incoming fields to stream attributes by name
+/// instead of only by position (#201). Pass an empty slice when no schema is
+/// available — mapping then falls back to positional order.
+pub fn initialize_source_stream(
     context: &EventFluxContext,
     stream_config: &StreamTypeConfig,
+    field_names: &[String],
 ) -> Result<InitializedStream, EventFluxError> {
+    ensure_stream_type(stream_config, StreamType::Source)?;
+
     // 1. Look up source factory by extension
     let extension = stream_config
         .extension()
@@ -301,7 +277,7 @@ fn initialize_source_stream(
     let factory_properties = factory_properties(stream_config);
     let source = source_factory.create_initialized(&factory_properties)?;
     let mapper = mapper_factory
-        .map(|factory| factory.create_initialized(&stream_config.properties))
+        .map(|factory| factory.create_with_schema(&stream_config.properties, field_names))
         .transpose()?;
 
     // 6. Phase 2 Validation: Verify external connectivity (FAIL-FAST)
@@ -324,28 +300,18 @@ fn initialize_source_stream(
 }
 
 /// Initialize a sink stream with factory lookup and validation
-fn initialize_sink_stream(
-    context: &EventFluxContext,
-    stream_config: &StreamTypeConfig,
-) -> Result<InitializedStream, EventFluxError> {
-    initialize_sink_stream_internal(context, stream_config, None)
-}
-
-/// Initialize a sink stream with schema field names for proper JSON output
-pub fn initialize_sink_stream_with_schema(
+/// Initialize a sink stream with factory lookup and fail-fast validation
+///
+/// `field_names` is the stream's schema in declaration order; format mappers
+/// use it for output field names (e.g. JSON keys `"symbol"` instead of
+/// `"field_0"`). Pass an empty slice when no schema is available.
+pub fn initialize_sink_stream(
     context: &EventFluxContext,
     stream_config: &StreamTypeConfig,
     field_names: &[String],
 ) -> Result<InitializedStream, EventFluxError> {
-    initialize_sink_stream_internal(context, stream_config, Some(field_names))
-}
+    ensure_stream_type(stream_config, StreamType::Sink)?;
 
-/// Internal sink stream initialization with optional field names
-fn initialize_sink_stream_internal(
-    context: &EventFluxContext,
-    stream_config: &StreamTypeConfig,
-    field_names: Option<&[String]>,
-) -> Result<InitializedStream, EventFluxError> {
     // 1. Look up sink factory by extension
     let extension = stream_config
         .extension()
@@ -409,15 +375,8 @@ fn initialize_sink_stream_internal(
     let factory_properties = factory_properties(stream_config);
     let sink = sink_factory.create_initialized(&factory_properties)?;
 
-    // Create mapper with field names if provided, otherwise use standard initialization
     let mapper = mapper_factory
-        .map(|factory| {
-            if let Some(names) = field_names {
-                factory.create_with_schema(&stream_config.properties, names)
-            } else {
-                factory.create_initialized(&stream_config.properties)
-            }
-        })
+        .map(|factory| factory.create_with_schema(&stream_config.properties, field_names))
         .transpose()?;
 
     // 6. Phase 2 Validation: Verify external connectivity (FAIL-FAST)
@@ -656,14 +615,16 @@ fn dfs_topo_sort(
 /// 4. DLQ junction wiring (if error.dlq.stream is configured)
 /// 5. SourceStreamHandler for lifecycle management
 fn initialize_source_stream_with_handler(
-    _stream_def: &StreamDefinition,
+    stream_def: &StreamDefinition,
     stream_config: &StreamTypeConfig,
     context: &EventFluxContext,
     input_manager: &crate::core::stream::input::InputManager,
     stream_name: &str,
 ) -> Result<Arc<SourceStreamHandler>, EventFluxError> {
-    // Use existing initialization logic
-    let initialized = initialize_source_stream(context, stream_config)?;
+    // Pass schema field names so format mappers can match incoming
+    // fields to stream attributes by name (#201)
+    let field_names = stream_def.abstract_definition.attribute_name_list();
+    let initialized = initialize_source_stream(context, stream_config, &field_names)?;
 
     match initialized {
         InitializedStream::Source(mut source) => {
@@ -726,15 +687,10 @@ fn initialize_sink_stream_with_handler(
 ) -> Result<Arc<SinkStreamHandler>, EventFluxError> {
     // Extract field names from stream definition for proper JSON output
     // (e.g., "symbol", "trade_count" instead of "field_0", "field_1")
-    let field_names: Vec<String> = stream_def
-        .abstract_definition
-        .attribute_list
-        .iter()
-        .map(|attr| attr.name.clone())
-        .collect();
+    let field_names = stream_def.abstract_definition.attribute_name_list();
 
     // Use initialization with schema field names
-    let initialized = initialize_sink_stream_with_schema(context, stream_config, &field_names)?;
+    let initialized = initialize_sink_stream(context, stream_config, &field_names)?;
 
     match initialized {
         InitializedStream::Sink(sink) => {
@@ -1085,7 +1041,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = initialize_stream(&context, &stream_config);
+        let result = initialize_source_stream(&context, &stream_config, &[]);
         assert!(result.is_ok());
 
         match result.unwrap() {
@@ -1095,6 +1051,51 @@ mod tests {
             }
             _ => panic!("Expected Source stream"),
         }
+    }
+
+    #[test]
+    fn test_initialize_source_stream_with_schema_maps_by_name() {
+        use crate::core::event::AttributeValue;
+
+        let context = EventFluxContext::new();
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
+        context.add_source_mapper_factory("json".to_string(), Box::new(JsonSourceMapperFactory));
+
+        let mut config = HashMap::new();
+        config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        config.insert("example.topic".to_string(), "test-topic".to_string());
+
+        let stream_config = StreamTypeConfig::new(
+            StreamType::Source,
+            Some("example".to_string()),
+            Some("json".to_string()),
+            config,
+        )
+        .unwrap();
+
+        // Schema order: price, symbol, volume
+        let field_names = vec![
+            "price".to_string(),
+            "symbol".to_string(),
+            "volume".to_string(),
+        ];
+        let result = initialize_source_stream(&context, &stream_config, &field_names).unwrap();
+
+        let mapper = match result {
+            InitializedStream::Source(source) => source.mapper.expect("mapper"),
+            _ => panic!("Expected Source stream"),
+        };
+
+        // JSON keys arrive in a different order than the schema (#201)
+        let json_str = r#"{"symbol": "AAPL", "price": 185.5, "volume": 5000}"#;
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+
+        assert!(matches!(events[0].data[0], AttributeValue::Double(p) if (p - 185.5).abs() < 1e-9));
+        assert!(matches!(
+            events[0].data[1],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[2], AttributeValue::Int(5000)));
     }
 
     #[test]
@@ -1109,7 +1110,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = initialize_stream(&context, &stream_config);
+        let result = initialize_source_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1137,7 +1138,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = initialize_stream(&context, &stream_config);
+        let result = initialize_source_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1170,7 +1171,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = initialize_stream(&context, &stream_config);
+        let result = initialize_source_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1205,7 +1206,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = initialize_stream(&context, &stream_config);
+        let result = initialize_sink_stream(&context, &stream_config, &[]);
         assert!(result.is_ok());
 
         match result.unwrap() {
@@ -1218,19 +1219,40 @@ mod tests {
     }
 
     #[test]
-    fn test_initialize_internal_stream() {
+    fn test_initialize_source_stream_rejects_non_source_config() {
         let context = EventFluxContext::new();
 
-        let stream_config =
+        let internal =
             StreamTypeConfig::new(StreamType::Internal, None, None, HashMap::new()).unwrap();
+        let err = initialize_source_stream(&context, &internal, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("Expected a source stream"),
+            "got: {err}"
+        );
+    }
 
-        let result = initialize_stream(&context, &stream_config);
-        assert!(result.is_ok());
+    #[test]
+    fn test_initialize_sink_stream_rejects_non_sink_config() {
+        let context = EventFluxContext::new();
+        context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
 
-        match result.unwrap() {
-            InitializedStream::Internal => {}
-            _ => panic!("Expected Internal stream"),
-        }
+        let mut config = HashMap::new();
+        config.insert("example.servers".to_string(), "localhost:9092".to_string());
+        config.insert("example.topic".to_string(), "test-topic".to_string());
+        let source = StreamTypeConfig::new(
+            StreamType::Source,
+            Some("example".to_string()),
+            Some("json".to_string()),
+            config,
+        )
+        .unwrap();
+
+        // A source config must not be initialized as a sink
+        let err = initialize_sink_stream(&context, &source, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("Expected a sink stream"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1250,7 +1272,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = initialize_stream(&context, &stream_config);
+        let result = initialize_source_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
         // Should get InvalidParameter error from factory (for missing parameter)
@@ -1286,7 +1308,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = initialize_stream(&context, &stream_config);
+        let result = initialize_source_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
         // Should get Configuration error requiring format
@@ -1324,7 +1346,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = initialize_stream(&context, &stream_config);
+        let result = initialize_sink_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
         // Should get Configuration error requiring format

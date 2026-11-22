@@ -58,7 +58,81 @@ pub mod validation;
 
 use crate::core::event::Event;
 use crate::core::exception::EventFluxError;
+use std::collections::HashMap;
 use std::fmt::Debug;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Current wall-clock time in epoch milliseconds, used as the timestamp of
+/// mapped events. Returns 0 if the system clock is set before the epoch.
+pub(crate) fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Order explicit `mapping.*` entries alphabetically by field name.
+///
+/// Used when no stream schema is available: HashMap iteration order is
+/// non-deterministic, so a stable order is required.
+pub(crate) fn alphabetical_mappings<V: Clone>(mappings: &HashMap<String, V>) -> Vec<(String, V)> {
+    let mut ordered: Vec<(String, V)> = mappings
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    ordered.sort_by(|a, b| a.0.cmp(&b.0));
+    ordered
+}
+
+/// Order explicit `mapping.*` entries by stream schema, validating fail-fast.
+///
+/// Each schema field is matched to a mapping key exactly first, then ASCII
+/// case-insensitively. Fails if a schema field has no mapping, or if a
+/// mapping key matches no schema field (typo or stale entry).
+/// `format` is the property prefix (e.g. "json") used in error messages.
+pub(crate) fn schema_ordered_mappings<V: Clone>(
+    field_names: &[String],
+    mappings: &HashMap<String, V>,
+    format: &str,
+) -> Result<Vec<(String, V)>, EventFluxError> {
+    let mut unused: Vec<&String> = mappings.keys().collect();
+    let mut ordered = Vec::with_capacity(field_names.len());
+
+    for field_name in field_names {
+        let key = if mappings.contains_key(field_name) {
+            Some(field_name)
+        } else {
+            unused
+                .iter()
+                .copied()
+                .find(|k| k.eq_ignore_ascii_case(field_name))
+        };
+        let Some(key) = key else {
+            return Err(EventFluxError::Configuration {
+                message: format!(
+                    "No mapping configured for stream field '{field_name}'. When any \
+                     '{format}.mapping.*' property is set, every stream field must be \
+                     explicitly mapped."
+                ),
+                config_key: Some(format!("{format}.mapping.{field_name}")),
+            });
+        };
+        unused.retain(|k| *k != key);
+        ordered.push((field_name.clone(), mappings[key].clone()));
+    }
+
+    if let Some(stray) = unused.first() {
+        return Err(EventFluxError::Configuration {
+            message: format!(
+                "Mapping key '{stray}' does not match any stream field. \
+                 Remove it or rename it to a declared field."
+            ),
+            config_key: Some(format!("{format}.mapping.{stray}")),
+        });
+    }
+
+    Ok(ordered)
+}
 
 /// Trait for mapping raw bytes to EventFlux events (for source streams)
 ///

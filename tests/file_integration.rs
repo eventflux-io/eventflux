@@ -550,6 +550,27 @@ fn test_sink_to_source_round_trip() {
 // E2E: SQL app — replay a JSONL file, filter, write JSONL out
 // ============================================================================
 
+/// Poll until `path` holds at least `min_lines` lines (or a 10s deadline)
+fn await_jsonl_lines(path: &Path, min_lines: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let content = fs::read_to_string(path).unwrap_or_default();
+        if content.lines().count() >= min_lines || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Read a JSONL file into parsed JSON values, one per line
+fn read_jsonl(path: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
 #[tokio::test]
 async fn test_e2e_sql_file_to_file() {
     use eventflux::core::eventflux_manager::EventFluxManager;
@@ -592,24 +613,126 @@ async fn test_e2e_sql_file_to_file() {
     runtime.start().expect("start");
 
     // Wait until both passing events are durably in the output file
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let content = fs::read_to_string(&output).unwrap_or_default();
-        if content.lines().count() >= 2 || Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    await_jsonl_lines(&output, 2);
     runtime.shutdown();
 
-    let lines: Vec<serde_json::Value> = fs::read_to_string(&output)
-        .unwrap()
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
+    let lines = read_jsonl(&output);
     assert_eq!(lines.len(), 2, "GOOGL (volume 800) must be filtered out");
     assert_eq!(lines[0]["symbol"], "AAPL");
     assert_eq!(lines[0]["volume"], 5000);
     assert_eq!(lines[1]["symbol"], "MSFT");
     assert_eq!(lines[1]["volume"], 1500);
+}
+
+// ============================================================================
+// E2E: SQL app — JSON fields map by name, not position (#201)
+// ============================================================================
+
+/// Regression test for https://github.com/eventflux-io/eventflux/issues/201:
+/// the stream schema declares (price, symbol, volume) while the JSON lines
+/// carry keys in a different order (symbol, price, volume). The mapper must
+/// match fields by name — previously it mapped positionally, producing
+/// {"price":"AAPL","symbol":185.5,...}.
+#[tokio::test]
+async fn test_e2e_sql_json_fields_map_by_name_not_position() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("trades.jsonl");
+    let output = dir.path().join("out.jsonl");
+    fs::write(
+        &input,
+        concat!(
+            "{\"symbol\":\"AAPL\",\"price\":185.5,\"volume\":5000}\n",
+            "{\"symbol\":\"GOOGL\",\"price\":142.3,\"volume\":800}\n",
+        ),
+    )
+    .unwrap();
+
+    // Schema order deliberately differs from the JSON key order
+    let sql = format!(
+        r#"
+        CREATE STREAM Trades (price DOUBLE, symbol STRING, volume INT) WITH (
+            type = 'source', extension = 'file', format = 'json',
+            "file.path" = '{input}',
+            "file.start.position" = 'beginning',
+            "file.poll.interval.ms" = '20'
+        );
+        CREATE STREAM EventOutput (price DOUBLE, symbol STRING, volume INT) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{output}'
+        );
+        INSERT INTO EventOutput SELECT * FROM Trades;
+    "#,
+        input = input.display(),
+        output = output.display(),
+    );
+
+    let manager = EventFluxManager::new();
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(&sql)
+        .await
+        .expect("runtime");
+    runtime.start().expect("start");
+
+    await_jsonl_lines(&output, 2);
+    runtime.shutdown();
+
+    let lines = read_jsonl(&output);
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["price"], 185.5);
+    assert_eq!(lines[0]["symbol"], "AAPL");
+    assert_eq!(lines[0]["volume"], 5000);
+    assert_eq!(lines[1]["price"], 142.3);
+    assert_eq!(lines[1]["symbol"], "GOOGL");
+    assert_eq!(lines[1]["volume"], 800);
+}
+
+/// Case-insensitive name matching (documented behavior): JSON keys with
+/// different casing still map to the right stream fields.
+#[tokio::test]
+async fn test_e2e_sql_json_fields_map_case_insensitive() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("trades.jsonl");
+    let output = dir.path().join("out.jsonl");
+    fs::write(
+        &input,
+        "{\"Symbol\":\"AAPL\",\"PRICE\":185.5,\"Volume\":5000}\n",
+    )
+    .unwrap();
+
+    let sql = format!(
+        r#"
+        CREATE STREAM Trades (price DOUBLE, symbol STRING, volume INT) WITH (
+            type = 'source', extension = 'file', format = 'json',
+            "file.path" = '{input}',
+            "file.poll.interval.ms" = '20'
+        );
+        CREATE STREAM EventOutput (price DOUBLE, symbol STRING, volume INT) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{output}'
+        );
+        INSERT INTO EventOutput SELECT * FROM Trades;
+    "#,
+        input = input.display(),
+        output = output.display(),
+    );
+
+    let manager = EventFluxManager::new();
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(&sql)
+        .await
+        .expect("runtime");
+    runtime.start().expect("start");
+
+    await_jsonl_lines(&output, 1);
+    runtime.shutdown();
+
+    let lines = read_jsonl(&output);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["price"], 185.5);
+    assert_eq!(lines[0]["symbol"], "AAPL");
+    assert_eq!(lines[0]["volume"], 5000);
 }

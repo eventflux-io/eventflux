@@ -44,7 +44,7 @@
 //! json.template = "{\"eventType\":\"ORDER\",\"id\":\"{{orderId}}\",\"amount\":{{amount}}}"
 //! ```
 
-use super::{SinkMapper, SourceMapper};
+use super::{alphabetical_mappings, now_millis, schema_ordered_mappings, SinkMapper, SourceMapper};
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
 use serde_json::Value as JsonValue;
@@ -64,6 +64,13 @@ pub struct JsonSourceMapper {
     max_input_size: usize,
     /// Maximum JSONPath nesting depth (default: 32)
     max_nesting_depth: usize,
+    /// Stream schema field names in schema order; never `Some(empty)`.
+    /// Enables name-based auto-mapping (see `auto_map`).
+    field_names: Option<Vec<String>>,
+    /// Explicit mappings as (field name, JSONPath) in output order.
+    /// Precomputed at configuration time: schema order when field names are
+    /// set, alphabetical otherwise (HashMap iteration is non-deterministic).
+    ordered_mappings: Vec<(String, String)>,
 }
 
 impl JsonSourceMapper {
@@ -75,18 +82,46 @@ impl JsonSourceMapper {
             date_format: None,
             max_input_size: 10 * 1024 * 1024, // 10 MB default
             max_nesting_depth: 32,            // 32 levels default
+            field_names: None,
+            ordered_mappings: Vec::new(),
         }
     }
 
     /// Create a new JSON source mapper with explicit mappings
     pub fn with_mappings(mappings: HashMap<String, String>) -> Self {
+        let ordered_mappings = alphabetical_mappings(&mappings);
         Self {
             mappings,
             ignore_parse_errors: false,
             date_format: None,
             max_input_size: 10 * 1024 * 1024, // 10 MB default
             max_nesting_depth: 32,            // 32 levels default
+            field_names: None,
+            ordered_mappings,
         }
+    }
+
+    /// Set the stream schema field names (in schema order).
+    ///
+    /// Enables name-based auto-mapping: each schema field is resolved from the
+    /// JSON object by exact key match, then ASCII case-insensitive match; when
+    /// no schema field matches any JSON key, values fall back to positional
+    /// order. An empty list is treated as "no schema" (unset).
+    ///
+    /// With explicit `mapping.*` properties configured, this validates the
+    /// configuration fail-fast: every schema field must have a mapping
+    /// (matched exactly or case-insensitively) and every mapping key must
+    /// correspond to a schema field. Output follows schema order.
+    pub fn set_field_names(&mut self, names: Vec<String>) -> Result<(), EventFluxError> {
+        if names.is_empty() {
+            self.field_names = None;
+            return Ok(());
+        }
+        if !self.mappings.is_empty() {
+            self.ordered_mappings = schema_ordered_mappings(&names, &self.mappings, "json")?;
+        }
+        self.field_names = Some(names);
+        Ok(())
     }
 
     /// Set whether to ignore parse errors
@@ -126,7 +161,17 @@ impl JsonSourceMapper {
         self.max_nesting_depth = max_depth;
     }
 
-    /// Auto-map all top-level JSON fields to event attributes
+    /// Auto-map top-level JSON fields to event attributes.
+    ///
+    /// With schema field names available, each schema field is resolved by
+    /// exact JSON key match, then ASCII case-insensitive key match. When at
+    /// least one field matches by name, the payload is treated as name-based:
+    /// unmatched fields map to Null (a value is never consumed twice). Only
+    /// when NO field matches by name does the mapper fall back to positional
+    /// order (serde_json's `preserve_order` keeps the incoming key order).
+    ///
+    /// Without schema field names, all top-level fields are mapped in JSON
+    /// insertion order (legacy behavior).
     fn auto_map(&self, json: &JsonValue) -> Result<Vec<Event>, EventFluxError> {
         let obj = json
             .as_object()
@@ -135,40 +180,39 @@ impl JsonSourceMapper {
                 source: None,
             })?;
 
-        // Preserve JSON key order (serde_json maintains insertion order)
-        // This allows the JSON input to match schema field order
-        let mut event_data = Vec::new();
-        for (_key, value) in obj.iter() {
-            event_data.push(json_value_to_attribute(value, self.date_format.as_deref())?);
-        }
+        let to_attribute = |value: Option<&JsonValue>| match value {
+            Some(v) => json_value_to_attribute(v, self.date_format.as_deref()),
+            None => Ok(AttributeValue::Null),
+        };
 
-        // Use current timestamp in milliseconds
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-
-        Ok(vec![Event::new_with_data(timestamp, event_data)])
+        let event_data: Result<Vec<AttributeValue>, EventFluxError> = match &self.field_names {
+            Some(names) => {
+                let matched: Vec<Option<&JsonValue>> =
+                    names.iter().map(|name| lookup_field(obj, name)).collect();
+                if matched.iter().any(Option::is_some) {
+                    // Name-based payload: unmatched fields become Null
+                    matched.into_iter().map(to_attribute).collect()
+                } else {
+                    // No key matched any schema field: positional fallback
+                    let mut values = obj.values();
+                    names.iter().map(|_| to_attribute(values.next())).collect()
+                }
+            }
+            // No schema available: preserve JSON key order
+            None => obj.values().map(|v| to_attribute(Some(v))).collect(),
+        };
+        Ok(vec![Event::new_with_data(now_millis(), event_data?)])
     }
 
     /// Extract fields using explicit JSONPath mappings
     ///
-    /// NOTE: Since mappings come from a HashMap with non-deterministic iteration order,
-    /// we sort field names alphabetically to ensure deterministic and predictable ordering.
-    fn extract_with_mappings(
-        &self,
-        json: &JsonValue,
-        mappings: &HashMap<String, String>,
-    ) -> Result<Vec<Event>, EventFluxError> {
-        let mut event_data = Vec::new();
+    /// Uses the (field, path) order precomputed at configuration time:
+    /// schema order when schema field names were set (validated for
+    /// completeness in `set_field_names`), alphabetical otherwise.
+    fn extract_with_mappings(&self, json: &JsonValue) -> Result<Vec<Event>, EventFluxError> {
+        let mut event_data = Vec::with_capacity(self.ordered_mappings.len());
 
-        // Sort field names alphabetically for deterministic ordering
-        // (HashMap iteration order is non-deterministic)
-        let mut sorted_fields: Vec<_> = mappings.keys().collect();
-        sorted_fields.sort();
-
-        for field_name in sorted_fields {
-            let json_path = &mappings[field_name];
+        for (_field_name, json_path) in &self.ordered_mappings {
             let value = extract_json_path(json, json_path, self.max_nesting_depth)?;
             event_data.push(json_value_to_attribute(
                 &value,
@@ -176,14 +220,21 @@ impl JsonSourceMapper {
             )?);
         }
 
-        // Use current timestamp in milliseconds
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-
-        Ok(vec![Event::new_with_data(timestamp, event_data)])
+        Ok(vec![Event::new_with_data(now_millis(), event_data)])
     }
+}
+
+/// Find a top-level JSON value by key: exact match first, then ASCII
+/// case-insensitive (the linear scan only runs on an exact miss).
+fn lookup_field<'a>(
+    obj: &'a serde_json::Map<String, JsonValue>,
+    name: &str,
+) -> Option<&'a JsonValue> {
+    obj.get(name).or_else(|| {
+        obj.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v)
+    })
 }
 
 impl Default for JsonSourceMapper {
@@ -226,7 +277,7 @@ impl SourceMapper for JsonSourceMapper {
         if self.mappings.is_empty() {
             self.auto_map(&json)
         } else {
-            self.extract_with_mappings(&json, &self.mappings)
+            self.extract_with_mappings(&json)
         }
     }
 
@@ -1176,5 +1227,249 @@ mod tests {
             events[0].data[2],
             AttributeValue::String(ref s) if s == "T123"
         ));
+    }
+
+    // ========================================================================
+    // Schema-Aware Auto-Mapping Tests (#201)
+    // JSON fields must match stream fields by name: exact match first,
+    // then case-insensitive, with positional order only as a fallback.
+    // ========================================================================
+
+    fn schema_mapper(names: &[&str]) -> JsonSourceMapper {
+        let mut mapper = JsonSourceMapper::new();
+        mapper
+            .set_field_names(names.iter().map(|s| s.to_string()).collect())
+            .unwrap();
+        mapper
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_exact_name_match() {
+        // Issue #201 repro: schema is (price, symbol, volume) but the JSON
+        // keys arrive in a different order (symbol, price, volume).
+        let mapper = schema_mapper(&["price", "symbol", "volume"]);
+        let json_str = r#"{"symbol": "AAPL", "price": 185.5, "volume": 5000}"#;
+
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data.len(), 3);
+
+        assert!(matches!(events[0].data[0], AttributeValue::Double(p) if (p - 185.5).abs() < 1e-9));
+        assert!(matches!(
+            events[0].data[1],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[2], AttributeValue::Int(5000)));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_case_insensitive_match() {
+        // Documented behavior: {"Symbol": ..., "PRICE": ..., "Volume": ...}
+        // still maps correctly due to case-insensitive matching
+        let mapper = schema_mapper(&["symbol", "price", "volume"]);
+        let json_str = r#"{"PRICE": 185.5, "Volume": 5000, "Symbol": "AAPL"}"#;
+
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[1], AttributeValue::Double(p) if (p - 185.5).abs() < 1e-9));
+        assert!(matches!(events[0].data[2], AttributeValue::Int(5000)));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_exact_match_wins_over_case_insensitive() {
+        // When both an exact and a case-variant key exist, exact wins
+        let mapper = schema_mapper(&["symbol"]);
+        let json_str = r#"{"SYMBOL": "wrong", "symbol": "right"}"#;
+
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "right"
+        ));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_positional_fallback() {
+        // No JSON key matches any schema name: fall back to positional order
+        let mapper = schema_mapper(&["price", "symbol", "volume"]);
+        let json_str = r#"{"p": 185.5, "s": "AAPL", "v": 5000}"#;
+
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Double(p) if (p - 185.5).abs() < 1e-9));
+        assert!(matches!(
+            events[0].data[1],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[2], AttributeValue::Int(5000)));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_name_mode_is_all_or_nothing() {
+        // Once ANY field matches by name, the payload is treated as
+        // name-based: an unmatched field becomes Null instead of stealing a
+        // positional value (which could consume a value twice)
+        let mapper = schema_mapper(&["price", "symbol"]);
+        let json_str = r#"{"symbol": "AAPL", "cost": 185.5}"#;
+
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        // "price" has no name match → Null (NOT positional "AAPL", which is
+        // already consumed by "symbol")
+        assert!(matches!(events[0].data[0], AttributeValue::Null));
+        assert!(matches!(
+            events[0].data[1],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_extra_key_does_not_fill_missing_field() {
+        // An extra JSON key must not leak into an unmatched schema field
+        // through the positional fallback
+        let mapper = schema_mapper(&["price", "symbol", "volume"]);
+        let json_str = r#"{"price": 1.0, "symbol": "AAPL", "venue": "NYSE"}"#;
+
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Double(p) if (p - 1.0).abs() < 1e-9));
+        assert!(matches!(
+            events[0].data[1],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        // "volume" is absent → Null, not "NYSE"
+        assert!(matches!(events[0].data[2], AttributeValue::Null));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_missing_field_is_null() {
+        // Schema has more fields than the JSON object provides: the
+        // unmatched trailing field maps to Null, not an error
+        let mapper = schema_mapper(&["symbol", "price", "volume"]);
+        let json_str = r#"{"symbol": "AAPL", "price": 185.5}"#;
+
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert_eq!(events[0].data.len(), 3);
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[1], AttributeValue::Double(_)));
+        assert!(matches!(events[0].data[2], AttributeValue::Null));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_ignores_extra_json_fields() {
+        // JSON carries extra fields the schema doesn't declare — they are skipped
+        let mapper = schema_mapper(&["symbol", "volume"]);
+        let json_str = r#"{"price": 185.5, "symbol": "AAPL", "volume": 5000, "venue": "NYSE"}"#;
+
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert_eq!(events[0].data.len(), 2);
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(5000)));
+    }
+
+    #[test]
+    fn test_schema_explicit_mappings_follow_schema_order() {
+        // Explicit JSONPath mappings must be emitted in schema order,
+        // not alphabetical order
+        let mut mappings = HashMap::new();
+        mappings.insert("symbol".to_string(), "$.trade.sym".to_string());
+        mappings.insert("amount".to_string(), "$.trade.total".to_string());
+
+        // Schema order: symbol first, amount second (alphabetical would
+        // put amount first)
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap();
+
+        let json_str = r#"{"trade": {"sym": "AAPL", "total": 100.0}}"#;
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[1], AttributeValue::Double(a) if (a - 100.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn test_schema_explicit_mappings_missing_field_fails_at_config_time() {
+        // With a schema, every stream field needs a mapping once any
+        // mapping.* property is set (all-or-nothing policy). This must fail
+        // when the mapper is configured, not per event at runtime.
+        let mut mappings = HashMap::new();
+        mappings.insert("symbol".to_string(), "$.trade.sym".to_string());
+
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("amount"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_schema_explicit_mappings_match_keys_case_insensitively() {
+        // A mapping key that differs from the attribute only by case is
+        // accepted, consistent with auto-mapping's case-insensitive matching
+        let mut mappings = HashMap::new();
+        mappings.insert("orderid".to_string(), "$.order.id".to_string());
+
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        mapper.set_field_names(vec!["orderId".to_string()]).unwrap();
+
+        let json_str = r#"{"order": {"id": "O-1"}}"#;
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "O-1"
+        ));
+    }
+
+    #[test]
+    fn test_schema_explicit_mappings_stray_key_fails_at_config_time() {
+        // A mapping key matching no stream field (typo, stale entry) is a
+        // configuration error, not a silently dead key
+        let mut mappings = HashMap::new();
+        mappings.insert("symbol".to_string(), "$.sym".to_string());
+        mappings.insert("trade_ts".to_string(), "$.T".to_string());
+
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["symbol".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("trade_ts"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_set_field_names_empty_means_no_schema() {
+        // Empty schema is canonicalized to "unset": legacy insertion-order
+        // behavior applies
+        let mut mapper = JsonSourceMapper::new();
+        mapper.set_field_names(Vec::new()).unwrap();
+        assert!(mapper.field_names.is_none());
+
+        let json_str = r#"{"b": 2, "a": 1}"#;
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(2)));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(1)));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_with_date_format() {
+        // Name-matched values still go through date parsing
+        let mut mapper = schema_mapper(&["value", "timestamp"]);
+        mapper.set_date_format(Some("%Y-%m-%d %H:%M:%S".to_string()));
+
+        let json_str = r#"{"timestamp": "2025-10-19 12:34:56", "value": 100}"#;
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+
+        assert!(matches!(events[0].data[0], AttributeValue::Int(100)));
+        assert!(matches!(events[0].data[1], AttributeValue::Long(_)));
     }
 }

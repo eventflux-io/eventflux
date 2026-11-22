@@ -98,6 +98,21 @@ pub trait SourceMapperFactory: Debug + Send + Sync {
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn SourceMapper>, EventFluxError>;
 
+    /// Create a source mapper with schema field names for name-based mapping
+    ///
+    /// # Arguments
+    /// * `config` - Flat configuration map with format-prefixed keys
+    /// * `field_names` - Stream schema field names in schema order
+    ///   (e.g., ["price", "symbol", "volume"])
+    fn create_with_schema(
+        &self,
+        config: &HashMap<String, String>,
+        _field_names: &[String],
+    ) -> Result<Box<dyn SourceMapper>, EventFluxError> {
+        // Default implementation ignores field names
+        self.create_initialized(config)
+    }
+
     /// Clone this factory into a boxed trait object
     fn clone_box(&self) -> Box<dyn SourceMapperFactory>;
 }
@@ -225,25 +240,44 @@ impl SourceMapperFactory for JsonSourceMapperFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn SourceMapper>, EventFluxError> {
-        // Parse and validate configuration
-        let mapper_config = JsonSourceMapperConfig::parse(config)?;
+        self.create_with_schema(config, &[])
+    }
 
-        // Create fully initialized mapper
-        let mut mapper = if mapper_config.mappings.is_empty() {
-            JsonSourceMapper::new()
-        } else {
-            JsonSourceMapper::with_mappings(mapper_config.mappings)
-        };
-
-        mapper.set_ignore_parse_errors(mapper_config.ignore_parse_errors);
-        mapper.set_date_format(mapper_config.date_format);
-
-        Ok(Box::new(mapper))
+    fn create_with_schema(
+        &self,
+        config: &HashMap<String, String>,
+        field_names: &[String],
+    ) -> Result<Box<dyn SourceMapper>, EventFluxError> {
+        Ok(Box::new(build_json_source_mapper(config, field_names)?))
     }
 
     fn clone_box(&self) -> Box<dyn SourceMapperFactory> {
         Box::new(self.clone())
     }
+}
+
+/// Build a fully configured JSON source mapper (`field_names` empty = no schema)
+fn build_json_source_mapper(
+    config: &HashMap<String, String>,
+    field_names: &[String],
+) -> Result<JsonSourceMapper, EventFluxError> {
+    // Parse and validate configuration
+    let mapper_config = JsonSourceMapperConfig::parse(config)?;
+
+    // Create fully initialized mapper
+    let mut mapper = if mapper_config.mappings.is_empty() {
+        JsonSourceMapper::new()
+    } else {
+        JsonSourceMapper::with_mappings(mapper_config.mappings)
+    };
+
+    mapper.set_ignore_parse_errors(mapper_config.ignore_parse_errors);
+    mapper.set_date_format(mapper_config.date_format);
+    // Fail-fast: with explicit mappings this validates that every stream
+    // field is mapped and no mapping key is stray
+    mapper.set_field_names(field_names.to_vec())?;
+
+    Ok(mapper)
 }
 
 /// Factory for creating JSON sink mappers
@@ -410,26 +444,45 @@ impl SourceMapperFactory for CsvSourceMapperFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn SourceMapper>, EventFluxError> {
-        // Parse and validate configuration
-        let mapper_config = CsvSourceMapperConfig::parse(config)?;
+        self.create_with_schema(config, &[])
+    }
 
-        // Create fully initialized mapper
-        let mut mapper = if mapper_config.mappings.is_empty() {
-            CsvSourceMapper::new()
-        } else {
-            CsvSourceMapper::with_mappings(mapper_config.mappings)
-        };
-
-        mapper.set_delimiter(mapper_config.delimiter);
-        mapper.set_has_header(mapper_config.has_header);
-        mapper.set_ignore_parse_errors(mapper_config.ignore_parse_errors);
-
-        Ok(Box::new(mapper))
+    fn create_with_schema(
+        &self,
+        config: &HashMap<String, String>,
+        field_names: &[String],
+    ) -> Result<Box<dyn SourceMapper>, EventFluxError> {
+        Ok(Box::new(build_csv_source_mapper(config, field_names)?))
     }
 
     fn clone_box(&self) -> Box<dyn SourceMapperFactory> {
         Box::new(self.clone())
     }
+}
+
+/// Build a fully configured CSV source mapper (`field_names` empty = no schema)
+fn build_csv_source_mapper(
+    config: &HashMap<String, String>,
+    field_names: &[String],
+) -> Result<CsvSourceMapper, EventFluxError> {
+    // Parse and validate configuration
+    let mapper_config = CsvSourceMapperConfig::parse(config)?;
+
+    // Create fully initialized mapper
+    let mut mapper = if mapper_config.mappings.is_empty() {
+        CsvSourceMapper::new()
+    } else {
+        CsvSourceMapper::with_mappings(mapper_config.mappings)
+    };
+
+    mapper.set_delimiter(mapper_config.delimiter);
+    mapper.set_has_header(mapper_config.has_header);
+    mapper.set_ignore_parse_errors(mapper_config.ignore_parse_errors);
+    // Fail-fast: with explicit mappings this orders output by schema and
+    // validates that every stream field is mapped with no stray keys
+    mapper.set_field_names(field_names.to_vec())?;
+
+    Ok(mapper)
 }
 
 /// Factory for creating CSV sink mappers
@@ -617,21 +670,46 @@ impl MapperFactoryRegistry {
         self.sink_factories.insert(format, factory);
     }
 
+    /// Look up a registered source mapper factory by format
+    fn source_factory(&self, format: &str) -> Result<&dyn SourceMapperFactory, EventFluxError> {
+        self.source_factories
+            .get(format)
+            .map(|f| f.as_ref())
+            .ok_or_else(|| EventFluxError::Configuration {
+                message: format!("Unknown source mapper format: {}", format),
+                config_key: Some("format".to_string()),
+            })
+    }
+
+    /// Look up a registered sink mapper factory by format
+    fn sink_factory(&self, format: &str) -> Result<&dyn SinkMapperFactory, EventFluxError> {
+        self.sink_factories
+            .get(format)
+            .map(|f| f.as_ref())
+            .ok_or_else(|| EventFluxError::Configuration {
+                message: format!("Unknown sink mapper format: {}", format),
+                config_key: Some("format".to_string()),
+            })
+    }
+
     /// Create a source mapper for the given format
     pub fn create_source_mapper(
         &self,
         format: &str,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn SourceMapper>, EventFluxError> {
-        let factory =
-            self.source_factories
-                .get(format)
-                .ok_or_else(|| EventFluxError::Configuration {
-                    message: format!("Unknown source mapper format: {}", format),
-                    config_key: Some("format".to_string()),
-                })?;
+        self.source_factory(format)?.create_initialized(config)
+    }
 
-        factory.create_initialized(config)
+    /// Create a source mapper for the given format with schema field names
+    pub fn create_source_mapper_with_schema(
+        &self,
+        format: &str,
+        config: &HashMap<String, String>,
+        field_names: &[String],
+    ) -> Result<Box<dyn SourceMapper>, EventFluxError> {
+        self.source_factory(format)?
+            .create_with_schema(config, field_names)
     }
 
     /// Create a sink mapper for the given format
@@ -640,15 +718,7 @@ impl MapperFactoryRegistry {
         format: &str,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn SinkMapper>, EventFluxError> {
-        let factory =
-            self.sink_factories
-                .get(format)
-                .ok_or_else(|| EventFluxError::Configuration {
-                    message: format!("Unknown sink mapper format: {}", format),
-                    config_key: Some("format".to_string()),
-                })?;
-
-        factory.create_initialized(config)
+        self.sink_factory(format)?.create_initialized(config)
     }
 
     /// Create a sink mapper for the given format with schema field names
@@ -658,15 +728,8 @@ impl MapperFactoryRegistry {
         config: &HashMap<String, String>,
         field_names: &[String],
     ) -> Result<Box<dyn SinkMapper>, EventFluxError> {
-        let factory =
-            self.sink_factories
-                .get(format)
-                .ok_or_else(|| EventFluxError::Configuration {
-                    message: format!("Unknown sink mapper format: {}", format),
-                    config_key: Some("format".to_string()),
-                })?;
-
-        factory.create_with_schema(config, field_names)
+        self.sink_factory(format)?
+            .create_with_schema(config, field_names)
     }
 }
 
@@ -710,6 +773,85 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data.len(), 2);
+    }
+
+    #[test]
+    fn test_json_source_factory_create_with_schema_maps_by_name() {
+        use crate::core::event::AttributeValue;
+
+        let config = HashMap::new();
+        let factory = JsonSourceMapperFactory;
+        let field_names = vec![
+            "price".to_string(),
+            "symbol".to_string(),
+            "volume".to_string(),
+        ];
+
+        let mapper = factory.create_with_schema(&config, &field_names).unwrap();
+
+        // JSON keys in a different order than the schema
+        let json_str = r#"{"symbol": "AAPL", "price": 185.5, "volume": 5000}"#;
+        let events = mapper.map(json_str.as_bytes()).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].data[0], AttributeValue::Double(p) if (p - 185.5).abs() < 1e-9));
+        assert!(matches!(
+            events[0].data[1],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[2], AttributeValue::Int(5000)));
+    }
+
+    #[test]
+    fn test_json_source_factory_create_with_schema_incomplete_mapping_fails() {
+        // A schema field without a mapping must fail at creation time
+        // (app startup), not per event at runtime
+        let mut config = HashMap::new();
+        config.insert("json.mapping.a".to_string(), "$.x".to_string());
+
+        let factory = JsonSourceMapperFactory;
+        let field_names = vec!["a".to_string(), "b".to_string()];
+        let err = factory
+            .create_with_schema(&config, &field_names)
+            .unwrap_err();
+        assert!(err.to_string().contains('b'), "got: {}", err);
+    }
+
+    #[test]
+    fn test_csv_source_factory_create_with_schema_orders_by_schema() {
+        use crate::core::event::AttributeValue;
+
+        let mut config = HashMap::new();
+        config.insert("csv.mapping.symbol".to_string(), "0".to_string());
+        config.insert("csv.mapping.amount".to_string(), "1".to_string());
+
+        let factory = CsvSourceMapperFactory;
+        let field_names = vec!["symbol".to_string(), "amount".to_string()];
+        let mapper = factory.create_with_schema(&config, &field_names).unwrap();
+
+        let events = mapper.map(b"AAPL,42.5").unwrap();
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "AAPL"
+        ));
+        assert!(matches!(events[0].data[1], AttributeValue::Double(a) if (a - 42.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn test_registry_create_source_mapper_with_schema() {
+        use crate::core::event::AttributeValue;
+
+        let registry = MapperFactoryRegistry::new();
+        let config = HashMap::new();
+        let field_names = vec!["b".to_string(), "a".to_string()];
+
+        let mapper = registry
+            .create_source_mapper_with_schema("json", &config, &field_names)
+            .unwrap();
+
+        let events = mapper.map(r#"{"a": 1, "b": 2}"#.as_bytes()).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(2)));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(1)));
     }
 
     #[test]
