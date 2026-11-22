@@ -164,7 +164,8 @@ impl JsonSourceMapper {
     /// Auto-map top-level JSON fields to event attributes.
     ///
     /// With schema field names available, each schema field is resolved by
-    /// exact JSON key match, then ASCII case-insensitive key match. When at
+    /// exact JSON key match, then ASCII case-insensitive key match, with each
+    /// JSON key used by at most one field (see `match_fields`). When at
     /// least one field matches by name, the payload is treated as name-based:
     /// unmatched fields map to Null (a value is never consumed twice). Only
     /// when NO field matches by name does the mapper fall back to positional
@@ -187,8 +188,7 @@ impl JsonSourceMapper {
 
         let event_data: Result<Vec<AttributeValue>, EventFluxError> = match &self.field_names {
             Some(names) => {
-                let matched: Vec<Option<&JsonValue>> =
-                    names.iter().map(|name| lookup_field(obj, name)).collect();
+                let matched = match_fields(obj, names);
                 if matched.iter().any(Option::is_some) {
                     // Name-based payload: unmatched fields become Null
                     matched.into_iter().map(to_attribute).collect()
@@ -224,17 +224,41 @@ impl JsonSourceMapper {
     }
 }
 
-/// Find a top-level JSON value by key: exact match first, then ASCII
-/// case-insensitive (the linear scan only runs on an exact miss).
-fn lookup_field<'a>(
+/// Match schema fields to top-level JSON keys one-to-one.
+///
+/// All exact matches are resolved first; remaining fields then match ASCII
+/// case-insensitively, but only against keys no other field has claimed.
+/// This keeps schemas with case-variant names (e.g. `id` and `ID`) from
+/// reading the same JSON value twice.
+fn match_fields<'a>(
     obj: &'a serde_json::Map<String, JsonValue>,
-    name: &str,
-) -> Option<&'a JsonValue> {
-    obj.get(name).or_else(|| {
-        obj.iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v)
-    })
+    names: &[String],
+) -> Vec<Option<&'a JsonValue>> {
+    let mut claimed: Vec<&str> = Vec::with_capacity(names.len());
+    let mut matched = Vec::with_capacity(names.len());
+
+    for name in names {
+        let hit = obj.get_key_value(name.as_str());
+        if let Some((key, _)) = hit {
+            claimed.push(key.as_str());
+        }
+        matched.push(hit.map(|(_, value)| value));
+    }
+
+    for (slot, name) in matched.iter_mut().zip(names) {
+        if slot.is_some() {
+            continue;
+        }
+        let hit = obj
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name) && !claimed.contains(&key.as_str()));
+        if let Some((key, value)) = hit {
+            claimed.push(key.as_str());
+            *slot = Some(value);
+        }
+    }
+
+    matched
 }
 
 impl Default for JsonSourceMapper {
@@ -1289,6 +1313,38 @@ mod tests {
             events[0].data[0],
             AttributeValue::String(ref s) if s == "right"
         ));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_case_variant_fields_do_not_share_a_key() {
+        // Schema (id, ID) with only "id" in the JSON: "id" matches exactly,
+        // and "ID" must NOT reuse the same key case-insensitively
+        let mapper = schema_mapper(&["id", "ID"]);
+        let events = mapper.map(br#"{"id": 1}"#).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
+        assert!(matches!(events[0].data[1], AttributeValue::Null));
+
+        // Same with the case-variant field declared first: the exact match
+        // still wins regardless of schema order
+        let mapper = schema_mapper(&["ID", "id"]);
+        let events = mapper.map(br#"{"id": 1}"#).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Null));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(1)));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_case_insensitive_matches_are_one_to_one() {
+        // Neither field matches exactly; the single "Id" key goes to the
+        // first field only
+        let mapper = schema_mapper(&["id", "ID"]);
+        let events = mapper.map(br#"{"Id": 1}"#).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
+        assert!(matches!(events[0].data[1], AttributeValue::Null));
+
+        // With both keys present, each field gets its own exact match
+        let events = mapper.map(br#"{"ID": 2, "id": 1}"#).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(2)));
     }
 
     #[test]
