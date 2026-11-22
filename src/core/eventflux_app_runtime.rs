@@ -1359,6 +1359,16 @@ impl EventFluxAppRuntime {
         }
     }
 
+    /// Attribute names of a stream's schema in declaration order (empty if the
+    /// stream is not defined). Format mappers use these to map fields by name.
+    fn stream_field_names(&self, stream_name: &str) -> Vec<String> {
+        self.eventflux_app
+            .stream_definition_map
+            .get(stream_name)
+            .map(|stream_def| stream_def.abstract_definition.attribute_name_list())
+            .unwrap_or_default()
+    }
+
     /// Common helper for attaching source streams
     ///
     /// This method contains the shared logic between YAML and SQL source attachment.
@@ -1383,17 +1393,22 @@ impl EventFluxAppRuntime {
     ) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::exception::EventFluxError;
         use crate::core::stream::handler::SourceStreamHandler;
-        use crate::core::stream::stream_initializer::{initialize_stream, InitializedStream};
+        use crate::core::stream::stream_initializer::{
+            initialize_source_stream, InitializedStream,
+        };
 
         // Check if handler already registered (idempotent operation)
         if self.get_source_handler(stream_name).is_some() {
             return Ok(());
         }
 
+        let field_names = self.stream_field_names(stream_name);
+
         // Use stream_initializer to create source with mapper
-        let initialized = initialize_stream(
+        let initialized = initialize_source_stream(
             &self.eventflux_app_context.eventflux_context,
             stream_type_config,
+            &field_names,
         )
         .map_err(|e| {
             EventFluxError::app_creation(format!(
@@ -1578,35 +1593,20 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Extract field names from stream definition for proper JSON output
-        // (e.g., "symbol", "trade_count" instead of "field_0", "field_1")
-        let field_names: Vec<String> = self
-            .eventflux_app
-            .stream_definition_map
-            .get(stream_name)
-            .map(|stream_def| {
-                stream_def
-                    .abstract_definition
-                    .attribute_list
-                    .iter()
-                    .map(|attr| attr.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let field_names = self.stream_field_names(stream_name);
 
         // Use stream_initializer to create sink with mapper (using field names for JSON output)
-        let initialized =
-            crate::core::stream::stream_initializer::initialize_sink_stream_with_schema(
-                &self.eventflux_app_context.eventflux_context,
-                &stream_type_config,
-                &field_names,
-            )
-            .map_err(|e| {
-                EventFluxError::app_creation(format!(
-                    "Failed to initialize sink '{}' (extension={}, format={:?}): {}",
-                    stream_name, extension, resolved.format, e
-                ))
-            })?;
+        let initialized = crate::core::stream::stream_initializer::initialize_sink_stream(
+            &self.eventflux_app_context.eventflux_context,
+            &stream_type_config,
+            &field_names,
+        )
+        .map_err(|e| {
+            EventFluxError::app_creation(format!(
+                "Failed to initialize sink '{}' (extension={}, format={:?}): {}",
+                stream_name, extension, resolved.format, e
+            ))
+        })?;
 
         // Extract sink and mapper from initialized stream
         let (sink, mapper) = match initialized {
@@ -1904,7 +1904,7 @@ impl EventFluxAppRuntime {
         use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
         use crate::core::exception::EventFluxError;
         use crate::core::stream::handler::SinkStreamHandler;
-        use crate::core::stream::stream_initializer::{initialize_stream, InitializedStream};
+        use crate::core::stream::stream_initializer::{initialize_sink_stream, InitializedStream};
 
         // Check if sink handler already registered (idempotent operation)
         if self.get_sink_handler(stream_name).is_some() {
@@ -1942,11 +1942,14 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
+        let field_names = self.stream_field_names(stream_name);
+
         // Use stream_initializer to create sink with mapper
         // This properly uses EventFluxContext's registered factories!
-        let initialized = initialize_stream(
+        let initialized = initialize_sink_stream(
             &self.eventflux_app_context.eventflux_context,
             &stream_type_config,
+            &field_names,
         )
         .map_err(|e| {
             EventFluxError::app_runtime(format!(

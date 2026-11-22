@@ -52,6 +52,15 @@ impl AbstractDefinition {
         &self.attribute_list
     }
 
+    /// Attribute names in schema order (derived on demand, mirroring Java's
+    /// `attribute_name_array`)
+    pub fn attribute_name_list(&self) -> Vec<String> {
+        self.attribute_list
+            .iter()
+            .map(|attr| attr.name.clone())
+            .collect()
+    }
+
     // TODO: Builder methods from Java for attribute and annotation
     // pub fn attribute(mut self, attribute_name: String, attribute_type: crate::query_api::definition::attribute::Type) -> Self {
     //     // TODO: checkAttribute logic
