@@ -84,64 +84,119 @@ pub(crate) fn alphabetical_mappings<V: Clone>(mappings: &HashMap<String, V>) -> 
     ordered
 }
 
+/// Match schema field names to keys (JSON object keys or `mapping.*` keys)
+/// one-to-one, returning the matched key for each field in schema order.
+///
+/// Exact matches are resolved first. A remaining field then matches a key
+/// ASCII case-insensitively only when the pairing is unambiguous in both
+/// directions: the field has exactly one unclaimed candidate key, and that
+/// key matches no other unresolved field. Anything else is reported as an
+/// error rather than guessed, so the outcome never depends on key order and
+/// one key never feeds two fields. A field with no candidate maps to `None`.
+pub(crate) fn match_field_names<'k>(
+    field_names: &[String],
+    keys: &[&'k str],
+) -> Result<Vec<Option<&'k str>>, String> {
+    let mut matched: Vec<Option<&'k str>> = field_names
+        .iter()
+        .map(|name| keys.iter().copied().find(|key| *key == name))
+        .collect();
+
+    let unclaimed: Vec<&'k str> = keys
+        .iter()
+        .copied()
+        .filter(|key| !matched.contains(&Some(*key)))
+        .collect();
+    let unresolved: Vec<usize> = (0..field_names.len())
+        .filter(|&i| matched[i].is_none())
+        .collect();
+
+    for &i in &unresolved {
+        let field = &field_names[i];
+        let candidates: Vec<&str> = unclaimed
+            .iter()
+            .copied()
+            .filter(|key| key.eq_ignore_ascii_case(field))
+            .collect();
+        match candidates.as_slice() {
+            [] => {}
+            [key] => {
+                let rivals: Vec<&str> = unresolved
+                    .iter()
+                    .filter(|&&j| j != i && field_names[j].eq_ignore_ascii_case(key))
+                    .map(|&j| field_names[j].as_str())
+                    .collect();
+                if !rivals.is_empty() {
+                    return Err(format!(
+                        "key '{key}' matches stream fields '{field}' and '{}' only by \
+                         case; use the exact field name",
+                        rivals.join("', '")
+                    ));
+                }
+                matched[i] = Some(key);
+            }
+            _ => {
+                return Err(format!(
+                    "stream field '{field}' matches keys '{}' only by case; use the \
+                     exact field name",
+                    candidates.join("', '")
+                ));
+            }
+        }
+    }
+
+    Ok(matched)
+}
+
 /// Order explicit `mapping.*` entries by stream schema, validating fail-fast.
 ///
-/// All exact key matches are resolved first; remaining fields then match
-/// ASCII case-insensitively, but only against keys no other field has
-/// claimed, so case-variant schema names (e.g. `foo` and `FOO`) can never
-/// share one mapping. Fails if a schema field has no mapping, or if a
-/// mapping key matches no schema field (typo or stale entry).
+/// Fields are paired with mapping keys by [`match_field_names`]. Fails if a
+/// schema field has no mapping, if a pairing is ambiguous, or if a mapping
+/// key matches no schema field (typo or stale entry).
 /// `format` is the property prefix (e.g. "json") used in error messages.
 pub(crate) fn schema_ordered_mappings<V: Clone>(
     field_names: &[String],
     mappings: &HashMap<String, V>,
     format: &str,
 ) -> Result<Vec<(String, V)>, EventFluxError> {
-    let mut unused: Vec<&String> = mappings.keys().collect();
+    let config_error = |message: String, key: &str| EventFluxError::Configuration {
+        message,
+        config_key: Some(format!("{format}.mapping.{key}")),
+    };
 
-    let mut keys: Vec<Option<&String>> = field_names
-        .iter()
-        .map(|name| mappings.get_key_value(name).map(|(key, _)| key))
-        .collect();
-    unused.retain(|k| !keys.contains(&Some(*k)));
+    // Sorted so error messages are stable; the matching itself is order-independent
+    let mut keys: Vec<&str> = mappings.keys().map(String::as_str).collect();
+    keys.sort_unstable();
 
-    for (slot, field_name) in keys.iter_mut().zip(field_names) {
-        if slot.is_some() {
-            continue;
-        }
-        let Some(pos) = unused
-            .iter()
-            .position(|k| k.eq_ignore_ascii_case(field_name))
-        else {
-            return Err(EventFluxError::Configuration {
-                message: format!(
+    let matched =
+        match_field_names(field_names, &keys).map_err(|message| EventFluxError::Configuration {
+            message: format!("Ambiguous '{format}.mapping.*' configuration: {message}"),
+            config_key: None,
+        })?;
+
+    let mut ordered = Vec::with_capacity(field_names.len());
+    for (field_name, key) in field_names.iter().zip(&matched) {
+        let Some(key) = key else {
+            return Err(config_error(
+                format!(
                     "No mapping configured for stream field '{field_name}'. When any \
                      '{format}.mapping.*' property is set, every stream field must be \
                      explicitly mapped."
                 ),
-                config_key: Some(format!("{format}.mapping.{field_name}")),
-            });
+                field_name,
+            ));
         };
-        *slot = Some(unused.remove(pos));
+        ordered.push((field_name.clone(), mappings[*key].clone()));
     }
 
-    let ordered: Vec<(String, V)> = keys
-        .into_iter()
-        .zip(field_names)
-        .map(|(key, field_name)| {
-            let key = key.expect("every field is resolved or returned an error above");
-            (field_name.clone(), mappings[key].clone())
-        })
-        .collect();
-
-    if let Some(stray) = unused.first() {
-        return Err(EventFluxError::Configuration {
-            message: format!(
+    if let Some(stray) = keys.iter().find(|key| !matched.contains(&Some(**key))) {
+        return Err(config_error(
+            format!(
                 "Mapping key '{stray}' does not match any stream field. \
                  Remove it or rename it to a declared field."
             ),
-            config_key: Some(format!("{format}.mapping.{stray}")),
-        });
+            stray,
+        ));
     }
 
     Ok(ordered)
@@ -212,5 +267,69 @@ pub trait SinkMapper: Debug + Send + Sync {
 impl Clone for Box<dyn SinkMapper> {
     fn clone(&self) -> Self {
         self.clone_box()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::match_field_names;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_match_exact_then_unambiguous_case_insensitive() {
+        let fields = names(&["price", "symbol", "volume"]);
+        let matched = match_field_names(&fields, &["SYMBOL", "price", "Volume"]).unwrap();
+        assert_eq!(matched, vec![Some("price"), Some("SYMBOL"), Some("Volume")]);
+    }
+
+    #[test]
+    fn test_match_unmatched_field_is_none() {
+        let fields = names(&["a", "b"]);
+        let matched = match_field_names(&fields, &["a"]).unwrap();
+        assert_eq!(matched, vec![Some("a"), None]);
+    }
+
+    #[test]
+    fn test_match_exact_key_is_never_reused_by_case_variant_field() {
+        // "id" takes its exact key; "ID" must not fall back to it
+        let fields = names(&["ID", "id"]);
+        let matched = match_field_names(&fields, &["id"]).unwrap();
+        assert_eq!(matched, vec![None, Some("id")]);
+    }
+
+    #[test]
+    fn test_match_field_with_two_case_candidates_is_ambiguous() {
+        let fields = names(&["id"]);
+        let err = match_field_names(&fields, &["Id", "iD"]).unwrap_err();
+        assert!(err.contains("'id'"), "got: {err}");
+    }
+
+    #[test]
+    fn test_match_key_fitting_two_fields_by_case_is_ambiguous() {
+        let fields = names(&["foo", "FOO"]);
+        let err = match_field_names(&fields, &["Foo"]).unwrap_err();
+        assert!(err.contains("'Foo'"), "got: {err}");
+    }
+
+    #[test]
+    fn test_match_result_is_independent_of_key_order() {
+        let fields = names(&["price", "symbol", "foo", "FOO"]);
+        let forward = ["Price", "symbol", "foo", "FOO"];
+        let mut reversed = forward;
+        reversed.reverse();
+        assert_eq!(
+            match_field_names(&fields, &forward).unwrap(),
+            match_field_names(&fields, &reversed).unwrap()
+        );
+
+        let ambiguous = ["Foo", "fOO"];
+        let mut ambiguous_rev = ambiguous;
+        ambiguous_rev.reverse();
+        let fields = names(&["foo", "FOO"]);
+        assert!(match_field_names(&fields, &ambiguous).is_err());
+        assert!(match_field_names(&fields, &ambiguous_rev).is_err());
     }
 }

@@ -44,7 +44,10 @@
 //! json.template = "{\"eventType\":\"ORDER\",\"id\":\"{{orderId}}\",\"amount\":{{amount}}}"
 //! ```
 
-use super::{alphabetical_mappings, now_millis, schema_ordered_mappings, SinkMapper, SourceMapper};
+use super::{
+    alphabetical_mappings, match_field_names, now_millis, schema_ordered_mappings, SinkMapper,
+    SourceMapper,
+};
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
 use serde_json::Value as JsonValue;
@@ -164,9 +167,10 @@ impl JsonSourceMapper {
     /// Auto-map top-level JSON fields to event attributes.
     ///
     /// With schema field names available, each schema field is resolved by
-    /// exact JSON key match, then ASCII case-insensitive key match, with each
-    /// JSON key used by at most one field (see `match_fields`). When at
-    /// least one field matches by name, the payload is treated as name-based:
+    /// exact JSON key match, then an unambiguous ASCII case-insensitive match,
+    /// with each JSON key used by at most one field (see `match_field_names`).
+    /// An ambiguous case-only match fails the event instead of guessing.
+    /// When at least one field matches by name, the payload is treated as name-based:
     /// unmatched fields map to Null (a value is never consumed twice). Only
     /// when NO field matches by name does the mapper fall back to positional
     /// order (serde_json's `preserve_order` keeps the incoming key order).
@@ -188,7 +192,7 @@ impl JsonSourceMapper {
 
         let event_data: Result<Vec<AttributeValue>, EventFluxError> = match &self.field_names {
             Some(names) => {
-                let matched = match_fields(obj, names);
+                let matched = match_fields(obj, names)?;
                 if matched.iter().any(Option::is_some) {
                     // Name-based payload: unmatched fields become Null
                     matched.into_iter().map(to_attribute).collect()
@@ -224,41 +228,29 @@ impl JsonSourceMapper {
     }
 }
 
-/// Match schema fields to top-level JSON keys one-to-one.
+/// Match schema fields to top-level JSON values using [`match_field_names`].
 ///
-/// All exact matches are resolved first; remaining fields then match ASCII
-/// case-insensitively, but only against keys no other field has claimed.
-/// This keeps schemas with case-variant names (e.g. `id` and `ID`) from
-/// reading the same JSON value twice.
+/// Fast path: when every field matches a key exactly (the common case),
+/// the general matcher and its key list allocation are skipped.
 fn match_fields<'a>(
     obj: &'a serde_json::Map<String, JsonValue>,
     names: &[String],
-) -> Vec<Option<&'a JsonValue>> {
-    let mut claimed: Vec<&str> = Vec::with_capacity(names.len());
-    let mut matched = Vec::with_capacity(names.len());
-
-    for name in names {
-        let hit = obj.get_key_value(name.as_str());
-        if let Some((key, _)) = hit {
-            claimed.push(key.as_str());
-        }
-        matched.push(hit.map(|(_, value)| value));
+) -> Result<Vec<Option<&'a JsonValue>>, EventFluxError> {
+    let exact: Vec<Option<&'a JsonValue>> = names.iter().map(|name| obj.get(name)).collect();
+    if exact.iter().all(Option::is_some) {
+        return Ok(exact);
     }
 
-    for (slot, name) in matched.iter_mut().zip(names) {
-        if slot.is_some() {
-            continue;
-        }
-        let hit = obj
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name) && !claimed.contains(&key.as_str()));
-        if let Some((key, value)) = hit {
-            claimed.push(key.as_str());
-            *slot = Some(value);
-        }
-    }
-
-    matched
+    let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    let matched =
+        match_field_names(names, &keys).map_err(|message| EventFluxError::MappingFailed {
+            message: format!("Ambiguous JSON keys: {message}"),
+            source: None,
+        })?;
+    Ok(matched
+        .into_iter()
+        .map(|key| key.and_then(|k| obj.get(k)))
+        .collect())
 }
 
 impl Default for JsonSourceMapper {
@@ -1333,18 +1325,37 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_auto_mapping_case_insensitive_matches_are_one_to_one() {
-        // Neither field matches exactly; the single "Id" key goes to the
-        // first field only
+    fn test_schema_auto_mapping_key_matching_two_fields_by_case_is_rejected() {
+        // Neither field matches exactly and "Id" fits both by case: picking
+        // one would be a guess based on schema order, so the event fails
         let mapper = schema_mapper(&["id", "ID"]);
-        let events = mapper.map(br#"{"Id": 1}"#).unwrap();
-        assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
-        assert!(matches!(events[0].data[1], AttributeValue::Null));
+        let err = mapper.map(br#"{"Id": 1}"#).unwrap_err();
+        assert!(err.to_string().contains("'Id'"), "got: {}", err);
 
         // With both keys present, each field gets its own exact match
         let events = mapper.map(br#"{"ID": 2, "id": 1}"#).unwrap();
         assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
         assert!(matches!(events[0].data[1], AttributeValue::Int(2)));
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_field_matching_two_keys_by_case_is_rejected() {
+        // Field "id" has no exact key and fits both "Id" and "iD": the
+        // result must not depend on which key appears first in the payload
+        let mapper = schema_mapper(&["id"]);
+        for payload in [br#"{"Id": 1, "iD": 2}"#, br#"{"iD": 2, "Id": 1}"#] {
+            let err = mapper.map(payload).unwrap_err();
+            assert!(err.to_string().contains("Ambiguous"), "got: {}", err);
+        }
+    }
+
+    #[test]
+    fn test_schema_auto_mapping_ambiguity_ignored_when_exact_match_exists() {
+        // An exact key resolves the field, so other case variants in the
+        // payload are simply extra keys, not an ambiguity
+        let mapper = schema_mapper(&["id"]);
+        let events = mapper.map(br#"{"Id": 9, "id": 1, "ID": 8}"#).unwrap();
+        assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
     }
 
     #[test]
@@ -1513,16 +1524,52 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_explicit_mappings_case_insensitive_key_used_once() {
-        // Neither field matches exactly; the single "Foo" key goes to the
-        // first field, and the second is reported as unmapped
+    fn test_schema_explicit_mappings_key_matching_two_fields_by_case_is_rejected() {
+        // Neither field matches exactly and "Foo" fits both by case: this is
+        // ambiguous, not "first field in schema order wins"
         let mut mappings = HashMap::new();
         mappings.insert("Foo".to_string(), "$.a".to_string());
         let mut mapper = JsonSourceMapper::with_mappings(mappings);
         let err = mapper
             .set_field_names(vec!["foo".to_string(), "FOO".to_string()])
             .unwrap_err();
-        assert!(err.to_string().contains("'FOO'"), "got: {}", err);
+        assert!(err.to_string().contains("Ambiguous"), "got: {}", err);
+        assert!(err.to_string().contains("'Foo'"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_schema_explicit_mappings_case_only_aliases_are_rejected_deterministically() {
+        // Schema (foo, FOO) with keys "Foo" and "fOO": neither key is exact
+        // and each fits both fields. Greedy assignment would depend on
+        // HashMap order; it must be rejected, every time.
+        for _ in 0..32 {
+            let mut mappings = HashMap::new();
+            mappings.insert("Foo".to_string(), "$.a".to_string());
+            mappings.insert("fOO".to_string(), "$.b".to_string());
+            let mut mapper = JsonSourceMapper::with_mappings(mappings);
+            let err = mapper
+                .set_field_names(vec!["foo".to_string(), "FOO".to_string()])
+                .unwrap_err();
+            assert!(err.to_string().contains("Ambiguous"), "got: {}", err);
+        }
+    }
+
+    #[test]
+    fn test_schema_explicit_mappings_unambiguous_case_match_still_works() {
+        // One field, one case-variant key: unambiguous, so it is accepted
+        let mut mappings = HashMap::new();
+        mappings.insert("ORDERID".to_string(), "$.id".to_string());
+        mappings.insert("amount".to_string(), "$.amt".to_string());
+        let mut mapper = JsonSourceMapper::with_mappings(mappings);
+        mapper
+            .set_field_names(vec!["orderId".to_string(), "amount".to_string()])
+            .unwrap();
+        let events = mapper.map(br#"{"id": "O-1", "amt": 5}"#).unwrap();
+        assert!(matches!(
+            events[0].data[0],
+            AttributeValue::String(ref s) if s == "O-1"
+        ));
+        assert!(matches!(events[0].data[1], AttributeValue::Int(5)));
     }
 
     #[test]

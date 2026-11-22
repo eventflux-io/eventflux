@@ -656,6 +656,20 @@ mod tests {
     }
 
     #[test]
+    fn test_csv_schema_case_only_aliases_are_rejected() {
+        // Schema (foo, FOO) with keys "Foo" and "fOO": ambiguous, so it must
+        // fail rather than assign columns based on HashMap order
+        let mut mappings = HashMap::new();
+        mappings.insert("Foo".to_string(), 0usize);
+        mappings.insert("fOO".to_string(), 1usize);
+        let mut mapper = CsvSourceMapper::with_mappings(mappings);
+        let err = mapper
+            .set_field_names(vec!["foo".to_string(), "FOO".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("Ambiguous"), "got: {}", err);
+    }
+
+    #[test]
     fn test_csv_schema_without_mappings_stays_positional() {
         // CSV auto-mapping is inherently positional; schema names are unused
         let mut mapper = CsvSourceMapper::new();
