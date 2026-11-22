@@ -27,8 +27,14 @@ use std::sync::{Arc, RwLock};
 /// Counts in-flight tasks submitted via [`ExecutorService::execute_tracked`].
 ///
 /// A task is "in flight" from the moment it is submitted (not when it starts
-/// running) until its closure returns or unwinds, so `in_flight() == 0` means
-/// no tracked work is queued or executing.
+/// running) until its closure returns or unwinds.
+///
+/// Memory-model caveat: a reader with no happens-before edge to a `register()`
+/// call can legally observe a stale pre-registration zero, so `in_flight() ==
+/// 0` means "no tracked work" only for readers synchronized with every
+/// registration — e.g. the junction drain, whose read order (consumed counter
+/// before tracker) supplies that edge, since consumers register dispatches
+/// before Release-incrementing the consumed counter.
 #[derive(Debug, Default)]
 pub struct TaskTracker {
     // CachePadded keeps the hot per-dispatch increments/decrements off the
@@ -56,16 +62,15 @@ impl TaskTracker {
 
     /// Poll until `in_flight` reaches zero or `timeout` elapses, sleeping
     /// `poll_interval` between checks. Returns whether zero was reached.
-    /// Callers passing user-supplied timeouts must cap them (`Instant + huge
-    /// Duration` panics); in-crate callers pass small constants.
+    /// A timeout too large for `Instant` arithmetic means "wait forever".
     pub fn wait_for_zero(
         &self,
         timeout: std::time::Duration,
         poll_interval: std::time::Duration,
     ) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = std::time::Instant::now().checked_add(timeout);
         while self.in_flight() != 0 {
-            if std::time::Instant::now() >= deadline {
+            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                 return false;
             }
             std::thread::sleep(poll_interval);
@@ -148,10 +153,10 @@ impl ExecutorService {
         });
     }
 
-    /// Block until queued tasks complete. Rayon manages its threads so this is
-    /// a no-op; callers that need completion signalling can opt in via
-    /// [`ExecutorService::execute_tracked`] and poll the [`TaskTracker`].
-    /// Making this wait for all untracked tasks is tracked in #75.
+    /// Does NOT wait — this is a no-op (rayon manages its own threads and
+    /// offers no queued-task barrier). Callers that need completion
+    /// signalling must opt in via [`ExecutorService::execute_tracked`] and
+    /// poll the [`TaskTracker`]. Making this a real wait is tracked in #75.
     pub fn wait_all(&self) {}
 
     pub fn pool_size(&self) -> usize {

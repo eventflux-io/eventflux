@@ -42,8 +42,12 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-/// How long `EventFluxAppRuntime::shutdown()` waits for async junctions to
-/// drain before abandoning queued events (mirrors `SOURCE_STOP_GRACE_PERIOD`).
+/// DEFAULT drain budget for `EventFluxAppRuntime::shutdown()` (mirrors
+/// `SOURCE_STOP_GRACE_PERIOD`). The effective value can be overridden via the
+/// `EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS` env var (capped at
+/// [`MAX_DRAIN_TIMEOUT`]), and a timed-out shutdown waits up to
+/// [`HALT_SETTLE_TIMEOUT`] more — orchestrator kill grace periods should
+/// budget for drain + settle, not this constant alone.
 pub const JUNCTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Poll interval for quiescence checks during the shutdown drain.
@@ -79,15 +83,23 @@ pub fn poll_settled(handles: &[JunctionDrainHandle], deadline: Instant) -> bool 
 
 /// Poll until every handle is quiescent for two consecutive passes with an
 /// unchanged total published count, or the deadline passes. Returns whether
-/// global quiescence was reached. Only meaningful once producers have stopped.
+/// global quiescence was reached.
 ///
-/// The ΣP-stability requirement closes cross-junction races: a cascading
-/// tracked dispatch increments junction B's published count before its guard
-/// decrements junction A's in-flight count, so a single all-quiescent pass can
-/// be stale. With producers stopped, ΣP is finite and monotone, so two
-/// matching quiescent passes mean nothing is moving. The confirming pass needs
-/// a second read, not elapsed time, so the loop only sleeps while the system
-/// is visibly still moving.
+/// PRECONDITION: every publisher must be stopped or covered — a source thread
+/// (joined), a consumer (its withheld consumed-increment covers it), or a
+/// tracked dispatch (its in-flight guard covers it). An uncovered publisher
+/// parked between its queue push and its published-count increment is
+/// invisible to this poll and can produce false quiescence.
+///
+/// Why two passes with unchanged ΣP suffice (given the precondition): each
+/// all-quiescent pass reads every junction's consumed counter (Acquire) before
+/// its in-flight count, so hidden progress at one cascade hop surfaces as
+/// either a non-zero in-flight, a consumed/published imbalance, or a changed
+/// ΣP on the next pass — any of which resets the streak. Work hidden at
+/// cascade depth d can take up to ~d passes to surface, which costs liveness
+/// (deep cascades may need more passes near the deadline) but never safety.
+/// The confirming pass needs a second read, not elapsed time, so the loop only
+/// sleeps while the system is visibly still moving.
 pub fn poll_quiescent(handles: &[JunctionDrainHandle], deadline: Instant) -> bool {
     if handles.is_empty() {
         return true;
@@ -469,11 +481,13 @@ impl StreamJunction {
         self.on_error_action = action;
     }
 
-    /// Start processing events
+    /// Start processing events.
     ///
-    /// For async junctions, this is called automatically during construction.
-    /// This method is idempotent - calling it multiple times is safe.
-    /// For synchronous junctions, this is a no-op.
+    /// For async junctions, this is called automatically during construction;
+    /// calling it again while running is a safe no-op. It is NOT valid after
+    /// `stop_processing`/`halt_processing`: a stopped junction returns `Err` —
+    /// use [`StreamJunction::restart_processing`], which waits out the old
+    /// consumer set and clears the sticky flags.
     pub fn start_processing(&self) -> Result<(), String> {
         if self.shutdown.load(Ordering::Acquire) {
             // A stopped junction must go through restart_processing, which
@@ -500,9 +514,12 @@ impl StreamJunction {
                 // iteration) and un-latch `started`. A retry must go through
                 // restart_processing, which waits for them and clears flags.
                 self.halt_processing();
-                // Keep the halted-implies-counted invariant that restart's
-                // purge relies on: anything queued here would otherwise be
-                // discarded later without ever showing up in events_dropped.
+                // Let the partial set finish its in-flight events so the
+                // abandon count below is exact, then keep the
+                // halted-implies-counted invariant that restart's purge relies
+                // on: anything queued here would otherwise be discarded later
+                // without ever showing up in events_dropped.
+                poll_settled(&[self.drain_handle()], Instant::now() + HALT_SETTLE_TIMEOUT);
                 self.abandon_pending();
                 return Err(e);
             }
@@ -523,6 +540,13 @@ impl StreamJunction {
     /// iteration, leaving queued events in place. Used on drain timeout so the
     /// events counted by `abandon_pending` are not also delivered afterwards
     /// (into stopped sinks, concurrently with the shutdown snapshot).
+    ///
+    /// CALLER CONTRACT: after halting, wait for [`JunctionDrainHandle::settled`]
+    /// (see [`poll_settled`]) and then call [`StreamJunction::abandon_pending`]
+    /// so the frozen backlog is counted into `events_dropped`.
+    /// `restart_processing` purges a halted queue on the assumption that this
+    /// accounting already happened; halting without abandoning makes events
+    /// vanish from the metrics at the next restart.
     pub fn halt_processing(&self) {
         self.stop_processing();
         self.event_pipeline.halt();
@@ -533,10 +557,17 @@ impl StreamJunction {
     /// on every runtime restart — for sync junctions too, or `send_event`
     /// rejects forever after the first shutdown.
     ///
-    /// Fails (leaving the flags sticky) if the previous consumer set is still
-    /// live after a bounded wait: clearing the flags with a straggler alive
-    /// would revive it permanently alongside the fresh set, leaking a consumer
-    /// set per restart. With sticky flags the straggler still exits once it
+    /// Effects, in order: (1) bounded wait for the previous consumer set AND
+    /// its in-flight dispatches to finish; (2) **permanently discards** any
+    /// leftover queued backlog (stale events from the previous run must not
+    /// replay into the restarted topology before sinks reconnect — they were
+    /// counted into `events_dropped` when abandoned, or are counted here);
+    /// (3) clears the sticky flags; (4) spawns a fresh consumer set.
+    ///
+    /// Fails (leaving the flags sticky) if the previous run is still live
+    /// after the bounded wait: clearing the flags with a straggler alive would
+    /// revive it permanently alongside the fresh set, leaking a consumer set
+    /// per restart. With sticky flags the straggler still exits once it
     /// unblocks, and the restart can be retried.
     pub fn restart_processing(&self) -> Result<(), String> {
         if self.shutdown.load(Ordering::Acquire) {
@@ -546,37 +577,39 @@ impl StreamJunction {
             // trackers matters: a consumer set can be fully gone while its
             // dispatched work is still queued on the executor — restarting
             // then would interleave stale-run deliveries with the new run.
-            if !self
-                .active_consumers
-                .wait_for_zero(CONSUMER_EXIT_TIMEOUT, DRAIN_POLL_INTERVAL)
-                || !self
-                    .dispatch_tracker
-                    .wait_for_zero(CONSUMER_EXIT_TIMEOUT, DRAIN_POLL_INTERVAL)
-            {
-                return Err(format!(
-                    "[{}] previous run not settled after {:?} ({} consumer(s), {} dispatch(es) still live — wedged subscriber?); not restarting — retry once they exit",
-                    self.stream_id,
-                    CONSUMER_EXIT_TIMEOUT,
-                    self.active_consumers.in_flight(),
-                    self.dispatch_tracker.in_flight()
-                ));
-            }
-            // A halted queue was already counted as abandoned/dropped (every
-            // halt path runs abandon_pending) — discard it so the restarted
-            // app does not replay events the operator was told were dropped
-            // (and before sinks reconnect, which would repeat the #136
-            // lost-event window). Producers racing the halt flag can slip an
-            // event in after the abandon count; that sliver is discarded
-            // uncounted and bounded by in-flight publishers.
-            if self.event_pipeline.is_halted() {
-                let purged = self.event_pipeline.purge();
-                if purged > 0 {
-                    log::info!(
-                        "[{}] discarded {} stale event(s) left by the previous run (counted dropped when abandoned)",
-                        self.stream_id,
-                        purged
-                    );
+            // One loop with one deadline keeps the error message's counts
+            // consistent with the decision to refuse.
+            let settle_deadline = Instant::now() + CONSUMER_EXIT_TIMEOUT;
+            loop {
+                let consumers = self.active_consumers.in_flight();
+                let dispatches = self.dispatch_tracker.in_flight();
+                if consumers == 0 && dispatches == 0 {
+                    break;
                 }
+                if Instant::now() >= settle_deadline {
+                    return Err(format!(
+                        "[{}] previous run not settled after {:?} ({} consumer(s), {} dispatch(es) still live — wedged subscriber?); not restarting — retry once they exit",
+                        self.stream_id, CONSUMER_EXIT_TIMEOUT, consumers, dispatches
+                    ));
+                }
+                std::thread::sleep(DRAIN_POLL_INTERVAL);
+            }
+            // Any leftover queue is stale-run work and must not replay into
+            // the restarted topology (sinks reconnect only after junctions —
+            // replaying would repeat the #136 lost-event window). Halted
+            // backlogs were already counted into events_dropped by
+            // abandon_pending; a graceful stop's leftover (a producer that
+            // raced the flags) was not — count it before discarding.
+            if !self.event_pipeline.is_halted() {
+                self.abandon_pending();
+            }
+            let purged = self.event_pipeline.purge();
+            if purged > 0 {
+                log::info!(
+                    "[{}] discarded {} stale event(s) left by the previous run (counted into events_dropped when abandoned)",
+                    self.stream_id,
+                    purged
+                );
             }
             self.shutdown.store(false, Ordering::Release);
             self.event_pipeline.clear_shutdown();
@@ -616,10 +649,18 @@ impl StreamJunction {
         poll_quiescent(&[self.drain_handle()], Instant::now() + timeout)
     }
 
-    /// Give up on undrained events after a drain timeout: count still-queued
-    /// events as dropped and warn. In-flight dispatches are logged but not
-    /// counted dropped — those events already reached their subscribers.
-    /// Returns the number of abandoned (queued) events.
+    /// Give up on undrained events: count still-queued events as dropped and
+    /// warn. Returns the number of abandoned (queued) events.
+    ///
+    /// For an exact count, call only after `halt_processing` + settling
+    /// ([`poll_settled`]): until consumers settle, an event they already
+    /// popped (not yet counted consumed) appears in `queued` — it would be
+    /// counted dropped AND still delivered. In-flight dispatches are logged
+    /// but never counted dropped: their events were already handed toward
+    /// subscribers. Not idempotent — recounting the same frozen backlog
+    /// double-counts; the drain protocol guarantees one call per backlog
+    /// (halted junctions read as quiescent, so a repeated shutdown skips the
+    /// abandon branch).
     pub fn abandon_pending(&self) -> u64 {
         if !self.is_async {
             return 0;
@@ -628,7 +669,7 @@ impl StreamJunction {
         if queued > 0 || in_flight > 0 {
             self.events_dropped.fetch_add(queued, Ordering::Relaxed);
             log::warn!(
-                "[{}] Drain timeout: abandoning {} queued event(s) at shutdown ({} subscriber dispatch(es) still in flight)",
+                "[{}] abandoning {} queued event(s) ({} subscriber dispatch(es) still in flight)",
                 self.stream_id,
                 queued,
                 in_flight
@@ -637,13 +678,20 @@ impl StreamJunction {
         queued
     }
 
+    /// Count events lost on an internal cascade edge (query output → this
+    /// junction) whose send was rejected by the shutdown gate. The sending
+    /// processor swallows the error — without this the events would vanish
+    /// from the delivered/dropped ledger. External senders are NOT counted
+    /// here: they receive the `Err` and still own their events.
+    pub(crate) fn record_cascade_drop(&self, count: u64) {
+        self.events_dropped.fetch_add(count, Ordering::Relaxed);
+    }
+
     /// Send a single event through the pipeline
     pub fn send_event(&self, event: Event) -> Result<(), EventFluxError> {
         if self.shutdown.load(Ordering::Acquire) {
             self.handle_backpressure_error("StreamJunction is shutting down");
-            return Err(EventFluxError::SendError {
-                message: "StreamJunction is shutting down".to_string(),
-            });
+            return Err(EventFluxError::ShutdownRejected { count: 1 });
         }
 
         let stream_event = Self::event_to_stream_event(event);
@@ -795,12 +843,17 @@ impl StreamJunction {
         }
 
         if self.shutdown.load(Ordering::Acquire) {
+            // "rejected", not "dropped": the caller receives Err and these
+            // events are never counted into events_dropped (that metric is
+            // reserved for silently lost events). Fire-and-forget callers
+            // that swallow the Err must count it via record_cascade_drop —
+            // the ShutdownRejected variant carries the count for that.
             self.handle_backpressure_error(&format!(
-                "StreamJunction is shutting down ({} events dropped)",
+                "StreamJunction is shutting down ({} events rejected)",
                 events.len()
             ));
-            return Err(EventFluxError::SendError {
-                message: "StreamJunction is shutting down".to_string(),
+            return Err(EventFluxError::ShutdownRejected {
+                count: events.len(),
             });
         }
 
@@ -1235,19 +1288,33 @@ impl JunctionDrainHandle {
         self.pipeline.metrics().events_published_count()
     }
 
-    /// Quiescence predicate:
-    /// `!is_async || (queue empty && published == consumed && in_flight == 0)`
+    /// Quiescence predicate: `!is_async || (halted ? settled : (queue empty
+    /// && published == consumed && in_flight == 0))`
     ///
-    /// `published` increments only on successful queue push; `consumed` only
-    /// after the consumer handler returns (i.e. after all subscriber
-    /// dispatches for that event were issued and tracked). Read order is
-    /// consumed → published → is_empty → in_flight so a concurrent event
-    /// can only make us see *less* progress, never false quiescence.
-    /// Inline-processing mode (pool_size == 1) is covered by
-    /// `published == consumed` alone since dispatch happens in the handler.
+    /// A halted junction is quiescent once settled: its frozen backlog will
+    /// never move again (it was counted by `abandon_pending` and is purged on
+    /// restart), so waiting on it would only burn the drain budget — and
+    /// re-abandoning it on a later shutdown would double-count the drops.
+    ///
+    /// For live junctions: `published` increments only after a successful
+    /// queue push; `consumed` only after the consumer handler returns (i.e.
+    /// after all subscriber dispatches for that event were registered). The
+    /// read order consumed → published → is_empty → in_flight supplies the
+    /// happens-before edges the counters need (the latest `consumed` makes
+    /// prior dispatch registrations visible before `in_flight` is read).
+    ///
+    /// CAUTION: a single call can still return a false `true` — a cascade
+    /// dispatch on another thread may have pushed an event whose `published`
+    /// increment this thread has not observed, and the queue-empty check is
+    /// not synchronized with that push. The predicate is only sound under
+    /// [`poll_quiescent`]'s two-pass ΣP-stability protocol; do not gate
+    /// anything on one isolated call.
     pub fn is_quiescent(&self) -> bool {
         if !self.is_async {
             return true;
+        }
+        if self.pipeline.is_halted() {
+            return self.settled();
         }
         let consumed = self.pipeline.metrics().events_consumed_count();
         let published = self.pipeline.metrics().events_published_count();
@@ -1291,7 +1358,9 @@ impl JunctionPerformanceMetrics {
         } else {
             0.0
         };
-        let drop_rate = if self.events_processed > 0 {
+        // Guard on processed + dropped: a junction that dropped everything it
+        // ever saw (processed == 0, dropped == K) must not score as healthy.
+        let drop_rate = if self.events_processed + self.events_dropped > 0 {
             self.events_dropped as f64 / (self.events_processed + self.events_dropped) as f64
         } else {
             0.0

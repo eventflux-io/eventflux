@@ -133,12 +133,10 @@ impl EventFluxManager {
     ) -> Result<Arc<EventFluxAppRuntime>, String> {
         // Load the configuration once for the reads below (get_config()
         // deep-clones the cached EventFluxConfig per call). A load failure
-        // fails app creation: starting a misconfigured engine with silent
-        // defaults is worse than a startup error.
-        let loaded_config = self
-            .get_config()
-            .await
-            .map_err(|e| format!("Failed to load configuration: {e}"))?;
+        // fails app creation — get_config's error is already self-describing —
+        // because starting a misconfigured engine with silent defaults is
+        // worse than a startup error.
+        let loaded_config = self.get_config().await?;
         let application_global = loaded_config.eventflux.application.as_ref();
 
         // Determine app name using config-based naming (not annotations)

@@ -208,6 +208,12 @@ pub enum EventFluxError {
     #[error("Send error: {message}")]
     SendError { message: String },
 
+    /// Events rejected because the target stream junction is shutting down.
+    /// Carries the rejected-event count so fire-and-forget senders (query
+    /// output edges) can account the loss instead of swallowing it silently.
+    #[error("Stream junction is shutting down ({count} event(s) rejected)")]
+    ShutdownRejected { count: usize },
+
     /// Processor errors
     #[error("Processor error: {message}")]
     ProcessorError {
@@ -402,6 +408,9 @@ impl EventFluxError {
 
             // Channel send errors (receiver may become available)
             EventFluxError::SendError { .. } => true,
+
+            // Shutdown is terminal for this runtime run — retrying cannot succeed
+            EventFluxError::ShutdownRejected { .. } => false,
 
             // Processor errors (may be transient depending on state)
             EventFluxError::ProcessorError { .. } => true,

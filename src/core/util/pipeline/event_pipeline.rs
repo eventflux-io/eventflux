@@ -49,9 +49,15 @@ pub struct PipelineConfig {
     /// **Important**: This setting is read by StreamJunction to spawn N consumer threads.
     /// All consumers share the same lock-free queue, naturally load-balancing via competition.
     pub consumer_threads: usize,
-    /// Batch size for consumer processing
+    /// Batch size for consumer processing (currently unused — consume() is
+    /// strictly per-event)
     pub batch_size: usize,
-    /// Enable detailed metrics collection
+    /// Enable detailed metrics collection.
+    ///
+    /// NOTE: currently unread — counters always record. If this is ever
+    /// honored, events_published/events_consumed MUST keep recording
+    /// unconditionally: the shutdown drain's quiescence predicate
+    /// (`published == consumed`) depends on them.
     pub enable_metrics: bool,
 }
 
@@ -159,7 +165,15 @@ impl EventPipeline {
         // Attempt to enqueue - this is the main bottleneck
         match self.event_queue.push(pooled_event) {
             Ok(()) => {
-                // Success - update metrics
+                // Success - update metrics.
+                // NOTE: the push lands BEFORE events_published increments, so
+                // "queue empty && published == consumed" can be observed while
+                // an event is physically queued. Quiescence detection stays
+                // sound only because every in-system publisher is covered by
+                // another counter the drain reads first (a dispatch's
+                // in_flight guard, or a consumer's withheld consumed
+                // increment) — an uncovered publisher thread parked between
+                // these two lines is invisible to the drain.
                 let latency = start_time.elapsed();
                 self.metrics.record_publish_success(latency);
                 PipelineResult::Success { sequence }
@@ -179,17 +193,19 @@ impl EventPipeline {
         self.publish(event)
     }
 
-    /// Publish a batch of events for higher throughput
+    /// Publish a batch of events for higher throughput.
+    ///
+    /// Every input event gets a result: once shutdown lands mid-batch,
+    /// publish() returns `Shutdown` for each remaining event (a cheap flag
+    /// check), which callers rely on to count rejected events. An early
+    /// `break` here would leave the tail with no result at all — callers
+    /// counting failures from results would report the batch as successful
+    /// while silently losing the unpublished remainder.
     pub fn publish_batch(&self, events: Vec<StreamEvent>) -> Vec<PipelineResult> {
         let mut results = Vec::with_capacity(events.len());
 
         for event in events {
             results.push(self.publish(event));
-
-            // Early exit on shutdown
-            if self.shutdown.load(Ordering::Acquire) {
-                break;
-            }
         }
 
         results
@@ -418,8 +434,13 @@ impl Default for PipelineBuilder {
     }
 }
 
-unsafe impl Send for EventPipeline {}
-unsafe impl Sync for EventPipeline {}
+// Send + Sync are auto-derived from the fields; a manual `unsafe impl` here
+// would silence the compiler if a future field (e.g. a pool optimization
+// using raw pointers) stopped being thread-safe.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<EventPipeline>()
+};
 
 #[cfg(test)]
 mod tests {
@@ -526,5 +547,61 @@ mod tests {
 
         let processed = processed_events.lock().unwrap();
         assert_eq!(processed.len(), 10);
+    }
+
+    /// A handler error must still count the popped event as consumed (the
+    /// shutdown drain's `published == consumed` predicate depends on it) and
+    /// return its slot to the pool. Reverting to error-without-accounting
+    /// would wedge every later drain at the full timeout and leak a pool slot
+    /// per error.
+    #[test]
+    fn test_consume_error_counts_event_and_releases_slot() {
+        let pipeline = PipelineBuilder::new().with_capacity(64).build().unwrap();
+
+        assert!(matches!(
+            pipeline.publish(create_test_event(1)),
+            PipelineResult::Success { .. }
+        ));
+        let result = pipeline.consume(|_event, _seq| Err("boom".to_string()));
+        assert!(result.is_err(), "handler error must propagate");
+
+        let metrics = pipeline.metrics();
+        assert_eq!(
+            metrics.events_consumed_count(),
+            1,
+            "errored event left the queue and must count as consumed"
+        );
+        assert_eq!(metrics.snapshot().processing_errors, 1);
+        assert_eq!(
+            metrics.events_published_count(),
+            metrics.events_consumed_count(),
+            "drain predicate must be balanced after a handler error"
+        );
+        assert!(pipeline.is_empty());
+
+        // The slot must be reusable: publish + consume again succeeds.
+        assert!(matches!(
+            pipeline.publish(create_test_event(2)),
+            PipelineResult::Success { .. }
+        ));
+        pipeline.shutdown();
+        let processed = pipeline.consume(|_event, _seq| Ok(())).unwrap();
+        assert_eq!(processed, 1);
+    }
+
+    /// Once shutdown lands mid-batch, every remaining event must still get a
+    /// `Shutdown` result — an early exit would leave the tail unreported and
+    /// callers would count the batch as fully successful.
+    #[test]
+    fn test_publish_batch_reports_shutdown_for_full_tail() {
+        let pipeline = PipelineBuilder::new().with_capacity(64).build().unwrap();
+        pipeline.shutdown();
+
+        let events: Vec<_> = (0..5).map(create_test_event).collect();
+        let results = pipeline.publish_batch(events);
+        assert_eq!(results.len(), 5, "every event needs a result");
+        assert!(results
+            .iter()
+            .all(|r| matches!(r, PipelineResult::Shutdown)));
     }
 }

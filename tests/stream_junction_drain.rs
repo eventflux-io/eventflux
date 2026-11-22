@@ -259,3 +259,45 @@ fn test_wait_quiescent_zero_timeout_on_idle_junction() {
         "an idle junction must be quiescent with a zero timeout"
     );
 }
+
+/// Restarting while a consumer from the previous run is still wedged inside a
+/// subscriber must be refused (clearing the sticky flags would revive the
+/// straggler alongside the fresh set, leaking a consumer set per restart) and
+/// must succeed once the previous run settles.
+#[test]
+fn test_restart_refused_while_previous_run_unsettled() {
+    use eventflux::core::stream::stream_junction::poll_settled;
+
+    // Single-threaded executor → inline processing: the consumer itself sits
+    // inside the 4s handler, keeping active_consumers non-zero.
+    let executor = Arc::new(ExecutorService::new("wedged-restart-test", 1));
+    let (junction, _processor) = make_junction(Some(executor), Duration::from_secs(4));
+
+    junction
+        .send_events(vec![Event::new_with_data(1, vec![AttributeValue::Int(1)])])
+        .unwrap();
+    // Give a consumer time to pop the event and enter the handler.
+    thread::sleep(Duration::from_millis(200));
+    junction.stop_processing();
+
+    let err = junction
+        .restart_processing()
+        .expect_err("restart must be refused while a consumer is wedged in a handler");
+    assert!(
+        err.contains("not settled"),
+        "refusal must explain the unsettled previous run, got: {err}"
+    );
+
+    // Once the handler finishes and the consumers exit, the retry succeeds.
+    assert!(
+        poll_settled(
+            &[junction.drain_handle()],
+            std::time::Instant::now() + Duration::from_secs(10),
+        ),
+        "previous run must settle once the handler returns"
+    );
+    junction
+        .restart_processing()
+        .expect("retry after settling should succeed");
+    assert!(junction.wait_quiescent(Duration::from_secs(1)));
+}
