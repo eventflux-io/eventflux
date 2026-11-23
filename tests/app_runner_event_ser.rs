@@ -25,14 +25,13 @@ use eventflux::core::event::stream::stream_event::StreamEvent;
 use eventflux::core::event::value::AttributeValue;
 use eventflux::core::util::{from_bytes, to_bytes};
 
-// TODO: NOT PART OF M1 SQL TESTING - Event serialization is core functionality but test uses old syntax
-// This test is for event serialization/deserialization which is core runtime functionality.
-// However, it currently uses old EventFluxQL syntax ("define stream") which is no longer supported by AppRunner.
-// The test should be rewritten to either:
-// 1. Use SQL syntax (CREATE STREAM), or
-// 2. Test event serialization without going through the parser (direct Event construction)
-// Event serialization IS important for M1 (needed for state management), but the test itself
-// is not about SQL parsing, so it's disabled pending refactoring.
+// TODO: NOT PART OF M1 SQL TESTING. Event serialization is core runtime behaviour,
+// but this test uses the old EventFluxQL syntax ("define stream"), which AppRunner no
+// longer supports. Rewrite it to either
+// 1. use SQL syntax (CREATE STREAM), or
+// 2. test serialization without the parser by building Events directly.
+// Serialization IS important for M1 because state management needs it. The test is not
+// about SQL parsing, so it stays ignored until it is rewritten.
 #[tokio::test]
 #[ignore = "Event serialization test - needs refactoring for SQL syntax"]
 async fn test_clone_and_serialize_stream_event() {
@@ -85,14 +84,9 @@ async fn test_serialize_state_event() {
     );
 }
 
-// TODO: NOT PART OF M1 SQL TESTING - Event serialization is core functionality but test uses old syntax
-// This test is for event serialization/deserialization which is core runtime functionality.
-// However, it currently uses old EventFluxQL syntax ("define stream") which is no longer supported by AppRunner.
-// The test should be rewritten to either:
-// 1. Use SQL syntax (CREATE STREAM), or
-// 2. Test event serialization without going through the parser (direct Event construction)
-// Event serialization IS important for M1 (needed for state management), but the test itself
-// is not about SQL parsing, so it's disabled pending refactoring.
+// TODO: NOT PART OF M1 SQL TESTING. Ignored for the same reason as the test above.
+// It uses the old "define stream" syntax and should be rewritten with CREATE STREAM or
+// without the parser.
 #[tokio::test]
 #[ignore = "Event serialization test - needs refactoring for SQL syntax"]
 async fn clone_and_serialize_events() {

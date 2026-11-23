@@ -26,11 +26,11 @@ use std::thread::sleep;
 use std::time::Duration;
 
 // ============================================================================
-// API-BASED TRIGGER TESTS (Working)
+// TRIGGERS BUILT WITH THE API
 // ============================================================================
 
-/// Start trigger fires once at application start
-/// Reference: TriggerTestCase.java - testStartTrigger
+/// Start trigger fires once when the app starts
+/// Reference: TriggerTestCase.java testStartTrigger
 #[tokio::test]
 async fn trigger_test1_start() {
     let mut app = EventFluxApp::new("TriggerApp".to_string());
@@ -40,12 +40,11 @@ async fn trigger_test1_start() {
     let runner = AppRunner::new_from_api(app, "StartTriggerStream").await;
     sleep(Duration::from_millis(50));
     let out = runner.shutdown();
-    // Start trigger should emit exactly once
     assert_eq!(out.len(), 1);
 }
 
-/// Periodic trigger fires at regular intervals
-/// Reference: TriggerTestCase.java - testPeriodicTrigger
+/// Periodic trigger fires every 50 ms
+/// Reference: TriggerTestCase.java testPeriodicTrigger
 #[tokio::test]
 async fn trigger_test2_periodic() {
     let mut app = EventFluxApp::new("PeriodicApp".to_string());
@@ -56,12 +55,12 @@ async fn trigger_test2_periodic() {
     let runner = AppRunner::new_from_api(app, "PeriodicStream").await;
     sleep(Duration::from_millis(130));
     let out = runner.shutdown();
-    // Should emit at least 2 events (at 50ms and 100ms)
+    // At least 2 events in 130 ms, at 50 ms and 100 ms
     assert!(out.len() >= 2);
 }
 
-/// Cron trigger fires at cron schedule
-/// Reference: TriggerTestCase.java - testCronTrigger
+/// Cron trigger fires every second
+/// Reference: TriggerTestCase.java testCronTrigger
 #[tokio::test]
 async fn trigger_test3_cron() {
     let mut app = EventFluxApp::new("CronApp".to_string());
@@ -71,11 +70,12 @@ async fn trigger_test3_cron() {
     let runner = AppRunner::new_from_api(app, "CronStream").await;
     sleep(Duration::from_millis(2200));
     let out = runner.shutdown();
-    // Should emit at least 2 events (each second)
+    // At least 2 events in 2.2 seconds, one per second
     assert!(out.len() >= 2);
 }
 
-/// Multiple triggers in one app
+/// A start trigger and a periodic trigger in one app. Only the start trigger
+/// stream is collected.
 #[tokio::test]
 async fn trigger_test4_multiple() {
     let mut app = EventFluxApp::new("MultiTriggerApp".to_string());
@@ -89,11 +89,11 @@ async fn trigger_test4_multiple() {
     let runner = AppRunner::new_from_api(app, "StartStream").await;
     sleep(Duration::from_millis(50));
     let out = runner.shutdown();
-    // Start trigger should emit once
+    // The periodic trigger must not add events to the start trigger stream
     assert_eq!(out.len(), 1);
 }
 
-/// Periodic trigger with longer interval
+/// Periodic trigger with a 100 ms interval
 #[tokio::test]
 async fn trigger_test5_long_interval() {
     let mut app = EventFluxApp::new("LongIntervalApp".to_string());
@@ -104,15 +104,15 @@ async fn trigger_test5_long_interval() {
     let runner = AppRunner::new_from_api(app, "LongIntervalStream").await;
     sleep(Duration::from_millis(350));
     let out = runner.shutdown();
-    // Should emit at least 3 events (at 100ms, 200ms, 300ms)
+    // At least 3 events in 350 ms, at 100 ms, 200 ms and 300 ms
     assert!(out.len() >= 3);
 }
 
 // ============================================================================
-// SQL-BASED TRIGGER TESTS
+// TRIGGERS DEFINED IN SQL
 // ============================================================================
 
-/// SQL-based start trigger
+/// Start trigger defined in SQL
 #[tokio::test]
 async fn trigger_test6_sql_start() {
     let app = "CREATE TRIGGER StartTrigger AT START;";
@@ -122,7 +122,7 @@ async fn trigger_test6_sql_start() {
     assert_eq!(out.len(), 1);
 }
 
-/// SQL-based periodic trigger
+/// Periodic trigger defined in SQL
 #[tokio::test]
 async fn trigger_test7_sql_periodic() {
     let app = "CREATE TRIGGER PeriodicTrigger AT EVERY 50 MILLISECONDS;";
@@ -132,7 +132,7 @@ async fn trigger_test7_sql_periodic() {
     assert!(out.len() >= 2);
 }
 
-/// SQL-based cron trigger
+/// Cron trigger defined in SQL
 #[tokio::test]
 async fn trigger_test8_sql_cron() {
     let app = "CREATE TRIGGER CronTrigger AT CRON '*/1 * * * * *';";
@@ -142,8 +142,8 @@ async fn trigger_test8_sql_cron() {
     assert!(out.len() >= 2);
 }
 
-/// Trigger with query that processes trigger events
-/// Tests "SELECT FROM TriggerName" pattern where trigger events flow through the query pipeline.
+/// A query reads from a trigger with `SELECT ... FROM HeartbeatTrigger`, so trigger
+/// events flow through the query into outputStream.
 #[tokio::test]
 async fn trigger_test9_with_query() {
     let app = "\
@@ -157,7 +157,8 @@ async fn trigger_test9_with_query() {
     assert!(out.len() >= 2);
 }
 
-/// Trigger for batch processing
+/// A periodic trigger next to a windowed SUM query. The query reads only from
+/// inputStream, not from the trigger.
 #[tokio::test]
 async fn trigger_test10_batch_processing() {
     let app = "\
@@ -169,9 +170,10 @@ async fn trigger_test10_batch_processing() {
     let runner = AppRunner::new(app, "outputStream").await;
     sleep(Duration::from_millis(50));
     let out = runner.shutdown();
-    // No data was sent to inputStream. The sliding time window should produce
-    // no output because no events entered the window.
-    // Sleep (50ms) is shorter than the trigger interval (100ms) to minimize race risk.
+    // No data was sent to inputStream, so the sliding time window gets no events
+    // and must produce no output.
+    // The 50 ms sleep is shorter than the 100 ms trigger interval to lower the
+    // chance of a race.
     assert!(
         out.is_empty(),
         "Expected no output since no data was sent to inputStream, got {} events",

@@ -15,11 +15,12 @@
  * limitations under the License.
  */
 
-//! Phase 2b.1: Basic Two-Step Pattern Chains
+//! Phase 2b.1. Basic two step pattern chains
 //!
-//! Tests for basic pattern chaining: A -> B
+//! Tests for basic pattern chaining, A -> B.
 //!
-//! Reference: feat/pattern_processing/STATE_MACHINE_DESIGN.md Phase 2b.1
+//! Follows Phase 2b.1 of feat/pattern_processing/STATE_MACHINE_DESIGN.md. That doc
+//! is no longer in the repo.
 
 mod common;
 
@@ -27,7 +28,7 @@ use common::pattern_chain_test_utils::*;
 use eventflux::core::event::stream::stream_event::StreamEvent;
 use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 
-// Test 1: Simple single-step pattern first (A{1})
+// Test 1. A simple single step pattern first, A{1}
 #[test]
 fn test_2b1_0_single_step() {
     let (mut chain, collector) = build_pattern_chain(
@@ -48,7 +49,7 @@ fn test_2b1_0_single_step() {
 
     println!("Outputs: {}", collector.get_outputs().len());
 
-    // For a single step pattern, output should be generated immediately
+    // A single step pattern produces output right away
     let outputs = collector.get_outputs();
     assert_eq!(
         outputs.len(),
@@ -57,7 +58,7 @@ fn test_2b1_0_single_step() {
     );
 }
 
-// Test 2: A -> B, events [A, B] → MATCH
+// Test 2. A -> B, events [A, B] → MATCH
 #[test]
 fn test_2b1_1_simple_two_step() {
     let (mut chain, collector) = build_pattern_chain(
@@ -68,12 +69,11 @@ fn test_2b1_1_simple_two_step() {
         StateType::Sequence,
     );
 
-    // For a two-step sequence A -> B:
+    // For a two step sequence A -> B
     // - Event A goes to processor[0] (PreA)
     // - Event B goes to processor[1] (PreB)
-    // This mimics Java's ProcessStreamReceiver routing
+    // This copies the routing of ProcessStreamReceiver in the Java version.
 
-    // Send event A to processor 0
     let event_a = create_stream_event(1000);
     println!("\n=== Sending event A (timestamp 1000) to processor[0] ===");
     println!(
@@ -90,20 +90,19 @@ fn test_2b1_1_simple_two_step() {
         chain.pre_processors[0].lock().unwrap().has_state_changed()
     );
 
-    // CRITICAL: After PreA processes, update all processors to propagate forwarded states
-    // PostA will have called add_state() on PreB, adding to PreB's new_list
-    // We need to move that from new_list -> pending_list
+    // CRITICAL. After PreA runs, update every processor so forwarded states move on.
+    // PostA has called add_state() on PreB, which put the state in PreB's new_list.
+    // update_state moves it from new_list to pending_list.
     chain.update_state();
     println!(
         "  After update_state (propagates forwarded states), outputs = {}",
         collector.get_outputs().len()
     );
 
-    // Check if PreB received forwarded state from PostA
+    // PreB should now hold the StateEvent forwarded by PostA in its pending_list.
+    // This is only printed, not asserted.
     println!("\n=== Checking PreB state ===");
-    // PreB should now have the forwarded StateEvent in its pending_list
 
-    // Send event B to processor 1
     let event_b = create_stream_event(2000);
     println!("\n=== Sending event B (timestamp 2000) to processor[1] ===");
     println!(
@@ -125,7 +124,7 @@ fn test_2b1_1_simple_two_step() {
         collector.get_outputs().len()
     );
 
-    // Verify output: Should have exactly 1 StateEvent with both A and B
+    // Exactly 1 StateEvent holding both A and B
     let outputs = collector.get_outputs();
     println!("Final outputs count: {}", outputs.len());
     assert_eq!(outputs.len(), 1, "Expected exactly 1 output event");
@@ -162,7 +161,7 @@ fn test_2b1_1_simple_two_step() {
     );
 }
 
-// Test 3: A{2} -> B{2}, events [A, A, B, B] → MATCH
+// Test 3. A{2} -> B{2}, events [A, A, B, B] → MATCH
 #[test]
 fn test_2b1_2_count_quantifiers() {
     let (mut chain, collector) = build_pattern_chain(
@@ -215,7 +214,7 @@ fn test_2b1_2_count_quantifiers() {
     chain.update_state();
     println!("  After B2, outputs = {}", collector.get_outputs().len());
 
-    // Verify output: Should have exactly 1 StateEvent with both A and B chains
+    // Exactly 1 StateEvent holding both the A chain and the B chain
     let outputs = collector.get_outputs();
     println!("Final outputs count: {}", outputs.len());
     assert_eq!(outputs.len(), 1, "Expected exactly 1 output event");
@@ -264,7 +263,7 @@ fn test_2b1_2_count_quantifiers() {
     assert_eq!(event_b2.timestamp, 4000, "Expected second B timestamp 4000");
 }
 
-// Test 4: A -> B, events [B, A] → FAIL (wrong order)
+// Test 4. A -> B, events [B, A] → FAIL, because the order is wrong
 #[test]
 fn test_2b1_3_wrong_order_fails() {
     let (mut chain, collector) = build_pattern_chain(
@@ -277,7 +276,7 @@ fn test_2b1_3_wrong_order_fails() {
 
     println!("\n=== Testing wrong order: B before A ===");
 
-    // Send B first (should fail - no pending state in PreB)
+    // Send B first. It cannot match because PreB has no pending state.
     let event_b = create_stream_event(1000);
     println!("Sending B (timestamp 1000) to processor[1]");
     chain.pre_processors[1]
@@ -287,7 +286,7 @@ fn test_2b1_3_wrong_order_fails() {
     chain.update_state();
     println!("  After B, outputs = {}", collector.get_outputs().len());
 
-    // Send A second (too late - sequence is broken)
+    // Send A second. It is too late because the sequence is broken.
     let event_a = create_stream_event(2000);
     println!("Sending A (timestamp 2000) to processor[0]");
     chain.pre_processors[0]
@@ -297,15 +296,15 @@ fn test_2b1_3_wrong_order_fails() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Verify no output (wrong order should not match in sequence)
+    // No output, because the wrong order must not match a sequence
     let outputs = collector.get_outputs();
     println!("Final outputs count: {}", outputs.len());
     assert_eq!(outputs.len(), 0, "Expected no output for wrong order");
 }
 
-// Test 5: A -> B, events [A, C] → FAIL (wrong stream)
-// NOTE: In our test setup, we manually route events to processors,
-// so this test validates that sending to wrong processor produces no output
+// Test 5. A -> B, events [A, C] → FAIL, because C is the wrong stream.
+// This setup routes events to processors by hand, so the test checks that an
+// event sent to the wrong processor produces no output.
 #[test]
 fn test_2b1_4_wrong_stream_fails() {
     let (mut chain, collector) = build_pattern_chain(
@@ -345,7 +344,7 @@ fn test_2b1_4_wrong_stream_fails() {
     assert_eq!(outputs.len(), 0, "Expected no output for wrong stream");
 }
 
-// Test 6: A -> B, events [A, A] → FAIL (expecting B, got A in Sequence mode)
+// Test 6. A -> B, events [A, A] → FAIL, Sequence mode expected B but got A
 #[test]
 fn test_2b1_5_expecting_b_got_a() {
     let (mut chain, collector) = build_pattern_chain(
@@ -378,7 +377,7 @@ fn test_2b1_5_expecting_b_got_a() {
     chain.update_state();
     println!("  After A2, outputs = {}", collector.get_outputs().len());
 
-    // Verify no output (second A doesn't match B requirement)
+    // No output, because the second A does not match the B step
     let outputs = collector.get_outputs();
     println!("Final outputs count: {}", outputs.len());
     assert_eq!(
@@ -388,7 +387,7 @@ fn test_2b1_5_expecting_b_got_a() {
     );
 }
 
-// Test 7: A{1,3} -> B{2}, events [A, A, B, B] → MATCH
+// Test 7. A{1,3} -> B{2}, events [A, A, B, B] → MATCH
 #[test]
 fn test_2b1_6_range_quantifier() {
     let (mut chain, collector) = build_pattern_chain(
@@ -435,9 +434,9 @@ fn test_2b1_6_range_quantifier() {
         .process(Some(Box::new(event_b2)));
     chain.update_state();
 
-    // Verify output: Range quantifiers produce multiple matches
-    // A{1,3} forwards states for A{1} and A{2} (both within 1-3 range)
-    // So we get 2 outputs: one for A{1}->B{2} and one for A{2}->B{2}
+    // Range quantifiers can produce several matches. A{1,3} forwards states for
+    // A{1} and A{2}, both inside the 1 to 3 range, so expect up to 2 outputs,
+    // one for A{1}->B{2} and one for A{2}->B{2}. At least 1 is required.
     let outputs = collector.get_outputs();
     println!("Final outputs count: {}", outputs.len());
     assert!(!outputs.is_empty(), "Expected at least 1 output event");

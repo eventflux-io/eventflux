@@ -17,9 +17,9 @@
 
 //! Pattern SQL Integration Tests
 //!
-//! Tests the complete pipeline: SQL pattern parsing → conversion → Query API
-//! These tests verify that patterns parsed from SQL correctly produce
-//! StateInputStream structures that can be used by the pattern runtime.
+//! Tests the whole path from SQL pattern parsing → conversion → Query API.
+//! Patterns parsed from SQL must produce the StateInputStream structures that
+//! the pattern runtime uses.
 
 use eventflux::query_api::definition::attribute::Type as AttrType;
 use eventflux::query_api::definition::StreamDefinition;
@@ -415,8 +415,8 @@ fn test_e2e_within_events_unsupported() {
 
     let catalog = setup_catalog();
 
-    // Pattern: e1=AStream -> e2=BStream WITHIN 100 EVENTS
-    // Note: WITHIN EVENTS is not yet supported - should return error
+    // Pattern e1=AStream -> e2=BStream WITHIN 100 EVENTS.
+    // WITHIN EVENTS is not supported yet, so conversion must return an error.
     let pattern = sequence(stream("e1", "AStream"), stream("e2", "BStream"));
     let within = WithinConstraint::EventCount(100);
 
@@ -427,7 +427,6 @@ fn test_e2e_within_events_unsupported() {
         &catalog,
     );
 
-    // WITHIN EVENTS is not yet supported - should return error
     assert!(result.is_err(), "WITHIN EVENTS should be unsupported");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -497,7 +496,7 @@ fn test_e2e_complex_pattern() {
     let catalog = setup_catalog();
 
     // Complex pattern: EVERY((e1=A AND e2=B) -> e3=C{2,3})
-    // Note: Logical operators require Stream operands (not Count)
+    // Logical operators need Stream operands, not Count
     let and_pattern = PatternExpression::Logical {
         left: Box::new(stream("e1", "AStream")),
         op: PatternLogicalOp::And,
@@ -653,7 +652,7 @@ fn test_e2e_array_access_invalid_format() {
 
     let catalog = setup_catalog();
 
-    // Missing attribute after subscript: e1[0] (without .price)
+    // No attribute after the subscript, e1[0] without .price
     let root = SqlExpr::Identifier(Ident::new("e1"));
     let access_chain = vec![
         AccessExpr::Subscript(Subscript::Index {
@@ -677,10 +676,10 @@ fn test_e2e_array_access_invalid_format() {
 }
 
 // ============================================================================
-// PHASE 5.9: Real-World Pattern Scenarios
+// PHASE 5.9: Real World Pattern Scenarios
 // ============================================================================
 
-/// Setup catalog with security-related streams for brute force detection
+/// Builds a catalog with login streams for brute force detection.
 fn setup_security_catalog() -> SqlCatalog {
     let mut catalog = SqlCatalog::new();
 
@@ -714,7 +713,7 @@ fn setup_security_catalog() -> SqlCatalog {
     catalog
 }
 
-/// Setup catalog with trading-related streams
+/// Builds a catalog with trading streams.
 fn setup_trading_catalog() -> SqlCatalog {
     let mut catalog = SqlCatalog::new();
 
@@ -749,7 +748,7 @@ fn setup_trading_catalog() -> SqlCatalog {
 #[test]
 fn test_e2e_brute_force_login_detection_pattern() {
     // Pattern: e1=FailedLoginStream{3,5} -> e2=SuccessLoginStream
-    // This tests: count quantifiers + sequence + multi-stream pattern
+    // Covers count quantifiers, sequence and a pattern over two streams
 
     let catalog = setup_security_catalog();
 
@@ -783,7 +782,7 @@ fn test_e2e_brute_force_login_detection_pattern() {
                     StateElement::Count(count_elem) => {
                         assert_eq!(count_elem.min_count, 3);
                         assert_eq!(count_elem.max_count, 5);
-                        // Count element exists with correct bounds - stream is embedded in it
+                        // The Count element has the right bounds. The stream is inside it.
                     }
                     other => panic!("Expected Count state element, got {:?}", other),
                 }
@@ -851,7 +850,7 @@ fn test_e2e_brute_force_with_within_time() {
 #[test]
 fn test_e2e_trading_signal_pattern() {
     // Pattern: e1=StockStream{2,4} -> e2=AlertStream
-    // This tests: count quantifiers on stock events followed by alert
+    // Covers count quantifiers on stock events followed by an alert
 
     let catalog = setup_trading_catalog();
 
@@ -885,7 +884,7 @@ fn test_e2e_trading_signal_pattern() {
                     StateElement::Count(count_elem) => {
                         assert_eq!(count_elem.min_count, 2);
                         assert_eq!(count_elem.max_count, 4);
-                        // Count element exists with correct bounds - stream is embedded in it
+                        // The Count element has the right bounds. The stream is inside it.
                     }
                     other => panic!("Expected Count state element, got {:?}", other),
                 }
@@ -906,7 +905,7 @@ fn test_e2e_trading_signal_pattern() {
 #[test]
 fn test_e2e_trading_signal_with_every() {
     // Pattern: EVERY(StockStream{2,4} -> AlertStream)
-    // This tests: EVERY wrapper around the trading pattern
+    // Covers EVERY wrapped around the trading pattern
 
     let catalog = setup_trading_catalog();
 
@@ -959,7 +958,7 @@ fn test_e2e_indexed_access_in_brute_force_pattern() {
 
     let catalog = setup_security_catalog();
 
-    // Test e1[0].timestamp - first failed login timestamp
+    // e1[0].timestamp is the time of the first failed login
     let root = SqlExpr::Identifier(Ident::new("e1"));
     let access_chain = vec![
         AccessExpr::Subscript(Subscript::Index {
@@ -989,7 +988,7 @@ fn test_e2e_indexed_access_in_brute_force_pattern() {
         other => panic!("Expected IndexedVariable, got {:?}", other),
     }
 
-    // Test e1[last].timestamp - last failed login timestamp
+    // e1[last].timestamp is the time of the last failed login
     let root = SqlExpr::Identifier(Ident::new("e1"));
     let access_chain = vec![
         AccessExpr::Subscript(Subscript::Index {
@@ -1028,7 +1027,7 @@ fn test_e2e_indexed_access_in_trading_pattern() {
 
     let catalog = setup_trading_catalog();
 
-    // Test e1[0].price - entry price
+    // e1[0].price is the entry price
     let root = SqlExpr::Identifier(Ident::new("e1"));
     let access_chain = vec![
         AccessExpr::Subscript(Subscript::Index {
@@ -1054,7 +1053,7 @@ fn test_e2e_indexed_access_in_trading_pattern() {
         other => panic!("Expected IndexedVariable, got {:?}", other),
     }
 
-    // Test e1[last].price - exit price
+    // e1[last].price is the exit price
     let root = SqlExpr::Identifier(Ident::new("e1"));
     let access_chain = vec![
         AccessExpr::Subscript(Subscript::Index {

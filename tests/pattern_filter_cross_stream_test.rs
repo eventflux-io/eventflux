@@ -16,7 +16,7 @@
  */
 
 // tests/pattern_filter_cross_stream_test.rs
-// Tests for pattern filter conditions with cross-stream references
+// Tests for pattern filter conditions that refer to events from other streams
 
 use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
 use eventflux::core::config::eventflux_context::EventFluxContext;
@@ -137,7 +137,7 @@ fn test_filter_with_cross_stream_reference_simple() {
     );
 }
 
-/// Test cross-stream reference with percentage calculation
+/// Test a reference to another stream inside a percentage calculation
 #[test]
 fn test_filter_cross_stream_percentage() {
     // Pattern: e1=StockPrice -> e2=StockPrice[price > e1.price * 1.1]
@@ -219,7 +219,7 @@ fn test_filter_cross_stream_percentage() {
     );
 }
 
-/// Test cross-stream reference with String equality
+/// Test a reference to another stream in a String equality check
 #[test]
 fn test_filter_cross_stream_string_equality() {
     // Pattern: e1=Login -> e2=Activity[userId == e1.userId]
@@ -244,7 +244,7 @@ fn test_filter_cross_stream_string_equality() {
         Arc::clone(&query_ctx),
     );
 
-    // Filter: userId == e1.userId
+    // Filter is userId == e1.userId
     e2_processor.set_condition(|state_event| {
         if let Some(e1) = state_event.get_stream_event(0) {
             if let Some(AttributeValue::String(e1_user)) = e1.before_window_data.first() {
@@ -300,7 +300,7 @@ fn test_filter_cross_stream_string_equality() {
     );
 }
 
-/// Test three-stream pattern with cross-stream references
+/// Test a three stream pattern whose filter refers to both earlier streams
 #[test]
 fn test_filter_cross_stream_three_events() {
     // Pattern: e1=Event -> e2=Event -> e3=Event[value > e1.value AND value > e2.value]
@@ -418,10 +418,10 @@ fn test_filter_cross_stream_three_events() {
     );
 }
 
-/// Test cross-stream reference with NULL handling
+/// Test a reference to another stream when that event is missing
 #[test]
 fn test_filter_cross_stream_null_handling() {
-    // If e1 doesn't exist in StateEvent, filter should return false
+    // If e1 is not in the StateEvent, the filter must return false
 
     let (app_ctx, query_ctx) = create_test_context();
 
@@ -433,7 +433,7 @@ fn test_filter_cross_stream_null_handling() {
         Arc::clone(&query_ctx),
     );
 
-    // Filter references e1, but we'll pass StateEvent without e1
+    // The filter refers to e1, but the StateEvent passed in has no e1
     e2_processor.set_condition(|state_event| {
         if let Some(e1) = state_event.get_stream_event(0) {
             if let Some(AttributeValue::Float(e1_price)) = e1.before_window_data.first() {
@@ -463,11 +463,11 @@ fn test_filter_cross_stream_null_handling() {
     );
 }
 
-/// Test that simple filters without cross-stream references still work
+/// Test that simple filters that do not refer to other streams still work
 #[test]
 fn test_filter_without_cross_stream_reference() {
     // Pattern: e1=Event[value > 100]
-    // Simple filter that doesn't reference other streams
+    // Simple filter that does not refer to other streams
 
     let (app_ctx, query_ctx) = create_test_context();
 

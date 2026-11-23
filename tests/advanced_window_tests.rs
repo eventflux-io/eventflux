@@ -15,13 +15,13 @@
  * limitations under the License.
  */
 //
-// Comprehensive tests for the 6 advanced window types:
-// 1. unique(attr) - Keep only latest event per unique key
-// 2. firstUnique(attr) - Keep only first occurrence per unique key
-// 3. delay(duration) - Delay event emission
-// 4. expression('cond') - Dynamic window based on expression
-// 5. frequent(n) - Track most frequent values (Misra-Gries algorithm)
-// 6. lossyFrequent(s,e) - Approximate frequent item tracking (Lossy Counting)
+// Tests for the 6 advanced window types
+// 1. unique(attr) keeps only the latest event for each key
+// 2. firstUnique(attr) keeps only the first event for each key
+// 3. delay(duration) holds events back before emitting them
+// 4. expression('cond') sizes the window by an expression
+// 5. frequent(n) tracks the most frequent values with the Misra-Gries algorithm
+// 6. lossyFrequent(s,e) tracks frequent items approximately with Lossy Counting
 
 #[path = "common/mod.rs"]
 mod common;
@@ -65,7 +65,7 @@ async fn test_unique_window_basic() {
         ],
     );
 
-    // Second event for AAPL - should replace the first
+    // Second event for AAPL replaces the first
     runner.send(
         "StockStream",
         vec![
@@ -77,8 +77,8 @@ async fn test_unique_window_basic() {
 
     let results = runner.shutdown();
 
-    // Should have received 3 current events (each event is emitted when received)
-    // Plus 1 expired event (when second AAPL replaces first)
+    // Expected 3 current events, one per event received, plus 1 expired event when
+    // the second AAPL replaces the first. Only non empty output is asserted.
     assert!(!results.is_empty(), "Should have received events");
 }
 
@@ -102,7 +102,7 @@ async fn test_unique_window_replaces_old_event() {
         ],
     );
 
-    // Send AAPL again at $155 - should expire the $150 event
+    // AAPL again at $155 expires the $150 event
     runner.send(
         "StockStream",
         vec![
@@ -113,7 +113,8 @@ async fn test_unique_window_replaces_old_event() {
 
     let results = runner.shutdown();
 
-    // We should have received events - the second AAPL should trigger an expired + current
+    // The second AAPL should give an expired event and a current one. Only non empty
+    // output is asserted.
     assert!(
         !results.is_empty(),
         "Should have received at least one event"
@@ -187,7 +188,7 @@ async fn test_first_unique_window_basic() {
 
     let runner = AppRunner::new(app, "OutStream").await;
 
-    // First AAPL - should be kept
+    // First AAPL is kept
     runner.send(
         "StockStream",
         vec![
@@ -196,7 +197,7 @@ async fn test_first_unique_window_basic() {
         ],
     );
 
-    // Second AAPL - should be ignored
+    // Second AAPL is ignored
     runner.send(
         "StockStream",
         vec![
@@ -205,7 +206,7 @@ async fn test_first_unique_window_basic() {
         ],
     );
 
-    // First GOOG - should be kept
+    // First GOOG is kept
     runner.send(
         "StockStream",
         vec![
@@ -281,12 +282,11 @@ async fn test_delay_window_basic() {
         ],
     );
 
-    // Events are delayed, so immediate shutdown may not capture them
-    // This test validates the window doesn't crash
+    // Events are delayed, so an immediate shutdown may not see them.
+    // The test mainly checks that the window does not crash.
     let results = runner.shutdown();
 
-    // Due to delay, events may or may not have arrived depending on timing
-    // Main assertion is that the window works without errors
+    // Depending on timing the event may or may not have arrived
     assert!(results.len() <= 1, "Delayed events may or may not arrive");
 }
 
@@ -309,14 +309,13 @@ async fn test_delay_window_with_wait() {
         ],
     );
 
-    // Allow some time for the delay
+    // Wait 100 ms, twice the 50 ms delay
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let results = runner.shutdown();
 
-    // With 100ms wait after 50ms delay, event should have arrived
-    // (May still be timing dependent on slow systems)
-    // Just verify no crash
+    // The event should have arrived by now, but slow systems may still miss it.
+    // Nothing is asserted, the test only checks that nothing crashes.
     let _ = results;
 }
 
@@ -349,8 +348,8 @@ async fn test_expression_window_count_limit() {
 
     let results = runner.shutdown();
 
-    // Should have 5 current events and 2 expired events (when 4th and 5th arrive)
-    // Total events emitted = 5 current + 2 expired = 7
+    // Expected 5 current events and 2 expired ones, when the 4th and 5th arrive,
+    // so 7 in total. Only non empty output is asserted.
     assert!(!results.is_empty(), "Should have received events");
 }
 
@@ -471,7 +470,7 @@ async fn test_frequent_window_eviction() {
 
 #[tokio::test]
 async fn test_lossy_frequent_window_basic() {
-    // lossyFrequent(0.3, 0.1) - support threshold 30%, error bound 10%
+    // lossyFrequent(0.3, 0.1) means a 30% support threshold and a 10% error bound
     let app = "\
         CREATE STREAM StockStream (symbol STRING, price DOUBLE);\n\
         CREATE STREAM OutStream (symbol STRING, price DOUBLE);\n\
@@ -505,13 +504,14 @@ async fn test_lossy_frequent_window_basic() {
 
     let results = runner.shutdown();
 
-    // AAPL exceeds 30% threshold, should be emitted
+    // AAPL is over the 30% threshold, so it should be emitted. Only non empty
+    // output is asserted.
     assert!(!results.is_empty(), "Should have received frequent events");
 }
 
 #[tokio::test]
 async fn test_lossy_frequent_window_default_error() {
-    // lossyFrequent(0.2) - only support threshold, error defaults to support/10
+    // lossyFrequent(0.2) gives only the support threshold. The error defaults to support/10.
     let app = "\
         CREATE STREAM StockStream (symbol STRING, price DOUBLE);\n\
         CREATE STREAM OutStream (symbol STRING, price DOUBLE);\n\
@@ -521,7 +521,6 @@ async fn test_lossy_frequent_window_default_error() {
 
     let runner = AppRunner::new(app, "OutStream").await;
 
-    // Send events
     for i in 0..10 {
         runner.send(
             "StockStream",
@@ -534,7 +533,7 @@ async fn test_lossy_frequent_window_default_error() {
 
     let results = runner.shutdown();
 
-    // Should work without crash
+    // Nothing is asserted, the test only checks that nothing crashes
     let _ = results;
 }
 

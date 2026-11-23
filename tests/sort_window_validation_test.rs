@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-// Sort window VALIDATION tests - ensures proper error handling and input validation
-// These tests verify that the sort window correctly rejects invalid inputs
+// Sort window VALIDATION tests. The sort window must reject invalid parameters
+// and accept valid ones.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -149,7 +149,7 @@ async fn test_sort_window_accepts_valid_desc() {
     let _runner = AppRunner::new(app, "Out").await;
 }
 
-/// Test multi-attribute sorting with mixed order
+/// Test sorting on several attributes with mixed order
 #[tokio::test]
 async fn test_sort_window_multi_attribute_mixed_order() {
     let app = "\
@@ -160,7 +160,7 @@ async fn test_sort_window_multi_attribute_mixed_order() {
         FROM In \n\
         WINDOW('sort', 5, price, 'asc', volume, 'desc');\n";
 
-    // Should succeed - multi-attribute with different orders
+    // Several attributes with different orders must be accepted
     let _runner = AppRunner::new(app, "Out").await;
 }
 
@@ -175,11 +175,11 @@ async fn test_sort_window_default_order() {
         FROM In \n\
         WINDOW('sort', 2, value);\n";
 
-    // Should succeed and default to ascending
+    // Must be accepted. Ascending order is the default, though order is not checked here.
     let _runner = AppRunner::new(app, "Out").await;
 }
 
-/// Test case-insensitive order strings
+/// Test that order strings are not case sensitive
 #[tokio::test]
 async fn test_sort_window_case_insensitive_order() {
     let app = "\
@@ -190,7 +190,7 @@ async fn test_sort_window_case_insensitive_order() {
         FROM In \n\
         WINDOW('sort', 2, value, 'ASC');\n";
 
-    // Should succeed - 'ASC' should be accepted (case-insensitive)
+    // 'ASC' must be accepted because the order is not case sensitive
     let _runner = AppRunner::new(app, "Out").await;
 }
 

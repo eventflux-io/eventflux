@@ -34,7 +34,7 @@ async fn persist_restore_no_error() {
     runner.send("In", vec![AttributeValue::Int(1)]);
     let rev = runner.persist();
     runner.send("In", vec![AttributeValue::Int(2)]);
-    // restore should succeed
+    // restore must not panic
     runner.restore_revision(&rev);
     let _ = runner.shutdown();
     assert!(!rev.is_empty());
@@ -62,9 +62,9 @@ async fn length_window_restore_state() {
 // ============================================================================
 // Aggregator State Persistence Tests
 //
-// These tests verify the full persist → restore cycle for each aggregator.
-// Pattern: send events → persist → change state → restore → verify output
-// reflects the restored aggregator state (not the stale post-persist state).
+// These tests run the full persist → restore cycle for each aggregator.
+// Steps are send events → persist → change state → restore → check that the
+// output uses the restored aggregator state, not the newer state from before restore.
 // ============================================================================
 
 #[tokio::test]
@@ -79,12 +79,12 @@ async fn sum_aggregator_restore_state() {
     // sum=10, window=[10]
     runner.send("In", vec![AttributeValue::Int(10)]);
     let rev = runner.persist();
-    // Change state: sum=30 then sum=50
+    // Change state, sum=30 then sum=50
     runner.send("In", vec![AttributeValue::Int(20)]);
     runner.send("In", vec![AttributeValue::Int(30)]);
     // Restore to sum=10, window=[10]
     runner.restore_revision(&rev);
-    // After restore: sum should be 10+1=11, window=[10,1]
+    // After restore, sum is 10+1=11, window=[10,1]
     runner.send("In", vec![AttributeValue::Int(1)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Long(11)]);
@@ -102,13 +102,13 @@ async fn count_aggregator_restore_state() {
     // count=1, window=[10]
     runner.send("In", vec![AttributeValue::Int(10)]);
     let rev = runner.persist();
-    // Change state: count grows to 3
+    // Change state, count grows to 3
     runner.send("In", vec![AttributeValue::Int(20)]);
     runner.send("In", vec![AttributeValue::Int(30)]);
     runner.send("In", vec![AttributeValue::Int(40)]);
     // Restore to count=1, window=[10]
     runner.restore_revision(&rev);
-    // After restore: count should be 2, window=[10, 5]
+    // After restore, count is 2, window=[10, 5]
     runner.send("In", vec![AttributeValue::Int(5)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Long(2)]);
@@ -131,7 +131,7 @@ async fn avg_aggregator_restore_state() {
     runner.send("In", vec![AttributeValue::Int(200)]);
     // Restore to avg=10.0, window=[10]
     runner.restore_revision(&rev);
-    // After restore: avg=(10+20)/2=15.0, window=[10, 20]
+    // After restore, avg=(10+20)/2=15.0, window=[10, 20]
     runner.send("In", vec![AttributeValue::Int(20)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Double(15.0)]);
@@ -149,12 +149,12 @@ async fn min_aggregator_restore_state() {
     // min=10, window=[10]
     runner.send("In", vec![AttributeValue::Int(10)]);
     let rev = runner.persist();
-    // Change state: min becomes 1
+    // Change state, min becomes 1
     runner.send("In", vec![AttributeValue::Int(1)]);
     runner.send("In", vec![AttributeValue::Int(2)]);
     // Restore to min=10, window=[10]
     runner.restore_revision(&rev);
-    // After restore: min=min(10,20)=10, window=[10, 20]
+    // After restore, min=min(10,20)=10, window=[10, 20]
     runner.send("In", vec![AttributeValue::Int(20)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Int(10)]);
@@ -172,12 +172,12 @@ async fn max_aggregator_restore_state() {
     // max=10, window=[10]
     runner.send("In", vec![AttributeValue::Int(10)]);
     let rev = runner.persist();
-    // Change state: max becomes 999
+    // Change state, max becomes 999
     runner.send("In", vec![AttributeValue::Int(999)]);
     runner.send("In", vec![AttributeValue::Int(888)]);
     // Restore to max=10, window=[10]
     runner.restore_revision(&rev);
-    // After restore: max=max(10,5)=10, window=[10, 5]
+    // After restore, max=max(10,5)=10, window=[10, 5]
     runner.send("In", vec![AttributeValue::Int(5)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Int(10)]);
@@ -192,9 +192,9 @@ async fn stddev_aggregator_restore_state() {
         INSERT INTO Out\n\
         SELECT stddev(v) as sd FROM In WINDOW('length', 3);\n";
     let runner = AppRunner::new_with_store(app, "Out", Arc::clone(&store)).await;
-    // Welford: add 10 → count=1, mean=10, m2=0
+    // stddev uses Welford's running method. Add 10 → count=1, mean=10, m2=0
     runner.send("In", vec![AttributeValue::Int(10)]);
-    // Welford: add 20 → count=2, mean=15, m2=50, stddev=5.0
+    // Add 20 → count=2, mean=15, m2=50, stddev=5.0
     runner.send("In", vec![AttributeValue::Int(20)]);
     let rev = runner.persist();
     // Change state significantly
@@ -202,7 +202,7 @@ async fn stddev_aggregator_restore_state() {
     runner.send("In", vec![AttributeValue::Int(200)]);
     // Restore to count=2, mean=15, m2=50
     runner.restore_revision(&rev);
-    // After restore, add 30: count=3, mean=20, m2=200, stddev=sqrt(200/3)≈8.165
+    // After restore, add 30 → count=3, mean=20, m2=200, stddev=sqrt(200/3)≈8.165
     runner.send("In", vec![AttributeValue::Int(30)]);
     let out = runner.shutdown();
     let last = out.last().unwrap();
@@ -220,12 +220,10 @@ async fn stddev_aggregator_restore_state() {
 
 #[tokio::test]
 async fn last_aggregator_restore_state() {
-    // Last aggregator always returns the most recently added value, so we test
-    // that restoration doesn't cause errors and the aggregator continues working.
-    // The restored value gets immediately overwritten by the next process_add,
-    // making state divergence unobservable through output alone. This test
-    // verifies the persist/restore cycle completes without error and the
-    // aggregator produces correct results after restoration.
+    // last always returns the most recently added value. The next process_add
+    // overwrites the restored value at once, so a wrong restored state cannot be
+    // seen in the output. This test only checks that persist and restore work
+    // without error and that the aggregator still gives correct results after.
     let store: Arc<dyn PersistenceStore> = Arc::new(InMemoryPersistenceStore::new());
     let app = "\
         CREATE STREAM In (v INT);\n\
@@ -252,16 +250,16 @@ async fn distinctcount_aggregator_restore_state() {
         INSERT INTO Out\n\
         SELECT distinctCount(v) as dc FROM In WINDOW('length', 3);\n";
     let runner = AppRunner::new_with_store(app, "Out", Arc::clone(&store)).await;
-    // Send two identical values: distinctCount=1, window=[1,1]
+    // Send two equal values, distinctCount=1, window=[1,1]
     runner.send("In", vec![AttributeValue::Int(1)]);
     runner.send("In", vec![AttributeValue::Int(1)]);
     let rev = runner.persist();
-    // Change state: add diverse values
+    // Change state with different values
     runner.send("In", vec![AttributeValue::Int(2)]);
     runner.send("In", vec![AttributeValue::Int(3)]);
     // Restore to distinctCount=1, map={Int(1):2}, window=[1,1]
     runner.restore_revision(&rev);
-    // After restore: window=[1,1,1], distinctCount=1 (only value "1")
+    // After restore, window=[1,1,1] and distinctCount=1 since 1 is the only value
     runner.send("In", vec![AttributeValue::Int(1)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Long(1)]);
@@ -279,12 +277,12 @@ async fn first_aggregator_restore_state() {
     // first=10, values=[10], window=[10]
     runner.send("In", vec![AttributeValue::Int(10)]);
     let rev = runner.persist();
-    // Change state: first becomes 20 after expiry
+    // Change state, first becomes 20 after 10 expires
     runner.send("In", vec![AttributeValue::Int(20)]);
     runner.send("In", vec![AttributeValue::Int(30)]);
     // Restore to first=10, values=[10], window=[10]
     runner.restore_revision(&rev);
-    // After restore: values=[10,99], first=10, window=[10,99]
+    // After restore, values=[10,99], first=10, window=[10,99]
     runner.send("In", vec![AttributeValue::Int(99)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Int(10)]);
@@ -302,12 +300,12 @@ async fn and_aggregator_restore_state() {
     // tc=1, fc=0 → and=true, window=[true]
     runner.send("In", vec![AttributeValue::Bool(true)]);
     let rev = runner.persist();
-    // Change state: add false values
+    // Change state by adding false values
     runner.send("In", vec![AttributeValue::Bool(false)]);
     runner.send("In", vec![AttributeValue::Bool(false)]);
     // Restore to tc=1, fc=0, window=[true]
     runner.restore_revision(&rev);
-    // After restore: tc=2, fc=0, window=[true, true] → and=true
+    // After restore, tc=2, fc=0, window=[true, true] → and=true
     runner.send("In", vec![AttributeValue::Bool(true)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Bool(true)]);
@@ -325,26 +323,21 @@ async fn or_aggregator_restore_state() {
     // tc=0, window=[false]
     runner.send("In", vec![AttributeValue::Bool(false)]);
     let rev = runner.persist();
-    // Change state: add true values → tc=2
+    // Change state by adding true values → tc=2
     runner.send("In", vec![AttributeValue::Bool(true)]);
     runner.send("In", vec![AttributeValue::Bool(true)]);
     // Restore to tc=0, window=[false]
     runner.restore_revision(&rev);
-    // After restore: tc=0, window=[false, false] → or=false
+    // After restore, tc=0, window=[false, false] → or=false
     runner.send("In", vec![AttributeValue::Bool(false)]);
     let out = runner.shutdown();
     assert_eq!(out.last().unwrap(), &vec![AttributeValue::Bool(false)]);
 }
 
-// TODO: NOT PART OF M1 - App naming in SQL syntax for persistence across restarts
-// This test fails because SQL syntax doesn't support @app:name annotations.
-// Each new runtime gets a different auto-generated name, so the revision can't be found
-// when restoring in a new runtime instance. This requires either:
-// 1. SQL syntax support for app naming (e.g., CREATE APPLICATION or similar)
-// 2. Alternative persistence key scheme that doesn't depend on app name
-// The other two persistence tests (restore within same runtime) work fine.
-// This is an implementation detail for cross-restart persistence.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// Restoring a revision in a new runtime needs both runtimes to have the same app
+// name, because revisions are stored under it. SQL has no @app:name annotation, and
+// a runtime without a name gets a different generated one each time. So this test
+// sets the name through YAML config (app-with-name.yaml) for both runtimes.
 #[tokio::test]
 async fn persist_shutdown_restore_state() {
     use eventflux::core::config::ConfigManager;
@@ -352,7 +345,6 @@ async fn persist_shutdown_restore_state() {
 
     let store: Arc<dyn PersistenceStore> = Arc::new(InMemoryPersistenceStore::new());
 
-    // MIGRATED: Use YAML configuration for app naming
     let config_manager = ConfigManager::from_file("tests/fixtures/app-with-name.yaml");
     let manager = EventFluxManager::new_with_config_manager(config_manager);
     manager.set_persistence_store(Arc::clone(&store)).unwrap();
@@ -370,7 +362,7 @@ async fn persist_shutdown_restore_state() {
     runner.send("In", vec![AttributeValue::Int(3)]);
     let _ = runner.shutdown();
 
-    // Second instance with same config
+    // Second runtime with the same config, and so the same app name
     let config_manager2 = ConfigManager::from_file("tests/fixtures/app-with-name.yaml");
     let manager2 = EventFluxManager::new_with_config_manager(config_manager2);
     manager2.set_persistence_store(Arc::clone(&store)).unwrap();

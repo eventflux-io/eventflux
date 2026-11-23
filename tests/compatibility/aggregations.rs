@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Aggregation Compatibility Tests
+// Aggregation compatibility tests
 // Reference: query/selector/attribute/aggregator/*.java, GroupByTestCase.java
 
 use super::common::AppRunner;
@@ -65,7 +65,7 @@ async fn aggregator_test_distinct_count() {
 
 /// Test stdDev aggregator
 /// Reference: Aggregation1TestCase.java
-/// Note: stdDev window aggregator not implemented - only CollectionStdDev for patterns exists
+/// stdDev returns the population standard deviation of the window
 #[tokio::test]
 async fn aggregator_test_std_dev() {
     let app = "\
@@ -104,7 +104,7 @@ async fn aggregator_test_std_dev() {
         ],
     );
     let out = runner.shutdown();
-    // stdDev of 10, 20, 30, 40 should be ~11.18
+    // stdDev of 10, 20, 30, 40 is about 11.18
     let last = out.last().unwrap();
     if let AttributeValue::Double(std) = last[0] {
         assert!(std > 10.0 && std < 13.0);
@@ -148,11 +148,11 @@ async fn aggregation_test_sum_group_by() {
         ],
     );
     let out = runner.shutdown();
-    // Should have outputs for both symbols
+    // There is output for both symbols
     assert!(out.len() >= 2);
 }
 
-/// Min/Max aggregation
+/// Min and max aggregation
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn aggregation_test_min_max() {
@@ -226,8 +226,8 @@ async fn aggregation_test_avg() {
     assert_eq!(last[0], AttributeValue::Double(200.0));
 }
 
-/// Multiple aggregations in single query
-/// Reference: Aggregation test cases
+/// Several aggregations in one query
+/// Reference: aggregation test cases
 #[tokio::test]
 async fn aggregation_test_multiple_functions() {
     let app = "\
@@ -264,7 +264,7 @@ async fn aggregation_test_multiple_functions() {
     );
     let out = runner.shutdown();
     assert!(out.len() >= 3);
-    // Last event should have: sum=600, avg=200, count=3, min=100, max=300
+    // The last event has sum=600, avg=200, count=3, min=100, max=300
     let last = &out[out.len() - 1];
     assert_eq!(last[0], AttributeValue::Double(600.0));
     assert_eq!(last[1], AttributeValue::Double(200.0));
@@ -315,7 +315,7 @@ async fn group_by_test1_multiple_aggregations() {
         ],
     );
     let out = runner.shutdown();
-    // Should have grouped aggregations
+    // Only checks that the grouped query produced output
     assert_eq!(out.len(), 3);
 }
 
@@ -357,7 +357,7 @@ async fn group_by_test2_having() {
         ],
     );
     let out = runner.shutdown();
-    // Only groups with totalVolume > 100 should be output
+    // Only groups with totalVolume > 100 are output
     for row in &out {
         if let AttributeValue::Long(vol) = row[1] {
             assert!(vol > 100);
@@ -365,8 +365,8 @@ async fn group_by_test2_having() {
     }
 }
 
-/// Group by with multiple groups
-/// Reference: Aggregation group by tests
+/// Group by with several groups
+/// Reference: aggregation group by tests
 #[tokio::test]
 async fn group_by_test3_multiple_groups() {
     let app = "\
@@ -406,7 +406,7 @@ async fn group_by_test3_multiple_groups() {
         ],
     );
     let out = runner.shutdown();
-    // Should have groups for IBM (250) and MSFT (125)
+    // Groups for IBM (250) and MSFT (125)
     assert!(out.len() >= 2);
 }
 
@@ -461,7 +461,7 @@ async fn order_by_limit_test1() {
         ],
     );
     let out = runner.shutdown();
-    // Should output top 2 by price descending: B(200), C(150)
+    // Outputs the top 2 by price descending, B(200) and C(150)
     assert_eq!(out.len(), 2);
     assert_eq!(out[0][0], AttributeValue::String("B".to_string()));
     assert_eq!(out[1][0], AttributeValue::String("C".to_string()));
@@ -501,7 +501,7 @@ async fn order_by_test2_ascending() {
         ],
     );
     let out = runner.shutdown();
-    // Should be ordered by price ascending: A(100), C(150), B(200)
+    // Ordered by price ascending, A(100), C(150), B(200)
     assert_eq!(out.len(), 3);
     assert_eq!(out[0][0], AttributeValue::String("A".to_string()));
     assert_eq!(out[1][0], AttributeValue::String("C".to_string()));
@@ -509,7 +509,7 @@ async fn order_by_test2_ascending() {
 }
 
 // ============================================================================
-// FIRST/LAST AGGREGATOR TESTS
+// FIRST AND LAST AGGREGATOR TESTS
 // Reference: FirstLastAggregatorTestCase.java
 // ============================================================================
 
@@ -538,7 +538,7 @@ async fn aggregator_test_first() {
         ],
     );
     let out = runner.shutdown();
-    // first() should return "IBM"
+    // first() returns "IBM"
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::String("IBM".to_string()));
 }
@@ -568,13 +568,13 @@ async fn aggregator_test_last() {
         ],
     );
     let out = runner.shutdown();
-    // last() should return "MSFT"
+    // last() returns "MSFT"
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::String("MSFT".to_string()));
 }
 
 // ============================================================================
-// MINFOREVER/MAXFOREVER TESTS
+// MINFOREVER AND MAXFOREVER TESTS
 // Reference: MinForeverAggregatorExtensionTestCase.java
 // ============================================================================
 
@@ -610,7 +610,7 @@ async fn aggregator_test_min_forever() {
         ],
     );
     let out = runner.shutdown();
-    // minForever should track global minimum: 50.0
+    // minForever tracks the all time minimum, 50.0
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::Float(50.0));
 }
@@ -647,7 +647,7 @@ async fn aggregator_test_max_forever() {
         ],
     );
     let out = runner.shutdown();
-    // maxForever should track global maximum: 150.0
+    // maxForever tracks the all time maximum, 150.0
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::Float(150.0));
 }
@@ -699,8 +699,8 @@ async fn offset_test1_basic() {
         ],
     );
     let out = runner.shutdown();
-    // Sorted desc: B(200), C(150), A(100), D(50)
-    // OFFSET 1, LIMIT 2 = C(150), A(100)
+    // Sorted descending is B(200), C(150), A(100), D(50)
+    // OFFSET 1 with LIMIT 2 gives C(150), A(100)
     assert_eq!(out.len(), 2);
     assert_eq!(out[0][0], AttributeValue::String("C".to_string()));
     assert_eq!(out[1][0], AttributeValue::String("A".to_string()));
@@ -752,7 +752,7 @@ async fn order_by_test3_multiple_columns() {
         ],
     );
     let out = runner.shutdown();
-    // Sorted by category ASC, then price DESC:
+    // Sorted by category ASC, then price DESC, gives
     // A(150), A(50), B(200), B(100)
     assert_eq!(out.len(), 4);
     assert_eq!(out[0][0], AttributeValue::String("A".to_string()));
@@ -795,11 +795,11 @@ async fn rate_limit_test1_snapshot() {
     );
     std::thread::sleep(std::time::Duration::from_millis(600));
     let out = runner.shutdown();
-    // Should have snapshot outputs at rate-limited intervals
+    // Snapshot outputs come at the rate limited intervals
     assert!(!out.is_empty());
 }
 
-/// Event-based all output rate limiting
+/// OUTPUT ALL rate limiting by event count
 /// Reference: EventOutputRateLimitTestCase.java
 #[tokio::test]
 async fn rate_limit_test2_events_all() {
@@ -821,11 +821,11 @@ async fn rate_limit_test2_events_all() {
         );
     }
     let out = runner.shutdown();
-    // Should output all accumulated events every 3 events
+    // Outputs all collected events every 3 events
     assert!(!out.is_empty());
 }
 
-/// Event-based first output rate limiting
+/// OUTPUT FIRST rate limiting by event count
 /// Reference: EventOutputRateLimitTestCase.java
 #[tokio::test]
 async fn rate_limit_test3_events_first() {
@@ -847,11 +847,11 @@ async fn rate_limit_test3_events_first() {
         );
     }
     let out = runner.shutdown();
-    // Should output first event of every 3-event batch
+    // Outputs the first event of every batch of 3
     assert_eq!(out.len(), 2); // 2 batches of 3
 }
 
-/// Event-based last output rate limiting
+/// OUTPUT LAST rate limiting by event count
 /// Reference: EventOutputRateLimitTestCase.java
 #[tokio::test]
 async fn rate_limit_test4_events_last() {
@@ -873,11 +873,11 @@ async fn rate_limit_test4_events_last() {
         );
     }
     let out = runner.shutdown();
-    // Should output last event of every 3-event batch
+    // Outputs the last event of every batch of 3
     assert_eq!(out.len(), 2); // 2 batches of 3
 }
 
-/// Time-based output rate limiting
+/// Output rate limiting by time
 /// Reference: TimeOutputRateLimitTestCase.java
 #[tokio::test]
 async fn rate_limit_test5_time_all() {
@@ -905,7 +905,7 @@ async fn rate_limit_test5_time_all() {
     );
     std::thread::sleep(std::time::Duration::from_millis(250));
     let out = runner.shutdown();
-    // Should output at time-based intervals
+    // Outputs come at fixed time intervals
     assert!(!out.is_empty());
 }
 
@@ -991,7 +991,7 @@ async fn group_by_test5_min_max() {
         ],
     );
     let out = runner.shutdown();
-    // Last output for IBM should have min=50, max=150
+    // The last output for IBM has min=50, max=150
     let last = out.last().unwrap();
     assert_eq!(last[1], AttributeValue::Float(50.0));
     assert_eq!(last[2], AttributeValue::Float(150.0));
@@ -1031,8 +1031,8 @@ async fn having_test2_count_condition() {
         ],
     );
     let out = runner.shutdown();
-    // Only groups with count >= 2 should pass (A has 2, B has 1)
-    // After second A event, A should appear in output
+    // Only groups with count >= 2 pass. A has 2 and B has 1.
+    // A appears in the output after its second event
     let has_valid = out.iter().any(|row| {
         if let AttributeValue::Long(cnt) = row[1] {
             cnt >= 2
@@ -1077,7 +1077,7 @@ async fn having_test3_avg_condition() {
         ],
     );
     let out = runner.shutdown();
-    // Only IBM (avg=175) should pass, not MSFT (avg=50)
+    // Only IBM (avg=175) passes, not MSFT (avg=50)
     for row in &out {
         if let AttributeValue::Double(avg) = row[1] {
             assert!(avg > 100.0);
@@ -1089,7 +1089,7 @@ async fn having_test3_avg_condition() {
 // AGGREGATION WITH NULL VALUES
 // ============================================================================
 
-/// Aggregation ignoring NULL values
+/// sum skips NULL values, while count() still counts the event
 #[tokio::test]
 async fn aggregation_test_null_handling() {
     let app = "\
@@ -1122,7 +1122,7 @@ async fn aggregation_test_null_handling() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // sum should be 300 (100 + 200), count should be 3
+    // sum is 300 (100 + 200) and count is 3
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::Double(300.0));
     assert_eq!(last[1], AttributeValue::Long(3));
@@ -1147,7 +1147,7 @@ async fn aggregation_test_count_all_nulls() {
         vec![AttributeValue::Null, AttributeValue::Null],
     );
     let out = runner.shutdown();
-    // count() counts all events regardless of NULL
+    // count() counts every event, NULL values or not
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::Long(2));
 }
@@ -1189,7 +1189,7 @@ async fn order_by_test4_with_nulls() {
         ],
     );
     let out = runner.shutdown();
-    // Should handle NULL values in ordering
+    // NULL values do not break the ordering. Only the count is checked.
     assert_eq!(out.len(), 3);
 }
 
@@ -1214,11 +1214,11 @@ async fn limit_test2_without_order() {
         );
     }
     let out = runner.shutdown();
-    // Should return only 2 results
+    // Only 2 results
     assert_eq!(out.len(), 2);
 }
 
-/// OFFSET only (without explicit LIMIT)
+/// OFFSET with no LIMIT
 #[tokio::test]
 async fn offset_test2_only() {
     let app = "\
@@ -1259,8 +1259,8 @@ async fn offset_test2_only() {
         ],
     );
     let out = runner.shutdown();
-    // Sorted desc: B(200), C(150), A(100), D(50)
-    // OFFSET 2 = A(100), D(50)
+    // Sorted descending is B(200), C(150), A(100), D(50)
+    // OFFSET 2 gives A(100), D(50)
     assert_eq!(out.len(), 2);
     assert_eq!(out[0][0], AttributeValue::String("A".to_string()));
     assert_eq!(out[1][0], AttributeValue::String("D".to_string()));
@@ -1317,7 +1317,7 @@ async fn aggregation_test_avg_expression() {
         vec![AttributeValue::Float(30.0), AttributeValue::Float(5.0)],
     );
     let out = runner.shutdown();
-    // avg(25 + 30 + 35) = avg(90/3) = 30
+    // temp + offset gives 25, 30 and 35, so avg = 90/3 = 30
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::Double(30.0));
 }
@@ -1326,9 +1326,9 @@ async fn aggregation_test_avg_expression() {
 // COUNT VARIATIONS
 // ============================================================================
 
-/// Count with specific column
-/// Note: In EventFlux, count(column) counts all events (like count())
-/// This differs from SQL where count(column) skips NULL values
+/// Count of a named column
+/// In EventFlux count(column) counts all events, like count(). This differs from
+/// SQL, where count(column) skips NULL values.
 #[tokio::test]
 async fn aggregation_test_count_column() {
     let app = "\
@@ -1360,12 +1360,12 @@ async fn aggregation_test_count_column() {
         ],
     );
     let out = runner.shutdown();
-    // EventFlux's count(column) counts all events including NULL
+    // count(column) counts all events, including the one with NULL
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::Long(3));
 }
 
-/// Count(*) vs count()
+/// count(*) compared with count()
 #[tokio::test]
 async fn aggregation_test_count_star() {
     let app = "\
@@ -1443,7 +1443,7 @@ async fn aggregation_test_sum_bigint() {
     assert_eq!(last[0], AttributeValue::Long(10000000000));
 }
 
-/// Average with INT values (returns DOUBLE)
+/// Average of INT values returns DOUBLE
 #[tokio::test]
 async fn aggregation_test_avg_int() {
     let app = "\
@@ -1472,7 +1472,7 @@ async fn aggregation_test_avg_int() {
 }
 
 // ============================================================================
-// MIN/MAX EDGE CASES
+// MIN AND MAX EDGE CASES
 // ============================================================================
 
 /// Min with negative values
@@ -1525,7 +1525,7 @@ async fn aggregation_test_max_with_zero() {
     assert_eq!(last[0], AttributeValue::Float(0.0));
 }
 
-/// Min/Max with strings (lexicographic)
+/// Min and max on strings, in dictionary order
 #[tokio::test]
 #[ignore = "String min/max aggregation not yet supported"]
 async fn aggregation_test_min_max_string() {
@@ -1687,7 +1687,7 @@ async fn group_by_test6_two_columns() {
         ],
     );
     let out = runner.shutdown();
-    // US-Electronics should have total 150, US-Clothing should have 30
+    // US Electronics totals 150 and US Clothing totals 30
     assert!(out.len() >= 2);
 }
 
@@ -1707,7 +1707,7 @@ async fn having_test4_multiple_conditions() {
         GROUP BY symbol\n\
         HAVING count() >= 2 AND avg(price) > 50.0;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // IBM: 2 events, avg = 150 (passes)
+    // IBM has 2 events with avg = 150, so it passes
     runner.send(
         "stockStream",
         vec![
@@ -1722,7 +1722,7 @@ async fn having_test4_multiple_conditions() {
             AttributeValue::Float(200.0),
         ],
     );
-    // MSFT: 2 events, avg = 30 (fails avg condition)
+    // MSFT has 2 events with avg = 30, so it fails the avg condition
     runner.send(
         "stockStream",
         vec![
@@ -1737,7 +1737,7 @@ async fn having_test4_multiple_conditions() {
             AttributeValue::Float(40.0),
         ],
     );
-    // GOOG: 1 event (fails count condition)
+    // GOOG has 1 event, so it fails the count condition
     runner.send(
         "stockStream",
         vec![
@@ -1746,7 +1746,7 @@ async fn having_test4_multiple_conditions() {
         ],
     );
     let out = runner.shutdown();
-    // Only IBM should pass both conditions
+    // Only IBM passes both conditions
     let ibm_rows: Vec<_> = out
         .iter()
         .filter(|row| row[0] == AttributeValue::String("IBM".to_string()))
@@ -1765,7 +1765,7 @@ async fn having_test4_multiple_conditions() {
 // DISTINCT COUNT EDGE CASES
 // ============================================================================
 
-/// DistinctCount with all same values
+/// distinctCount when every value is the same
 #[tokio::test]
 async fn aggregation_test_distinct_count_all_same() {
     let app = "\
@@ -1787,10 +1787,10 @@ async fn aggregation_test_distinct_count_all_same() {
     let out = runner.shutdown();
     let last = out.last().unwrap();
     // distinctCount returns Long in EventFlux
-    assert_eq!(last[0], AttributeValue::Long(1)); // All same = 1 distinct
+    assert_eq!(last[0], AttributeValue::Long(1)); // all the same, so 1 distinct
 }
 
-/// DistinctCount with all different values
+/// distinctCount when every value differs
 #[tokio::test]
 async fn aggregation_test_distinct_count_all_different() {
     let app = "\
@@ -1812,7 +1812,7 @@ async fn aggregation_test_distinct_count_all_different() {
     let out = runner.shutdown();
     let last = out.last().unwrap();
     // distinctCount returns Long in EventFlux
-    assert_eq!(last[0], AttributeValue::Long(5)); // All different = 5 distinct
+    assert_eq!(last[0], AttributeValue::Long(5)); // all different, so 5 distinct
 }
 
 // ============================================================================
@@ -1913,7 +1913,7 @@ async fn group_by_test_case_when() {
         ],
     );
     let out = runner.shutdown();
-    // Should have outputs for 'high' and 'low' categories
+    // Outputs for the 'high' and 'low' categories
     assert!(out.len() >= 3);
 }
 
@@ -1954,7 +1954,7 @@ async fn having_test_multiple_conditions() {
         ],
     );
     let out = runner.shutdown();
-    // Only IBM should pass both HAVING conditions
+    // Only IBM passes both HAVING conditions
     assert!(!out.is_empty());
 }
 
@@ -2001,7 +2001,7 @@ async fn order_by_limit_offset_test() {
         ],
     );
     let out = runner.shutdown();
-    // With OFFSET 1 and LIMIT 2, should skip B (200), get C (150) and A (100)
+    // OFFSET 1 with LIMIT 2 skips B (200) and gives C (150) and A (100)
     assert!(!out.is_empty());
 }
 
@@ -2071,7 +2071,7 @@ async fn group_by_test_multiple_agg_same_column() {
         ],
     );
     let out = runner.shutdown();
-    // Last output should have min=100, max=150, avg=125
+    // The last output has min=100, max=150, avg=125
     let last = out.last().unwrap();
     if let AttributeValue::Double(min) = last[1] {
         assert!((min - 100.0).abs() < 0.01);
@@ -2147,7 +2147,7 @@ async fn aggregation_test_where_then_group() {
         vec![
             AttributeValue::String("IBM".to_string()),
             AttributeValue::Float(50.0),
-            AttributeValue::Bool(false), // Filtered out
+            AttributeValue::Bool(false), // filtered out
         ],
     );
     runner.send(
@@ -2159,11 +2159,11 @@ async fn aggregation_test_where_then_group() {
         ],
     );
     let out = runner.shutdown();
-    // Sum should be 100 + 150 = 250 (not including filtered event)
+    // The sum is 100 + 150 = 250, without the filtered event
     assert!(!out.is_empty());
 }
 
-/// ORDER BY with null handling (nulls should be at end by default)
+/// ORDER BY with NULL values, which should sort last by default
 #[tokio::test]
 async fn order_by_test_nulls() {
     let app = "\
@@ -2196,7 +2196,7 @@ async fn order_by_test_nulls() {
         ],
     );
     let out = runner.shutdown();
-    // Should have 3 outputs
+    // 3 outputs. Where the NULL lands is not checked.
     assert_eq!(out.len(), 3);
 }
 
@@ -2309,7 +2309,7 @@ async fn group_by_test_string_function() {
         ],
     );
     let out = runner.shutdown();
-    // Both should group together as 'IBM'
+    // "ibm" and "IBM" should fall in the same 'IBM' group
     assert!(!out.is_empty());
 }
 
@@ -2383,7 +2383,7 @@ async fn aggregation_test_avg_vs_sum_count() {
         ],
     );
     let out = runner.shutdown();
-    // avg should equal sum/count = 150
+    // avg equals sum/count = 150
     let last = out.last().unwrap();
     if let (AttributeValue::Double(avg), AttributeValue::Double(calc)) = (&last[1], &last[2]) {
         assert!((avg - 150.0).abs() < 0.01);
@@ -2455,7 +2455,7 @@ async fn aggregation_test_stddev() {
         vec![AttributeValue::Int(3), AttributeValue::Float(30.0)],
     );
     let out = runner.shutdown();
-    // stddev of [10, 20, 30] should be ~8.16
+    // stddev of [10, 20, 30] is about 8.16. The test only checks that it is > 0.
     assert!(!out.is_empty());
     if let AttributeValue::Double(std) = out.last().unwrap()[0] {
         assert!(std > 0.0);
@@ -2782,7 +2782,7 @@ async fn aggregation_test_negative_values() {
         ],
     );
     let out = runner.shutdown();
-    // Sum should be 100 - 50 - 30 = 20
+    // The sum is 100 - 50 - 30 = 20
     let last = out.last().unwrap();
     let total = match last[1] {
         AttributeValue::Int(v) => v,
@@ -2815,7 +2815,7 @@ async fn aggregation_test_zero_values() {
         vec![AttributeValue::Int(3), AttributeValue::Int(10)],
     );
     let out = runner.shutdown();
-    // Sum should be 0 + 0 + 10 = 10
+    // The sum is 0 + 0 + 10 = 10
     let last = out.last().unwrap();
     let total = match last[0] {
         AttributeValue::Int(v) => v,
@@ -2858,7 +2858,7 @@ async fn aggregation_test_max_negative() {
         ],
     );
     let out = runner.shutdown();
-    // Max should be -15
+    // The max is -15
     let last = out.last().unwrap();
     assert_eq!(last[1], AttributeValue::Int(-15));
 }
@@ -2896,7 +2896,7 @@ async fn aggregation_test_min_positive() {
         ],
     );
     let out = runner.shutdown();
-    // Min should be 50
+    // The min is 50
     let last = out.last().unwrap();
     assert_eq!(last[1], AttributeValue::Int(50));
 }
@@ -2929,7 +2929,7 @@ async fn aggregation_test_multiplication_in_select() {
         ],
     );
     let out = runner.shutdown();
-    // Revenue should be (10*5) + (20*3) = 50 + 60 = 110
+    // Revenue is (10*5) + (20*3) = 50 + 60 = 110
     let last = out.last().unwrap();
     let revenue = match last[1] {
         AttributeValue::Int(v) => v,
@@ -3045,21 +3045,19 @@ async fn aggregation_test_multiple_on_same() {
     );
     let out = runner.shutdown();
     let last = out.last().unwrap();
-    // Check min
+    // min, max and sum may come back as Int or Long, so accept both
     let min_val = match last[0] {
         AttributeValue::Int(v) => v,
         AttributeValue::Long(v) => v as i32,
         _ => panic!("Expected int or long for min"),
     };
     assert_eq!(min_val, 10);
-    // Check max
     let max_val = match last[1] {
         AttributeValue::Int(v) => v,
         AttributeValue::Long(v) => v as i32,
         _ => panic!("Expected int or long for max"),
     };
     assert_eq!(max_val, 30);
-    // Check sum
     let sum_val = match last[2] {
         AttributeValue::Int(v) => v,
         AttributeValue::Long(v) => v as i32,
@@ -3125,7 +3123,7 @@ async fn aggregation_test_having_order() {
         ],
     );
     let out = runner.shutdown();
-    // East (130), North (150), South (200) pass HAVING; West (70) doesn't
+    // East (130), North (150) and South (200) pass HAVING. West (70) does not.
     // Ordered by total DESC: South, North, East
     assert!(!out.is_empty());
 }
@@ -4347,7 +4345,7 @@ async fn aggregation_test_lower_in_select() {
     assert_eq!(out[0][0], AttributeValue::String("west".to_string()));
 }
 
-/// Aggregation count with zero results
+/// count over one full lengthBatch of 3 events
 #[tokio::test]
 async fn aggregation_test_count_zero_batch() {
     let app = "\
@@ -4924,7 +4922,7 @@ async fn aggregation_test_avg_lt_filter() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // avg(25, 20, 28) = 73/3 ≈ 24.333...
+    // avg(25, 20, 28) = 73/3, about 24.333
     if let AttributeValue::Double(v) = out[0][1] {
         assert!((v - 24.333).abs() < 0.01);
     } else {
@@ -5029,7 +5027,6 @@ async fn aggregation_test_multi_agg_four() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // Extract values
     let sum_val = match &out[0][1] {
         AttributeValue::Int(v) => *v as i64,
         AttributeValue::Long(v) => *v,
@@ -5083,6 +5080,6 @@ async fn aggregation_test_case_when_category() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // Last value determines the CASE result (120 > 100 = high)
+    // The last event sets the CASE result, and 120 > 100 gives high
     assert_eq!(out[0][1], AttributeValue::String("high".to_string()));
 }

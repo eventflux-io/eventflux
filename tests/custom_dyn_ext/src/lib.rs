@@ -157,6 +157,7 @@ pub extern "C" fn register_functions(manager: &EventFluxManager) {
 }
 
 /// Returns the path to the compiled dynamic library for this crate.
+/// Looks in target/debug/deps of the main workspace, so it only finds debug builds.
 pub fn library_path() -> std::path::PathBuf {
     use std::path::PathBuf;
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

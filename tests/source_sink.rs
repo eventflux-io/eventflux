@@ -67,7 +67,7 @@ fn timer_source_to_log_sink() {
         Arc::clone(&app_ctx),
     )));
 
-    // Create sink with adapter (Events → mapper → bytes → sink)
+    // Sink side. Events go through the mapper to bytes, then to the sink.
     let sink = LogSink::new();
     let collected = sink.events.clone();
     let sink_adapter = SinkCallbackAdapter {
@@ -86,7 +86,7 @@ fn timer_source_to_log_sink() {
     )));
     junction.lock().unwrap().subscribe(cb_processor);
 
-    // Create source with callback adapter (source → bytes → mapper → Events → InputHandler)
+    // Source side. Bytes from the source go through the mapper to events, then to the InputHandler.
     let source_callback = Arc::new(SourceCallbackAdapter::new(
         Arc::new(Mutex::new(Box::new(SourcePassthroughMapper::new()))),
         Arc::clone(&input_handler),

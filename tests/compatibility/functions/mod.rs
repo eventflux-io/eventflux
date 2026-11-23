@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 //
-// Function Compatibility Tests
-// Organized into logical modules for better maintainability.
+// Function compatibility tests, split into one module per function group.
 //
 // Reference: query/function/FunctionTestCase.java, CoalesceFunctionTestCase.java,
 //            ConversionFunctionTestCase.java, UUIDFunctionTestCase.java

@@ -20,7 +20,8 @@
 //! Requires building with the `rabbitmq` feature:
 //! `cargo test --features rabbitmq --test rabbitmq_integration -- --ignored`
 //!
-//! These tests require a running RabbitMQ broker and are marked with `#[ignore]`.
+//! Tests that need a running RabbitMQ broker are marked with `#[ignore]`. The
+//! configuration tests need no broker and always run.
 //!
 //! ## Setup
 //!
@@ -45,7 +46,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 // ============================================================================
-// Configuration Tests (No broker required)
+// Configuration Tests (no broker needed)
 // ============================================================================
 
 #[test]
@@ -111,7 +112,7 @@ fn test_sink_config_validation() {
 }
 
 // ============================================================================
-// Helper: Test callback that collects received data
+// Helper. Callback that collects the data it receives
 // ============================================================================
 
 #[derive(Debug)]
@@ -139,7 +140,7 @@ impl SourceCallback for TestSourceCallback {
 }
 
 // ============================================================================
-// Helper: Setup test queue and exchange
+// Helper. Set up the test queue and exchange
 // ============================================================================
 
 async fn setup_test_infrastructure(
@@ -148,8 +149,8 @@ async fn setup_test_infrastructure(
     exchange_name: &str,
     routing_key: &str,
 ) -> Result<(), lapin::Error> {
-    // Declare exchange
-    // Note: Using auto_delete: false to match the source's queue declaration behavior
+    // auto_delete is false to match the sink, which declares exchanges with the
+    // lapin default of false
     channel
         .exchange_declare(
             exchange_name,
@@ -163,8 +164,8 @@ async fn setup_test_infrastructure(
         )
         .await?;
 
-    // Declare queue
-    // Note: Using auto_delete: false to match the source's queue declaration behavior
+    // auto_delete is false to match the source, which declares queues with the
+    // lapin default of false
     channel
         .queue_declare(
             queue_name,
@@ -241,7 +242,7 @@ fn test_rabbitmq_source_validate_connectivity() {
     // First, create the queue using lapin directly
     let rt = tokio::runtime::Runtime::new().unwrap();
 
-    // Setup: create test queue
+    // Set up the test queue
     rt.block_on(async {
         let conn = lapin::Connection::connect(
             "amqp://guest:guest@localhost:5672/%2f",
@@ -253,7 +254,7 @@ fn test_rabbitmq_source_validate_connectivity() {
         let channel = conn.create_channel().await.unwrap();
 
         // Create test queue
-        // Note: Using auto_delete: false to match the source's queue declaration behavior
+        // auto_delete is false to match how the source declares queues
         channel
             .queue_declare(
                 "test-connectivity-queue",
@@ -287,7 +288,7 @@ fn test_rabbitmq_source_validate_connectivity() {
         result.err()
     );
 
-    // Test with non-existent queue (with declare_queue=false, queue must already exist)
+    // A queue that does not exist. With declare_queue=false the queue must already exist.
     let mut bad_config = HashMap::new();
     bad_config.insert("rabbitmq.host".to_string(), "localhost".to_string());
     bad_config.insert(
@@ -344,7 +345,7 @@ fn test_rabbitmq_sink_validate_connectivity() {
         let channel = conn.create_channel().await.unwrap();
 
         // Create test exchange
-        // Note: Using auto_delete: false to match the sink's exchange declaration behavior
+        // auto_delete is false to match how the sink declares exchanges
         channel
             .exchange_declare(
                 "test-connectivity-exchange",
@@ -379,7 +380,7 @@ fn test_rabbitmq_sink_validate_connectivity() {
         result.err()
     );
 
-    // Test with non-existent exchange
+    // An exchange that does not exist
     let mut bad_config = HashMap::new();
     bad_config.insert("rabbitmq.host".to_string(), "localhost".to_string());
     bad_config.insert(
@@ -642,7 +643,7 @@ fn test_rabbitmq_source_consume_and_verify() {
     });
 }
 
-/// Test full round-trip: Source -> EventFlux Events -> Sink
+/// Test a full round trip, Source -> EventFlux Events -> Sink
 #[test]
 #[ignore = "Requires RabbitMQ broker - run with --ignored"]
 fn test_rabbitmq_roundtrip_source_to_sink() {
@@ -716,7 +717,7 @@ fn test_rabbitmq_roundtrip_source_to_sink() {
     let sink = Arc::new(RabbitMQSink::from_properties(&sink_config).unwrap());
     sink.start();
 
-    // Create a callback that forwards to sink (simulating EventFlux pipeline)
+    // A callback that forwards to the sink, standing in for an EventFlux pipeline
     #[derive(Debug)]
     struct ForwardToSinkCallback {
         sink: Arc<eventflux::core::stream::output::sink::rabbitmq_sink::RabbitMQSink>,
@@ -725,7 +726,7 @@ fn test_rabbitmq_roundtrip_source_to_sink() {
 
     impl SourceCallback for ForwardToSinkCallback {
         fn on_data(&self, data: &[u8]) -> Result<(), EventFluxError> {
-            // Forward data to sink (simulating passthrough pipeline)
+            // Pass the data straight to the sink, like a passthrough pipeline
             self.sink.publish(data)?;
             *self.forwarded_count.lock().unwrap() += 1;
             Ok(())
@@ -838,10 +839,10 @@ fn test_rabbitmq_roundtrip_source_to_sink() {
 // End-to-End Test: RabbitMQ → EventFlux Processing → RabbitMQ
 // ============================================================================
 
-/// End-to-end test demonstrating a complete EventFlux pipeline:
+/// End to end test of a complete EventFlux pipeline:
 /// 1. External client publishes stock trade events to INPUT queue
 /// 2. RabbitMQ Source consumes events
-/// 3. EventFlux processes: filters by volume > 1000, adds price_category via CASE
+/// 3. EventFlux filters by volume > 1000 and adds price_category with CASE
 /// 4. RabbitMQ Sink publishes processed events to OUTPUT exchange
 /// 5. External client verifies results from OUTPUT queue
 ///
@@ -873,21 +874,21 @@ fn test_rabbitmq_roundtrip_source_to_sink() {
 /// 6. Publish test messages via Admin UI:
 ///    - Go to `e2e-input-exchange` → "Publish message"
 ///    - Routing key: `trades`
-///    - Payload (test events that PASS filter - volume > 1000):
+///    - Payload with test events that PASS the filter (volume > 1000):
 ///      ```json
 ///      {"symbol":"AAPL","price":185.50,"volume":5000,"timestamp":1702500000}
 ///      {"symbol":"GOOGL","price":142.30,"volume":2500,"timestamp":1702500001}
 ///      {"symbol":"MSFT","price":378.25,"volume":1500,"timestamp":1702500002}
 ///      ```
-///    - Payload (test events that FAIL filter - volume <= 1000):
+///    - Payload with test events that FAIL the filter (volume <= 1000):
 ///      ```json
 ///      {"symbol":"META","price":325.00,"volume":800,"timestamp":1702500003}
 ///      {"symbol":"NVDA","price":495.50,"volume":500,"timestamp":1702500004}
 ///      ```
 ///
 /// 7. Run this test and check `e2e-output-queue` for processed events:
-///    - Only 3 events should appear (filtered by volume > 1000)
-///    - Each should have `price_category` field added via CASE expression:
+///    - Only 3 events should appear, because of the volume > 1000 filter
+///    - Each should have a `price_category` field added by the CASE expression:
 ///      - price < 150: "low"
 ///      - price < 300: "medium"
 ///      - else: "high"
@@ -921,7 +922,7 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
         json!({"symbol": "MSFT", "price": 378.25, "volume": 1500, "timestamp": 1702500002}),
     ];
 
-    // Events that FAIL the filter (volume <= 1000) - should NOT appear in output
+    // Events that FAIL the filter (volume <= 1000). They must NOT appear in the output.
     let fail_events = [
         json!({"symbol": "META", "price": 325.00, "volume": 800, "timestamp": 1702500003}),
         json!({"symbol": "NVDA", "price": 495.50, "volume": 500, "timestamp": 1702500004}),
@@ -935,7 +936,7 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
     ];
 
     // ========================================================================
-    // Step 1: Setup RabbitMQ infrastructure (separate client)
+    // Step 1: Set up RabbitMQ queues and exchanges with a separate client
     // ========================================================================
     println!("\n[E2E Test] Setting up RabbitMQ infrastructure...");
 
@@ -973,7 +974,7 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
     );
 
     // ========================================================================
-    // Step 2: Publish input events via SEPARATE client (simulating external producer)
+    // Step 2: Publish input events with a SEPARATE client, standing in for an outside producer
     // ========================================================================
     println!(
         "\n[E2E Test] Publishing {} input events via external client...",
@@ -1036,7 +1037,7 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
     sink.start();
 
     // ========================================================================
-    // Step 4: Create processing callback (Filter + CASE transformation)
+    // Step 4: Create the processing callback, a filter plus the CASE transformation
     // ========================================================================
     println!("[E2E Test] Starting EventFlux Source with processing pipeline...");
 
@@ -1054,7 +1055,7 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
                 .map_err(|e| EventFluxError::app_runtime(format!("Failed to parse JSON: {}", e)))?;
 
             // ================================================================
-            // FILTER: Only process events with volume > 1000
+            // FILTER. Only process events with volume > 1000
             // ================================================================
             let volume = event.get("volume").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -1065,7 +1066,7 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
             }
 
             // ================================================================
-            // CASE: Add price_category based on price ranges
+            // CASE. Add price_category based on price ranges
             // CASE
             //   WHEN price < 150 THEN 'low'
             //   WHEN price < 300 THEN 'medium'
@@ -1296,16 +1297,16 @@ fn test_e2e_rabbitmq_filter_and_case_processing() {
 }
 
 // ============================================================================
-// Query-Based End-to-End Test: RabbitMQ → EventFluxQL → RabbitMQ
+// End to End Test with a Query. RabbitMQ → EventFluxQL → RabbitMQ
 // ============================================================================
 
-/// Query-based E2E test using EventFluxQL for all processing logic.
+/// End to end test where an EventFluxQL query does all the processing.
 ///
-/// This test demonstrates the COMPLETE EventFlux architecture:
+/// This test runs the COMPLETE EventFlux setup:
 /// 1. RabbitMQ Source configured via SQL WITH clause (consumes JSON)
 /// 2. EventFluxQL query: SELECT with filter and CASE expression
 /// 3. RabbitMQ Sink configured via SQL WITH clause (publishes JSON)
-/// 4. Separate RabbitMQ clients for input/output verification
+/// 4. Separate RabbitMQ clients send the input and check the output
 ///
 /// ## The Query Logic
 ///
@@ -1357,7 +1358,7 @@ fn test_e2e_query_based_rabbitmq_processing() {
     use eventflux::core::eventflux_manager::EventFluxManager;
     use serde_json::{json, Value};
 
-    // Create a separate runtime for setup/verification (NOT for EventFlux)
+    // A separate tokio runtime for setup and checks. EventFlux does NOT use it.
     let setup_rt = tokio::runtime::Runtime::new().unwrap();
 
     // ========================================================================
@@ -1388,7 +1389,7 @@ fn test_e2e_query_based_rabbitmq_processing() {
     ];
 
     // ========================================================================
-    // Step 1: Setup RabbitMQ infrastructure (using setup runtime)
+    // Step 1: Set up RabbitMQ queues and exchanges on the setup runtime
     // ========================================================================
     println!("\n[Query E2E Test] Setting up RabbitMQ infrastructure...");
 
@@ -1446,7 +1447,7 @@ fn test_e2e_query_based_rabbitmq_processing() {
     });
 
     // ========================================================================
-    // Step 3: Create EventFlux application with SQL query (needs its own runtime)
+    // Step 3: Create the EventFlux app from a SQL query. It needs its own runtime.
     // ========================================================================
     println!("\n[Query E2E Test] Starting EventFlux with SQL query...");
 
@@ -1512,7 +1513,7 @@ fn test_e2e_query_based_rabbitmq_processing() {
             AppRunner::new_with_manager(manager, &sql_clone, "ProcessedTrades").await
         });
 
-        // Wait for events to be processed - give more time for consumption
+        // Wait for events to be processed, with extra time for consumption
         std::thread::sleep(Duration::from_millis(5000));
 
         // Print debug info
@@ -1669,7 +1670,7 @@ fn test_rabbitmq_unreachable_broker() {
 
     // Test source with unreachable broker
     let mut source_config = HashMap::new();
-    source_config.insert("rabbitmq.host".to_string(), "192.0.2.1".to_string()); // TEST-NET, should be unreachable
+    source_config.insert("rabbitmq.host".to_string(), "192.0.2.1".to_string()); // TEST-NET, unreachable
     source_config.insert("rabbitmq.port".to_string(), "59999".to_string());
     source_config.insert("rabbitmq.queue".to_string(), "test".to_string());
 

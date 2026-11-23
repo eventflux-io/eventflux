@@ -15,15 +15,15 @@
  * limitations under the License.
  */
 
-//! Comprehensive tests for nested (parenthesized) expressions in SQL.
+//! Tests for nested expressions in SQL, meaning expressions in parentheses.
 //!
-//! Tests cover various scenarios where parentheses are used in SQL expressions:
+//! They cover these uses of parentheses
 //! - Arithmetic grouping for operator precedence
 //! - Nested expressions in SELECT items
 //! - Nested expressions in WHERE clauses
 //! - Nested expressions in function arguments
 //! - Deeply nested expressions
-//! - Nested expressions with pattern/sequence aliases
+//! - Nested expressions with pattern and sequence aliases
 
 #[path = "common/mod.rs"]
 mod common;
@@ -35,8 +35,8 @@ use eventflux::core::event::value::AttributeValue;
 // =============================================================================
 
 /// Test simple nested arithmetic: (a + b) * c
-/// Without parentheses: a + b * c = a + (b * c) due to precedence
-/// With parentheses: (a + b) * c = (a + b) * c
+/// Without parentheses, a + b * c means a + (b * c) because * binds tighter.
+/// The parentheses make the addition happen first.
 #[tokio::test]
 async fn nested_simple_addition_then_multiply() {
     let app = "\
@@ -79,7 +79,7 @@ async fn nested_subtraction_then_divide() {
 }
 
 /// Test percentage calculation: ((new - old) / old) * 100
-/// This is the exact pattern used in the crypto demo
+/// This is the same formula the Bitcoin demo in examples/demo uses
 #[tokio::test]
 async fn nested_percentage_calculation() {
     let app = "\
@@ -205,12 +205,12 @@ async fn nested_difference_in_where() {
         CREATE STREAM Out (current DOUBLE, previous DOUBLE);\n\
         INSERT INTO Out SELECT current, previous FROM In WHERE (current - previous) > 0;\n";
     let runner = AppRunner::new(app, "Out").await;
-    // Increasing: 110 - 100 = 10 > 0, pass
+    // Going up. 110 - 100 = 10 > 0, so it passes.
     runner.send(
         "In",
         vec![AttributeValue::Double(110.0), AttributeValue::Double(100.0)],
     );
-    // Decreasing: 90 - 100 = -10 > 0 is false, filter
+    // Going down. 90 - 100 = -10 > 0 is false, so it is filtered out.
     runner.send(
         "In",
         vec![AttributeValue::Double(90.0), AttributeValue::Double(100.0)],
@@ -271,13 +271,13 @@ async fn nested_in_sum_aggregation() {
         CREATE STREAM Out (total DOUBLE);\n\
         INSERT INTO Out SELECT SUM((a + b)) AS total FROM In WINDOW('lengthBatch', 2);\n";
     let runner = AppRunner::new(app, "Out").await;
-    // First event: (1.0 + 2.0) = 3.0
+    // First event, (1.0 + 2.0) = 3.0
     runner.send(
         "In",
         vec![AttributeValue::Double(1.0), AttributeValue::Double(2.0)],
     );
-    // Second event: (3.0 + 4.0) = 7.0
-    // Total: 3.0 + 7.0 = 10.0
+    // Second event, (3.0 + 4.0) = 7.0
+    // Total, 3.0 + 7.0 = 10.0
     runner.send(
         "In",
         vec![AttributeValue::Double(3.0), AttributeValue::Double(4.0)],
@@ -295,13 +295,13 @@ async fn nested_avg_percentage() {
         CREATE STREAM Out (avg_pct DOUBLE);\n\
         INSERT INTO Out SELECT AVG(((new_val - old_val) / old_val) * 100.0) AS avg_pct FROM In WINDOW('lengthBatch', 2);\n";
     let runner = AppRunner::new(app, "Out").await;
-    // First: ((110 - 100) / 100) * 100 = 10%
+    // First, ((110 - 100) / 100) * 100 = 10%
     runner.send(
         "In",
         vec![AttributeValue::Double(100.0), AttributeValue::Double(110.0)],
     );
-    // Second: ((120 - 100) / 100) * 100 = 20%
-    // Avg: (10 + 20) / 2 = 15%
+    // Second, ((120 - 100) / 100) * 100 = 20%
+    // Average, (10 + 20) / 2 = 15%
     runner.send(
         "In",
         vec![AttributeValue::Double(100.0), AttributeValue::Double(120.0)],

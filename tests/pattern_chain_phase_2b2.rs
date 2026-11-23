@@ -15,11 +15,12 @@
  * limitations under the License.
  */
 
-//! Phase 2b.2: Three-Step Pattern Chains (A → B → C)
+//! Phase 2b.2. Three step pattern chains (A → B → C)
 //!
-//! Tests for three-step pattern chaining: A -> B -> C
+//! Tests for chaining three pattern steps, A -> B -> C.
 //!
-//! Reference: feat/pattern_processing/STATE_MACHINE_DESIGN.md Phase 2b.2
+//! Follows Phase 2b.2 of feat/pattern_processing/STATE_MACHINE_DESIGN.md. That doc
+//! is no longer in the repo.
 
 mod common;
 
@@ -27,16 +28,16 @@ use common::pattern_chain_test_utils::*;
 use eventflux::core::event::stream::stream_event::StreamEvent;
 use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 
-// Alias for three-step tests (same as build_pattern_chain)
+// Another name for build_pattern_chain, so the three step tests read clearly
 use common::pattern_chain_test_utils::build_pattern_chain as build_three_step_chain;
 
 // ============================================================================
-// PHASE 2b.2 TESTS: Three-Step Chains (A → B → C)
+// PHASE 2b.2 TESTS. Three Step Chains (A → B → C)
 // ============================================================================
 
-/// Test 0: Simple three-step chain A → B → C
-/// Pattern: A{1} → B{1} → C{1}
-/// Events: [A, B, C] → MATCH
+/// Test 0. Simple three step chain A → B → C
+/// Pattern A{1} → B{1} → C{1}
+/// Events [A, B, C] → MATCH
 #[test]
 fn test_2b2_0_simple_three_step() {
     println!("\n=== Testing A -> B -> C pattern ===");
@@ -110,9 +111,9 @@ fn test_2b2_0_simple_three_step() {
     println!("Final outputs count: {}", outputs.len());
 }
 
-/// Test 1: Three-step chain with count quantifiers A{2} → B{2} → C{2}
-/// Pattern: A{2} → B{2} → C{2}
-/// Events: [A, A, B, B, C, C] → MATCH
+/// Test 1. Three step chain with count quantifiers A{2} → B{2} → C{2}
+/// Pattern A{2} → B{2} → C{2}
+/// Events [A, A, B, B, C, C] → MATCH
 #[test]
 fn test_2b2_1_count_quantifiers() {
     println!("\n=== Testing A{{2}} -> B{{2}} -> C{{2}} pattern ===");
@@ -219,9 +220,9 @@ fn test_2b2_1_count_quantifiers() {
     println!("Final outputs count: {}", outputs.len());
 }
 
-/// Test 2: Three-step chain failure - expecting C, got B
-/// Pattern: A → B → C
-/// Events: [A, B, B] → FAIL (expecting C at processor[2], but got B at processor[1])
+/// Test 2. Three step chain fails when B arrives where C was expected.
+/// Pattern A → B → C
+/// Events [A, B, B] → FAIL, C was expected at processor[2] but B came to processor[1]
 #[test]
 fn test_2b2_2_expecting_c_got_b() {
     println!("\n=== Testing expecting C, got B ===");
@@ -256,7 +257,7 @@ fn test_2b2_2_expecting_c_got_b() {
         .process(Some(Box::new(event_b1)));
     chain.update_state();
 
-    // Send second B to processor[1] (wrong - should send C to processor[2])
+    // Send a second B to processor[1]. This is wrong on purpose, C should go to processor[2].
     println!("Sending B2 to processor[1] (wrong - expecting C at processor[2])");
     chain.pre_processors[1]
         .lock()
@@ -264,7 +265,7 @@ fn test_2b2_2_expecting_c_got_b() {
         .process(Some(Box::new(event_b2)));
     chain.update_state();
 
-    // Verify no output (sequence broken)
+    // No output, because the sequence is broken
     let outputs = collector.get_outputs();
     println!("  After B2, outputs = {}", outputs.len());
     assert_eq!(
@@ -276,9 +277,9 @@ fn test_2b2_2_expecting_c_got_b() {
     println!("Final outputs count: {}", outputs.len());
 }
 
-/// Test 3: Three-step chain failure - skipped B
-/// Pattern: A → B → C
-/// Events: [A, C] → FAIL (skipped B - C arrives but PreC has no pending state)
+/// Test 3. Three step chain fails when B is skipped.
+/// Pattern A → B → C
+/// Events [A, C] → FAIL, C arrives but PreC has no pending state because B never came
 #[test]
 fn test_2b2_3_skipped_b() {
     println!("\n=== Testing skipped B ===");
@@ -308,7 +309,7 @@ fn test_2b2_3_skipped_b() {
     println!("  After A, outputs = {}", outputs.len());
     assert_eq!(outputs.len(), 0, "No output yet after A");
 
-    // Send C to processor[2] (skipping B - PreC should have no pending state)
+    // Send C to processor[2], skipping B. PreC has no pending state yet.
     println!("Sending C to processor[2] (skipped B)");
     chain.pre_processors[2]
         .lock()
@@ -316,7 +317,7 @@ fn test_2b2_3_skipped_b() {
         .process(Some(Box::new(event_c)));
     chain.update_state();
 
-    // Verify no output (B was skipped, so PreC has no pending states)
+    // No output, because B was skipped and PreC has no pending states
     let outputs = collector.get_outputs();
     println!("  After C, outputs = {}", outputs.len());
     assert_eq!(outputs.len(), 0, "Expected no output - B was skipped");
@@ -324,10 +325,10 @@ fn test_2b2_3_skipped_b() {
     println!("Final outputs count: {}", outputs.len());
 }
 
-/// Test 4: Three-step chain with range quantifiers
-/// Pattern: A{1,2} → B{1} → C{2}
-/// Events: [A, A, B, C, C] → MATCH
-/// Note: Last step must have exact count (min=max)
+/// Test 4. Three step chain with range quantifiers
+/// Pattern A{1,2} → B{1} → C{2}
+/// Events [A, A, B, C, C] → MATCH
+/// The last step must have an exact count (min=max).
 #[test]
 fn test_2b2_4_range_quantifiers() {
     println!("\n=== Testing A{{1,2}} -> B -> C{{2}} pattern ===");
@@ -385,9 +386,8 @@ fn test_2b2_4_range_quantifiers() {
         );
     }
 
-    // Verify output
-    // Range quantifiers A{1,2} should produce multiple matches (A{1} and A{2})
-    // Each match flows through the chain and may produce outputs
+    // A{1,2} can start two matches, one for A{1} and one for A{2}.
+    // Each flows through the chain and may produce an output, so expect 1 or 2.
     let outputs = collector.get_outputs();
     assert!(
         !outputs.is_empty(),

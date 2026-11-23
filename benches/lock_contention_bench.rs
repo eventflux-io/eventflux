@@ -15,11 +15,10 @@
  * limitations under the License.
  */
 
-//! Lock Contention Benchmark
+//! Lock contention benchmark
 //!
-//! Measures lock contention in hot paths under concurrent load.
-//! This benchmark helps identify mutex contention bottlenecks that
-//! could be optimized with RwLock or lock-free structures.
+//! Measures how much threads wait on locks in the hot path under concurrent load.
+//! Use it to find mutexes that could become an RwLock or a lock free structure.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
@@ -35,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// Dummy processor for benchmarking
+/// Processor that drops every event, so the benchmark measures only the junction.
 #[derive(Debug)]
 struct BenchProcessor {
     name: String,
@@ -52,7 +51,7 @@ impl Processor for BenchProcessor {
         &self,
         _chunk: Option<Box<dyn eventflux::core::event::complex_event::ComplexEvent>>,
     ) {
-        // Minimal processing - just consume the event
+        // Do nothing. The event is dropped.
     }
 
     fn next_processor(&self) -> Option<Arc<Mutex<dyn Processor>>> {
@@ -120,13 +119,12 @@ fn create_junction(subscriber_count: usize, is_async: bool) -> Arc<Mutex<StreamJ
 
     let junction = StreamJunctionFactory::create(config, stream_def, app_ctx, None).unwrap();
 
-    // Add subscribers
     for i in 0..subscriber_count {
         let processor = Arc::new(Mutex::new(BenchProcessor::new(format!("Processor{}", i))));
         junction.lock().unwrap().subscribe(processor);
     }
 
-    // Set to DROP mode for benchmarking to reduce noise
+    // DROP failed events so error handling does not add noise to the numbers
     junction
         .lock()
         .unwrap()
@@ -135,7 +133,7 @@ fn create_junction(subscriber_count: usize, is_async: bool) -> Arc<Mutex<StreamJ
     junction
 }
 
-/// Benchmark subscriber lock contention with varying subscriber counts
+/// Measures lock contention with 4 sender threads and 1, 4, 8 or 16 subscribers.
 fn bench_subscriber_lock_contention(c: &mut Criterion) {
     let mut group = c.benchmark_group("subscriber_lock_contention");
 
@@ -148,7 +146,7 @@ fn bench_subscriber_lock_contention(c: &mut Criterion) {
                 let junction = create_junction(subscriber_count, true);
 
                 b.iter(|| {
-                    // Send 10K events concurrently with pacing to avoid overwhelming pipeline
+                    // Send 10K events from 4 threads, paced so the pipeline is not flooded
                     let mut handles = vec![];
                     for thread_id in 0..4 {
                         let junction_clone = Arc::clone(&junction);
@@ -158,10 +156,10 @@ fn bench_subscriber_lock_contention(c: &mut Criterion) {
                                     i as i64,
                                     vec![AttributeValue::Int(thread_id * 1000 + i)],
                                 );
-                                // Use send_event and handle backpressure gracefully
+                                // Ignore send errors so backpressure does not stop the run
                                 let _ = junction_clone.lock().unwrap().send_event(event);
 
-                                // Micro-sleep every 100 events to allow consumers to keep up
+                                // Sleep 100 microseconds every 100 events so consumers keep up
                                 if i % 100 == 0 {
                                     thread::sleep(Duration::from_micros(100));
                                 }
@@ -174,7 +172,7 @@ fn bench_subscriber_lock_contention(c: &mut Criterion) {
                     }
                 });
 
-                // Give more time for async processing to complete
+                // Stop the junction, then give async workers 500 ms to finish
                 junction.lock().unwrap().stop_processing();
                 thread::sleep(Duration::from_millis(500));
             },
@@ -184,7 +182,7 @@ fn bench_subscriber_lock_contention(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark single-threaded throughput (baseline with no contention)
+/// Measures throughput from a single sender thread. This is the baseline with no contention.
 fn bench_single_threaded_baseline(c: &mut Criterion) {
     let mut group = c.benchmark_group("single_threaded_baseline");
     group.throughput(Throughput::Elements(10000));
@@ -197,14 +195,13 @@ fn bench_single_threaded_baseline(c: &mut Criterion) {
                 let junction = create_junction(subscriber_count, true);
 
                 b.iter(|| {
-                    // Send 10K events from single thread
                     for i in 0..10000 {
                         let event = Event::new_with_data(i as i64, vec![AttributeValue::Int(i)]);
                         let _ = black_box(junction.lock().unwrap().send_event(event));
                     }
                 });
 
-                // Cleanup - longer wait for async processing
+                // Stop the junction, then give async workers 500 ms to finish
                 junction.lock().unwrap().stop_processing();
                 thread::sleep(Duration::from_millis(500));
             },

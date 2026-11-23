@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Join Compatibility Tests
+// Join compatibility tests
 // Reference: query/join/JoinTestCase.java, OuterJoinTestCase.java
 
 use super::common::AppRunner;
@@ -97,7 +97,7 @@ async fn join_test2_with_aliases() {
     assert_eq!(out.len(), 1);
 }
 
-/// Test self-join
+/// Test a stream joined with itself
 /// Reference: JoinTestCase.java:joinTest3
 #[tokio::test]
 async fn join_test3_self_join() {
@@ -127,11 +127,11 @@ async fn join_test3_self_join() {
         ],
     );
     let out = runner.shutdown();
-    // Self-join should produce matches where symbol matches itself
+    // Each event matches itself on symbol, so there is output
     assert!(!out.is_empty());
 }
 
-/// Test join without condition (cross join)
+/// Test a join with no ON condition, which is a cross join
 /// Reference: JoinTestCase.java:joinTest5
 #[tokio::test]
 async fn join_test5_cross_join() {
@@ -147,7 +147,7 @@ async fn join_test5_cross_join() {
     runner.send("A", vec![AttributeValue::Int(1)]);
     runner.send("B", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
-    // Cross join produces output
+    // One A event times one B event gives one row
     assert_eq!(out.len(), 1);
 }
 
@@ -170,7 +170,7 @@ async fn join_test6_left_outer() {
         ON L.id = R.id;\n";
     let runner = AppRunner::new(app, "Out").await;
     runner.send("L", vec![AttributeValue::Int(1)]);
-    // No matching R event
+    // No R event is sent, so R columns are NULL
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
@@ -213,7 +213,7 @@ async fn join_test8_full_outer() {
     runner.send("L", vec![AttributeValue::Int(1)]);
     runner.send("R", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
-    // Full outer join should produce output for both non-matching events
+    // Neither event has a match, and full outer join outputs both
     assert_eq!(out.len(), 2);
 }
 
@@ -337,8 +337,8 @@ async fn join_test11_with_filter() {
         ],
     );
     let out = runner.shutdown();
-    // Only IBM should match (price > 50)
-    // Filter may be applied after join, so we check that IBM is in the output
+    // Only IBM has price > 50. The test only checks that IBM is in the output,
+    // not that MSFT is missing.
     let ibm_matches: Vec<_> = out
         .iter()
         .filter(|row| row[0] == AttributeValue::String("IBM".to_string()))
@@ -430,7 +430,7 @@ async fn join_test13_multiple_conditions() {
         ],
     );
     let out = runner.shutdown();
-    // Only US region should match
+    // Only the US region matches
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][1], AttributeValue::String("US".to_string()));
 }
@@ -462,9 +462,8 @@ async fn join_test14_left_outer_with_match() {
     );
     runner.send("R", vec![AttributeValue::Int(1), AttributeValue::Int(100)]);
     let out = runner.shutdown();
-    // Should have match now
+    // L may first be output alone with NULL, then again once R matches it
     assert!(!out.is_empty());
-    // Find the matched row
     let matched = out
         .iter()
         .find(|row| row[1] != AttributeValue::Null)
@@ -474,11 +473,11 @@ async fn join_test14_left_outer_with_match() {
 }
 
 // ============================================================================
-// STREAM-TABLE JOIN TESTS
+// STREAM TO TABLE JOIN TESTS
 // Reference: query/table/InsertIntoTableTestCase.java
 // ============================================================================
 
-/// Test stream-table join
+/// Test a stream joined with a table
 /// Reference: InsertIntoTableTestCase.java
 #[tokio::test]
 async fn join_test15_stream_table() {
@@ -496,7 +495,7 @@ async fn join_test15_stream_table() {
         FROM orderStream JOIN productTable\n\
         ON orderStream.productId = productTable.productId;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // Insert product into table
+    // Add a product to the table
     runner.send(
         "insertStream",
         vec![
@@ -506,7 +505,7 @@ async fn join_test15_stream_table() {
         ],
     );
     std::thread::sleep(std::time::Duration::from_millis(50));
-    // Create order
+    // Send an order for that product
     runner.send(
         "orderStream",
         vec![
@@ -519,15 +518,15 @@ async fn join_test15_stream_table() {
     assert!(!out.is_empty());
     assert_eq!(out[0][0], AttributeValue::Int(101));
     assert_eq!(out[0][1], AttributeValue::String("Laptop".to_string()));
-    // Float * Int returns Float in EventFlux
+    // FLOAT * INT returns Float in EventFlux, even though the column is DOUBLE
     assert_eq!(out[0][2], AttributeValue::Float(2000.0));
 }
 
 // ============================================================================
-// JOIN EDGE CASES - INEQUALITY CONDITIONS
+// JOIN EDGE CASES WITH INEQUALITY CONDITIONS
 // ============================================================================
 
-/// Join with inequality condition (non-equi join)
+/// Join whose ON condition also has an inequality, not only equality
 #[tokio::test]
 async fn join_test16_non_equi_join() {
     let app = "\
@@ -557,7 +556,7 @@ async fn join_test16_non_equi_join() {
 // JOIN WITH NULL VALUES
 // ============================================================================
 
-/// Join with NULL in join column - should not match
+/// NULL in the join column never matches
 #[tokio::test]
 async fn join_test17_null_in_join_column() {
     let app = "\
@@ -570,7 +569,7 @@ async fn join_test17_null_in_join_column() {
         JOIN B WINDOW('length', 10)\n\
         ON A.id = B.id;\n";
     let runner = AppRunner::new(app, "Out").await;
-    // A event with NULL id
+    // A event with a NULL id
     runner.send(
         "A",
         vec![
@@ -578,12 +577,12 @@ async fn join_test17_null_in_join_column() {
             AttributeValue::String("Alice".to_string()),
         ],
     );
-    // B event with NULL id - should not match with A.NULL
+    // B event with a NULL id, which must not match the A event
     runner.send("B", vec![AttributeValue::Null, AttributeValue::Int(100)]);
-    // B event with actual id
+    // B event with a real id
     runner.send("B", vec![AttributeValue::Int(1), AttributeValue::Int(200)]);
     let out = runner.shutdown();
-    // NULL != NULL in SQL, so no match expected
+    // In SQL NULL never equals NULL, so there is no match
     assert!(out.is_empty());
 }
 
@@ -600,7 +599,7 @@ async fn join_test18_left_outer_null_id() {
         LEFT OUTER JOIN B WINDOW('length', 10)\n\
         ON A.id = B.id;\n";
     let runner = AppRunner::new(app, "Out").await;
-    // A event with NULL id - left outer join should still output it
+    // A event with a NULL id. Left outer join must still output it.
     runner.send(
         "A",
         vec![
@@ -609,7 +608,7 @@ async fn join_test18_left_outer_null_id() {
         ],
     );
     let out = runner.shutdown();
-    // Left outer join outputs left side even without match
+    // The left side is output with NULL for B, since nothing matches
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("Alice".to_string()));
     assert_eq!(out[0][1], AttributeValue::Null);
@@ -657,7 +656,7 @@ async fn join_test19_with_group_by() {
         vec![AttributeValue::Int(2), AttributeValue::Int(3)],
     );
     let out = runner.shutdown();
-    // Should have aggregated by category
+    // Only checks that the grouped join produced output, not the sums
     assert!(!out.is_empty());
 }
 
@@ -678,17 +677,17 @@ async fn join_test20_multiple_matches() {
         JOIN B WINDOW('length', 10)\n\
         ON A.aKey = B.bKey;\n";
     let runner = AppRunner::new(app, "Out").await;
-    // Two A events with same key
+    // Two A events with the same key
     runner.send("A", vec![AttributeValue::Int(1), AttributeValue::Int(10)]);
     runner.send("A", vec![AttributeValue::Int(1), AttributeValue::Int(20)]);
-    // One B event with matching key
+    // One B event with that key
     runner.send("B", vec![AttributeValue::Int(1), AttributeValue::Int(100)]);
     let out = runner.shutdown();
-    // Should produce 2 results (2 A's x 1 B)
+    // At least 2 rows, 2 A events times 1 B event
     assert!(out.len() >= 2);
 }
 
-/// Join with cartesian product behavior
+/// Join where every A event matches every B event on the key
 #[tokio::test]
 async fn join_test21_cartesian_matches() {
     let app = "\
@@ -701,14 +700,14 @@ async fn join_test21_cartesian_matches() {
         JOIN B WINDOW('length', 10)\n\
         ON A.aKey = B.bKey;\n";
     let runner = AppRunner::new(app, "Out").await;
-    // Two A events with same key
+    // Two A events with the same key
     runner.send("A", vec![AttributeValue::Int(1), AttributeValue::Int(10)]);
     runner.send("A", vec![AttributeValue::Int(1), AttributeValue::Int(20)]);
-    // Two B events with matching key
+    // Two B events with that key
     runner.send("B", vec![AttributeValue::Int(1), AttributeValue::Int(100)]);
     runner.send("B", vec![AttributeValue::Int(1), AttributeValue::Int(200)]);
     let out = runner.shutdown();
-    // Should produce 4 results (2 A's x 2 B's)
+    // At least 4 rows, 2 A events times 2 B events
     assert!(out.len() >= 4);
 }
 
@@ -866,7 +865,7 @@ async fn join_test26_boolean_filter() {
         ],
     );
     let out = runner.shutdown();
-    // Only priority order should be in output
+    // Only the priority order is in the output
     let priority_orders: Vec<_> = out
         .iter()
         .filter(|row| row[0] == AttributeValue::Int(101))
@@ -875,10 +874,10 @@ async fn join_test26_boolean_filter() {
 }
 
 // ============================================================================
-// THREE-WAY JOIN (CHAINED)
+// THREE WAY JOIN (CHAINED)
 // ============================================================================
 
-/// Three-way join (chained joins)
+/// Three way join, written as two chained joins
 #[tokio::test]
 #[ignore = "Chained joins (three-way join) not yet supported"]
 async fn join_test27_three_way_join() {
@@ -1013,9 +1012,9 @@ async fn join_test30_late_left_event() {
         JOIN R WINDOW('length', 10)\n\
         ON L.id = R.id;\n";
     let runner = AppRunner::new(app, "Out").await;
-    // R event first
+    // Send the R event first
     runner.send("R", vec![AttributeValue::Int(1), AttributeValue::Int(100)]);
-    // L event later
+    // and the L event after it
     runner.send("L", vec![AttributeValue::Int(1), AttributeValue::Int(10)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
@@ -1048,7 +1047,7 @@ async fn join_test31_full_outer_with_match() {
     );
     runner.send("R", vec![AttributeValue::Int(1), AttributeValue::Int(100)]);
     let out = runner.shutdown();
-    // Should have match
+    // At least one output row must hold the match
     let matched = out
         .iter()
         .find(|row| row[0] != AttributeValue::Null && row[1] != AttributeValue::Null);
@@ -1200,7 +1199,7 @@ async fn join_test_coalesce() {
             AttributeValue::String("Alice".to_string()),
         ],
     );
-    // No matching R record, should use L.name
+    // No R record matches, so coalesce falls back to L.name
     let out = runner.shutdown();
     assert!(!out.is_empty());
 }
@@ -1287,7 +1286,7 @@ async fn join_test_left_outer_no_match() {
         vec![AttributeValue::Int(999), AttributeValue::Int(100)],
     ); // No match
     let out = runner.shutdown();
-    // Should have output with L data and null for R
+    // Output has the L data and NULL for R
     assert!(!out.is_empty());
 }
 
@@ -1313,7 +1312,7 @@ async fn join_test_right_outer_no_match() {
     ); // No match
     runner.send("R", vec![AttributeValue::Int(1), AttributeValue::Int(100)]);
     let out = runner.shutdown();
-    // Should have output with R data and null for L
+    // Output has the R data and NULL for L
     assert!(!out.is_empty());
 }
 
@@ -1340,7 +1339,7 @@ async fn join_test_uuid() {
     runner.send("R", vec![AttributeValue::Int(1), AttributeValue::Int(100)]);
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // Check UUID is generated
+    // A UUID string is generated
     if let AttributeValue::String(uuid) = &out[0][0] {
         assert_eq!(uuid.len(), 36);
     }
@@ -1523,7 +1522,7 @@ async fn join_test_division() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // Division may return INT or DOUBLE depending on implementation
+    // Accept INT or DOUBLE so the test does not depend on the division result type
     let avg = match out[0][1] {
         AttributeValue::Int(v) => v as f64,
         AttributeValue::Double(v) => v,
@@ -1957,7 +1956,7 @@ async fn join_test_uuid_trans() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // UUID should be a non-empty string
+    // The UUID is a string that is not empty
     if let AttributeValue::String(uuid) = &out[0][0] {
         assert!(!uuid.is_empty());
     } else {
@@ -2108,9 +2107,10 @@ async fn join_test_min_agg() {
         ],
     );
     let out = runner.shutdown();
-    // Each join match emits output after batch completes
+    // Output comes once the lengthBatch of 3 orders is full, possibly one row
+    // per join match
     assert!(!out.is_empty());
-    // Find the minimum quantity in output
+    // The smallest min across all rows
     let mut min_found = i64::MAX;
     for row in &out {
         let val = match &row[0] {
@@ -2167,9 +2167,10 @@ async fn join_test_max_agg() {
         ],
     );
     let out = runner.shutdown();
-    // Each join match emits output after batch completes
+    // Output comes once the lengthBatch of 3 orders is full, possibly one row
+    // per join match
     assert!(!out.is_empty());
-    // Find the maximum quantity in output
+    // The largest max across all rows
     let mut max_found = i64::MIN;
     for row in &out {
         let val = match &row[0] {
@@ -2226,16 +2227,17 @@ async fn join_test_avg_agg() {
         ],
     );
     let out = runner.shutdown();
-    // Each join match emits output after batch completes
+    // Output comes once the lengthBatch of 3 orders is full, possibly one row
+    // per join match
     assert!(!out.is_empty());
-    // Collect all avg values and verify expected range (3.0 to 9.0)
+    // Every avg must lie between 3.0 and 9.0
     for row in &out {
         let avg_val = match &row[0] {
             AttributeValue::Double(d) => *d,
             AttributeValue::Float(f) => *f as f64,
             _ => continue,
         };
-        // Values should be in range of the input quantities
+        // An average can never leave the range of the input quantities
         assert!(
             (3.0..=9.0).contains(&avg_val),
             "avg={} should be between 3 and 9",
@@ -2939,6 +2941,6 @@ async fn join_test_multiple_matches() {
         vec![AttributeValue::Int(1), AttributeValue::Int(200)],
     );
     let out = runner.shutdown();
-    // Should have 2 matches (A-100 and A-200)
+    // 2 matches, the stream1 event with each stream2 event (100 and 200)
     assert_eq!(out.len(), 2);
 }

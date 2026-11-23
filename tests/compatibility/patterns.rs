@@ -15,18 +15,18 @@
  * limitations under the License.
  */
 //
-// Pattern Compatibility Tests
+// Pattern compatibility tests
 // Reference: query/pattern/EveryPatternTestCase.java, LogicalPatternTestCase.java, WithinPatternTestCase.java
 
 use super::common::AppRunner;
 use eventflux::core::event::value::AttributeValue;
 
 // ============================================================================
-// SIMPLE SEQUENCE PATTERNS (FOLLOWED-BY)
+// SIMPLE SEQUENCE PATTERNS (FOLLOWED BY)
 // Reference: query/pattern/EveryPatternTestCase.java
 // ============================================================================
 
-/// Test simple followed-by pattern
+/// Test a simple followed by pattern
 /// Reference: EveryPatternTestCase.java:testQuery1
 /// Pattern: e1=Stream1 -> e2=Stream2
 #[tokio::test]
@@ -79,7 +79,7 @@ async fn pattern_test2_with_filter() {
         SELECT e1.symbol AS symbol1, e2.symbol AS symbol2\n\
         FROM PATTERN (e1=Stream1[price > 20.0] -> e2=Stream2);\n";
     let runner = AppRunner::new(app, "OutputStream").await;
-    // First event matches filter
+    // The first event passes the filter
     runner.send(
         "Stream1",
         vec![
@@ -107,10 +107,10 @@ async fn pattern_test2_with_filter() {
     );
 }
 
-/// Test pattern filter no match
-/// Reference: Filter condition not met
-/// Note: Pattern filter behavior - EventFlux may still allow pattern to proceed
-/// if first event doesn't match but subsequent events could form new pattern
+/// Test that no match comes out when the first event fails the filter
+/// Reference: filter condition not met
+/// Ignored because EventFlux may still let the pattern go on when the first event
+/// fails the filter, if later events could start a new match
 #[tokio::test]
 #[ignore = "Pattern filter behavior differs - needs investigation"]
 async fn pattern_test3_filter_no_match() {
@@ -122,7 +122,7 @@ async fn pattern_test3_filter_no_match() {
         SELECT e1.symbol AS symbol1, e2.symbol AS symbol2\n\
         FROM PATTERN (e1=Stream1[price > 100.0] -> e2=Stream2);\n";
     let runner = AppRunner::new(app, "OutputStream").await;
-    // First event does NOT match filter (55.6 < 100)
+    // The first event does NOT pass the filter, since 55.6 < 100
     runner.send(
         "Stream1",
         vec![
@@ -140,11 +140,11 @@ async fn pattern_test3_filter_no_match() {
         ],
     );
     let out = runner.shutdown();
-    // Pattern should not match
+    // The pattern must not match
     assert!(out.is_empty());
 }
 
-/// Test pattern on same stream
+/// Test a pattern on the same stream
 /// Reference: EveryPatternTestCase.java:testQuery7
 /// Pattern: e1=Stream1 -> e2=Stream1 (same stream)
 #[tokio::test]
@@ -178,8 +178,8 @@ async fn pattern_test4_same_stream() {
     assert_eq!(out[0][1], AttributeValue::Float(57.6));
 }
 
-/// Test 3-element pattern
-/// Reference: Multi-element pattern
+/// Test a pattern of 3 events
+/// Reference: pattern with several events
 #[tokio::test]
 async fn pattern_test5_three_elements() {
     let app = "\
@@ -206,8 +206,8 @@ async fn pattern_test5_three_elements() {
     );
 }
 
-/// Test pattern incomplete (no match)
-/// Reference: Pattern does not complete
+/// Test that a pattern that never completes gives no match
+/// Reference: pattern does not complete
 #[tokio::test]
 async fn pattern_test6_incomplete() {
     let app = "\
@@ -303,7 +303,7 @@ async fn logical_pattern_test3_and_with_symbol() {
     assert!(!out.is_empty());
 }
 
-/// Logical OR pattern - first match wins
+/// Logical OR pattern where the first matching stream wins
 /// Reference: LogicalPatternTestCase.java
 #[tokio::test]
 async fn logical_pattern_test4_or_first_match() {
@@ -324,7 +324,7 @@ async fn logical_pattern_test4_or_first_match() {
         ],
     );
     let out = runner.shutdown();
-    // First stream matches OR pattern
+    // The first stream satisfies the OR pattern
     assert!(!out.is_empty());
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
 }
@@ -366,8 +366,8 @@ async fn pattern_test_within_clause() {
     assert_eq!(out[0][1], AttributeValue::String("MSFT".to_string()));
 }
 
-/// Pattern with cross-stream reference
-/// Tests: e2.price > e1.price
+/// Pattern whose WHERE compares fields from both events
+/// Query `e2.price > e1.price`
 /// Reference: WithinPatternTestCase.java testQuery1
 #[tokio::test]
 async fn pattern_test7_cross_stream_reference() {
@@ -397,15 +397,16 @@ async fn pattern_test7_cross_stream_reference() {
         ],
     );
     let out = runner.shutdown();
-    // Pattern matches: e2.price (60) > e1.price (50)
+    // The pattern matches because e2.price (60) > e1.price (50)
     assert!(!out.is_empty());
     assert_eq!(out[0][0], AttributeValue::String("MSFT".to_string()));
     assert_eq!(out[0][1], AttributeValue::String("IBM".to_string()));
 }
 
-/// Pattern with no match due to filter
-/// Reference: Based on WithinPatternTestCase.java
-/// Note: EventFlux pattern WHERE clause filtering behavior differs
+/// Pattern that the WHERE filter must reject
+/// Reference: based on WithinPatternTestCase.java
+/// Ignored because EventFlux filters pattern WHERE clauses differently from the
+/// reference
 #[tokio::test]
 #[ignore = "Pattern cross-reference WHERE clause filtering differs from reference"]
 async fn pattern_test8_cross_stream_no_match() {
@@ -435,7 +436,7 @@ async fn pattern_test8_cross_stream_no_match() {
         ],
     );
     let out = runner.shutdown();
-    // Pattern doesn't match: e2.price (50) NOT > e1.price (100)
+    // No match because e2.price (50) is NOT > e1.price (100)
     assert_eq!(out.len(), 0);
 }
 
@@ -444,7 +445,7 @@ async fn pattern_test8_cross_stream_no_match() {
 // Reference: query/pattern/EveryPatternTestCase.java
 // ============================================================================
 
-/// Every pattern - matches multiple times
+/// EVERY pattern matches more than once
 /// Reference: EveryPatternTestCase.java
 #[tokio::test]
 async fn pattern_test_every() {
@@ -487,7 +488,7 @@ async fn pattern_test_every() {
         ],
     );
     let out = runner.shutdown();
-    // EVERY should produce 2 matches
+    // EVERY gives 2 matches
     assert_eq!(out.len(), 2);
 }
 
@@ -496,9 +497,9 @@ async fn pattern_test_every() {
 // Reference: query/pattern/AbsentPatternTestCase.java
 // ============================================================================
 
-/// NOT pattern - absence detection
+/// NOT pattern, which detects that an event did not happen
 /// Reference: AbsentPatternTestCase.java
-/// Pattern: e1=A -> NOT B -> e2=C (B should not occur between A and C)
+/// Pattern: e1=A -> NOT B -> e2=C, where B must not occur between A and C
 #[tokio::test]
 #[ignore = "NOT pattern syntax not yet supported"]
 async fn pattern_test_not_absent() {
@@ -515,7 +516,7 @@ async fn pattern_test_not_absent() {
     // No B event
     runner.send("C", vec![AttributeValue::Int(3)]);
     let out = runner.shutdown();
-    // Pattern should match since B didn't occur
+    // The pattern matches because B did not occur
     assert_eq!(out.len(), 1);
 }
 
@@ -524,9 +525,9 @@ async fn pattern_test_not_absent() {
 // Reference: query/pattern/CountPatternTestCase.java
 // ============================================================================
 
-/// Count pattern - exactly N occurrences
+/// Count pattern with exactly N events
 /// Reference: CountPatternTestCase.java
-/// Pattern: e1=A<2> (exactly 2 A events)
+/// Pattern: e1=A<2>, exactly 2 A events
 #[tokio::test]
 #[ignore = "Count pattern syntax not yet supported"]
 async fn pattern_test_count_exact() {
@@ -543,9 +544,9 @@ async fn pattern_test_count_exact() {
     assert_eq!(out.len(), 1);
 }
 
-/// Count pattern - range (min:max)
+/// Count pattern with a min:max range
 /// Reference: CountPatternTestCase.java
-/// Pattern: e1=A<1:3> (1 to 3 A events)
+/// Pattern: e1=A<1:3>, 1 to 3 A events
 #[tokio::test]
 #[ignore = "Count pattern syntax not yet supported"]
 async fn pattern_test_count_range() {
@@ -559,13 +560,13 @@ async fn pattern_test_count_range() {
     runner.send("A", vec![AttributeValue::Int(1)]);
     runner.send("A", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
-    // Should match after 1, 2, or 3 events
+    // A match may come after 1, 2 or 3 events
     assert!(!out.is_empty());
 }
 
-/// Count pattern - zero or more (Kleene star)
+/// Count pattern with zero or more events (Kleene star)
 /// Reference: CountPatternTestCase.java
-/// Pattern: e1=A<0:> or e1=A* (zero or more)
+/// Pattern: e1=A<0:> or e1=A*, zero or more
 #[tokio::test]
 #[ignore = "Count pattern syntax not yet supported"]
 async fn pattern_test_count_zero_or_more() {
@@ -580,13 +581,13 @@ async fn pattern_test_count_zero_or_more() {
     // Zero A events, then B
     runner.send("B", vec![AttributeValue::Int(10)]);
     let out = runner.shutdown();
-    // Should match with zero A events
+    // Matches with zero A events
     assert_eq!(out.len(), 1);
 }
 
-/// Count pattern - one or more (Kleene plus)
+/// Count pattern with one or more events (Kleene plus)
 /// Reference: CountPatternTestCase.java
-/// Pattern: e1=A<1:> or e1=A+ (one or more)
+/// Pattern: e1=A<1:> or e1=A+, one or more
 #[tokio::test]
 #[ignore = "Count pattern syntax not yet supported"]
 async fn pattern_test_count_one_or_more() {
@@ -602,7 +603,7 @@ async fn pattern_test_count_one_or_more() {
     runner.send("A", vec![AttributeValue::Int(2)]);
     runner.send("B", vec![AttributeValue::Int(10)]);
     let out = runner.shutdown();
-    // Should match after one or more A events followed by B
+    // One match, for the A events followed by B
     assert_eq!(out.len(), 1);
 }
 
@@ -611,7 +612,7 @@ async fn pattern_test_count_one_or_more() {
 // Reference: query/pattern/ComplexPatternTestCase.java
 // ============================================================================
 
-/// Complex pattern - nested logical operators
+/// Complex pattern that nests a followed by inside a logical AND
 /// Reference: ComplexPatternTestCase.java
 #[tokio::test]
 #[ignore = "Nested logical operators with followed-by not yet supported"]
@@ -629,7 +630,7 @@ async fn pattern_test_complex_nested() {
     runner.send("B", vec![AttributeValue::Int(2)]);
     runner.send("C", vec![AttributeValue::Int(3)]);
     let out = runner.shutdown();
-    // (A -> B) AND C should match when all three conditions are met
+    // (A -> B) AND C matches once all three events have arrived
     assert_eq!(out.len(), 1);
 }
 
@@ -665,7 +666,7 @@ async fn pattern_test_multiple_filters() {
     assert_eq!(out[0][1], AttributeValue::String("MSFT".to_string()));
 }
 
-/// Pattern with aggregation on collected events
+/// Pattern that aggregates over the events a count step collected
 /// Reference: ComplexPatternTestCase.java
 #[tokio::test]
 #[ignore = "Pattern collection aggregation syntax not yet supported"]
@@ -699,7 +700,7 @@ async fn pattern_test_collection_aggregation() {
         ],
     );
     let out = runner.shutdown();
-    // Average of 100, 110, 120 = 110
+    // The average of 100, 110 and 120 is 110
     assert_eq!(out.len(), 1);
 }
 
@@ -887,8 +888,9 @@ async fn pattern_test_boolean_filter() {
 // PATTERN TIMEOUT TESTS
 // ============================================================================
 
-/// Pattern that should timeout with WITHIN clause
-/// Note: WITHIN timeout behavior may differ - the pattern still matches if second event arrives
+/// Pattern that must time out because of its WITHIN clause
+/// Ignored because the pattern still matches when the second event arrives late.
+/// Both events are sent with timestamp 0, so the sleep does not change event time.
 #[tokio::test]
 #[ignore = "WITHIN timeout behavior needs investigation"]
 async fn pattern_test_within_timeout() {
@@ -900,15 +902,15 @@ async fn pattern_test_within_timeout() {
         FROM PATTERN (e1=S -> e2=S) WITHIN 50 MILLISECONDS;\n";
     let runner = AppRunner::new(app, "Out").await;
     runner.send("S", vec![AttributeValue::Int(1)]);
-    // Wait longer than WITHIN timeout
+    // Wait longer than the WITHIN time on the wall clock
     std::thread::sleep(std::time::Duration::from_millis(100));
     runner.send("S", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
-    // Should have no output because e2 came after timeout
+    // Expect no output because e2 came after the WITHIN time
     assert_eq!(out.len(), 0);
 }
 
-/// Pattern that should match within timeout
+/// Pattern that matches when the second event arrives within the WITHIN time
 #[tokio::test]
 async fn pattern_test_within_success() {
     let app = "\
@@ -919,11 +921,11 @@ async fn pattern_test_within_success() {
         FROM PATTERN (e1=S -> e2=S) WITHIN 500 MILLISECONDS;\n";
     let runner = AppRunner::new(app, "Out").await;
     runner.send("S", vec![AttributeValue::Int(1)]);
-    // Wait less than WITHIN timeout
+    // Wait less than the WITHIN time
     std::thread::sleep(std::time::Duration::from_millis(50));
     runner.send("S", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
-    // Should match because e2 came within timeout
+    // Matches because e2 came within the WITHIN time
     assert_eq!(out.len(), 1);
 }
 
@@ -954,7 +956,7 @@ async fn pattern_test_function_in_select() {
 }
 
 // ============================================================================
-// PATTERN EDGE CASES - NULL HANDLING
+// PATTERN EDGE CASES WITH NULL VALUES
 // ============================================================================
 
 /// Pattern with NULL value in event
@@ -978,8 +980,9 @@ async fn pattern_test_with_null_value() {
     assert_eq!(out[0][1], AttributeValue::Int(2));
 }
 
-/// Pattern WHERE clause with NULL comparison
-/// Note: IS NOT NULL filtering in pattern WHERE clause behavior differs
+/// Pattern WHERE clause with IS NOT NULL
+/// Ignored because IS NOT NULL in a pattern WHERE clause behaves differently than
+/// expected
 #[tokio::test]
 #[ignore = "IS NOT NULL in pattern WHERE clause behavior differs - needs investigation"]
 async fn pattern_test_null_comparison_in_filter() {
@@ -1005,7 +1008,7 @@ async fn pattern_test_null_comparison_in_filter() {
 // PATTERN RESTART BEHAVIOR
 // ============================================================================
 
-/// Pattern resets after match and can match again
+/// Pattern resets after a match and can match again
 #[tokio::test]
 async fn pattern_test_restart_after_match() {
     let app = "\
@@ -1018,11 +1021,12 @@ async fn pattern_test_restart_after_match() {
     // First match
     runner.send("Event", vec![AttributeValue::Int(1)]);
     runner.send("Event", vec![AttributeValue::Int(2)]);
-    // Second match (pattern restarts)
+    // Second match, after the pattern restarts
     runner.send("Event", vec![AttributeValue::Int(3)]);
     runner.send("Event", vec![AttributeValue::Int(4)]);
     let out = runner.shutdown();
-    // Note: The number of matches depends on implementation - each pair should match
+    // Each pair should match, but the exact count is not fixed, so only check for
+    // some output
     assert!(!out.is_empty());
 }
 
@@ -1052,7 +1056,7 @@ async fn pattern_test_gte_comparison() {
         "Stock",
         vec![
             AttributeValue::String("MSFT".to_string()),
-            AttributeValue::Float(100.0), // Equal, should still match
+            AttributeValue::Float(100.0), // equal, still matches
         ],
     );
     let out = runner.shutdown();
@@ -1081,7 +1085,7 @@ async fn pattern_test_lte_comparison() {
         "Stock",
         vec![
             AttributeValue::String("MSFT".to_string()),
-            AttributeValue::Float(50.0), // Less than, should match
+            AttributeValue::Float(50.0), // less than, matches
         ],
     );
     let out = runner.shutdown();
@@ -1181,8 +1185,8 @@ async fn pattern_test_string_like() {
 // PATTERN WITH COALESCE IN SELECT
 // ============================================================================
 
-/// Pattern using coalesce to handle possible NULL
-/// Note: Single-event pattern e1=Event matches once per pattern instance
+/// Pattern that uses coalesce to replace a NULL value
+/// A single event pattern e1=Event matches once per pattern instance
 #[tokio::test]
 async fn pattern_test_coalesce_in_select() {
     let app = "\
@@ -1196,7 +1200,7 @@ async fn pattern_test_coalesce_in_select() {
     let out = runner.shutdown();
     // Pattern e1=Event matches once
     assert!(!out.is_empty());
-    // First event should have coalesce return 0.0 (or actual value if non-null)
+    // value is NULL, so coalesce returns the 0.0 fallback
     assert_eq!(out[0][0], AttributeValue::Int(1));
     assert_eq!(out[0][1], AttributeValue::Float(0.0));
 }
@@ -1222,7 +1226,7 @@ async fn pattern_test_cast_in_select() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
-    assert_eq!(out[0][1], AttributeValue::Int(99)); // Truncated
+    assert_eq!(out[0][1], AttributeValue::Int(99)); // fraction dropped, not rounded
 }
 
 // ============================================================================
@@ -1269,7 +1273,7 @@ async fn pattern_test_three_way_or() {
         SELECT coalesce(e1.val, e2.val, e3.val) AS result\n\
         FROM PATTERN (e1=A OR e2=B OR e3=C);\n";
     let runner = AppRunner::new(app, "Out").await;
-    runner.send("B", vec![AttributeValue::Int(20)]); // First match is B
+    runner.send("B", vec![AttributeValue::Int(20)]); // B arrives first, so it matches
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(20));
@@ -1302,7 +1306,7 @@ async fn pattern_test_double_precision() {
         vec![
             AttributeValue::Int(2),
             AttributeValue::Double(100.123456790),
-        ], // Slightly larger
+        ], // slightly larger
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
@@ -1363,7 +1367,7 @@ async fn pattern_test_arithmetic_in_filter() {
         vec![
             AttributeValue::String("IBM".to_string()),
             AttributeValue::Float(100.0),
-            AttributeValue::Float(40.0), // 100 - 40 = 60 > 50, should match
+            AttributeValue::Float(40.0), // 100 - 40 = 60 > 50, matches
         ],
     );
     runner.send(
@@ -1371,7 +1375,7 @@ async fn pattern_test_arithmetic_in_filter() {
         vec![
             AttributeValue::String("MSFT".to_string()),
             AttributeValue::Float(100.0),
-            AttributeValue::Float(60.0), // 100 - 60 = 40 < 50, should not match
+            AttributeValue::Float(60.0), // 100 - 60 = 40 < 50, no match
         ],
     );
     let out = runner.shutdown();
@@ -1406,14 +1410,14 @@ async fn pattern_test_multiple_conditions_same_event() {
         "Trade",
         vec![
             AttributeValue::String("IBM".to_string()),
-            AttributeValue::Float(40.0), // Price too low
+            AttributeValue::Float(40.0), // price too low
             AttributeValue::Int(1000),
         ],
     );
     runner.send(
         "Trade",
         vec![
-            AttributeValue::String("MSFT".to_string()), // Wrong symbol
+            AttributeValue::String("MSFT".to_string()), // wrong symbol
             AttributeValue::Float(100.0),
             AttributeValue::Int(1000),
         ],
@@ -1613,8 +1617,8 @@ async fn pattern_test_and_different_types() {
     assert_eq!(out[0][0], AttributeValue::String("NYC".to_string()));
 }
 
-/// Pattern OR with same stream different conditions
-/// Note: Pattern matching with OR filter may restart on first match
+/// Pattern on one stream with an OR of two conditions
+/// The pattern may restart after the first match
 #[tokio::test]
 async fn pattern_test_or_same_stream() {
     let app = "\
@@ -1629,30 +1633,30 @@ async fn pattern_test_or_same_stream() {
         "stockStream",
         vec![
             AttributeValue::String("IBM".to_string()),
-            AttributeValue::Float(100.0), // Matches IBM
+            AttributeValue::Float(100.0), // matches on symbol IBM
         ],
     );
     runner.send(
         "stockStream",
         vec![
             AttributeValue::String("MSFT".to_string()),
-            AttributeValue::Float(50.0), // No match
+            AttributeValue::Float(50.0), // no match
         ],
     );
     runner.send(
         "stockStream",
         vec![
             AttributeValue::String("GOOG".to_string()),
-            AttributeValue::Float(250.0), // Matches price > 200
+            AttributeValue::Float(250.0), // matches on price > 200
         ],
     );
     let out = runner.shutdown();
-    // Should match at least IBM, behavior with subsequent matches may vary
+    // IBM must match first. Whether later events also match may vary.
     assert!(!out.is_empty());
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
 }
 
-/// Pattern followed-by with restart verification
+/// Followed by pattern that restarts and matches a second pair
 #[tokio::test]
 async fn pattern_test_multiple_matches() {
     let app = "\
@@ -1694,7 +1698,7 @@ async fn pattern_test_multiple_matches() {
         ],
     );
     let out = runner.shutdown();
-    // Should match both pairs
+    // Both pairs match
     assert!(!out.is_empty());
 }
 
@@ -1788,7 +1792,7 @@ async fn pattern_test_boolean_comparison() {
         vec![AttributeValue::Int(3), AttributeValue::Bool(true)],
     );
     let out = runner.shutdown();
-    // Should have at least 1 output (events with active=true)
+    // At least 1 output, from the events with active=true
     assert!(!out.is_empty());
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -1947,7 +1951,7 @@ async fn pattern_test_multiple_and_filters() {
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
 }
 
-/// Pattern followed-by with symbol equality constraint
+/// Followed by pattern where both events must have the same symbol
 #[tokio::test]
 async fn pattern_test_followed_by_same_symbol() {
     let app = "\
@@ -2003,7 +2007,7 @@ async fn pattern_test_int_comparison() {
         vec![AttributeValue::Int(3), AttributeValue::Int(10)],
     );
     let out = runner.shutdown();
-    // Should have at least 1 output (orders with quantity >= 10)
+    // At least 1 output, from the orders with quantity >= 10
     assert!(!out.is_empty());
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -2125,9 +2129,9 @@ async fn pattern_test_case_when_categorization() {
         ],
     );
     let out = runner.shutdown();
-    // Basic pattern matches once - check we got at least one output
+    // A basic pattern matches once, so check for at least one output
     assert!(!out.is_empty());
-    // First output should have HIGH category for value=75
+    // The first output has category HIGH for value=75
     assert_eq!(out[0][1], AttributeValue::String("HIGH".to_string()));
 }
 
@@ -2144,7 +2148,7 @@ async fn pattern_test_uuid_function() {
     runner.send("eventStream", vec![AttributeValue::String("A".to_string())]);
     runner.send("eventStream", vec![AttributeValue::String("B".to_string())]);
     let out = runner.shutdown();
-    // Basic pattern matches once per consumption
+    // A basic pattern matches once per pattern instance
     assert!(!out.is_empty());
     if let AttributeValue::String(uuid) = &out[0][1] {
         assert_eq!(uuid.len(), 36);
@@ -2451,7 +2455,7 @@ async fn pattern_test_arithmetic_divide() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // Division returns Double
+    // Accept INT or DOUBLE so the test does not depend on the division result type
     let quotient = match &out[0][1] {
         AttributeValue::Int(v) => *v as f64,
         AttributeValue::Double(v) => *v,
@@ -2487,7 +2491,7 @@ async fn pattern_test_double_field() {
     assert!((val - 1.23456).abs() < 0.0001);
 }
 
-/// Pattern with LONG timestamp-like field
+/// Pattern with a LONG field that holds a timestamp
 #[tokio::test]
 #[ignore = "LONG type not yet supported in SQL parser"]
 async fn pattern_test_long_timestamp() {
@@ -3201,7 +3205,7 @@ async fn pattern_test_or_condition() {
         SELECT e1.type AS type, e1.level AS level\n\
         FROM PATTERN (e1=eventStream[e1.type = 'critical' OR e1.level > 90]);\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // Test that critical type matches via first OR condition
+    // The critical type matches through the first OR condition
     runner.send(
         "eventStream",
         vec![
@@ -3224,7 +3228,7 @@ async fn pattern_test_not_equal() {
         SELECT e1.id AS id, e1.status AS status\n\
         FROM PATTERN (e1=statusStream[e1.status != 'inactive']);\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // Test that active status matches via != 'inactive'
+    // The active status matches through != 'inactive'
     runner.send(
         "statusStream",
         vec![

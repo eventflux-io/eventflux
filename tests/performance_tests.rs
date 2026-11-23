@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-//! Performance tests for EventFlux Engine
+//! Performance tests for the EventFlux engine
 //!
-//! These tests are long-running and stress-test various components.
-//! They are only compiled and run when the `perf-tests` feature is enabled.
+//! These tests run for a long time and put heavy load on several components.
+//! They are compiled and run only when the `perf-tests` feature is enabled.
 //!
-//! Run with: cargo test --features perf-tests
+//! Run with `cargo test --features perf-tests`.
 
 #![cfg(feature = "perf-tests")]
 
@@ -37,7 +37,7 @@ use eventflux::query_api::definition::StreamDefinition;
 use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::{Arc, Mutex};
 
-// Test processor that records events
+// Processor that records the data of every event it receives
 #[derive(Debug)]
 struct TestProcessor {
     events: Arc<Mutex<Vec<Vec<AttributeValue>>>>,
@@ -116,7 +116,6 @@ impl Processor for TestProcessor {
 
 #[test]
 fn test_junction_backpressure() {
-    // Create junction with smaller buffer to guarantee backpressure
     let eventflux_context = Arc::new(EventFluxContext::new());
     let app = Arc::new(EventFluxApp::new("TestApp".to_string()));
     let app_ctx = Arc::new(EventFluxAppContext::new(
@@ -130,12 +129,12 @@ fn test_junction_backpressure() {
         StreamDefinition::new("TestStream".to_string()).attribute("id".to_string(), AttrType::INT),
     );
 
-    // Use minimal buffer (64) to guarantee overflow
+    // A 64 slot async buffer is far too small for 50,000 events, so it must overflow
     let junction = StreamJunction::new(
         "TestStream".to_string(),
         stream_def,
         app_ctx,
-        64, // Minimal buffer to ensure backpressure
+        64, // buffer size
         true,
         None,
     )
@@ -146,7 +145,6 @@ fn test_junction_backpressure() {
 
     junction.start_processing().unwrap();
 
-    // Flood the junction to test backpressure
     let mut dropped = 0;
     for i in 0..50000 {
         let event = Event::new_with_data(i, vec![AttributeValue::Int(i as i32)]);
@@ -160,6 +158,6 @@ fn test_junction_backpressure() {
     let metrics = junction.get_performance_metrics();
     println!("Junction metrics: {:?}", metrics);
 
-    // With small buffer, some events should definitely be dropped due to backpressure
+    // Some events must be dropped, either seen as send errors or in the junction metrics
     assert!(metrics.events_dropped > 0 || dropped > 0);
 }

@@ -49,9 +49,10 @@ async fn test_start_stop_restart() {
     assert!(out.contains(&vec![AttributeValue::Int(2)]));
 }
 
-/// Async-junction variant of the restart contract (#138): shutdown() now
-/// calls stop_processing() on every junction, so start() must clear the
-/// sticky shutdown flags and re-spawn consumers for both batches to arrive.
+/// The restart contract with async junctions (#138). shutdown() calls
+/// stop_processing() on every junction, so start() must clear the shutdown
+/// flags, which stay set otherwise, and spawn new consumers. Only then do
+/// both batches arrive.
 #[tokio::test]
 async fn test_start_stop_restart_async() {
     use eventflux::core::eventflux_manager::EventFluxManager;
@@ -161,7 +162,7 @@ async fn test_start_idempotent() {
     let runner = AppRunner::new(app, "Out").await;
     let rt = runner.runtime();
 
-    // Already running — second start should be fine
+    // Already running, so this second start must do nothing and succeed
     rt.start().expect("idempotent start");
 
     runner.send("In", vec![AttributeValue::Int(7)]);
@@ -171,7 +172,7 @@ async fn test_start_idempotent() {
     assert!(out.contains(&vec![AttributeValue::Int(7)]));
 }
 
-/// With a persistence store: shutdown auto-persists, start auto-restores.
+/// With a persistence store, shutdown saves state and start restores it.
 #[tokio::test]
 async fn test_restart_with_auto_persist_restore() {
     let store: Arc<dyn PersistenceStore> = Arc::new(InMemoryPersistenceStore::new());
@@ -183,22 +184,21 @@ async fn test_restart_with_auto_persist_restore() {
     let runner = AppRunner::new_with_store(app, "Out", Arc::clone(&store)).await;
     let rt = runner.runtime();
 
-    // Build up state: sum=10, window=[10]
+    // Build up state. sum=10, window=[10]
     runner.send("In", vec![AttributeValue::Int(10)]);
     // sum=30, window=[10,20]
     runner.send("In", vec![AttributeValue::Int(20)]);
 
-    // Shutdown triggers auto-persist
+    // Shutdown saves a revision on its own
     rt.shutdown();
 
-    // Verify a revision was saved
     let rev = store.get_last_revision(&rt.name);
     assert!(rev.is_some(), "auto-persist should have saved a revision");
 
-    // Restart triggers auto-restore
+    // Restart restores the saved revision on its own
     rt.start().expect("restart with auto-restore");
 
-    // After restore: state should be sum=30, window=[10,20]
+    // After restore the state is sum=30, window=[10,20]
     // Sending 5 → sum=35, window=[10,20,5]
     runner.send("In", vec![AttributeValue::Int(5)]);
     rt.shutdown();
@@ -220,10 +220,10 @@ async fn test_clear_state_then_start() {
     let runner = AppRunner::new_with_store(app, "Out", Arc::clone(&store)).await;
     let rt = runner.runtime();
 
-    // Build up state: sum=10
+    // Build up state. sum=10
     runner.send("In", vec![AttributeValue::Int(10)]);
 
-    // Shutdown (auto-persist)
+    // Shutdown saves a revision on its own
     rt.shutdown();
     assert!(store.get_last_revision(&rt.name).is_some());
 
@@ -236,8 +236,8 @@ async fn test_clear_state_then_start() {
 
     rt.start().expect("fresh restart");
 
-    // After clear + restart: no old aggregation state
-    // sum should start from 0: sending 5 → sum=5
+    // After clear and restart there is no old aggregation state.
+    // sum starts from 0, so sending 5 → sum=5
     runner.send("In", vec![AttributeValue::Int(5)]);
     rt.shutdown();
 

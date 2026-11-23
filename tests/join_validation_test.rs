@@ -15,13 +15,13 @@
  * limitations under the License.
  */
 
-// Test to verify JOIN validation and error handling
+// JOIN validation and the errors for unsupported JOIN forms
 
 use eventflux::sql_compiler::parse;
 
 #[test]
 fn test_join_using_clause_error() {
-    // USING clause should produce helpful error
+    // USING is rejected with an error that names it
     let sql = "\
         CREATE STREAM L (id INT, name STRING);\n\
         CREATE STREAM R (id INT, value INT);\n\
@@ -43,7 +43,7 @@ fn test_join_using_clause_error() {
 
 #[test]
 fn test_natural_join_error() {
-    // NATURAL JOIN should produce helpful error
+    // NATURAL JOIN is rejected with an error that names it
     let sql = "\
         CREATE STREAM L (id INT, name STRING);\n\
         CREATE STREAM R (id INT, value INT);\n\
@@ -65,7 +65,7 @@ fn test_natural_join_error() {
 
 #[test]
 fn test_join_and_inner_join_are_equivalent() {
-    // Plain JOIN and INNER JOIN should behave identically
+    // Plain JOIN and INNER JOIN must both be accepted
     let sql_plain = "\
         CREATE STREAM L (id INT);\n\
         CREATE STREAM R (id INT);\n\
@@ -80,7 +80,6 @@ fn test_join_and_inner_join_are_equivalent() {
         SELECT L.id as l, R.id as r\n\
         FROM L INNER JOIN R ON L.id = R.id;\n";
 
-    // Both should compile successfully
     let result1 = parse(sql_plain);
     let result2 = parse(sql_inner);
 
@@ -95,6 +94,6 @@ fn test_join_and_inner_join_are_equivalent() {
         result2.err()
     );
 
-    // Both compile successfully - normalization happens internally
-    // The fix ensures both JOIN and INNER JOIN are treated identically
+    // This only checks that both parse. The compiler treats plain JOIN as INNER JOIN,
+    // but the parsed results are not compared here.
 }

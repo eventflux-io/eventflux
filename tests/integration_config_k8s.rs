@@ -17,8 +17,9 @@
 
 //! Integration tests for Kubernetes configuration management
 //!
-//! These tests demonstrate how the configuration system works with Kubernetes
-//! ConfigMaps, Secrets, and cloud-native patterns.
+//! These tests show how the configuration system works with Kubernetes
+//! ConfigMaps, Secrets, and common cloud deployment patterns. They only build
+//! with the `kubernetes` feature.
 
 #[cfg(feature = "kubernetes")]
 use eventflux::core::config::{
@@ -48,25 +49,21 @@ async fn test_kubernetes_config_manager_creation() {
         );
     }
 
-    // Should have Kubernetes ConfigMap loader
     assert!(loaders
         .iter()
         .any(|l| l.description.contains("Kubernetes ConfigMap")));
 
-    // Should have environment variables loader
     assert!(loaders
         .iter()
         .any(|l| l.description.contains("Environment variables")));
 }
 
-/// Test showing cloud-native configuration precedence
+/// Test showing the order in which configuration sources apply
 #[tokio::test]
 #[cfg(feature = "kubernetes")]
 async fn test_cloud_native_precedence() {
-    // This test would work in a real Kubernetes environment with proper ConfigMaps
-    // For now, it demonstrates the precedence logic
-
-    // Set environment variable override
+    // No real ConfigMap is loaded here. The test only checks that the loaders are
+    // listed in priority order.
     std::env::set_var("EVENTFLUX_RUNTIME_PERFORMANCE_THREAD_POOL_SIZE", "32");
 
     let manager = ConfigManager::builder()
@@ -74,10 +71,10 @@ async fn test_cloud_native_precedence() {
         .with_environment_vars_prefix("EVENTFLUX_")
         .build();
 
-    // In a real environment, this would load from K8s ConfigMap first, then override with env vars
+    // In a real cluster the ConfigMap would load first and env vars would override it
     let result = manager.list_loaders();
 
-    // Verify precedence order (higher priority numbers should come later)
+    // Higher priority numbers must come later in the list
     let mut priorities: Vec<u32> = result.iter().map(|l| l.priority).collect();
     let original_priorities = priorities.clone();
     priorities.sort();
@@ -152,7 +149,7 @@ fn test_kubernetes_config_validation() {
     let mut config = EventFluxConfig::default();
     config.eventflux.runtime.mode = RuntimeMode::Distributed;
 
-    // This should fail validation because distributed mode requires distributed config
+    // Fails validation because distributed mode needs a distributed config
     let result = tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async { validator.validate(&config).await });
@@ -188,7 +185,7 @@ fn test_application_usage_pattern() {
     config.eventflux.runtime.performance.thread_pool_size = 24;
     config.eventflux.runtime.performance.event_buffer_size = 2000000;
 
-    // Add application-specific configuration
+    // Configuration for this application only
     let mut app_config = ApplicationConfig::default();
     app_config.persistence = Some(crate::core::config::PersistenceConfig {
         enabled: true,
@@ -230,7 +227,6 @@ fn test_application_usage_pattern() {
     assert_eq!(app_context.get_configured_event_buffer_size(), 2000000);
     assert!(app_context.is_distributed_mode());
 
-    // Verify application-specific configuration
     let app_config_ref = app_context.get_app_config().unwrap();
     assert!(app_config_ref.persistence.as_ref().unwrap().enabled);
 

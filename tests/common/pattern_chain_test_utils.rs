@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-//! Common test utilities for pattern chain tests
+//! Shared helpers for pattern chain tests.
 //!
-//! Provides shared helpers, mock objects, and utilities to eliminate code duplication
-//! across Phase 2b test files.
+//! Builds test contexts, stream definitions and pattern chains, and wraps the last
+//! post processor so tests can read the pattern matches it emits.
 
 use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
 use eventflux::core::config::eventflux_context::EventFluxContext;
@@ -37,7 +37,7 @@ use eventflux::query_api::eventflux_app::EventFluxApp;
 use std::sync::{Arc, Mutex};
 
 #[allow(dead_code)]
-/// Create test contexts for pattern chain tests
+/// Create an app context and a query context for an empty app named "TestApp".
 pub fn create_test_contexts() -> (Arc<EventFluxAppContext>, Arc<EventFluxQueryContext>) {
     let eventflux_context = Arc::new(EventFluxContext::new());
     let app = Arc::new(EventFluxApp::new("TestApp".to_string()));
@@ -56,7 +56,7 @@ pub fn create_test_contexts() -> (Arc<EventFluxAppContext>, Arc<EventFluxQueryCo
 }
 
 #[allow(dead_code)]
-/// Create a stream definition for testing
+/// Create a stream definition with one LONG attribute named `value`.
 pub fn create_stream_definition(name: &str) -> Arc<StreamDefinition> {
     Arc::new(
         StreamDefinition::new(name.to_string()).attribute("value".to_string(), AttributeType::LONG),
@@ -64,13 +64,16 @@ pub fn create_stream_definition(name: &str) -> Arc<StreamDefinition> {
 }
 
 #[allow(dead_code)]
-/// Create a StreamEvent with specified timestamp
+/// Create a StreamEvent with the given timestamp and no attribute data.
 pub fn create_stream_event(timestamp: i64) -> StreamEvent {
     StreamEvent::new(timestamp, 0, 0, 0)
 }
 
 #[allow(dead_code)]
-/// Build a pattern chain with specified number of steps
+/// Build a ready to use pattern chain with one step per entry in `steps`.
+///
+/// Each step is `(alias, stream_name, min, max)`. Returns the chain and a collector
+/// that captures every match the last step emits. Panics if the chain fails to build.
 pub fn build_pattern_chain(
     steps: Vec<(String, String, usize, usize)>, // (alias, stream_name, min, max)
     state_type: StateType,
@@ -79,13 +82,12 @@ pub fn build_pattern_chain(
 
     let mut builder = PatternChainBuilder::new(state_type);
 
-    // Collect stream definitions before consuming steps
+    // Build the stream definitions first because the loop below consumes `steps`
     let stream_defs: Vec<Arc<StreamDefinition>> = steps
         .iter()
         .map(|(_, stream_name, _, _)| create_stream_definition(stream_name))
         .collect();
 
-    // Add steps to builder
     for (alias, stream_name, min, max) in steps {
         builder.add_step(PatternStepConfig::new(alias, stream_name, min, max));
     }
@@ -94,23 +96,22 @@ pub fn build_pattern_chain(
         .build(app_ctx, query_ctx)
         .expect("Failed to build chain");
 
-    // Initialize chain
     chain.init();
 
-    // Set up event cloners
     chain.setup_cloners(stream_defs);
 
-    // CRITICAL: Move initial state from new_list to pending_list
+    // CRITICAL: move the initial state from new_list to pending_list so the first
+    // step is ready to match events
     chain.update_state();
 
-    // Attach output collector to last post processor
+    // Wrap the last post processor so the collector sees every match
     let collector = OutputCollector::new();
     let last_idx = chain.post_processors.len() - 1;
     let original_last = chain.post_processors[last_idx].clone();
     let wrapped = Arc::new(Mutex::new(collector.create_wrapper(original_last)));
     chain.post_processors[last_idx] = wrapped.clone() as Arc<Mutex<dyn PostStateProcessor>>;
 
-    // Re-wire the last pre-processor to use the wrapped post processor
+    // Point the last pre processor at the wrapper, or matches skip the collector
     chain.pre_processors_concrete[last_idx]
         .lock()
         .unwrap()
@@ -121,7 +122,10 @@ pub fn build_pattern_chain(
 }
 
 #[allow(dead_code)]
-/// Build a pattern chain with WITHIN time constraint
+/// Same as [`build_pattern_chain`] but also sets a WITHIN limit.
+///
+/// `within_time_ms` is the most time in milliseconds allowed between the first
+/// event of a match and the later ones.
 pub fn build_pattern_chain_with_within(
     steps: Vec<(String, String, usize, usize)>,
     state_type: StateType,
@@ -131,13 +135,12 @@ pub fn build_pattern_chain_with_within(
 
     let mut builder = PatternChainBuilder::new(state_type);
 
-    // Collect stream definitions before consuming steps
+    // Build the stream definitions first because the loop below consumes `steps`
     let stream_defs: Vec<Arc<StreamDefinition>> = steps
         .iter()
         .map(|(_, stream_name, _, _)| create_stream_definition(stream_name))
         .collect();
 
-    // Add steps to builder
     for (alias, stream_name, min, max) in steps {
         builder.add_step(PatternStepConfig::new(alias, stream_name, min, max));
     }
@@ -146,38 +149,37 @@ pub fn build_pattern_chain_with_within(
         .build(app_ctx, query_ctx)
         .expect("Failed to build chain");
 
-    // Initialize chain
     chain.init();
 
-    // Set up event cloners
     chain.setup_cloners(stream_defs);
 
-    // Set WITHIN time on the first processor (where pattern starts)
+    // Set the WITHIN time on the first processor, where the pattern starts
     chain.pre_processors[0]
         .lock()
         .unwrap()
         .set_within_time(within_time_ms);
 
-    // Set start_state_ids on subsequent processors to check WITHIN constraint
+    // Later processors check the WITHIN limit against the start state ids
     for i in 1..chain.pre_processors.len() {
         chain.pre_processors_concrete[i]
             .lock()
             .unwrap()
             .stream_processor
-            .set_start_state_ids(vec![0]); // Check against position 0 (first event)
+            .set_start_state_ids(vec![0]); // measure from position 0, the first event
     }
 
-    // CRITICAL: Move initial state from new_list to pending_list
+    // CRITICAL: move the initial state from new_list to pending_list so the first
+    // step is ready to match events
     chain.update_state();
 
-    // Attach output collector to last post processor
+    // Wrap the last post processor so the collector sees every match
     let collector = OutputCollector::new();
     let last_idx = chain.post_processors.len() - 1;
     let original_last = chain.post_processors[last_idx].clone();
     let wrapped = Arc::new(Mutex::new(collector.create_wrapper(original_last)));
     chain.post_processors[last_idx] = wrapped.clone() as Arc<Mutex<dyn PostStateProcessor>>;
 
-    // Re-wire the last pre-processor to use the wrapped post processor
+    // Point the last pre processor at the wrapper, or matches skip the collector
     chain.pre_processors_concrete[last_idx]
         .lock()
         .unwrap()
@@ -188,7 +190,7 @@ pub fn build_pattern_chain_with_within(
 }
 
 #[allow(dead_code)]
-/// Output collector for capturing pattern match results
+/// Collects the pattern matches that reach the wrapped last post processor.
 pub struct OutputCollector {
     outputs: Arc<Mutex<Vec<StateEvent>>>,
 }
@@ -205,7 +207,8 @@ impl OutputCollector {
         self.outputs.lock().unwrap().clone()
     }
 
-    /// Create a wrapper post processor that captures outputs
+    /// Wrap `original` in a post processor that records each StateEvent into this
+    /// collector, then passes it on to `original`.
     pub fn create_wrapper(
         &self,
         original: Arc<Mutex<dyn PostStateProcessor>>,
@@ -218,7 +221,8 @@ impl OutputCollector {
 }
 
 #[allow(dead_code)]
-/// PostStateProcessor wrapper that captures outputs
+/// PostStateProcessor wrapper that records each StateEvent it processes. Every
+/// trait call is passed through to the wrapped processor.
 #[derive(Debug)]
 pub struct CollectorPostProcessor {
     original: Arc<Mutex<dyn PostStateProcessor>>,
@@ -234,7 +238,6 @@ impl PostStateProcessor for CollectorPostProcessor {
             }
         }
 
-        // Pass through to original processor
         self.original.lock().unwrap().process(chunk)
     }
 

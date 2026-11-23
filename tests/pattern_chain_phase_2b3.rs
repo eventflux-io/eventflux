@@ -15,11 +15,12 @@
  * limitations under the License.
  */
 
-//! Phase 2b.3: Pattern Mode (StateType::Pattern)
+//! Phase 2b.3. Pattern mode (StateType::Pattern)
 //!
-//! Tests for pattern mode behavior in chains - non-matching events are ignored
+//! Tests for pattern mode in chains, where events that do not match are skipped.
 //!
-//! Reference: feat/pattern_processing/STATE_MACHINE_DESIGN.md Phase 2b.3
+//! Follows Phase 2b.3 of feat/pattern_processing/STATE_MACHINE_DESIGN.md. That doc
+//! is no longer in the repo.
 
 mod common;
 
@@ -27,13 +28,13 @@ use common::pattern_chain_test_utils::*;
 use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 
 // ============================================================================
-// PHASE 2b.3 TESTS: Pattern Mode (StateType::Pattern)
+// PHASE 2b.3 TESTS. Pattern Mode (StateType::Pattern)
 // ============================================================================
 
-/// Test 0: Pattern mode ignores non-matching events
-/// Pattern: A → B (Pattern mode)
-/// Events: [A, X, Y, B] → MATCH [A, B]
-/// Non-matching events X and Y are ignored
+/// Test 0. Pattern mode skips events that do not match.
+/// Pattern A → B (Pattern mode)
+/// Events [A, X, Y, B] → MATCH [A, B]
+/// X and Y do not match and are skipped.
 #[test]
 fn test_2b3_0_pattern_ignores_non_matching() {
     println!("\n=== Testing A -> B (Pattern) with non-matching events [A, X, Y, B] ===");
@@ -61,7 +62,7 @@ fn test_2b3_0_pattern_ignores_non_matching() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send X to processor[0] (non-matching, should be ignored in Pattern mode)
+    // Send X to processor[0]. It does not match, so Pattern mode skips it.
     println!("Sending X to processor[0] (non-matching, should be ignored)");
     chain.pre_processors[0]
         .lock()
@@ -70,7 +71,7 @@ fn test_2b3_0_pattern_ignores_non_matching() {
     chain.update_state();
     println!("  After X, outputs = {}", collector.get_outputs().len());
 
-    // Send Y to processor[0] (non-matching, should be ignored in Pattern mode)
+    // Send Y to processor[0]. It does not match, so Pattern mode skips it.
     println!("Sending Y to processor[0] (non-matching, should be ignored)");
     chain.pre_processors[0]
         .lock()
@@ -79,7 +80,7 @@ fn test_2b3_0_pattern_ignores_non_matching() {
     chain.update_state();
     println!("  After Y, outputs = {}", collector.get_outputs().len());
 
-    // Send B to processor[1] (should match and complete the pattern)
+    // Send B to processor[1]. It matches and completes the pattern.
     println!("Sending B to processor[1]");
     chain.pre_processors[1]
         .lock()
@@ -110,14 +111,14 @@ fn test_2b3_0_pattern_ignores_non_matching() {
     println!("SUCCESS: Pattern mode ignored non-matching events X and Y");
 }
 
-/// Test 1: Compare Sequence vs Pattern behavior
-/// Sequence: A → B, events [A, X] → FAIL (X breaks sequence)
-/// Pattern: A → B, events [A, X, B] → MATCH [A, B] (X is ignored)
+/// Test 1. Sequence mode compared with Pattern mode.
+/// Sequence A → B, events [A, X] → FAIL, because X breaks the sequence
+/// Pattern A → B, events [A, X, B] → MATCH [A, B], because X is skipped
 #[test]
 fn test_2b3_1_sequence_vs_pattern() {
     println!("\n=== Testing Sequence vs Pattern behavior ===");
 
-    // PART 1: Sequence mode - non-matching event breaks the sequence
+    // PART 1. In Sequence mode an event that does not match breaks the sequence
     println!("\nPART 1: Sequence mode [A, X] → FAIL");
     let (mut seq_chain, seq_collector) = build_pattern_chain(
         vec![
@@ -138,7 +139,7 @@ fn test_2b3_1_sequence_vs_pattern() {
         .process(Some(Box::new(event_a1)));
     seq_chain.update_state();
 
-    // Send X (non-matching - in Sequence mode, this would go to processor[0] and not match)
+    // Send X to processor[0], where it does not match and breaks the sequence
     println!("  Sending X to processor[0] (should break sequence)");
     seq_chain.pre_processors[0]
         .lock()
@@ -150,7 +151,7 @@ fn test_2b3_1_sequence_vs_pattern() {
     println!("  Sequence mode outputs: {}", seq_outputs.len());
     assert_eq!(seq_outputs.len(), 0, "Sequence mode: X breaks the sequence");
 
-    // PART 2: Pattern mode - non-matching event is ignored
+    // PART 2. In Pattern mode an event that does not match is skipped
     println!("\nPART 2: Pattern mode [A, X, B] → MATCH");
     let (mut pat_chain, pat_collector) = build_pattern_chain(
         vec![
@@ -172,7 +173,7 @@ fn test_2b3_1_sequence_vs_pattern() {
         .process(Some(Box::new(event_a2)));
     pat_chain.update_state();
 
-    // Send X (non-matching - in Pattern mode, this is ignored)
+    // Send X. It does not match, so Pattern mode skips it.
     println!("  Sending X to processor[0] (should be ignored)");
     pat_chain.pre_processors[0]
         .lock()
@@ -180,7 +181,7 @@ fn test_2b3_1_sequence_vs_pattern() {
         .process(Some(Box::new(event_x2)));
     pat_chain.update_state();
 
-    // Send B (should match and complete the pattern)
+    // Send B. It matches and completes the pattern.
     println!("  Sending B to processor[1]");
     pat_chain.pre_processors[1]
         .lock()
@@ -199,9 +200,9 @@ fn test_2b3_1_sequence_vs_pattern() {
     println!("SUCCESS: Sequence breaks on X, Pattern ignores X and matches");
 }
 
-/// Test 2: Three-step pattern with non-matching events in between
-/// Pattern: A → B → C (Pattern mode)
-/// Events: [A, X, B, Y, C] → MATCH [A, B, C]
+/// Test 2. Three step pattern with events that do not match in between.
+/// Pattern A → B → C (Pattern mode)
+/// Events [A, X, B, Y, C] → MATCH [A, B, C]
 #[test]
 fn test_2b3_2_three_step_pattern_with_noise() {
     println!("\n=== Testing A -> B -> C (Pattern) with events [A, X, B, Y, C] ===");
@@ -231,7 +232,7 @@ fn test_2b3_2_three_step_pattern_with_noise() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send X (non-matching, should be ignored)
+    // Send X. It does not match and is skipped.
     println!("Sending X to processor[0] (non-matching)");
     chain.pre_processors[0]
         .lock()
@@ -249,7 +250,7 @@ fn test_2b3_2_three_step_pattern_with_noise() {
     chain.update_state();
     println!("  After B, outputs = {}", collector.get_outputs().len());
 
-    // Send Y (non-matching, should be ignored)
+    // Send Y. It does not match and is skipped.
     println!("Sending Y to processor[1] (non-matching)");
     chain.pre_processors[1]
         .lock()
@@ -293,10 +294,10 @@ fn test_2b3_2_three_step_pattern_with_noise() {
     println!("SUCCESS: Three-step pattern ignored non-matching events X and Y");
 }
 
-/// Test 3: Pattern with many non-matching events (stress test)
-/// Pattern: A → B (Pattern mode)
-/// Events: [A, X×1000, B] → MATCH [A, B]
-/// Tests memory efficiency of ignoring many non-matching events
+/// Test 3. Pattern with many events that do not match, as a stress test.
+/// Pattern A → B (Pattern mode)
+/// Events [A, X×1000, B] → MATCH [A, B]
+/// Skipping many events must not build up memory.
 #[test]
 fn test_2b3_3_pattern_with_many_non_matching() {
     println!("\n=== Testing A -> B (Pattern) with 1000 non-matching events ===");
@@ -319,7 +320,7 @@ fn test_2b3_3_pattern_with_many_non_matching() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send 1000 non-matching X events (should all be ignored)
+    // Send 1000 X events that do not match. All must be skipped.
     println!("Sending 1000 non-matching X events...");
     for i in 0..1000 {
         let event_x = create_stream_event(2000 + i);
@@ -343,7 +344,7 @@ fn test_2b3_3_pattern_with_many_non_matching() {
         collector.get_outputs().len()
     );
 
-    // Send B to processor[1] (should match and complete the pattern)
+    // Send B to processor[1]. It matches and completes the pattern.
     let event_b = create_stream_event(3000);
     println!("Sending B to processor[1]");
     chain.pre_processors[1]

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Window Compatibility Tests
+// Window compatibility tests
 // Reference: query/window/*.java
 
 use super::common::AppRunner;
@@ -119,7 +119,7 @@ async fn length_window_test4_aggregation_functions() {
     assert_eq!(last[1], AttributeValue::Float(100.0)); // min
 }
 
-/// Test length window with null values in aggregation
+/// Test length window with NULL values in an aggregation
 #[tokio::test]
 async fn length_window_null_handling_in_aggregation() {
     let app = "\
@@ -147,7 +147,7 @@ async fn length_window_null_handling_in_aggregation() {
     assert_eq!(last[1], AttributeValue::Long(2));
 }
 
-/// Length window with expired events count
+/// Length window output count includes expired events
 #[tokio::test]
 async fn length_window_test5_expired_events() {
     let app = "\
@@ -170,7 +170,7 @@ async fn length_window_test5_expired_events() {
     assert!(out.len() >= 6);
 }
 
-/// Length window with min/max aggregation
+/// Length window with min and max
 #[tokio::test]
 async fn length_window_test6_min_max() {
     let app = "\
@@ -213,9 +213,9 @@ async fn length_window_test6_min_max() {
 // Reference: query/window/TimeWindowTestCase.java
 // ============================================================================
 
-/// Test time window basic behavior
-/// Note: Time windows emit both CURRENT and EXPIRED events
-/// 2 input events = 4 outputs (2 CURRENT + 2 EXPIRED)
+/// Test basic time window behavior
+/// Time windows emit both CURRENT and EXPIRED events, so 2 input events can give
+/// up to 4 outputs (2 CURRENT and 2 EXPIRED)
 #[tokio::test]
 async fn time_window_test1_basic() {
     let app = "\
@@ -241,8 +241,8 @@ async fn time_window_test1_basic() {
         ],
     );
     let out = runner.shutdown();
-    // Time windows emit CURRENT events immediately; EXPIRED events depend on timing
-    // At minimum 2 events (CURRENT), up to 4 events (CURRENT + EXPIRED)
+    // CURRENT events come out at once. EXPIRED events depend on timing.
+    // So expect at least 2 events (CURRENT) and at most 4 (CURRENT and EXPIRED).
     assert!(out.len() >= 2 && out.len() <= 4);
 }
 
@@ -357,7 +357,7 @@ async fn length_batch_window_with_aggregation() {
     assert_eq!(last[1], AttributeValue::Long(3));
 }
 
-/// Length batch window - fewer events than batch size
+/// Length batch window with fewer events than the batch size
 #[tokio::test]
 async fn length_batch_window_test4_fewer_than_batch() {
     let app = "\
@@ -536,7 +536,7 @@ async fn time_batch_window_test2_multiple_batches() {
     assert!(out.len() >= 2);
 }
 
-/// Time batch window with count aggregation (timing-sensitive)
+/// Time batch window with count. Depends on timing.
 #[tokio::test]
 #[ignore = "Time-based window aggregation timing is environment-sensitive"]
 async fn time_batch_window_test3_count_aggregation() {
@@ -622,7 +622,7 @@ async fn external_time_window_test1_basic() {
     assert!(out.len() >= 3);
 }
 
-/// External time batch window (timing-sensitive)
+/// External time batch window. Depends on timing.
 #[tokio::test]
 #[ignore = "externalTimeBatch window output timing needs investigation"]
 async fn external_time_batch_window_test1_basic() {
@@ -668,7 +668,7 @@ async fn external_time_batch_window_test1_basic() {
 // Reference: query/window/SortWindowTestCase.java
 // ============================================================================
 
-/// Sort window basic test (descending)
+/// Basic sort window test, descending
 #[tokio::test]
 async fn sort_window_test1_basic() {
     let app = "\
@@ -822,8 +822,8 @@ async fn session_window_test1_basic() {
     assert!(!out.is_empty());
 }
 
-/// Session window with partition key
-/// Note: Session window with partition key syntax not yet fully supported
+/// Session window with a partition key
+/// Ignored because the session window partition key syntax is not fully supported
 #[tokio::test]
 #[ignore = "Session window with partition key syntax not yet fully supported"]
 async fn session_window_test2_with_partition() {
@@ -864,7 +864,7 @@ async fn session_window_test2_with_partition() {
 // Reference: query/window/UniqueWindowTestCase.java
 // ============================================================================
 
-/// Unique window - keeps only one event per unique key
+/// Unique window keeps only one event per key
 #[tokio::test]
 async fn unique_window_test1_basic() {
     let app = "\
@@ -907,7 +907,7 @@ async fn unique_window_test1_basic() {
 // Reference: query/window/FirstUniqueWindowTestCase.java
 // ============================================================================
 
-/// First unique window - keeps first occurrence of each unique key
+/// First unique window keeps the first event for each key
 #[tokio::test]
 async fn first_unique_window_test1_basic() {
     let app = "\
@@ -931,7 +931,7 @@ async fn first_unique_window_test1_basic() {
         ],
     );
     let out = runner.shutdown();
-    // First unique should keep only first IBM with price 100.0
+    // First unique keeps only the first IBM event, with price 100.0
     assert!(!out.is_empty());
 }
 
@@ -940,7 +940,7 @@ async fn first_unique_window_test1_basic() {
 // Reference: query/window/DelayWindowTestCase.java
 // ============================================================================
 
-/// Delay window - delays events by specified time
+/// Delay window holds events back for the given time
 #[tokio::test]
 async fn delay_window_test1_basic() {
     let app = "\
@@ -1035,7 +1035,7 @@ async fn length_window_test8_distinct_count() {
     );
     let out = runner.shutdown();
     assert!(out.len() >= 3);
-    // After 3 events, distinctCount should be 2 (IBM, MSFT)
+    // After 3 events distinctCount is 2, for IBM and MSFT
     let last = out.last().unwrap();
     assert_eq!(last[0], AttributeValue::Long(2));
 }
@@ -1045,8 +1045,9 @@ async fn length_window_test8_distinct_count() {
 // Reference: query/window/TimeWindowTestCase.java
 // ============================================================================
 
-/// Time window with sum aggregation
-/// Note: Running sum is emitted on each event. EXPIRED events may reset sum to 0.
+/// Time window with sum
+/// The running sum is emitted on each event. EXPIRED events may bring the sum down
+/// to 0.
 #[tokio::test]
 async fn time_window_test3_sum_aggregation() {
     let app = "\
@@ -1070,9 +1071,9 @@ async fn time_window_test3_sum_aggregation() {
         ],
     );
     let out = runner.shutdown();
-    // Running sum emits on each event. EXPIRED events may show reduced/0 sums.
+    // EXPIRED events may show a smaller sum or 0
     assert!(!out.is_empty(), "Expected at least one output");
-    // Check that at least one output has a positive sum (from CURRENT events)
+    // At least one output, from a CURRENT event, has a positive sum
     let has_positive_sum = out.iter().any(|row| {
         if let AttributeValue::Double(sum) = row[0] {
             sum > 0.0
@@ -1108,7 +1109,7 @@ async fn time_window_test4_avg_aggregation() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // Check that avg values are reasonable (100-200 range depending on timing)
+    // At least one avg falls between 100 and 200. The exact value depends on timing.
     let has_valid_avg = out.iter().any(|row| {
         if let AttributeValue::Double(avg) = row[0] {
             (100.0..=200.0).contains(&avg)
@@ -1149,17 +1150,17 @@ async fn length_batch_window_test7_with_filter() {
         ],
     );
     let out = runner.shutdown();
-    // Only events with price > 100 should pass
+    // Only events with price > 100 pass
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][1], AttributeValue::Float(200.0));
 }
 
 // ============================================================================
-// EXPRESSION-BASED WINDOW TESTS
+// EXPRESSION WINDOW TESTS
 // Reference: query/window/ExpressionWindowTestCase.java
 // ============================================================================
 
-/// Expression window - count-based expression limit
+/// Expression window limited by an expression on count
 #[tokio::test]
 async fn expression_window_test1_basic() {
     let app = "\
@@ -1192,8 +1193,8 @@ async fn expression_window_test1_basic() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // With count() <= 2, window holds at most 2 events.
-    // After 3 events: window contains events 2 and 3 (prices 200+300=500)
+    // With count() <= 2 the window holds at most 2 events.
+    // After 3 events it holds events 2 and 3, so the sum is 200+300=500
     let last = &out[out.len() - 1];
     assert_eq!(last[1], AttributeValue::Double(500.0));
 }
@@ -1203,7 +1204,7 @@ async fn expression_window_test1_basic() {
 // Reference: query/window/CronWindowTestCase.java
 // ============================================================================
 
-/// Cron window - trigger output on schedule
+/// Cron window emits output on a schedule
 #[tokio::test]
 #[ignore = "Cron window syntax not yet fully supported"]
 async fn cron_window_test1_basic() {
@@ -1231,7 +1232,7 @@ async fn cron_window_test1_basic() {
 // Reference: query/window/FrequentWindowTestCase.java
 // ============================================================================
 
-/// Frequent window - tracks most frequent values
+/// Frequent window tracks the most frequent values
 #[tokio::test]
 async fn frequent_window_test1_basic() {
     let app = "\
@@ -1266,11 +1267,11 @@ async fn frequent_window_test1_basic() {
 }
 
 // ============================================================================
-// LOSS-LESS WINDOW TESTS
+// LOSSLESS WINDOW TESTS
 // Reference: query/window/LossLessWindowTestCase.java
 // ============================================================================
 
-/// Lossless window - no event loss on overflow
+/// Lossless window loses no events when it overflows
 #[tokio::test]
 #[ignore = "Lossless window does not exist in Siddhi reference; test is invalid"]
 async fn lossless_window_test1_basic() {
@@ -1290,7 +1291,7 @@ async fn lossless_window_test1_basic() {
         );
     }
     let out = runner.shutdown();
-    // Lossless should output all events even when window overflows
+    // Lossless outputs all 5 events even though the window holds only 2
     assert_eq!(out.len(), 5);
 }
 
@@ -1322,7 +1323,7 @@ async fn length_window_test9_size_one() {
         ],
     );
     let out = runner.shutdown();
-    // Window size 1 means only latest event in window
+    // With size 1 the window holds only the latest event
     assert!(out.len() >= 2);
 }
 
@@ -1418,7 +1419,7 @@ async fn time_window_test6_multiple_aggregates() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // Find maximum sum across all outputs (timing-sensitive)
+    // The largest sum across all outputs. Depends on timing.
     let max_sum = out
         .iter()
         .filter_map(|row| match &row[0] {
@@ -1426,14 +1427,14 @@ async fn time_window_test6_multiple_aggregates() {
             _ => None,
         })
         .fold(0.0_f64, |a, b| a.max(b));
-    // With timing, we might not always capture all 3 events together
-    // but we should see at least some aggregation happening
+    // Timing may keep all 3 events from being in the window at once, so only
+    // require that some aggregation happened
     assert!(
         max_sum >= 100.0,
         "Expected max sum >= 100.0, got {}",
         max_sum
     );
-    // Verify max volume - should see 2000 at some point
+    // The max volume reaches 2000 at some point
     let max_vol = out
         .iter()
         .filter_map(|row| match &row[2] {
@@ -1443,7 +1444,7 @@ async fn time_window_test6_multiple_aggregates() {
         .max()
         .unwrap_or(0);
     assert_eq!(max_vol, 2000);
-    // Verify count is reasonable (at least 1 event counted)
+    // At least 1 event was counted
     let max_cnt = out
         .iter()
         .filter_map(|row| match &row[3] {
@@ -1478,8 +1479,8 @@ async fn length_batch_window_test8_exact_multiple() {
         );
     }
     let out = runner.shutdown();
-    // Batch window outputs current + expired events, so we get more outputs
-    // 3 batches = 6 current events + some expired events
+    // The batch window outputs current and expired events, so there are more
+    // outputs than inputs. 3 batches give 6 current events plus some expired ones.
     assert!(out.len() >= 6);
 }
 
@@ -1514,9 +1515,9 @@ async fn length_batch_window_test9_min_aggregation() {
         ],
     );
     let out = runner.shutdown();
-    // Batch window outputs on third event, min should be 50
+    // The batch window outputs on the third event
     assert!(!out.is_empty());
-    // Check that min across all outputs is 50 (the actual minimum)
+    // The smallest min across all outputs is 50, the real minimum
     let min_price: f32 = out
         .iter()
         .filter_map(|row| {
@@ -1534,7 +1535,7 @@ async fn length_batch_window_test9_min_aggregation() {
 // EXTERNAL TIME WINDOW EDGE CASES
 // ============================================================================
 
-/// External time window with out-of-order events
+/// External time window with events that arrive out of order
 #[tokio::test]
 async fn external_time_window_test2_out_of_order() {
     let app = "\
@@ -1572,7 +1573,7 @@ async fn external_time_window_test2_out_of_order() {
         ],
     );
     let out = runner.shutdown();
-    // All events should still be processed
+    // All events are still processed
     assert_eq!(out.len(), 3);
 }
 
@@ -1724,7 +1725,7 @@ async fn length_window_test11_with_expiry_count() {
     );
     let out = runner.shutdown();
     assert!(out.len() >= 4);
-    // After 4 events with window size 2, count should always be 2
+    // After 4 events in a window of size 2, the last count is 2
     let last = out.last().unwrap();
     assert_eq!(last[1], AttributeValue::Long(2));
 }
@@ -1752,7 +1753,7 @@ async fn time_window_test7_expiring_sum() {
             AttributeValue::Float(200.0),
         ],
     );
-    // Wait for window to expire
+    // Wait for the window to expire
     sleep(Duration::from_millis(150));
     runner.send(
         "stockStream",
@@ -1762,15 +1763,16 @@ async fn time_window_test7_expiring_sum() {
         ],
     );
     let out = runner.shutdown();
-    // After expiry, sum should only include the latest event
+    // After expiry the sum should include only the latest event. The test only
+    // checks that there is output.
     assert!(!out.is_empty());
 }
 
 // ============================================================================
-// LENGTH WINDOW EDGE CASES - AGGREGATION COMBINATIONS
+// LENGTH WINDOW EDGE CASES WITH SEVERAL AGGREGATIONS
 // ============================================================================
 
-/// Length window with first and last values
+/// Length window with min, max and count
 #[tokio::test]
 async fn length_window_test12_first_last() {
     let app = "\
@@ -1841,7 +1843,7 @@ async fn length_window_test13_with_group_by() {
         ],
     );
     let out = runner.shutdown();
-    // IBM should have total = 250, MSFT should have 50
+    // IBM totals 250 and MSFT totals 50
     assert!(out.len() >= 2);
 }
 
@@ -2503,7 +2505,7 @@ async fn length_window_test_filter_and_agg() {
         ],
     );
     let out = runner.shutdown();
-    // Only IBM and GOOG should be counted (filtered MSFT)
+    // Only IBM and GOOG are counted. The filter drops MSFT.
     assert!(!out.is_empty());
 }
 
@@ -2541,7 +2543,7 @@ async fn length_batch_window_test_order_by() {
         ],
     );
     let out = runner.shutdown();
-    // Should be ordered: B (300), C (200), A (100)
+    // Expected order is B (300), C (200), A (100)
     assert!(out.len() >= 3);
 }
 
@@ -2724,11 +2726,12 @@ async fn time_batch_window_test_multi_group() {
             AttributeValue::Float(110.0),
         ],
     );
-    // Allow generous margin above the 2000ms window for CI environments under load
+    // Wait well past the 2000 ms window so slow CI machines still see the batch
     sleep(Duration::from_millis(3500));
     let out = runner.shutdown();
-    // After the 2-second batch window expires, grouped results should be emitted.
-    // Two events with different (symbol, region) keys should produce 2 output rows.
+    // Grouped results come out once the 2 second batch ends. The two events have
+    // different (symbol, region) keys, so 2 rows are expected, but the test only
+    // checks that there is output.
     assert!(
         !out.is_empty(),
         "Expected output from timeBatch window after batch expiry"
@@ -2755,11 +2758,11 @@ async fn length_window_test_uuid() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 2);
-    // UUIDs should be different
+    // The UUIDs differ
     assert_ne!(out[0][1], out[1][1]);
-    // Check UUID format
+    // Check the UUID length
     if let AttributeValue::String(uuid) = &out[0][1] {
-        assert!(uuid.len() == 36); // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        assert!(uuid.len() == 36); // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
     }
 }
 
@@ -3017,7 +3020,7 @@ async fn length_window_test_min() {
 }
 
 /// Length batch window with count
-/// Note: Batch window count behavior differs from expected
+/// Ignored because count comes out once per event instead of once per batch
 #[tokio::test]
 #[ignore = "Length batch count semantics differ - outputs per event instead of per batch"]
 async fn length_batch_window_test_count() {
@@ -3038,7 +3041,7 @@ async fn length_batch_window_test_count() {
         );
     }
     let out = runner.shutdown();
-    // Batch output may or may not fire depending on timing
+    // The batch output may not fire, so only check it when there is one
     if !out.is_empty() {
         assert_eq!(out[0][0], AttributeValue::Long(3));
     }
@@ -3061,7 +3064,7 @@ async fn length_window_test_current_time() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Long(ts) = out[0][1] {
-        // Timestamp should be a reasonable current time (after year 2020)
+        // A sane current time, after the start of 2020
         assert!(ts > 1577836800000);
     }
 }
@@ -3101,7 +3104,7 @@ async fn time_batch_window_test_with_filter() {
     );
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
     let out = runner.shutdown();
-    // Only events with price > 100 should be counted (150 + 200 = 350)
+    // Only events with price > 100 are counted, so 150 + 200 = 350
     assert!(!out.is_empty());
 }
 
@@ -3198,7 +3201,7 @@ async fn length_window_test_string_length_agg() {
         vec![AttributeValue::String("hey".to_string())],
     );
     let out = runner.shutdown();
-    // Output for each event as window fills
+    // One output per event as the window fills
     assert!(!out.is_empty());
 }
 
@@ -3217,9 +3220,9 @@ async fn time_window_test_large_interval() {
     runner.send("eventStream", vec![AttributeValue::Int(2)]);
     runner.send("eventStream", vec![AttributeValue::Int(3)]);
     let out = runner.shutdown();
-    // All events should be in the window
+    // All events stay in the 60 second window
     assert!(!out.is_empty());
-    // Last output should have count of all events
+    // The last output counts all 3 events
     let last_count = match out.last().unwrap()[0] {
         AttributeValue::Int(c) => c,
         AttributeValue::Long(c) => c as i32,
@@ -3269,7 +3272,7 @@ async fn length_batch_window_test_having() {
         ],
     );
     let out = runner.shutdown();
-    // Only Electronics (100+150=250) should pass HAVING filter
+    // Only Electronics, with 100+150=250, passes the HAVING filter
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("Electronics".to_string()));
 }
@@ -3626,7 +3629,7 @@ async fn length_batch_window_test_arithmetic_where() {
         ],
     );
     let out = runner.shutdown();
-    // Order 1: 20*10=200 > 100 (pass), Order 2: 5*5=25 (fail), Order 3: 50*3=150 > 100 (pass)
+    // Orders 1 (20*10=200) and 3 (50*3=150) pass. Order 2 (5*5=25) fails.
     assert_eq!(out.len(), 2);
 }
 
@@ -4006,7 +4009,7 @@ async fn length_window_test_zero_values() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 3);
-    // All zeros should sum to 0
+    // All zeros sum to 0
     let sum_val = match &out[2][1] {
         AttributeValue::Int(v) => *v as i64,
         AttributeValue::Long(v) => *v,
@@ -4730,7 +4733,7 @@ async fn length_window_test_and_filter() {
     assert_eq!(out[0][1], AttributeValue::Int(45)); // 15 * 3 = 45
 }
 
-/// Length window with range condition (simulating BETWEEN)
+/// Length window with a range check written with AND instead of BETWEEN
 #[tokio::test]
 async fn length_window_test_range_condition() {
     let app = "\
@@ -4841,7 +4844,7 @@ async fn length_window_test_nested_arithmetic() {
     assert_eq!(out[1][0], AttributeValue::Int(196)); // (200 - 20) + 16 = 196
 }
 
-/// Length batch window with division (returns Double)
+/// Length batch window with division, which returns Double
 #[tokio::test]
 async fn length_batch_window_test_division() {
     let app = "\

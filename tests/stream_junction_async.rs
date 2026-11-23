@@ -164,7 +164,7 @@ fn test_async_processing() {
         .unwrap()
         .send_event(Event::new_with_data(0, vec![AttributeValue::Int(2)]))
         .unwrap();
-    // wait for async tasks
+    // give the async workers 200 ms to deliver
     thread::sleep(Duration::from_millis(200));
     let v1 = r1.lock().unwrap().clone();
     let v2 = r2.lock().unwrap().clone();

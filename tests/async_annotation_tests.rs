@@ -15,30 +15,26 @@
  * limitations under the License.
  */
 
-// ✅ MIGRATED: All tests converted to SQL WITH syntax
+// Async stream configuration through SQL WITH clauses and YAML config files.
+// These replace the old @Async, @config and @app annotations. The tests were
+// moved over on 2025-10-24.
+// - Async settings for one stream go in SQL WITH
+// - Async settings for the whole app go in YAML config files
+// - Plain SQL syntax, with no custom annotations
 //
-// These tests verify async stream configuration using modern SQL WITH clauses
-// and YAML configuration files, replacing legacy @Async/@config/@app annotations.
-//
-// Migration completed: 2025-10-24
-// - All 6 tests now use SQL WITH for stream-level async configuration
-// - Application-level async uses YAML configuration files
-// - Pure SQL syntax with no custom annotations
-//
-// Tests verify:
+// What the tests cover
 // - SQL WITH async properties (buffer_size, workers, batch_size_max)
-// - YAML application-level configuration
-// - Multiple streams with different async settings
-// - Async configuration with SQL queries
+// - App level YAML configuration
+// - Several streams with different async settings
+// - Async configuration together with SQL queries
 
-// Tests for async stream configuration via SQL WITH and YAML
 use eventflux::core::eventflux_manager::EventFluxManager;
 
 #[tokio::test]
 async fn test_async_with_sql_basic() {
     let manager = EventFluxManager::new();
 
-    // MIGRATED: @Async annotation replaced with SQL WITH clause
+    // SQL WITH in place of the old @Async annotation
     let eventflux_app_string = r#"
         CREATE STREAM StockStream (symbol STRING, price DOUBLE, volume BIGINT) WITH (
             'async.buffer_size' = '1024',
@@ -92,7 +88,7 @@ async fn test_async_with_sql_basic() {
 async fn test_async_with_sql_minimal() {
     let manager = EventFluxManager::new();
 
-    // MIGRATED: Minimal @Async replaced with async.enabled property
+    // async.enabled alone, in place of a bare @Async
     let eventflux_app_string = r#"
         CREATE STREAM MinimalAsyncStream (id INT, value STRING) WITH (
             'async.enabled' = 'true'
@@ -131,7 +127,7 @@ async fn test_async_with_sql_minimal() {
 async fn test_async_via_yaml_config() {
     use eventflux::core::config::ConfigManager;
 
-    // MIGRATED: @config(async='true') replaced with YAML configuration
+    // YAML config in place of the old @config(async='true')
     let config_manager = ConfigManager::from_file("tests/fixtures/app-async-enabled.yaml");
     let manager = EventFluxManager::new_with_config_manager(config_manager);
 
@@ -152,15 +148,15 @@ async fn test_async_via_yaml_config() {
     let stream_definitions = &app_runtime.eventflux_app.stream_definition_map;
 
     assert!(stream_definitions.contains_key("ConfigAsyncStream"));
-    // Stream created successfully with YAML configuration
-    // Async mode configured via YAML app-async-enabled.yaml
+    // Only checks that the stream exists. Async mode comes from app-async-enabled.yaml
+    // but is not asserted here.
 }
 
 #[tokio::test]
 async fn test_app_level_async_via_yaml() {
     use eventflux::core::config::ConfigManager;
 
-    // MIGRATED: @app(async='true') replaced with YAML configuration
+    // YAML config in place of the old @app(async='true')
     let config_manager = ConfigManager::from_file("tests/fixtures/app-async-enabled.yaml");
     let manager = EventFluxManager::new_with_config_manager(config_manager);
 
@@ -181,18 +177,18 @@ async fn test_app_level_async_via_yaml() {
 
     let app_runtime = result.unwrap();
 
-    // Both streams should exist
+    // Both streams take async mode from the YAML app config. This test only
+    // checks that both exist.
     let stream_definitions = &app_runtime.eventflux_app.stream_definition_map;
     assert!(stream_definitions.contains_key("AutoAsyncStream"));
     assert!(stream_definitions.contains_key("RegularStream"));
-    // Both streams inherit async mode from YAML application config
 }
 
 #[tokio::test]
 async fn test_multiple_async_streams_with_sql() {
     let manager = EventFluxManager::new();
 
-    // MIGRATED: Multiple @Async annotations replaced with SQL WITH clauses
+    // One SQL WITH per stream, in place of several @Async annotations
     let eventflux_app_string = r#"
         CREATE STREAM Stream1 (id INT) WITH (
             'async.buffer_size' = '512'
@@ -247,7 +243,7 @@ async fn test_multiple_async_streams_with_sql() {
 async fn test_async_with_sql_query() {
     let manager = EventFluxManager::new();
 
-    // MIGRATED: @Async + EventFluxQL query replaced with SQL WITH + SQL query
+    // SQL WITH and a SQL query, in place of @Async and an EventFluxQL query
     let eventflux_app_string = r#"
         CREATE STREAM InputStream (symbol STRING, price DOUBLE, volume BIGINT) WITH (
             'async.buffer_size' = '1024'

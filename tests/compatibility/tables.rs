@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Table Compatibility Tests
+// Table compatibility tests
 // Reference: query/table/*.java, InsertIntoTableTestCase.java
 
 use super::common::AppRunner;
@@ -44,7 +44,7 @@ async fn table_test1_insert_and_query() {
         SELECT stockTable.symbol, stockTable.price, stockTable.volume\n\
         FROM queryStream JOIN stockTable ON queryStream.symbol = stockTable.symbol;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // Insert into table
+    // Add rows to the table
     runner.send(
         "stockStream",
         vec![
@@ -77,9 +77,9 @@ async fn table_test1_insert_and_query() {
 // Reference: query/partition/PartitionTestCase1.java
 // ============================================================================
 
-/// Test value-based partition
+/// Test a partition on the values of a field
 /// Reference: PartitionTestCase1.java:testPartitionQuery1
-/// Note: PARTITION BY syntax not yet supported
+/// Ignored because PARTITION BY syntax is not supported
 #[tokio::test]
 #[ignore = "PARTITION BY syntax not yet supported"]
 async fn partition_test1_value_based() {
@@ -119,7 +119,7 @@ async fn partition_test1_value_based() {
         ],
     );
     let out = runner.shutdown();
-    // Each symbol should have its own partition with separate aggregation
+    // Each symbol should get its own partition and its own aggregation
     assert!(!out.is_empty());
 }
 
@@ -139,7 +139,7 @@ async fn trigger_test1_periodic() {
         INSERT INTO outputStream\n\
         SELECT true AS triggered FROM FiveSecTrigger;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // Wait for trigger to fire
+    // Wait for the trigger to fire
     sleep(Duration::from_millis(6000));
     let out = runner.shutdown();
     assert!(!out.is_empty());
@@ -158,16 +158,16 @@ async fn trigger_test2_start() {
     let runner = AppRunner::new(app, "outputStream").await;
     sleep(Duration::from_millis(100));
     let out = runner.shutdown();
-    // Start trigger should fire once at startup
+    // The start trigger fires once at startup
     assert_eq!(out.len(), 1);
 }
 
 // ============================================================================
-// TABLE UPDATE/DELETE TESTS
+// TABLE UPDATE AND DELETE TESTS
 // Reference: query/table/UpdateTableTestCase.java, DeleteFromTableTestCase.java
 // ============================================================================
 
-/// Table update test - verify lookup works without UPDATE first
+/// Table lookup works when no UPDATE has run
 #[tokio::test]
 async fn table_test2a_lookup_without_update() {
     let app = "\
@@ -193,14 +193,14 @@ async fn table_test2a_lookup_without_update() {
         ],
     );
     sleep(Duration::from_millis(100));
-    // Lookup without update
+    // Look up with no update before it
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
     );
     sleep(Duration::from_millis(100));
     let out = runner.shutdown();
-    // Table should return original values
+    // The table returns the original values
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
     assert_eq!(out[0][1], AttributeValue::Float(100.0)); // Original price
@@ -248,14 +248,14 @@ async fn table_test2_update() {
         ],
     );
     sleep(Duration::from_millis(100));
-    // Lookup to verify the update
+    // Look up the row to check the update
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
     );
     sleep(Duration::from_millis(100));
     let out = runner.shutdown();
-    // Table should have updated price
+    // The table has the updated price
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
     assert_eq!(out[0][1], AttributeValue::Float(150.0)); // Updated price
@@ -300,13 +300,13 @@ async fn table_test3_delete() {
         vec![AttributeValue::String("IBM".to_string())],
     );
     sleep(Duration::from_millis(50));
-    // Lookup to verify the delete - should find nothing
+    // Look up the row to check the delete
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
     );
     let out = runner.shutdown();
-    // Row should be deleted - lookup returns empty
+    // The row is gone, so the lookup returns nothing
     assert!(out.is_empty());
 }
 
@@ -329,7 +329,7 @@ async fn table_test4_primary_key() {
             AttributeValue::Int(100),
         ],
     );
-    // Insert duplicate key - should update or error
+    // Insert a duplicate key, which should either update the row or fail
     runner.send(
         "stockStream",
         vec![
@@ -339,7 +339,7 @@ async fn table_test4_primary_key() {
         ],
     );
     let out = runner.shutdown();
-    // Table should have only one IBM entry
+    // The table should hold only one IBM row. The test only checks for output.
     assert!(!out.is_empty());
 }
 
@@ -451,7 +451,7 @@ async fn table_test6_with_aggregation() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // US total should be 300.0
+    // The US total is 300.0
     assert_eq!(out[0][0], AttributeValue::String("US".to_string()));
 }
 
@@ -480,7 +480,7 @@ async fn table_test7_upsert() {
         FROM lookupStream JOIN stockTable\n\
         ON lookupStream.symbol = stockTable.symbol;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // First insert - should insert new row
+    // The first upsert inserts a new row
     runner.send(
         "stockStream",
         vec![
@@ -490,7 +490,7 @@ async fn table_test7_upsert() {
         ],
     );
     sleep(Duration::from_millis(50));
-    // Second upsert - should update existing row
+    // The second upsert updates that row
     runner.send(
         "stockStream",
         vec![
@@ -500,13 +500,13 @@ async fn table_test7_upsert() {
         ],
     );
     sleep(Duration::from_millis(50));
-    // Lookup to verify upsert
+    // Look up the row to check the upsert
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
     );
     let out = runner.shutdown();
-    // Should have exactly one row with updated values
+    // Exactly one row, with the updated values
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
     assert_eq!(out[0][1], AttributeValue::Float(150.0)); // Updated price
@@ -514,10 +514,10 @@ async fn table_test7_upsert() {
 }
 
 // ============================================================================
-// COMPREHENSIVE MUTATION TESTS - EDGE CASES
+// MUTATION EDGE CASE TESTS
 // ============================================================================
 
-/// UPDATE with no matching rows - should not affect table
+/// UPDATE that matches no rows leaves the table as it was
 #[tokio::test]
 async fn table_mutation_update_no_match() {
     let app = "\
@@ -550,7 +550,7 @@ async fn table_mutation_update_no_match() {
     );
     sleep(Duration::from_millis(50));
 
-    // Try to update AAPL (doesn't exist) - should have no effect
+    // Try to update AAPL, which does not exist. This must have no effect.
     runner.send(
         "updateStream",
         vec![
@@ -560,7 +560,7 @@ async fn table_mutation_update_no_match() {
     );
     sleep(Duration::from_millis(50));
 
-    // Lookup IBM - should still have original values
+    // IBM still has its original values
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
@@ -578,7 +578,7 @@ async fn table_mutation_update_no_match() {
     assert_eq!(out[0][2], AttributeValue::Int(100));
 }
 
-/// UPDATE multiple rows matching same condition
+/// UPDATE changes every row that matches the condition
 #[tokio::test]
 async fn table_mutation_update_multiple_rows() {
     let app = "\
@@ -620,7 +620,7 @@ async fn table_mutation_update_multiple_rows() {
     );
     sleep(Duration::from_millis(50));
 
-    // Update all TECH stocks to same price
+    // Set all TECH stocks to the same price
     runner.send(
         "updateStream",
         vec![
@@ -630,7 +630,7 @@ async fn table_mutation_update_multiple_rows() {
     );
     sleep(Duration::from_millis(50));
 
-    // Lookup TECH category - should find both with updated price
+    // Looking up TECH finds both rows with the new price
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("TECH".to_string())],
@@ -639,7 +639,7 @@ async fn table_mutation_update_multiple_rows() {
     let out = runner.shutdown();
 
     assert_eq!(out.len(), 2, "Both TECH stocks should be returned");
-    // Both should have updated price
+    // Both have the new price
     for row in &out {
         assert_eq!(row[0], AttributeValue::String("TECH".to_string()));
         assert_eq!(
@@ -694,7 +694,7 @@ async fn table_mutation_update_multiple_columns() {
     );
     sleep(Duration::from_millis(50));
 
-    // Verify both columns updated
+    // Both columns are updated
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
@@ -716,7 +716,7 @@ async fn table_mutation_update_multiple_columns() {
     );
 }
 
-/// DELETE with no matching rows - should not affect table
+/// DELETE that matches no rows leaves the table as it was
 #[tokio::test]
 async fn table_mutation_delete_no_match() {
     let app = "\
@@ -749,14 +749,14 @@ async fn table_mutation_delete_no_match() {
     );
     sleep(Duration::from_millis(50));
 
-    // Try to delete AAPL (doesn't exist) - should have no effect
+    // Try to delete AAPL, which does not exist. This must have no effect.
     runner.send(
         "deleteStream",
         vec![AttributeValue::String("AAPL".to_string())],
     );
     sleep(Duration::from_millis(50));
 
-    // Lookup IBM - should still exist
+    // IBM still exists
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
@@ -768,7 +768,7 @@ async fn table_mutation_delete_no_match() {
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
 }
 
-/// DELETE multiple rows matching same condition
+/// DELETE removes every row that matches the condition
 #[tokio::test]
 async fn table_mutation_delete_multiple_rows() {
     let app = "\
@@ -827,7 +827,7 @@ async fn table_mutation_delete_multiple_rows() {
     );
     sleep(Duration::from_millis(50));
 
-    // Lookup TECH - should find nothing
+    // Looking up TECH finds nothing
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("TECH".to_string())],
@@ -885,7 +885,7 @@ async fn table_mutation_delete_preserves_others() {
     );
     sleep(Duration::from_millis(50));
 
-    // Verify AAPL still exists
+    // AAPL still exists
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("AAPL".to_string())],
@@ -898,7 +898,7 @@ async fn table_mutation_delete_preserves_others() {
     assert_eq!(out[0][1], AttributeValue::Float(200.0));
 }
 
-/// UPSERT pure insert - first event with no existing match
+/// UPSERT inserts when no row matches yet
 #[tokio::test]
 async fn table_mutation_upsert_pure_insert() {
     let app = "\
@@ -918,7 +918,7 @@ async fn table_mutation_upsert_pure_insert() {
         ON lookupStream.symbol = stockTable.symbol;\n";
     let runner = AppRunner::new(app, "outputStream").await;
 
-    // UPSERT into empty table - should insert
+    // UPSERT into an empty table inserts
     runner.send(
         "stockStream",
         vec![
@@ -929,7 +929,7 @@ async fn table_mutation_upsert_pure_insert() {
     );
     sleep(Duration::from_millis(50));
 
-    // Verify the insert
+    // Check the insert
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
@@ -989,7 +989,7 @@ async fn table_mutation_upsert_multiple_inserts() {
     );
     sleep(Duration::from_millis(50));
 
-    // Verify all three exist
+    // All three exist
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
@@ -1070,7 +1070,7 @@ async fn table_mutation_upsert_alternating() {
     );
     sleep(Duration::from_millis(50));
 
-    // Lookup IBM - should have updated value
+    // IBM has the updated value
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
@@ -1087,7 +1087,7 @@ async fn table_mutation_upsert_alternating() {
     );
 }
 
-/// Interleaved mutations - INSERT, UPDATE, DELETE sequence
+/// INSERT, UPDATE and DELETE mixed in one sequence
 #[tokio::test]
 async fn table_mutation_interleaved_operations() {
     let app = "\
@@ -1151,14 +1151,14 @@ async fn table_mutation_interleaved_operations() {
     );
     sleep(Duration::from_millis(50));
 
-    // Lookup IBM - should exist with updated price
+    // IBM exists with the updated price
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
     );
     sleep(Duration::from_millis(30));
 
-    // Lookup AAPL - should not exist
+    // AAPL does not exist
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("AAPL".to_string())],
@@ -1225,7 +1225,7 @@ async fn table_mutation_update_preserves_others() {
     );
     sleep(Duration::from_millis(50));
 
-    // Verify AAPL is unchanged
+    // AAPL is unchanged
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("AAPL".to_string())],
@@ -1242,7 +1242,7 @@ async fn table_mutation_update_preserves_others() {
     );
 }
 
-/// UPDATE with expression in SET clause (arithmetic)
+/// UPDATE with an arithmetic expression in the SET clause
 #[tokio::test]
 async fn table_mutation_update_with_expression() {
     let app = "\
@@ -1274,7 +1274,7 @@ async fn table_mutation_update_with_expression() {
     );
     sleep(Duration::from_millis(50));
 
-    // Update with expression: price = 1.5 * 100.0 = 150.0
+    // Update with the expression price = 1.5 * 100.0 = 150.0
     runner.send(
         "updateStream",
         vec![
@@ -1284,7 +1284,7 @@ async fn table_mutation_update_with_expression() {
     );
     sleep(Duration::from_millis(50));
 
-    // Verify the expression was evaluated
+    // The expression was evaluated
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
@@ -1322,7 +1322,7 @@ async fn table_mutation_upsert_different_types() {
         ON lookupStream.id = dataTable.id;\n";
     let runner = AppRunner::new(app, "outputStream").await;
 
-    // Insert with various types
+    // Insert values of several types
     runner.send(
         "dataStream",
         vec![
@@ -1346,7 +1346,7 @@ async fn table_mutation_upsert_different_types() {
     );
     sleep(Duration::from_millis(50));
 
-    // Verify updated values
+    // Check the updated values
     runner.send("lookupStream", vec![AttributeValue::Int(1)]);
     sleep(Duration::from_millis(50));
     let out = runner.shutdown();
@@ -1358,8 +1358,9 @@ async fn table_mutation_upsert_different_types() {
     assert_eq!(out[0][3], AttributeValue::Bool(false));
 }
 
-/// UPDATE with SET expression referencing BOTH table and stream columns
-/// This tests that SET expressions are evaluated per-row with proper table context
+/// UPDATE whose SET expression uses BOTH a table column and a stream column
+/// Checks that SET expressions are evaluated for each row against that row's
+/// table values
 #[tokio::test]
 async fn table_mutation_update_set_references_table_column() {
     let app = "\
@@ -1410,7 +1411,7 @@ async fn table_mutation_update_set_references_table_column() {
     );
     sleep(Duration::from_millis(100));
 
-    // Lookup IBM - should have updated price
+    // IBM has the updated price
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("IBM".to_string())],
@@ -1420,8 +1421,8 @@ async fn table_mutation_update_set_references_table_column() {
 
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
-    // The key assertion: price should be 100.0 + 25.0 = 125.0
-    // NOT just 25.0 (if table column was ignored) or some other wrong value
+    // The key check. price must be 100.0 + 25.0 = 125.0, NOT 25.0, which is what
+    // you get if the table column is ignored
     assert_eq!(
         out[0][1],
         AttributeValue::Double(125.0),
@@ -1430,8 +1431,8 @@ async fn table_mutation_update_set_references_table_column() {
     assert_eq!(out[0][2], AttributeValue::Int(1000));
 }
 
-/// UPDATE with SET expression referencing table columns - multiple rows with different values
-/// Verifies each row gets its own computed value, not the same value for all
+/// UPDATE whose SET expression uses a table column, over rows with different values
+/// Checks that each row gets its own computed value, not one value for all
 #[tokio::test]
 async fn table_mutation_update_set_per_row_evaluation() {
     let app = "\
@@ -1470,7 +1471,7 @@ async fn table_mutation_update_set_per_row_evaluation() {
     );
     sleep(Duration::from_millis(100));
 
-    // Update all TECH stocks: multiply each by 2.0
+    // Multiply the price of every TECH stock by 2.0
     // TECH1: 100.0 * 2.0 = 200.0
     // TECH2: 50.0 * 2.0 = 100.0
     runner.send(
@@ -1482,7 +1483,7 @@ async fn table_mutation_update_set_per_row_evaluation() {
     );
     sleep(Duration::from_millis(100));
 
-    // Lookup both
+    // Look up both
     runner.send(
         "lookupStream",
         vec![AttributeValue::String("TECH1".to_string())],
@@ -1507,7 +1508,7 @@ async fn table_mutation_update_set_per_row_evaluation() {
     assert!(tech1.is_some(), "TECH1 should be in results");
     assert!(tech2.is_some(), "TECH2 should be in results");
 
-    // Each row should have its own computed value
+    // Each row has its own computed value
     assert_eq!(
         tech1.unwrap()[1],
         AttributeValue::Double(200.0),
@@ -1620,11 +1621,11 @@ async fn table_test9_window_stream_join() {
 }
 
 // ============================================================================
-// RANGE-BASED PARTITION TESTS
+// RANGE PARTITION TESTS
 // Reference: query/partition/PartitionTestCase1.java
 // ============================================================================
 
-/// Test range-based partition
+/// Test a partition on value ranges
 /// Reference: PartitionTestCase1.java:testPartitionQuery2
 #[tokio::test]
 #[ignore = "Range partition syntax not yet supported"]
@@ -1669,12 +1670,12 @@ async fn partition_test2_range_based() {
         ],
     );
     let out = runner.shutdown();
-    // Each price range should have its own partition
+    // Each price range should get its own partition
     assert!(!out.is_empty());
 }
 
 // ============================================================================
-// MULTI-VALUE PARTITION TESTS
+// PARTITION ON SEVERAL VALUES TESTS
 // Reference: query/partition/PartitionTestCase1.java
 // ============================================================================
 
@@ -1722,7 +1723,7 @@ async fn partition_test3_multiple_values() {
         ],
     );
     let out = runner.shutdown();
-    // Each (symbol, region) combination should have its own partition
+    // Each (symbol, region) pair should get its own partition
     assert!(!out.is_empty());
 }
 
@@ -1773,7 +1774,7 @@ async fn table_test11_lookup_multiple_matches() {
         ],
     );
     sleep(Duration::from_millis(50));
-    // Lookup product 100 - should return 2 matches
+    // Looking up product 100 returns 2 matches
     runner.send("lookupStream", vec![AttributeValue::Int(100)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 2);
@@ -1803,10 +1804,10 @@ async fn table_test12_lookup_no_match() {
         ],
     );
     sleep(Duration::from_millis(50));
-    // Lookup non-existent user
+    // Look up a user that does not exist
     runner.send("lookupStream", vec![AttributeValue::Int(999)]);
     let out = runner.shutdown();
-    // Inner join should return no results for non-matching key
+    // An inner join returns nothing for a key with no match
     assert_eq!(out.len(), 0);
 }
 
@@ -1840,7 +1841,7 @@ async fn table_test13_left_outer_join_lookup() {
             AttributeValue::Int(2),
         ],
     );
-    // Order for non-existing product
+    // Order for a product that does not exist
     runner.send(
         "orderStream",
         vec![
@@ -1851,9 +1852,9 @@ async fn table_test13_left_outer_join_lookup() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 2);
-    // First order should have price
+    // The first order has a price
     assert_eq!(out[0][1], AttributeValue::Float(25.0));
-    // Second order should have null price
+    // The second order has a NULL price
     assert_eq!(out[1][1], AttributeValue::Null);
 }
 
@@ -1940,8 +1941,8 @@ async fn table_test15_multi_column_join() {
     assert_eq!(out[0][0], AttributeValue::Float(120.0));
 }
 
-/// Test table with count of matching records
-/// Note: count() in table join counts per-row output, not total matches
+/// Test that a table join outputs one row per matching record
+/// The query selects the matching rows. It does not call count().
 #[tokio::test]
 async fn table_test16_count_matches() {
     let app = "\
@@ -1987,10 +1988,10 @@ async fn table_test16_count_matches() {
         ],
     );
     sleep(Duration::from_millis(50));
-    // Query actions for user 1 - should return all 3 matching rows
+    // Query the actions of user 1, which returns all 3 matching rows
     runner.send("countStream", vec![AttributeValue::Int(1)]);
     let out = runner.shutdown();
-    // Should have 3 outputs for user 1's 3 actions
+    // 3 outputs, one for each of user 1's actions
     assert_eq!(out.len(), 3);
 }
 
@@ -2404,7 +2405,7 @@ async fn table_test26_concat_in_select() {
 // TABLE UPDATE SCENARIOS
 // ============================================================================
 
-/// Test table row update (same key, new value)
+/// Test inserting the same key twice with a new value
 #[tokio::test]
 async fn table_test27_row_update() {
     let app = "\
@@ -2426,7 +2427,7 @@ async fn table_test27_row_update() {
         vec![AttributeValue::Int(1), AttributeValue::Float(100.0)],
     );
     sleep(Duration::from_millis(50));
-    // Update price
+    // Insert a new price for the same key
     runner.send(
         "insertStream",
         vec![AttributeValue::Int(1), AttributeValue::Float(150.0)],
@@ -2434,7 +2435,7 @@ async fn table_test27_row_update() {
     sleep(Duration::from_millis(50));
     runner.send("queryStream", vec![AttributeValue::Int(1)]);
     let out = runner.shutdown();
-    // Table stores multiple entries with same key, returns all matches
+    // The table keeps both rows for the key and the lookup returns every match
     assert!(!out.is_empty());
 }
 
@@ -2476,7 +2477,7 @@ async fn table_test28_lookup_with_filter() {
         ],
     );
     sleep(Duration::from_millis(50));
-    // Query with max price 500 - only Mouse should match
+    // Query with max price 500, so only Mouse matches
     runner.send(
         "queryStream",
         vec![AttributeValue::Int(2), AttributeValue::Float(500.0)],
@@ -2511,7 +2512,7 @@ async fn table_test29_no_match() {
         vec![AttributeValue::Int(1), AttributeValue::Int(100)],
     );
     sleep(Duration::from_millis(50));
-    // Query for non-existent ID
+    // Query for an id that does not exist
     runner.send("queryStream", vec![AttributeValue::Int(999)]);
     let out = runner.shutdown();
     // Inner join with no match produces no output
@@ -2522,7 +2523,7 @@ async fn table_test29_no_match() {
 // ADDITIONAL TABLE EDGE CASES
 // ============================================================================
 
-/// Test empty table query - inner join returns no results
+/// Test that an inner join on an empty table returns nothing
 #[tokio::test]
 async fn table_test_empty_table() {
     let app = "\
@@ -2542,7 +2543,7 @@ async fn table_test_empty_table() {
     assert!(out.is_empty());
 }
 
-/// Test table with many rows - stress test
+/// Test a table with many rows, as a small stress test
 #[tokio::test]
 async fn table_test_many_rows() {
     let app = "\
@@ -2611,7 +2612,7 @@ async fn table_test_insert_from_window() {
     );
     sleep(Duration::from_millis(100));
     let out = runner.shutdown();
-    // Each window emission inserts into table AND emits to outputStream
+    // Each window output goes into the table AND to outputStream
     assert!(!out.is_empty());
 }
 
@@ -2646,7 +2647,7 @@ async fn table_test_right_outer_join() {
         vec![AttributeValue::Int(1), AttributeValue::Int(5)],
     );
     let out = runner.shutdown();
-    // Right outer join includes all table rows
+    // A right outer join includes all table rows
     assert!(!out.is_empty());
 }
 
@@ -2674,7 +2675,7 @@ async fn table_test_full_outer_join() {
     sleep(Duration::from_millis(50));
     runner.send(
         "orderStream",
-        vec![AttributeValue::Int(999), AttributeValue::Int(5)], // No matching product
+        vec![AttributeValue::Int(999), AttributeValue::Int(5)], // no matching product
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
@@ -2712,7 +2713,7 @@ async fn table_test_order_by() {
     sleep(Duration::from_millis(50));
     runner.send("triggerStream", vec![AttributeValue::Int(0)]);
     let out = runner.shutdown();
-    // Should be ordered by score DESC: 100, 75, 50
+    // Expected order is score DESC, so 100, 75, 50
     assert_eq!(out.len(), 3);
     assert_eq!(out[0][1], AttributeValue::Int(100));
 }
@@ -2773,7 +2774,7 @@ async fn table_test_insert_with_filter() {
         "orderStream",
         vec![AttributeValue::Int(1), AttributeValue::Float(100.0)],
     );
-    // Invalid order (should be filtered out)
+    // Invalid order, which the filter drops
     runner.send(
         "orderStream",
         vec![AttributeValue::Int(2), AttributeValue::Float(-50.0)],
@@ -2782,12 +2783,12 @@ async fn table_test_insert_with_filter() {
     runner.send("queryStream", vec![AttributeValue::Int(1)]);
     runner.send("queryStream", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
-    // Only valid order should be in table
+    // Only the valid order is in the table
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
 
-/// Test table with type coercion in join
+/// Test a table join where the key types differ, BIGINT against INT
 #[tokio::test]
 async fn table_test_type_coercion_join() {
     let app = "\
@@ -2811,10 +2812,10 @@ async fn table_test_type_coercion_join() {
         ],
     );
     sleep(Duration::from_millis(50));
-    // Query with BIGINT that matches INT
+    // Query with a BIGINT that equals the INT key
     runner.send("queryStream", vec![AttributeValue::Long(42)]);
     let out = runner.shutdown();
-    // Type coercion should allow match
+    // The types are converted, so the keys match
     assert_eq!(out.len(), 1);
 }
 
@@ -3071,7 +3072,7 @@ async fn table_test_coalesce() {
             AttributeValue::String("light".to_string()),
         ],
     );
-    // Lookup non-existing key
+    // Look up a key that does not exist
     runner.send(
         "lookupStream",
         vec![
@@ -3750,7 +3751,7 @@ async fn table_test_not_filter() {
     runner.send("queryStream", vec![AttributeValue::Int(1)]);
     runner.send("queryStream", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
-    // Only id=1 should pass (active=1, which is NOT 0)
+    // Only id=1 passes, since active=1 is NOT 0
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -3977,7 +3978,7 @@ async fn table_test_bigint_key() {
     assert_eq!(out[0][0], AttributeValue::String("event data".to_string()));
 }
 
-/// Table with UPDATE query
+/// Table where a second insert with the same primary key updates the value
 #[tokio::test]
 async fn table_test_update() {
     let app = "\
@@ -3998,7 +3999,7 @@ async fn table_test_update() {
         vec![AttributeValue::Int(1), AttributeValue::Int(200)],
     );
     let out = runner.shutdown();
-    // Second insert should update the value
+    // The second insert updates the value for the same primary key
     assert!(!out.is_empty());
     let last = out.last().unwrap();
     assert_eq!(last[1], AttributeValue::Int(200));
@@ -4421,7 +4422,7 @@ async fn table_test_nested_concat_address() {
     );
 }
 
-/// Table with multiple non-null string columns
+/// Table with several string columns that are not NULL
 #[tokio::test]
 async fn table_test_multi_string_columns() {
     let app = "\
@@ -4948,7 +4949,7 @@ async fn table_test_or_where_priority() {
     assert_eq!(out[0][2], AttributeValue::Int(9)); // priority > 8 matches
 }
 
-/// Table with multiple inserts (update behavior)
+/// Table where a second insert with the same key updates the row
 #[tokio::test]
 async fn table_test_update_on_duplicate() {
     let app = "\
@@ -4975,9 +4976,9 @@ async fn table_test_update_on_duplicate() {
         ],
     );
     let out = runner.shutdown();
-    // Second insert should update the row
+    // The second insert updates the row for the same primary key
     assert!(!out.is_empty());
-    // The last output should be "Bob"
+    // The last output is "Bob"
     let last_name = &out[out.len() - 1][1];
     assert_eq!(last_name, &AttributeValue::String("Bob".to_string()));
 }
@@ -4997,7 +4998,7 @@ async fn table_test_uuid_in_select() {
     runner.send("triggerStream", vec![AttributeValue::Int(1)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // UUID should be a non-empty string
+    // The UUID is a string that is not empty
     if let AttributeValue::String(uuid) = &out[0][1] {
         assert!(!uuid.is_empty());
     } else {

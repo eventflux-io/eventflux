@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-// NOTE: Some tests at the end of this file use old EventFluxQL syntax and are disabled for M1.
-// Tests using programmatic API (not parser) remain enabled and passing.
+// Some tests at the end of this file use the old EventFluxQL syntax and are ignored for M1.
+// Tests that use the programmatic API instead of the parser stay enabled.
 
 use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
 use eventflux::core::config::eventflux_context::EventFluxContext;
@@ -386,7 +386,7 @@ fn test_join_query_parsing() {
     );
     assert!(res.is_ok());
 
-    // Also ensure expression parsing works standalone
+    // The same join condition must also parse on its own, outside the query
     let left_meta = MetaStreamEvent::new_for_single_input(Arc::clone(&left_def));
     let mut right_meta = MetaStreamEvent::new_for_single_input(Arc::clone(&right_def));
     right_meta.apply_attribute_offset(1);
@@ -576,10 +576,9 @@ fn test_table_in_expression_query() {
     );
     assert!(res.is_ok());
 }
-// TODO: NOT PART OF M1 - Old EventFluxQL syntax
-// This test uses "define stream" and old JOIN syntax which is not supported by SQL parser.
-// M1 covers JOINs but via SQL syntax. See app_runner_joins.rs for SQL JOIN tests.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Ignored because it uses "define stream" and the old JOIN syntax,
+// which the SQL parser does not support. M1 covers JOINs through SQL syntax, see
+// app_runner_joins.rs. See feat/grammar/GRAMMAR.md for the grammar status.
 #[tokio::test]
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn test_app_runner_join_via_app_runner() {
@@ -619,7 +618,7 @@ async fn test_app_runner_table_in_lookup() {
 
     let s_def = StreamDefinition::new("S".to_string()).attribute("val".to_string(), AttrType::INT);
 
-    // Table now requires explicit extension specification for durability safety
+    // A table must name its extension explicitly, so durability is never assumed
     let mut table_config = FlatConfig::new();
     table_config.set("extension", "cache", PropertySource::SqlWith);
     table_config.set("max_size", "100", PropertySource::SqlWith); // Cache requires max_size
@@ -687,11 +686,10 @@ async fn test_app_runner_table_in_lookup() {
     );
 }
 
-// TODO: NOT PART OF M1 - Old EventFluxQL syntax for custom UDF
-// This test uses "define stream" and old query syntax.
-// Custom UDF functionality works (see test_custom_udf_plus_one above), but SQL syntax for
-// custom functions is not part of M1.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Ignored because it uses "define stream" and the old query
+// syntax for a custom UDF. Custom UDFs work (see test_custom_udf_plus_one above), but SQL
+// syntax for custom functions is not part of M1. See feat/grammar/GRAMMAR.md for the
+// grammar status.
 #[tokio::test]
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn test_app_runner_custom_udf() {
@@ -773,10 +771,8 @@ async fn test_app_runner_custom_udf() {
     assert_eq!(out, vec![vec![AttributeValue::Int(5)]]);
 }
 
-// TODO: NOT PART OF M1 - Old EventFluxQL syntax
-// This test uses "define stream" and old JOIN syntax which is not supported by SQL parser.
-// M1 covers JOINs but via SQL syntax. See app_runner_joins.rs for SQL JOIN tests.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Ignored for the same reason as test_app_runner_join_via_app_runner.
+// It uses "define stream" and the old JOIN syntax. See app_runner_joins.rs for SQL JOINs.
 #[tokio::test]
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn app_runner_join_variable_resolution() {
@@ -798,10 +794,9 @@ async fn app_runner_join_variable_resolution() {
     );
 }
 
-// TODO: NOT PART OF M1 - Old EventFluxQL pattern syntax
-// This test uses "define stream" and pattern sequence syntax ("A -> B") which is not supported
-// by SQL parser. Pattern matching is not part of M1.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Ignored because it uses "define stream" and the old pattern
+// syntax ("from A -> B"), which the SQL parser does not support. SQL patterns use
+// FROM PATTERN (...) instead, see pattern_sql_integration.rs.
 #[tokio::test]
 #[ignore = "Pattern syntax not part of M1"]
 async fn app_runner_pattern_variable_resolution() {

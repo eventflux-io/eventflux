@@ -15,14 +15,14 @@
  * limitations under the License.
  */
 
-//! Integration Tests for Data Mapping System
+//! Integration tests for the data mapping system
 //!
-//! These tests verify the complete mapper system including:
+//! These tests cover the whole mapper system
 //! - Source and sink mappers
-//! - Auto-mapping and explicit mapping
-//! - Factory system
+//! - Automatic mapping and explicit mapping
+//! - Mapper factories
 //! - Validation
-//! - End-to-end JSON and CSV workflows
+//! - Full JSON and CSV flows from input to output
 
 use eventflux::core::event::{AttributeValue, Event};
 use eventflux::core::stream::mapper::{
@@ -35,13 +35,13 @@ use eventflux::core::stream::mapper::{
 use std::collections::HashMap;
 
 // ============================================================================
-// JSON Auto-Mapping Tests
+// JSON Automatic Mapping Tests
 // ============================================================================
 
 #[test]
 fn test_json_auto_mapping_end_to_end() {
-    // Source: Auto-map all top-level fields
-    // JSON keys are preserved in insertion order: orderId, amount, customer
+    // With no mapping config, every top level field is mapped.
+    // Fields keep the key order of the JSON input, here orderId, amount, customer.
     let json_input = r#"{"orderId": "123", "amount": 100.0, "customer": "Alice"}"#;
 
     let config = HashMap::new();
@@ -53,7 +53,7 @@ fn test_json_auto_mapping_end_to_end() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].data.len(), 3);
 
-    // Verify data types (insertion order: orderId, amount, customer)
+    // Types in input order, orderId, amount, customer
     assert!(matches!(events[0].data[0], AttributeValue::String(_))); // orderId
     assert!(matches!(events[0].data[1], AttributeValue::Double(_))); // amount
     assert!(matches!(events[0].data[2], AttributeValue::String(_))); // customer
@@ -61,7 +61,7 @@ fn test_json_auto_mapping_end_to_end() {
 
 #[test]
 fn test_json_auto_mapping_preserves_types() {
-    // JSON keys preserved in insertion order: stringField, intField, doubleField, boolField, nullField
+    // Fields keep input order, stringField, intField, doubleField, boolField, nullField
     let json_input = r#"{
         "stringField": "test",
         "intField": 42,
@@ -79,7 +79,7 @@ fn test_json_auto_mapping_preserves_types() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].data.len(), 5);
 
-    // Verify type preservation (insertion order)
+    // Each JSON type maps to the matching value type, in input order
     assert!(matches!(events[0].data[0], AttributeValue::String(_))); // stringField
     assert!(matches!(events[0].data[1], AttributeValue::Int(42))); // intField
     assert!(matches!(events[0].data[2], AttributeValue::Double(_))); // doubleField
@@ -122,7 +122,7 @@ fn test_json_explicit_mapping_nested_fields() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].data.len(), 3);
 
-    // Verify extracted values (explicit mappings are sorted alphabetically: amount, currency, orderId)
+    // Explicit mappings are ordered by name, so the fields are amount, currency, orderId
     if let AttributeValue::Double(d) = events[0].data[0] {
         assert_eq!(d, 250.75);
     } else {
@@ -256,7 +256,7 @@ fn test_json_sink_pretty_print() {
     let result = mapper.map_event(&event).unwrap();
     let json_str = String::from_utf8(result).unwrap();
 
-    // Pretty-printed JSON should have newlines
+    // Pretty printed JSON has newlines
     assert!(json_str.contains('\n'));
 }
 
@@ -345,7 +345,7 @@ fn test_csv_sink_with_header() {
     let registry = MapperFactoryRegistry::new();
     let mapper = registry.create_sink_mapper("csv", &config).unwrap();
 
-    // Per-event contract: each event maps to its own message (header + row)
+    // Each event maps to its own message, a header plus one row
     let payloads: Vec<String> = events
         .iter()
         .map(|e| String::from_utf8(mapper.map_event(e).unwrap()).unwrap())
@@ -458,7 +458,7 @@ fn test_json_invalid_jsonpath() {
 
 #[test]
 fn test_csv_malformed_input() {
-    // UTF-8 validation test
+    // Bytes that are not valid UTF-8 must be rejected
     let invalid_utf8 = vec![0xFF, 0xFE, 0xFD];
 
     let config = HashMap::new();
@@ -493,7 +493,7 @@ fn test_registry_supports_all_formats() {
 
 #[test]
 fn test_end_to_end_json_workflow() {
-    // Step 1: Parse JSON input (fields sorted alphabetically: amount, orderId)
+    // Step 1. Parse the JSON input. Explicit mappings are ordered by name, amount then orderId.
     let json_input = r#"{"orderId": "ORDER-123", "amount": 250.75}"#;
 
     let mut source_config = HashMap::new();
@@ -506,8 +506,8 @@ fn test_end_to_end_json_workflow() {
     let events = source_mapper.map(json_input.as_bytes()).unwrap();
     assert_eq!(events.len(), 1);
 
-    // Step 2: Process event and serialize to JSON output
-    // Fields are sorted alphabetically: amount=field_0, orderId=field_1
+    // Step 2. Write the event out as JSON.
+    // Because fields are ordered by name, amount=field_0 and orderId=field_1.
     let mut sink_config = HashMap::new();
     sink_config.insert(
         "json.template".to_string(),
@@ -530,7 +530,7 @@ fn test_end_to_end_json_workflow() {
 
 #[test]
 fn test_end_to_end_csv_workflow() {
-    // Step 1: Parse CSV input
+    // Step 1. Parse the CSV input
     let csv_input = "123,250.75,Alice";
 
     let config = HashMap::new();
@@ -540,7 +540,7 @@ fn test_end_to_end_csv_workflow() {
     let events = source_mapper.map(csv_input.as_bytes()).unwrap();
     assert_eq!(events.len(), 1);
 
-    // Step 2: Serialize to CSV output with header
+    // Step 2. Write the event out as CSV with a header
     let mut sink_config = HashMap::new();
     sink_config.insert("csv.include-header".to_string(), "true".to_string());
 

@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-//! End-to-End Configuration Integration Tests
+//! End to end configuration integration tests
 //!
-//! Tests the complete flow from YAML configuration loading to runtime component behavior
-//! verification, ensuring that configuration values are properly applied to processors.
+//! Follows configuration from loading a YAML file through to runtime components,
+//! to check that configuration values reach the processors.
 
 use eventflux::core::config::types::application_config::{DefinitionConfig, WindowConfig};
 use eventflux::core::config::types::*;
@@ -34,7 +34,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tempfile::NamedTempFile;
 
-/// Test data structure to collect output events
+/// Callback that collects output events
 #[derive(Debug, Clone, Default)]
 struct TestEventCollector {
     events: Arc<Mutex<Vec<Event>>>,
@@ -148,31 +148,28 @@ applications:
     temp_file
 }
 
-// TODO: NOT PART OF M1 - Old EventFluxQL syntax with @app annotations
-// This test uses @app:name and @info annotations which are not supported in SQL parser.
-// While YAML configuration system exists, tests need to be updated to use SQL syntax.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Ignored because it uses the old EventFluxQL syntax with
+// @app:name and @info annotations, which the SQL parser does not support. The YAML
+// configuration system works, but this test needs rewriting in SQL syntax.
+// See feat/grammar/GRAMMAR.md for the grammar status.
 #[tokio::test]
 #[serial]
 #[ignore = "@app annotations and old EventFluxQL syntax not part of M1"]
 async fn test_yaml_config_to_runtime_integration() {
-    // Create temporary config file
     let config_file = create_test_config_file().await;
     let config_path = config_file.path();
 
-    // Load configuration from file
     let config_manager = ConfigManager::new();
     let loaded_config = config_manager
         .load_from_file(config_path)
         .await
         .expect("Failed to load configuration");
 
-    // Verify global configuration was loaded correctly
     assert_eq!(
         loaded_config.eventflux.runtime.mode,
         RuntimeMode::SingleNode
     );
-    // Note: Due to PerformanceConfig defaults, these may not match YAML exactly
+    // PerformanceConfig defaults may override these, so they are printed, not asserted
     println!(
         "Event buffer size: {}",
         loaded_config
@@ -186,72 +183,65 @@ async fn test_yaml_config_to_runtime_integration() {
         loaded_config.eventflux.runtime.performance.thread_pool_size
     );
 
-    // Verify application-specific configuration exists
     let app_config = loaded_config
         .applications
         .get("test-app")
         .expect("Test app configuration not found");
 
-    // Application config doesn't have performance field directly
-    // Those would be in global config, but we can verify monitoring settings
+    // Application config has no performance field. Performance settings live in the
+    // global config, so only the monitoring settings are checked here.
     assert!(app_config.monitoring.is_some());
 
-    // Create EventFluxManager with the loaded configuration
     let manager = EventFluxManager::new_with_config(loaded_config);
 
-    // Test EventFluxQL that would use window configuration
+    // EventFluxQL whose sort window would read the window configuration
     let eventflux_app_string = r#"
         @app:name('test-app')
         @app:statistics('true')
-        
+
         define stream InputStream (symbol string, price float, volume int);
         define stream OutputStream (symbol string, avgPrice float, maxVolume int);
-        
+
         @info(name = 'query1')
-        from InputStream#window:sort(5, price desc) 
+        from InputStream#window:sort(5, price desc)
         select symbol, avg(price) as avgPrice, max(volume) as maxVolume
         group by symbol
         insert into OutputStream;
     "#;
 
-    // Create the runtime (this should apply the configuration)
+    // Creating the runtime should apply the configuration
     let eventflux_app_runtime = manager
         .create_eventflux_app_runtime_from_string(eventflux_app_string)
         .await
         .expect("Failed to create EventFluxApp runtime");
 
-    // Set up event collector
     let event_collector = Arc::new(TestEventCollector::new());
     eventflux_app_runtime
         .add_callback("OutputStream", Box::new(event_collector.as_ref().clone()))
         .expect("Failed to add callback");
 
-    // Start the runtime after adding callbacks
+    // Start only after the callbacks are added
     eventflux_app_runtime
         .start()
         .expect("Failed to start runtime");
 
-    // Get input handler and send test events
     let _input_handler = eventflux_app_runtime
         .get_input_handler("InputStream")
         .expect("Failed to get input handler");
 
-    // For now, skip complex event creation - focus on config test
-    // TODO: Fix AttributeValue construction for proper event testing
+    // No events are sent for now. The test only covers configuration.
+    // TODO: Fix AttributeValue construction so real events can be sent
     println!("Skipping event sending for now due to AttributeValue conversion issues");
 
-    // Allow some processing time
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // For now, just verify the runtime was created successfully
-    // TODO: Add proper event processing verification once AttributeValue is fixed
+    // For now the test only checks that the runtime was created and started.
+    // TODO: Check event processing once AttributeValue construction is fixed
     println!("EventFluxApp runtime created successfully with configuration");
 
-    // Verify that configuration was applied by checking internal state
-    // This is a more indirect test since we can't directly access processor internals
+    // Processor internals cannot be reached from here, so nothing more is checked
     println!("Configuration integration test completed successfully");
 
-    // Clean up
     eventflux_app_runtime.shutdown();
 }
 
@@ -298,38 +288,38 @@ async fn test_processor_config_reader() {
     let factor = config_reader.get_window_config("sort", "distributed_size_factor");
     assert!(matches!(factor, Some(ConfigValue::Float(0.6))));
 
-    // Test performance configuration reading (now from global config)
+    // Performance settings are read from the global config
     let buffer_size = config_reader.get_performance_config("event_buffer_size");
-    // Global config defaults to 1024, but the assertion should be flexible
+    // Only the type is checked, not the value
     assert!(matches!(buffer_size, Some(ConfigValue::Integer(_))));
 
     let batch_size = config_reader.get_performance_config("batch_size");
-    // Global config has batch_size None, so it uses default of 1000
+    // With a global config whose batch_size is None, the reader returns None. The
+    // default of 1000 applies only when there is no global config at all.
     println!("Batch size: {:?}", batch_size);
-    // The test shows that batch_size can be None when not explicitly set
+    // This assert accepts any value, so it checks nothing
     assert!(batch_size.is_some() || batch_size.is_none());
 
     let stats_enabled = config_reader.get_performance_config("enable_statistics");
     assert!(matches!(stats_enabled, Some(ConfigValue::Boolean(false)))); // Default value
 
-    // Test default values for unknown configurations
+    // Unknown settings have no default and return None
     let unknown_window = config_reader.get_window_config("unknown", "param");
     assert!(unknown_window.is_none());
 
     let unknown_perf = config_reader.get_performance_config("unknown_param");
     assert!(unknown_perf.is_none());
 
-    // Test caching functionality - clear any existing cache first
+    // Caching. Clear any existing cache first.
     config_reader.clear_cache();
     assert_eq!(config_reader.get_cache_size(), 0);
 
-    // Access some configs to populate cache
+    // Each lookup adds one entry to the cache
     let _val1 = config_reader.get_window_config("sort", "initial_capacity_multiplier");
     let _val2 = config_reader.get_performance_config("event_buffer_size");
 
     assert_eq!(config_reader.get_cache_size(), 2);
 
-    // Clear cache
     config_reader.clear_cache();
     assert_eq!(config_reader.get_cache_size(), 0);
 }
@@ -337,10 +327,9 @@ async fn test_processor_config_reader() {
 #[tokio::test]
 #[serial]
 async fn test_config_fallback_behavior() {
-    // Test with no application config
+    // With no application or global config, the reader returns built in defaults
     let config_reader = ProcessorConfigReader::new(None, None);
 
-    // Should return default values
     let multiplier = config_reader.get_window_config("length", "initial_capacity_multiplier");
     assert!(matches!(multiplier, Some(ConfigValue::Float(1.2))));
 
@@ -368,7 +357,6 @@ async fn test_config_manager_eventflux_manager_integration() {
     };
     config.eventflux.runtime.performance = perf_config;
 
-    // Create application-specific config
     let app_config = ApplicationConfig::default();
 
     config
@@ -391,10 +379,10 @@ async fn test_config_manager_eventflux_manager_integration() {
         .expect("Failed to get app config")
         .expect("App config not found");
 
-    // App config exists but doesn't have performance field
-    assert!(app_specific.monitoring.is_none()); // Default empty config
+    // The app config exists but is the empty default, so monitoring is not set
+    assert!(app_specific.monitoring.is_none());
 
-    // Test with non-existent application
+    // An application that does not exist gives None, not an error
     let missing_app = manager
         .get_application_config("non-existent")
         .await

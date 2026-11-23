@@ -23,21 +23,16 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-// TODO: NOT PART OF M1 - Requires @app:async annotation support in SQL compiler
-// This test uses @app:async annotation which is not part of core SQL syntax.
-// M1 covers: Basic queries, Windows, Joins, GROUP BY, HAVING, ORDER BY, LIMIT
-// Async annotations and advanced app-level annotations will be implemented in Phase 2.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// The @app:async annotation is not part of the SQL syntax in M1, so this test turns on
+// async mode for the whole app through YAML config instead.
 #[tokio::test]
 async fn async_junction_concurrent_dispatch() {
     use eventflux::core::config::ConfigManager;
     use eventflux::core::eventflux_manager::EventFluxManager;
 
-    // MIGRATED: Use YAML configuration for global async mode
     let config_manager = ConfigManager::from_file("tests/fixtures/app-async-enabled.yaml");
     let manager = EventFluxManager::new_with_config_manager(config_manager);
 
-    // MIGRATED: Old EventFluxQL replaced with SQL
     let app = "\
         CREATE STREAM In (v INT);\n\
         CREATE STREAM Out (v INT);\n\
@@ -62,12 +57,15 @@ async fn async_junction_concurrent_dispatch() {
     assert_eq!(out.len(), 2000);
 }
 
-/// Regression test: YAML `eventflux.application.async_default` must reach
-/// junction creation (set_default_async_mode previously had no callers, so the
-/// fixture silently produced sync junctions), and an app whose junctions are
-/// ALL async must still deliver events (consumer loops previously ran on the
-/// shared executor, where two async junctions' consumers saturated the pool
-/// and starved every subscriber dispatch).
+/// Regression test for two bugs.
+///
+/// YAML `eventflux.application.async_default` must reach junction creation.
+/// set_default_async_mode used to have no callers, so the fixture quietly gave
+/// sync junctions.
+///
+/// An app whose junctions are ALL async must still deliver events. Consumer loops
+/// used to run on the shared executor, where the consumers of two async junctions
+/// filled the pool and left no thread for any subscriber dispatch.
 #[tokio::test]
 async fn yaml_async_default_enables_async_junctions() {
     use eventflux::core::config::ConfigManager;
@@ -76,7 +74,7 @@ async fn yaml_async_default_enables_async_junctions() {
     let config_manager = ConfigManager::from_file("tests/fixtures/app-async-enabled.yaml");
     let manager = EventFluxManager::new_with_config_manager(config_manager);
 
-    // No per-stream WITH — async must come from the YAML default
+    // No WITH on the streams, so async must come from the YAML default
     let app = "\
         CREATE STREAM In (v INT);\n\
         CREATE STREAM Out (v INT);\n\
@@ -100,8 +98,8 @@ async fn yaml_async_default_enables_async_junctions() {
     );
 }
 
-/// Second subscriber on Out whose per-event sleep keeps the executor busy, so
-/// a backlog of subscriber dispatches reliably exists when shutdown() runs.
+/// Second subscriber on Out. It sleeps 1 ms per event to keep the executor busy,
+/// so there is always a backlog of subscriber dispatches when shutdown() runs.
 #[derive(Debug)]
 struct SlowCallback;
 
@@ -113,17 +111,17 @@ impl eventflux::core::stream::output::stream_callback::StreamCallback for SlowCa
     }
 }
 
-/// Regression test for #138: shutdown() must drain async junctions before
-/// stopping sinks. Identical burst to the test above but with NO sleep before
-/// shutdown — every accepted event must still reach the output.
+/// Regression test for #138. shutdown() must drain async junctions before
+/// stopping sinks. Sends the same 4 x 500 burst as async_junction_concurrent_dispatch
+/// but with NO sleep before shutdown. Every accepted event must still reach the output.
 #[tokio::test]
 async fn async_junction_shutdown_drains_queued_events() {
     use eventflux::core::eventflux_manager::EventFluxManager;
 
     let manager = EventFluxManager::new();
 
-    // Both junctions async: the drain must follow the cascade — events
-    // drained from In flow through the query into Out, which drains in turn.
+    // Both junctions are async, so the drain must cascade. Events drained from In
+    // flow through the query into Out, which then drains too.
     let app = "\
         CREATE STREAM In (v INT) WITH ('async.enabled' = 'true', 'async.buffer_size' = '4096');\n\
         CREATE STREAM Out (v INT) WITH ('async.enabled' = 'true', 'async.buffer_size' = '4096');\n\
@@ -146,8 +144,8 @@ async fn async_junction_shutdown_drains_queued_events() {
     for h in handles {
         h.join().unwrap();
     }
-    // Shutdown immediately — events are still queued in the async junction
-    // and in-flight on the executor. The drain must deliver all of them.
+    // Shut down right away. Events are still queued in the async junctions and in
+    // flight on the executor. The drain must deliver all of them.
     let runner = Arc::try_unwrap(runner).unwrap();
     let out = runner.shutdown();
     assert_eq!(out.len(), 2000);

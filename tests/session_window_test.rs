@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-// TODO: Session window tests converted to SQL syntax
-// Session window is implemented but SQL syntax needs verification
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: These session window tests use SQL syntax and are all ignored. The session
+// window is implemented, but the `WINDOW session(...)` form used here still needs
+// checking. See feat/grammar/GRAMMAR.md for the grammar status.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -27,7 +27,7 @@ use eventflux::core::event::value::AttributeValue;
 #[tokio::test]
 #[ignore = "GROUP BY with session window syntax needs verification"]
 async fn test_basic_session_window() {
-    // TODO: Converted to SQL, session window exists but GROUP BY + aggregation syntax needs verification
+    // TODO: Check the syntax for a session window with GROUP BY and an aggregation
     let app = "\
         CREATE STREAM In (user VARCHAR, value INT);\n\
         CREATE STREAM Out (user VARCHAR, total INT);\n\
@@ -36,7 +36,7 @@ async fn test_basic_session_window() {
 
     let runner = AppRunner::new(app, "Out").await;
 
-    // Send events for alice within session gap
+    // Two events for alice within the 5000 ms session gap
     runner.send(
         "In",
         vec![
@@ -53,7 +53,7 @@ async fn test_basic_session_window() {
         ],
     );
 
-    // Send event for bob (different session key)
+    // bob has a different session key, so he gets his own session
     runner.send(
         "In",
         vec![
@@ -74,15 +74,14 @@ async fn test_basic_session_window() {
     let output = runner.shutdown();
     println!("Session window output: {:?}", output);
 
-    // Since session window is complex and timing-dependent,
-    // just verify we get some output
+    // Session output depends on timing, so only check that something came out
     assert!(!output.is_empty(), "Should have session output");
 }
 
 #[tokio::test]
 #[ignore = "Session window with aggregations needs syntax verification"]
 async fn test_default_session_key() {
-    // TODO: Converted to SQL, session window exists but aggregation syntax needs verification
+    // TODO: Check the syntax for a session window with aggregations
     let app = "\
         CREATE STREAM In (value INT);\n\
         CREATE STREAM Out (total INT, count BIGINT);\n\
@@ -91,7 +90,7 @@ async fn test_default_session_key() {
 
     let runner = AppRunner::new(app, "Out").await;
 
-    // All events should go to the same default session
+    // No session key is given, so all events share the default session
     runner.send("In", vec![AttributeValue::Int(10)]);
     runner.send("In", vec![AttributeValue::Int(20)]);
     runner.send("In", vec![AttributeValue::Int(30)]);
@@ -99,14 +98,14 @@ async fn test_default_session_key() {
     let output = runner.shutdown();
     println!("Default session key output: {:?}", output);
 
-    // Should have aggregated all events in one session
+    // Only checks that output exists, not that it was aggregated into one session
     assert!(!output.is_empty(), "Should have session output");
 }
 
 #[tokio::test]
 #[ignore = "Session window with GROUP BY needs syntax verification"]
 async fn test_session_window_gap_validation() {
-    // TODO: Converted to SQL, session window exists but GROUP BY syntax needs verification
+    // TODO: Check the syntax for a session window with GROUP BY
     let app = "\
         CREATE STREAM In (id VARCHAR, data INT);\n\
         CREATE STREAM Out (id VARCHAR, count BIGINT);\n\
@@ -115,7 +114,6 @@ async fn test_session_window_gap_validation() {
 
     let runner = AppRunner::new(app, "Out").await;
 
-    // Send some events
     runner.send(
         "In",
         vec![
@@ -127,6 +125,5 @@ async fn test_session_window_gap_validation() {
     let output = runner.shutdown();
     println!("Session gap test output: {:?}", output);
 
-    // Should succeed with valid gap
-    // Valid session gap should work - test passes if we reach this point
+    // A valid 1000 ms gap must be accepted. The test passes if it gets here without a panic.
 }

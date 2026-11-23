@@ -93,7 +93,7 @@ fn test_incremental_executor_basic() {
     let mut e2 = StreamEvent::new(1500, 1, 0, 0);
     e2.before_window_data[0] = AttributeValue::Int(2);
     inc.execute(&e2);
-    // flush last bucket
+    // an event at 2000 closes the 1000 to 2000 bucket
     inc.execute(&StreamEvent::new(2000, 1, 0, 0));
     let rows = table.all_rows();
     assert_eq!(

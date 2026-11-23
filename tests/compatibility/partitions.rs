@@ -25,7 +25,7 @@ use eventflux::core::event::value::AttributeValue;
 // BASIC PARTITION TESTS
 // ============================================================================
 
-/// Basic partition with simple passthrough
+/// Basic partition that passes events straight through
 /// Reference: PartitionTestCase.java
 #[tokio::test]
 async fn partition_test1_basic_passthrough() {
@@ -63,8 +63,8 @@ async fn partition_test1_basic_passthrough() {
     assert_eq!(out.len(), 3);
 }
 
-/// Partition with sum aggregation - state should be isolated per partition
-/// Reference: WindowPartitionTestCase.java shows per-partition isolation
+/// Partition with sum. Each partition must keep its own sum.
+/// Reference: WindowPartitionTestCase.java shows state kept per partition
 #[tokio::test]
 #[ignore = "Per-partition aggregation isolation not yet implemented - currently uses global state"]
 async fn partition_test2_sum_aggregation() {
@@ -100,14 +100,14 @@ async fn partition_test2_sum_aggregation() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 3);
-    // CORRECT per-partition SUM: C1=100, C2=50, C1=100+200=300
+    // Correct sums per partition are C1=100, C2=50, then C1=100+200=300
     assert_eq!(out[0][0], AttributeValue::Long(100)); // C1's first sum
-    assert_eq!(out[1][0], AttributeValue::Long(50)); // C2's first sum (isolated)
-    assert_eq!(out[2][0], AttributeValue::Long(300)); // C1's cumulative sum
+    assert_eq!(out[1][0], AttributeValue::Long(50)); // C2's first sum, apart from C1
+    assert_eq!(out[2][0], AttributeValue::Long(300)); // C1's running sum
 }
 
-/// Partition with count aggregation - state should be isolated per partition
-/// Reference: WindowPartitionTestCase.java shows per-partition isolation
+/// Partition with count. Each partition must keep its own count.
+/// Reference: WindowPartitionTestCase.java shows state kept per partition
 #[tokio::test]
 #[ignore = "Per-partition aggregation isolation not yet implemented - currently uses global state"]
 async fn partition_test3_count_aggregation() {
@@ -150,15 +150,15 @@ async fn partition_test3_count_aggregation() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 4);
-    // CORRECT per-partition count: A=1, B=1, A=2, A=3
+    // Correct counts per partition are A=1, B=1, A=2, A=3
     assert_eq!(out[0][0], AttributeValue::Long(1)); // A's first count
-    assert_eq!(out[1][0], AttributeValue::Long(1)); // B's first count (isolated)
+    assert_eq!(out[1][0], AttributeValue::Long(1)); // B's first count, apart from A
     assert_eq!(out[2][0], AttributeValue::Long(2)); // A's second count
     assert_eq!(out[3][0], AttributeValue::Long(3)); // A's third count
 }
 
-/// Partition with avg aggregation - state should be isolated per partition
-/// Reference: WindowPartitionTestCase.java shows per-partition isolation
+/// Partition with avg. Each partition must keep its own average.
+/// Reference: WindowPartitionTestCase.java shows state kept per partition
 #[tokio::test]
 #[ignore = "Per-partition aggregation isolation not yet implemented - currently uses global state"]
 async fn partition_test4_avg_aggregation() {
@@ -194,10 +194,10 @@ async fn partition_test4_avg_aggregation() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 3);
-    // CORRECT per-partition avg: S1=10, S1=(10+20)/2=15, S2=30 (isolated)
+    // Correct averages per partition are S1=10, S1=(10+20)/2=15, then S2=30
     assert_eq!(out[0][0], AttributeValue::Double(10.0)); // S1's first avg
-    assert_eq!(out[1][0], AttributeValue::Double(15.0)); // S1's cumulative avg
-    assert_eq!(out[2][0], AttributeValue::Double(30.0)); // S2's first avg (isolated)
+    assert_eq!(out[1][0], AttributeValue::Double(15.0)); // S1's running avg
+    assert_eq!(out[2][0], AttributeValue::Double(30.0)); // S2's first avg, apart from S1
 }
 
 /// Partition with filter
@@ -237,8 +237,8 @@ async fn partition_test5_with_filter() {
     assert_eq!(out.len(), 2);
 }
 
-/// Partition with window
-/// Note: Length window includes expired events in output
+/// Partition with a length window
+/// The length window also emits expired events
 #[tokio::test]
 async fn partition_test6_with_window() {
     let app = "\
@@ -272,7 +272,8 @@ async fn partition_test6_with_window() {
         ],
     );
     let out = runner.shutdown();
-    // Window includes expired events: 4 outputs (10, 30, expired-10, 50)
+    // With expired events there can be 4 outputs (10, 30, expired 10, 50). The
+    // test only requires at least 3.
     assert!(out.len() >= 3);
 }
 
@@ -310,7 +311,7 @@ async fn partition_test7_multiple_streams() {
     assert_eq!(out[0][1], AttributeValue::Int(100));
 }
 
-/// Partition with min/max aggregation
+/// Partition with min and max
 #[tokio::test]
 async fn partition_test8_min_max() {
     let app = "\
@@ -345,7 +346,7 @@ async fn partition_test8_min_max() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 3);
-    // NYC: min=20, max=20 -> min=20, max=25 -> min=15, max=25
+    // NYC goes from min=20 max=20, to min=20 max=25, to min=15 max=25
     assert_eq!(out[0][0], AttributeValue::Float(20.0));
     assert_eq!(out[0][1], AttributeValue::Float(20.0));
     assert_eq!(out[1][0], AttributeValue::Float(20.0));
@@ -354,8 +355,8 @@ async fn partition_test8_min_max() {
     assert_eq!(out[2][1], AttributeValue::Float(25.0));
 }
 
-/// Partition with INT partition key - state should be isolated per partition
-/// Reference: WindowPartitionTestCase.java shows per-partition isolation
+/// Partition on an INT key. Each partition must keep its own sum.
+/// Reference: WindowPartitionTestCase.java shows state kept per partition
 #[tokio::test]
 #[ignore = "Per-partition aggregation isolation not yet implemented - currently uses global state"]
 async fn partition_test9_int_key() {
@@ -382,10 +383,10 @@ async fn partition_test9_int_key() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 3);
-    // CORRECT per-partition sum: Region1=100, Region2=50, Region1=300
+    // Correct sums per partition are Region1=100, Region2=50, then Region1=300
     assert_eq!(out[0][0], AttributeValue::Long(100)); // Region 1's first sum
-    assert_eq!(out[1][0], AttributeValue::Long(50)); // Region 2's first sum (isolated)
-    assert_eq!(out[2][0], AttributeValue::Long(300)); // Region 1's cumulative sum
+    assert_eq!(out[1][0], AttributeValue::Long(50)); // Region 2's first sum, apart from 1
+    assert_eq!(out[2][0], AttributeValue::Long(300)); // Region 1's running sum
 }
 
 /// Partition with multiple queries in BEGIN block
@@ -455,7 +456,7 @@ async fn partition_test11_length_batch_window() {
         ],
     );
     let out = runner.shutdown();
-    // Batch window outputs after every 2 events: 10+20=30, 30+40=70
+    // The batch window outputs after every 2 events, 10+20=30 then 30+40=70
     assert_eq!(out.len(), 2);
     assert_eq!(out[0][0], AttributeValue::Long(30));
     assert_eq!(out[1][0], AttributeValue::Long(70));
@@ -496,14 +497,14 @@ async fn partition_test12_distinct_count() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 3);
-    // U1: 1 unique, 2 unique, still 2 unique (home repeated)
+    // U1 goes 1 unique, 2 unique, then still 2 unique because home repeats
     assert_eq!(out[0][0], AttributeValue::Long(1));
     assert_eq!(out[1][0], AttributeValue::Long(2));
     assert_eq!(out[2][0], AttributeValue::Long(2));
 }
 
-/// Partition isolation test - partitions should not affect each other
-/// Note: Currently aggregation state is global, not per-partition
+/// Partitions must not affect each other
+/// Ignored because aggregation state is shared across partitions today
 #[tokio::test]
 #[ignore = "Per-partition aggregation isolation not yet implemented"]
 async fn partition_test13_isolation() {
@@ -516,7 +517,7 @@ async fn partition_test13_isolation() {
             SELECT COUNT() AS cnt FROM dataStream;\n\
         END;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // Interleave events from different partitions
+    // Alternate events between partitions
     runner.send(
         "dataStream",
         vec![
@@ -554,7 +555,7 @@ async fn partition_test13_isolation() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 5);
-    // P1: 1, P2: 1, P1: 2, P2: 2, P1: 3
+    // Counts in order are P1=1, P2=1, P1=2, P2=2, P1=3
     assert_eq!(out[0][0], AttributeValue::Long(1));
     assert_eq!(out[1][0], AttributeValue::Long(1));
     assert_eq!(out[2][0], AttributeValue::Long(2));
@@ -562,8 +563,8 @@ async fn partition_test13_isolation() {
     assert_eq!(out[4][0], AttributeValue::Long(3));
 }
 
-/// Partition with arithmetic in SELECT
-/// Note: Currently aggregation state is global, not per-partition
+/// Partition with arithmetic inside SUM
+/// Ignored because aggregation state is shared across partitions today
 #[tokio::test]
 #[ignore = "Per-partition aggregation isolation not yet implemented"]
 async fn partition_test14_arithmetic() {
@@ -594,7 +595,7 @@ async fn partition_test14_arithmetic() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 2);
-    // C1: 2*10=20, C1: 20 + 3*20 = 80
+    // C1 sums to 2*10=20, then 20 + 3*20 = 80
     assert_eq!(out[0][0], AttributeValue::Float(20.0));
     assert_eq!(out[1][0], AttributeValue::Float(80.0));
 }
@@ -1140,7 +1141,7 @@ async fn partition_test33_not_where() {
         ],
     );
     let out = runner.shutdown();
-    // Only active=1 should pass
+    // Only active=1 passes
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][1], AttributeValue::Int(1));
 }
@@ -1176,7 +1177,7 @@ async fn partition_test34_and_where() {
         ],
     );
     let out = runner.shutdown();
-    // Only Electronics (price=100 > 50, stock=10 > 0) should pass
+    // Only Electronics passes, with price=100 > 50 and stock=10 > 0
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("Electronics".to_string()));
 }
@@ -1212,7 +1213,7 @@ async fn partition_test35_or_where() {
         ],
     );
     let out = runner.shutdown();
-    // Only Task (priority=1) should pass
+    // Only Task passes, with priority=1
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("Task".to_string()));
 }
@@ -1252,7 +1253,7 @@ async fn partition_test36_multi_key() {
     assert_eq!(out[0][2], AttributeValue::Int(300));
 }
 
-/// Partition with length window (sliding)
+/// Partition with a sliding length window
 #[tokio::test]
 async fn partition_test37_length_window() {
     let app = "\
@@ -1287,7 +1288,7 @@ async fn partition_test37_length_window() {
         ],
     );
     let out = runner.shutdown();
-    // Each event outputs with current window average
+    // Each event outputs the current window average
     assert!(!out.is_empty());
 }
 
@@ -1326,9 +1327,9 @@ async fn partition_test38_count() {
         ],
     );
     let out = runner.shutdown();
-    // LengthBatch outputs once when batch is full
+    // lengthBatch outputs once the batch is full
     assert!(!out.is_empty());
-    // Last output should have count = 3 (count returns Long)
+    // The last output has count = 3. count returns Long.
     let last = out.last().unwrap();
     let count = match &last[1] {
         AttributeValue::Int(c) => *c as i64,
@@ -1374,7 +1375,7 @@ async fn partition_test39_min() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // Last output should have min = 200
+    // The last output has min = 200
     let last = out.last().unwrap();
     assert_eq!(last[1], AttributeValue::Int(200));
 }
@@ -1415,7 +1416,7 @@ async fn partition_test40_max() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // Last output should have max = 1500
+    // The last output has max = 1500
     let last = out.last().unwrap();
     assert_eq!(last[1], AttributeValue::Int(1500));
 }
@@ -1456,7 +1457,7 @@ async fn partition_test41_avg() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // Last output should have avg = 25 (avg returns Double)
+    // The last output has avg = 25. avg returns Double.
     let last = out.last().unwrap();
     let avg = match &last[1] {
         AttributeValue::Int(v) => *v as f64,
@@ -2396,7 +2397,7 @@ async fn partition_test73_length_compare() {
     assert_eq!(out[0][1], AttributeValue::String("Hello World".to_string()));
 }
 
-/// Partition with boolean-like integer filter
+/// Partition that filters on an INT used as a flag
 #[tokio::test]
 async fn partition_test74_bool_int() {
     let app = "\
@@ -3020,7 +3021,7 @@ async fn partition_test92_or_condition() {
         ],
     );
     let out = runner.shutdown();
-    // First (priority=high) and second (level>80) pass
+    // The first passes on priority=high and the second on level>80
     assert_eq!(out.len(), 2);
 }
 
@@ -3063,7 +3064,7 @@ async fn partition_test93_and_condition() {
         ],
     );
     let out = runner.shutdown();
-    // Only first passes (price>10 AND volume>=100)
+    // Only the first passes, with price>10 AND volume>=100
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][1], AttributeValue::Int(3000)); // 15 * 200
 }
@@ -3252,7 +3253,7 @@ async fn partition_test99_division() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // Division returns Double
+    // Division returns Double. Any other type skips the check.
     if let AttributeValue::Double(ratio) = &out[0][1] {
         assert!((ratio - 25.0).abs() < 0.01);
     }
@@ -3285,7 +3286,7 @@ async fn partition_test100_arithmetic_expr() {
     assert_eq!(out[0][1], AttributeValue::Int(11)); // 5 + (3 * 2) = 11 (multiplication first)
 }
 
-/// Partition with range check (simulating BETWEEN)
+/// Partition with a range check written with AND instead of BETWEEN
 #[tokio::test]
 async fn partition_test101_range_check() {
     let app = "\
@@ -4180,7 +4181,8 @@ async fn partition_test126_length_window_filter() {
     assert!(!out.is_empty());
 }
 
-/// Partition with modulo-like check using subtraction
+/// Partition that keeps only positive numbers with `num > 0`. Despite the test
+/// name, the query does no even or odd check.
 #[tokio::test]
 async fn partition_test127_even_odd_check() {
     let app = "\
@@ -4586,7 +4588,7 @@ async fn partition_test138_min_forever() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // Last output should have min=15
+    // The last output has min=15
     let last = out.last().unwrap();
     let min_val = match &last[1] {
         AttributeValue::Int(v) => *v as i64,
@@ -4679,7 +4681,7 @@ async fn partition_test140_length_sum() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // After 3 events, sum = 10+20+30 = 60
+    // After 3 events the last sum is 10+20+30 = 60
     let last = out.last().unwrap();
     let sum_val = match &last[1] {
         AttributeValue::Int(v) => *v as i64,
@@ -4689,7 +4691,7 @@ async fn partition_test140_length_sum() {
     assert_eq!(sum_val, 60);
 }
 
-/// Partition with boolean-like condition
+/// Partition with a condition on an INT used as a flag
 #[tokio::test]
 async fn partition_test141_bool_condition() {
     let app = "\

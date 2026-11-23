@@ -15,35 +15,36 @@
  * limitations under the License.
  */
 
-//! Phase 2b.5: Integration Testing
+//! Phase 2b.5. Integration testing
 //!
-//! Comprehensive integration tests combining all pattern chain features:
-//! - Multi-instance scenarios (multiple overlapping patterns)
+//! Integration tests that combine the pattern chain features
+//! - Several overlapping pattern instances at once
 //! - Complex count quantifiers
-//! - Pattern + WITHIN combinations
-//! - Performance validation
+//! - Pattern mode together with WITHIN
+//! - Performance checks
 //!
-//! Reference: feat/pattern_processing/STATE_MACHINE_DESIGN.md Phase 2b.5
+//! Follows Phase 2b.5 of feat/pattern_processing/STATE_MACHINE_DESIGN.md. That doc
+//! is no longer in the repo.
 
 mod common;
 
 use common::pattern_chain_test_utils::*;
 use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
-// Note: build_pattern_chain_with_within() is provided by common module
+// build_pattern_chain_with_within() comes from the common module
 
 // ============================================================================
-// PHASE 2b.5 TESTS: Integration Testing
+// PHASE 2b.5 TESTS. Integration Testing
 // ============================================================================
 
-/// Test 1: Complex count quantifiers with multi-instance patterns
-/// Pattern: A{2,3} -> B{2} (Pattern mode)
-/// Events: [A, A, X, B, A, B] → Multiple matches possible
+/// Test 1. Complex count quantifiers with several pattern instances
+/// Pattern A{2,3} -> B{2} (Pattern mode)
+/// Events [A, A, X, B, A, B] → more than one match is possible
 ///
-/// Expected behavior:
-/// - A{2,3} means: collect 2 or 3 A events
-/// - B{2} means: collect exactly 2 B events (last step requires exact count)
-/// - Pattern mode ignores X
-/// - Expected match: After collecting 2+ As and 2 Bs
+/// Expected behaviour
+/// - A{2,3} collects 2 or 3 A events
+/// - B{2} collects exactly 2 B events, because the last step needs an exact count
+/// - Pattern mode skips X
+/// - A match comes after at least 2 As and 2 Bs
 #[test]
 fn test_integration_1_complex_count_quantifiers() {
     println!("\n=== Testing A{{2,3}} -> B{{2}} (Pattern), events [A, A, X, B, A, B] ===");
@@ -51,7 +52,7 @@ fn test_integration_1_complex_count_quantifiers() {
     let (mut chain, collector) = build_pattern_chain(
         vec![
             ("e1".to_string(), "A".to_string(), 2, 3), // A{2,3}
-            ("e2".to_string(), "B".to_string(), 2, 2), // B{2} - last step must have exact count
+            ("e2".to_string(), "B".to_string(), 2, 2), // B{2}, last step needs an exact count
         ],
         StateType::Pattern,
     );
@@ -76,7 +77,7 @@ fn test_integration_1_complex_count_quantifiers() {
     chain.update_state();
     println!("  After A2, outputs = {}", collector.get_outputs().len());
 
-    // Send X (non-matching, should be ignored in Pattern mode)
+    // Send X. It does not match, so Pattern mode skips it.
     let event_x = create_stream_event(3000);
     println!("Sending X (timestamp 3000, non-matching)");
     chain.pre_processors[0]
@@ -119,10 +120,10 @@ fn test_integration_1_complex_count_quantifiers() {
     let outputs = collector.get_outputs();
     println!("  Final outputs = {}", outputs.len());
 
-    // With A{2,3} -> B{2}, we expect:
-    // - After A1, A2: state with 2 As waiting for 2 Bs
-    // - After B1, B2: First match (2 As, 2 Bs)
-    // - Potentially more matches with A3
+    // With A{2,3} -> B{2}
+    // - After A1 and A2 there is a state with 2 As waiting for 2 Bs
+    // - After B1 and B2 comes the first match, 2 As and 2 Bs
+    // - A3 may lead to more matches
     assert!(
         !outputs.is_empty(),
         "Expected at least 1 output from A{{2,3}} -> B{{2}} pattern"
@@ -134,11 +135,11 @@ fn test_integration_1_complex_count_quantifiers() {
     );
 }
 
-/// Test 2: Pattern mode with WITHIN time constraint
-/// Pattern: A -> B -> C (Pattern mode, WITHIN 20s)
-/// Events: [A(t=0), X(t=5), B(t=10), Y(t=15), C(t=18)] → MATCH
+/// Test 2. Pattern mode with a WITHIN time limit
+/// Pattern A -> B -> C (Pattern mode, WITHIN 20 s)
+/// Events [A(t=0), X(t=5), B(t=10), Y(t=15), C(t=18)] → MATCH
 ///
-/// Expected: Pattern mode ignores X and Y, C arrives within 20s of A
+/// Pattern mode skips X and Y, and C arrives within 20 s of A.
 #[test]
 fn test_integration_2_pattern_with_within() {
     println!("\n=== Testing A -> B -> C (Pattern, WITHIN 20s), events [A(t=0), X(t=5), B(t=10), Y(t=15), C(t=18)] ===");
@@ -163,7 +164,7 @@ fn test_integration_2_pattern_with_within() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send X at t=5000 (non-matching, ignored)
+    // Send X at t=5000. It does not match and is skipped.
     let event_x = create_stream_event(5000);
     println!("Sending X (timestamp 5000, non-matching)");
     chain.pre_processors[0]
@@ -183,7 +184,7 @@ fn test_integration_2_pattern_with_within() {
     chain.update_state();
     println!("  After B, outputs = {}", collector.get_outputs().len());
 
-    // Send Y at t=15000 (non-matching, ignored)
+    // Send Y at t=15000. It does not match and is skipped.
     let event_y = create_stream_event(15000);
     println!("Sending Y (timestamp 15000, non-matching)");
     chain.pre_processors[0]
@@ -193,7 +194,7 @@ fn test_integration_2_pattern_with_within() {
     chain.update_state();
     println!("  After Y, outputs = {}", collector.get_outputs().len());
 
-    // Send C at t=18000 (within 20s of A)
+    // Send C at t=18000, within 20 s of A
     let event_c = create_stream_event(18000);
     println!("Sending C (timestamp 18000, +18s from A)");
     chain.pre_processors[2]
@@ -214,13 +215,13 @@ fn test_integration_2_pattern_with_within() {
     println!("SUCCESS: Pattern mode with WITHIN constraint produced match");
 }
 
-/// Test 3: Concurrent pattern instances with count quantifiers
-/// Pattern: A{2} -> B{2} (Pattern mode)
-/// Events: [A1, A2, A3, B1, B2, B3] → Multiple overlapping matches
+/// Test 3. Several pattern instances at once with count quantifiers
+/// Pattern A{2} -> B{2} (Pattern mode)
+/// Events [A1, A2, A3, B1, B2, B3] → several overlapping matches
 ///
-/// Expected: With A{2} -> B{2}, we should get:
-/// - (A1, A2) -> (B1, B2): First match
-/// - Potentially more matches with A3 and B3
+/// With A{2} -> B{2}
+/// - (A1, A2) -> (B1, B2) is the first match
+/// - A3 and B3 may lead to more matches
 #[test]
 fn test_integration_3_concurrent_instances() {
     println!("\n=== Testing A{{2}} -> B{{2}} (Pattern), events [A1, A2, A3, B1, B2, B3] ===");
@@ -291,8 +292,8 @@ fn test_integration_3_concurrent_instances() {
     let outputs = collector.get_outputs();
     println!("  Final outputs = {}", outputs.len());
 
-    // With A{2} -> B{2}, we expect at least 1 match from (A1,A2) -> (B1,B2)
-    // Potentially more with overlapping instances
+    // A{2} -> B{2} gives at least 1 match, (A1,A2) -> (B1,B2).
+    // Overlapping instances may give more.
     assert!(
         !outputs.is_empty(),
         "Expected at least 1 output from concurrent A{{2}} -> B{{2}} instances"
@@ -304,16 +305,16 @@ fn test_integration_3_concurrent_instances() {
     );
 }
 
-/// Test 4: Sequence mode vs Pattern mode comparison
-/// Compare behavior when all events match in order vs with non-matching events
+/// Test 4. Sequence mode compared with Pattern mode
+/// Compares events that all match in order with events that include ones that do not match.
 ///
-/// Sequence: A -> B -> C, events [A, B, C] → MATCH
-/// Pattern: A -> B -> C, events [A, X, B, Y, C] → MATCH (X, Y ignored)
+/// Sequence A -> B -> C, events [A, B, C] → MATCH
+/// Pattern A -> B -> C, events [A, X, B, Y, C] → MATCH, X and Y are skipped
 #[test]
 fn test_integration_4_sequence_vs_pattern_comparison() {
     println!("\n=== Testing Sequence vs Pattern mode comparison ===");
 
-    // Test 4a: Sequence mode with perfect order [A, B, C] → MATCH
+    // Test 4a. Sequence mode with events in exact order [A, B, C] → MATCH
     {
         let (mut chain, collector) = build_pattern_chain(
             vec![
@@ -352,7 +353,7 @@ fn test_integration_4_sequence_vs_pattern_comparison() {
         assert_eq!(outputs.len(), 1, "Expected 1 output from valid sequence");
     }
 
-    // Test 4b: Pattern mode with non-matching events [A, X, B, Y, C] → MATCH
+    // Test 4b. Pattern mode with events that do not match [A, X, B, Y, C] → MATCH
     {
         let (mut chain, collector) = build_pattern_chain(
             vec![
@@ -372,7 +373,7 @@ fn test_integration_4_sequence_vs_pattern_comparison() {
             .process(Some(Box::new(event_a)));
         chain.update_state();
 
-        // X is ignored in Pattern mode
+        // Pattern mode skips X
         let event_x = create_stream_event(1500);
         chain.pre_processors[0]
             .lock()
@@ -387,7 +388,7 @@ fn test_integration_4_sequence_vs_pattern_comparison() {
             .process(Some(Box::new(event_b)));
         chain.update_state();
 
-        // Y is ignored in Pattern mode
+        // Pattern mode skips Y
         let event_y = create_stream_event(2500);
         chain.pre_processors[0]
             .lock()
@@ -414,11 +415,11 @@ fn test_integration_4_sequence_vs_pattern_comparison() {
     println!("SUCCESS: Sequence and Pattern modes validated");
 }
 
-/// Test 5: Four-step pattern chain
-/// Pattern: A -> B -> C -> D (Pattern mode)
-/// Events: [A, X, B, Y, C, Z, D] → MATCH (X, Y, Z ignored)
+/// Test 5. Four step pattern chain
+/// Pattern A -> B -> C -> D (Pattern mode)
+/// Events [A, X, B, Y, C, Z, D] → MATCH, X, Y and Z are skipped
 ///
-/// Expected: Pattern mode completes four-step chain ignoring non-matching events
+/// Pattern mode completes the four step chain and skips events that do not match.
 #[test]
 fn test_integration_5_four_step_chain() {
     println!("\n=== Testing A -> B -> C -> D (Pattern, 4 steps), events [A, X, B, Y, C, Z, D] ===");
@@ -443,7 +444,7 @@ fn test_integration_5_four_step_chain() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send X (non-matching, ignored)
+    // Send X. It does not match and is skipped.
     let event_x = create_stream_event(2000);
     println!("Sending X (timestamp 2000, non-matching)");
     chain.pre_processors[0]
@@ -463,7 +464,7 @@ fn test_integration_5_four_step_chain() {
     chain.update_state();
     println!("  After B, outputs = {}", collector.get_outputs().len());
 
-    // Send Y (non-matching, ignored)
+    // Send Y. It does not match and is skipped.
     let event_y = create_stream_event(4000);
     println!("Sending Y (timestamp 4000, non-matching)");
     chain.pre_processors[0]
@@ -483,7 +484,7 @@ fn test_integration_5_four_step_chain() {
     chain.update_state();
     println!("  After C, outputs = {}", collector.get_outputs().len());
 
-    // Send Z (non-matching, ignored)
+    // Send Z. It does not match and is skipped.
     let event_z = create_stream_event(6000);
     println!("Sending Z (timestamp 6000, non-matching)");
     chain.pre_processors[0]

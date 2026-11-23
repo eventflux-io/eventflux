@@ -215,8 +215,7 @@ async fn external_time_batch_window() {
     );
 }
 
-// TODO: NOT PART OF M1 - lossyCounting window SQL syntax not yet supported
-// See comment above for details.
+// TODO: NOT PART OF M1. The SQL parser does not support the lossyCounting window yet.
 #[tokio::test]
 #[ignore = "lossyCounting window SQL syntax not supported in M1"]
 async fn lossy_counting_window() {
@@ -255,7 +254,7 @@ async fn test_and_aggregator_length_batch() {
     runner.send("In", vec![AttributeValue::Bool(false)]);
     runner.send("In", vec![AttributeValue::Bool(true)]);
     let out = runner.shutdown();
-    // lengthBatch emits one output per event in the batch, all with the same aggregated value
+    // Only presence is checked, so the number of outputs per batch does not matter
     assert!(out.contains(&vec![AttributeValue::Bool(true)]));
     assert!(out.contains(&vec![AttributeValue::Bool(false)]));
 }
@@ -313,8 +312,7 @@ async fn test_and_or_with_group_by() {
     ]));
 }
 
-// TODO: NOT PART OF M1 - cron window SQL syntax not yet supported
-// See comment above for details.
+// TODO: NOT PART OF M1. The SQL parser does not support the cron window yet.
 #[tokio::test]
 #[ignore = "cron window SQL syntax not supported in M1"]
 async fn cron_window_basic() {

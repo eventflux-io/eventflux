@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Arithmetic Operations Compatibility Tests
+// Arithmetic operator compatibility tests
 // Reference: query/function/FunctionTestCase.java
 
 use crate::compatibility::common::AppRunner;
@@ -25,7 +25,7 @@ use eventflux::core::event::value::AttributeValue;
 // BASIC ARITHMETIC OPERATIONS
 // ============================================================================
 
-/// Arithmetic - addition
+/// Addition
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn arithmetic_test_addition() {
@@ -44,7 +44,7 @@ async fn arithmetic_test_addition() {
     assert_eq!(out[0][0], AttributeValue::Int(15));
 }
 
-/// Arithmetic - subtraction
+/// Subtraction
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn arithmetic_test_subtraction() {
@@ -63,7 +63,7 @@ async fn arithmetic_test_subtraction() {
     assert_eq!(out[0][0], AttributeValue::Int(7));
 }
 
-/// Arithmetic - multiplication
+/// Multiplication
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn arithmetic_test_multiplication() {
@@ -82,7 +82,7 @@ async fn arithmetic_test_multiplication() {
     assert_eq!(out[0][0], AttributeValue::Int(50));
 }
 
-/// Arithmetic - division (returns DOUBLE for integer division)
+/// Division of two INT values returns DOUBLE
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn arithmetic_test_division() {
@@ -101,9 +101,10 @@ async fn arithmetic_test_division() {
     assert_eq!(out[0][0], AttributeValue::Double(5.0));
 }
 
-/// Arithmetic - modulo (returns DOUBLE in EventFlux)
+/// Modulo, expected to return DOUBLE in EventFlux
 /// Reference: FunctionTestCase.java
-/// Note: Modulo operator not yet supported in SQL converter
+/// The ignore reason may be stale. The SQL converter now maps `%` to
+/// `Expression::modulus`.
 #[tokio::test]
 #[ignore = "Modulo operator not yet supported in SQL converter"]
 async fn arithmetic_test_modulo() {
@@ -126,7 +127,7 @@ async fn arithmetic_test_modulo() {
 // COMPLEX ARITHMETIC EXPRESSIONS
 // ============================================================================
 
-/// Complex arithmetic expression
+/// Parentheses change the order of INT operations
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn arithmetic_test_complex_expression() {
@@ -150,7 +151,7 @@ async fn arithmetic_test_complex_expression() {
     assert_eq!(out[0][0], AttributeValue::Int(20));
 }
 
-/// Arithmetic with round
+/// round applied to a DOUBLE times INT product
 #[tokio::test]
 async fn function_test_arithmetic_with_round() {
     let app = "\
@@ -165,11 +166,11 @@ async fn function_test_arithmetic_with_round() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // 9.99 * 3 = 29.97, rounded = 30.0
+    // 9.99 * 3 = 29.97, which rounds to 30.0
     assert_eq!(out[0][0], AttributeValue::Double(30.0));
 }
 
-/// Complex arithmetic expression
+/// Parentheses with DOUBLE addition and division
 #[tokio::test]
 async fn function_test_complex_arithmetic() {
     let app = "\
@@ -192,7 +193,7 @@ async fn function_test_complex_arithmetic() {
     assert_eq!(out[0][0], AttributeValue::Double(5.0));
 }
 
-/// Nested arithmetic operations
+/// Nested parentheses with mixed INT operators
 #[tokio::test]
 async fn function_test_nested_arithmetic() {
     let app = "\

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Math Function Compatibility Tests
+// Math function compatibility tests
 // Reference: query/function/FunctionTestCase.java
 
 use crate::compatibility::common::AppRunner;
@@ -25,7 +25,7 @@ use eventflux::core::event::value::AttributeValue;
 // BASIC MATH FUNCTIONS
 // ============================================================================
 
-/// Math function - abs
+/// abs
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn function_test_abs() {
@@ -43,7 +43,7 @@ async fn function_test_abs() {
     assert_eq!(out[1][0], AttributeValue::Int(5));
 }
 
-/// Math function - round
+/// round
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn function_test_round() {
@@ -61,7 +61,7 @@ async fn function_test_round() {
     assert_eq!(out[1][0], AttributeValue::Double(3.0));
 }
 
-/// Math function: sqrt
+/// sqrt
 /// Reference: Math function tests
 #[tokio::test]
 async fn function_test_sqrt() {
@@ -80,10 +80,10 @@ async fn function_test_sqrt() {
 }
 
 // ============================================================================
-// TRIGONOMETRIC FUNCTIONS
+// LOG, TRIGONOMETRIC, POWER, FLOOR AND CEIL FUNCTIONS
 // ============================================================================
 
-/// Math function - log (natural logarithm)
+/// log, the natural logarithm
 /// Reference: Math function tests
 #[tokio::test]
 async fn function_test_log() {
@@ -93,7 +93,7 @@ async fn function_test_log() {
         INSERT INTO outputStream\n\
         SELECT log(value) AS result FROM inputStream;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // log(e) = 1, log(e^2) = 2
+    // log(e) = 1
     runner.send(
         "inputStream",
         vec![AttributeValue::Double(std::f64::consts::E)],
@@ -107,7 +107,7 @@ async fn function_test_log() {
     }
 }
 
-/// Math function - sin
+/// sin
 /// Reference: Math function tests
 #[tokio::test]
 async fn function_test_sin() {
@@ -133,7 +133,7 @@ async fn function_test_sin() {
     }
 }
 
-/// Math function - cos
+/// cos
 /// Reference: Math function tests
 #[tokio::test]
 async fn function_test_cos() {
@@ -152,7 +152,7 @@ async fn function_test_cos() {
     }
 }
 
-/// Math function - tan
+/// tan
 /// Reference: Math function tests
 #[tokio::test]
 async fn function_test_tan() {
@@ -178,7 +178,7 @@ async fn function_test_tan() {
     }
 }
 
-/// Math function - power
+/// power
 /// Reference: Math function tests
 #[tokio::test]
 async fn function_test_power() {
@@ -198,7 +198,7 @@ async fn function_test_power() {
     assert_eq!(out[0][0], AttributeValue::Double(8.0));
 }
 
-/// Math function - floor
+/// floor rounds down, so -2.3 becomes -3.0
 /// Reference: Math function tests
 #[tokio::test]
 async fn function_test_floor() {
@@ -216,7 +216,7 @@ async fn function_test_floor() {
     assert_eq!(out[1][0], AttributeValue::Double(-3.0));
 }
 
-/// Math function - ceil
+/// ceil rounds up, so -2.7 becomes -2.0
 /// Reference: Math function tests
 #[tokio::test]
 async fn function_test_ceil() {
@@ -238,7 +238,7 @@ async fn function_test_ceil() {
 // SQRT EDGE CASES
 // ============================================================================
 
-/// Sqrt of zero
+/// sqrt of zero
 #[tokio::test]
 async fn function_test_sqrt_zero() {
     let app = "\
@@ -253,7 +253,7 @@ async fn function_test_sqrt_zero() {
     assert_eq!(out[0][0], AttributeValue::Double(0.0));
 }
 
-/// Sqrt of one
+/// sqrt of one
 #[tokio::test]
 async fn function_test_sqrt_one() {
     let app = "\
@@ -272,7 +272,7 @@ async fn function_test_sqrt_one() {
 // ABS EDGE CASES
 // ============================================================================
 
-/// abs function with positive number
+/// abs of a positive number
 #[tokio::test]
 async fn function_test_abs_positive() {
     let app = "\
@@ -287,7 +287,7 @@ async fn function_test_abs_positive() {
     assert_eq!(out[0][0], AttributeValue::Double(42.5));
 }
 
-/// abs function with negative number
+/// abs of a negative number
 #[tokio::test]
 async fn function_test_abs_negative() {
     let app = "\
@@ -302,7 +302,7 @@ async fn function_test_abs_negative() {
     assert_eq!(out[0][0], AttributeValue::Double(42.5));
 }
 
-/// abs function with zero
+/// abs of zero
 #[tokio::test]
 async fn function_test_abs_zero() {
     let app = "\
@@ -318,10 +318,10 @@ async fn function_test_abs_zero() {
 }
 
 // ============================================================================
-// FLOOR/CEIL EDGE CASES
+// FLOOR, CEIL AND ROUND EDGE CASES
 // ============================================================================
 
-/// floor function edge case - positive
+/// floor of a positive number
 #[tokio::test]
 async fn function_test_floor_positive() {
     let app = "\
@@ -336,7 +336,7 @@ async fn function_test_floor_positive() {
     assert_eq!(out[0][0], AttributeValue::Double(3.0));
 }
 
-/// floor function with negative number
+/// floor of a negative number
 #[tokio::test]
 async fn function_test_floor_negative() {
     let app = "\
@@ -351,7 +351,7 @@ async fn function_test_floor_negative() {
     assert_eq!(out[0][0], AttributeValue::Double(-4.0));
 }
 
-/// ceil function edge case - positive
+/// ceil of a positive number
 #[tokio::test]
 async fn function_test_ceil_positive() {
     let app = "\
@@ -366,7 +366,7 @@ async fn function_test_ceil_positive() {
     assert_eq!(out[0][0], AttributeValue::Double(4.0));
 }
 
-/// ceil function with negative number
+/// ceil of a negative number
 #[tokio::test]
 async fn function_test_ceil_negative() {
     let app = "\
@@ -381,7 +381,7 @@ async fn function_test_ceil_negative() {
     assert_eq!(out[0][0], AttributeValue::Double(-3.0));
 }
 
-/// round function edge case - half up
+/// round takes 3.5 up to 4.0
 #[tokio::test]
 async fn function_test_round_half_up() {
     let app = "\
@@ -397,10 +397,10 @@ async fn function_test_round_half_up() {
 }
 
 // ============================================================================
-// LOGARITHMIC AND EXPONENTIAL FUNCTIONS
+// POWER, LOGARITHM AND EXPONENT FUNCTIONS
 // ============================================================================
 
-/// power function edge case - two to three
+/// power(2, 3) = 8
 #[tokio::test]
 async fn function_test_power_two_three() {
     let app = "\
@@ -418,7 +418,7 @@ async fn function_test_power_two_three() {
     assert_eq!(out[0][0], AttributeValue::Double(8.0));
 }
 
-/// log function edge case - natural log of e
+/// ln(e) = 1
 #[tokio::test]
 async fn function_test_ln_of_e() {
     let app = "\
@@ -433,13 +433,13 @@ async fn function_test_ln_of_e() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // Allow small floating point error
+    // Allow a small floating point error
     if let AttributeValue::Double(val) = out[0][0] {
         assert!((val - 1.0).abs() < 0.0001);
     }
 }
 
-/// log10 function
+/// log10(100) = 2
 #[tokio::test]
 async fn function_test_log10() {
     let app = "\
@@ -454,7 +454,7 @@ async fn function_test_log10() {
     assert_eq!(out[0][0], AttributeValue::Double(2.0));
 }
 
-/// exp function
+/// exp(0) = 1
 #[tokio::test]
 async fn function_test_exp() {
     let app = "\
@@ -473,7 +473,7 @@ async fn function_test_exp() {
 // TRIGONOMETRIC EDGE CASES
 // ============================================================================
 
-/// sin function edge case - sin of zero
+/// sin(0) = 0
 #[tokio::test]
 async fn function_test_sin_of_zero() {
     let app = "\
@@ -488,7 +488,7 @@ async fn function_test_sin_of_zero() {
     assert_eq!(out[0][0], AttributeValue::Double(0.0));
 }
 
-/// cos function edge case - cos of zero
+/// cos(0) = 1
 #[tokio::test]
 async fn function_test_cos_of_zero() {
     let app = "\
@@ -503,7 +503,7 @@ async fn function_test_cos_of_zero() {
     assert_eq!(out[0][0], AttributeValue::Double(1.0));
 }
 
-/// tan function edge case - tan of zero
+/// tan(0) = 0
 #[tokio::test]
 async fn function_test_tan_of_zero() {
     let app = "\
@@ -518,7 +518,7 @@ async fn function_test_tan_of_zero() {
     assert_eq!(out[0][0], AttributeValue::Double(0.0));
 }
 
-/// Multiple functions in SELECT
+/// floor, ceil and round of the same value in one SELECT
 #[tokio::test]
 async fn function_test_multiple_functions() {
     let app = "\
@@ -536,7 +536,7 @@ async fn function_test_multiple_functions() {
 }
 
 // ============================================================================
-// NEW MATH FUNCTIONS - maximum, minimum, mod, sign, trunc
+// MAXIMUM, MINIMUM, MOD, SIGN AND TRUNC
 // ============================================================================
 
 /// Test maximum function with two arguments
@@ -655,7 +655,7 @@ async fn function_test_minimum_negative() {
     assert_eq!(out[0][0], AttributeValue::Double(-10.0)); // -10 < -5
 }
 
-/// Test mod function (modulo operation)
+/// Test mod function, the remainder after division
 #[tokio::test]
 async fn function_test_mod_basic() {
     let app = "\
@@ -691,7 +691,7 @@ async fn function_test_mod_decimal() {
     assert_eq!(out[0][0], AttributeValue::Double(1.5)); // 10.5 % 3.0 = 1.5
 }
 
-/// Test mod with negative dividend
+/// Test mod with a negative dividend. The result takes the sign of the dividend.
 #[tokio::test]
 async fn function_test_mod_negative() {
     let app = "\
@@ -754,7 +754,7 @@ async fn function_test_sign_zero() {
     assert_eq!(out[0][0], AttributeValue::Int(0));
 }
 
-/// Test trunc function - truncate to integer (no precision)
+/// Test trunc with no precision, which cuts the value to a whole number
 #[tokio::test]
 async fn function_test_trunc_basic() {
     let app = "\
@@ -766,7 +766,7 @@ async fn function_test_trunc_basic() {
     runner.send("inputStream", vec![AttributeValue::Double(3.789)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][0], AttributeValue::Double(3.0)); // Truncate towards zero
+    assert_eq!(out[0][0], AttributeValue::Double(3.0)); // cut toward zero
 }
 
 /// Test trunc function with negative number
@@ -781,7 +781,7 @@ async fn function_test_trunc_negative() {
     runner.send("inputStream", vec![AttributeValue::Double(-3.789)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][0], AttributeValue::Double(-3.0)); // Truncate towards zero
+    assert_eq!(out[0][0], AttributeValue::Double(-3.0)); // cut toward zero, not down to -4
 }
 
 /// Test trunc function with precision
@@ -798,11 +798,11 @@ async fn function_test_trunc_with_precision() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     #[allow(clippy::approx_constant)]
-    let expected = AttributeValue::Double(3.14); // Truncate to 2 decimal places
+    let expected = AttributeValue::Double(3.14); // cut to 2 decimal places
     assert_eq!(out[0][0], expected);
 }
 
-/// Test truncate alias
+/// Test truncate, an alias for trunc
 #[tokio::test]
 async fn function_test_truncate_alias() {
     let app = "\
@@ -818,10 +818,10 @@ async fn function_test_truncate_alias() {
 }
 
 // ============================================================================
-// INVERSE TRIGONOMETRIC FUNCTIONS - asin, acos, atan
+// INVERSE TRIGONOMETRIC FUNCTIONS: asin, acos, atan
 // ============================================================================
 
-/// Test asin function - basic
+/// Test asin(0.5)
 #[tokio::test]
 async fn function_test_asin_basic() {
     let app = "\
@@ -834,7 +834,7 @@ async fn function_test_asin_basic() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // asin(0.5) ≈ π/6
+        // asin(0.5) is about π/6
         assert!((result - std::f64::consts::FRAC_PI_6).abs() < 0.0001);
     } else {
         panic!("Expected Double value");
@@ -869,14 +869,14 @@ async fn function_test_asin_one() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // asin(1) = π/2 ≈ 1.5707963267948966
+        // asin(1) = π/2, about 1.5707963267948966
         assert!((result - std::f64::consts::FRAC_PI_2).abs() < 0.0001);
     } else {
         panic!("Expected Double value");
     }
 }
 
-/// Test asin out of bounds returns NaN
+/// Test asin returns NaN for input outside [-1, 1]
 #[tokio::test]
 async fn function_test_asin_out_of_bounds() {
     let app = "\
@@ -895,7 +895,7 @@ async fn function_test_asin_out_of_bounds() {
     }
 }
 
-/// Test acos function - basic
+/// Test acos(0.5)
 #[tokio::test]
 async fn function_test_acos_basic() {
     let app = "\
@@ -908,7 +908,7 @@ async fn function_test_acos_basic() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // acos(0.5) ≈ π/3
+        // acos(0.5) is about π/3
         assert!((result - std::f64::consts::FRAC_PI_3).abs() < 0.0001);
     } else {
         panic!("Expected Double value");
@@ -947,14 +947,14 @@ async fn function_test_acos_zero() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // acos(0) = π/2 ≈ 1.5707963267948966
+        // acos(0) = π/2, about 1.5707963267948966
         assert!((result - std::f64::consts::FRAC_PI_2).abs() < 0.0001);
     } else {
         panic!("Expected Double value");
     }
 }
 
-/// Test acos out of bounds returns NaN
+/// Test acos returns NaN for input outside [-1, 1]
 #[tokio::test]
 async fn function_test_acos_out_of_bounds() {
     let app = "\
@@ -973,7 +973,7 @@ async fn function_test_acos_out_of_bounds() {
     }
 }
 
-/// Test atan function - basic
+/// Test atan(1)
 #[tokio::test]
 async fn function_test_atan_basic() {
     let app = "\
@@ -986,7 +986,7 @@ async fn function_test_atan_basic() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // atan(1) = π/4 ≈ 0.7853981633974483
+        // atan(1) = π/4, about 0.7853981633974483
         assert!((result - std::f64::consts::FRAC_PI_4).abs() < 0.0001);
     } else {
         panic!("Expected Double value");
@@ -1008,7 +1008,7 @@ async fn function_test_atan_zero() {
     assert_eq!(out[0][0], AttributeValue::Double(0.0));
 }
 
-/// Test atan with large positive value approaches π/2
+/// Test atan of a large positive value comes close to π/2
 #[tokio::test]
 async fn function_test_atan_large_positive() {
     let app = "\
@@ -1021,7 +1021,7 @@ async fn function_test_atan_large_positive() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // atan(large) approaches π/2
+        // atan(1000) is within 0.01 of π/2
         assert!((result - std::f64::consts::FRAC_PI_2).abs() < 0.01);
     } else {
         panic!("Expected Double value");
@@ -1041,7 +1041,7 @@ async fn function_test_atan_negative() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     if let AttributeValue::Double(result) = out[0][0] {
-        // atan(-1) = -π/4 ≈ -0.7853981633974483
+        // atan(-1) = -π/4, about -0.7853981633974483
         assert!((result + std::f64::consts::FRAC_PI_4).abs() < 0.0001);
     } else {
         panic!("Expected Double value");

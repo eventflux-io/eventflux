@@ -17,14 +17,13 @@
 
 //! Integration tests for StreamJunction
 //!
-//! Tests the crossbeam pipeline-based StreamJunction implementation
-//! for correctness, performance, and compatibility with existing code.
+//! Tests the StreamJunction built on the crossbeam pipeline for correctness,
+//! performance, and compatibility with existing code.
 //!
-//! Functional assertions (event counts, ordering, error/drop accounting)
-//! always run. Wall-clock performance thresholds (throughput floors,
-//! latency ceilings) only run under `--features perf-tests` — on loaded
-//! shared CI runners a single scheduling stall can miss them, which says
-//! nothing about correctness (#139).
+//! Functional checks (event counts, ordering, error and drop accounting) always
+//! run. Wall clock performance limits (minimum throughput, maximum latency) run
+//! only under `--features perf-tests`. On busy shared CI runners a single
+//! scheduling stall can miss them, which says nothing about correctness (#139).
 
 use eventflux::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_context::EventFluxContext,
@@ -50,7 +49,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Test processor that counts events and measures latency
+/// Processor that counts events. Latency is a fixed fake value, not measured.
 #[derive(Debug)]
 struct PerformanceTestProcessor {
     events_received: Arc<AtomicUsize>,
@@ -93,10 +92,9 @@ impl Processor for PerformanceTestProcessor {
             chunk = ce.set_next(None);
 
             if let Some(_se) = ce.as_any().downcast_ref::<StreamEvent>() {
-                // Calculate latency from timestamp
-                // For testing purposes, we just count events rather than calculate real latency
-                // since the timestamps in the test are sequential numbers, not real timestamps
-                self.total_latency_ns.fetch_add(100, Ordering::Relaxed); // Mock 100ns latency
+                // Real latency cannot be worked out because the test timestamps are
+                // sequence numbers, not clock times. Add a fake 100 ns per event instead.
+                self.total_latency_ns.fetch_add(100, Ordering::Relaxed);
 
                 self.events_received.fetch_add(1, Ordering::Relaxed);
             }
@@ -205,14 +203,12 @@ fn test_optimized_junction_basic_functionality() {
         junction.send_event(event).unwrap();
     }
 
-    // Wait for processing
     thread::sleep(Duration::from_millis(500));
     junction.stop_processing();
 
-    // Wait additional time for async processing to complete
+    // Give async processing another 200 ms to finish
     thread::sleep(Duration::from_millis(200));
 
-    // Verify results
     let (events_received, throughput, avg_latency) = processor.lock().unwrap().get_stats();
     println!(
         "Optimized Junction - Events: {}, Throughput: {:.0}/sec, Avg Latency: {:.2}µs",
@@ -228,9 +224,9 @@ fn test_optimized_junction_basic_functionality() {
     assert!(throughput > 1000.0, "Should handle >1K events/sec");
 
     let metrics = junction.get_performance_metrics();
-    // is_healthy() includes wall-clock thresholds (>1K events/sec floor,
-    // <10ms max publish latency) — perf-tests only. The functional parts
-    // (error/drop rates) are asserted directly below for every run.
+    // is_healthy() includes wall clock limits (at least 1K events/sec and at most
+    // 10 ms publish latency), so it runs under perf-tests only. The functional
+    // parts, error and drop rates, are asserted below on every run.
     #[cfg(feature = "perf-tests")]
     assert!(metrics.is_healthy());
     assert!(metrics.pipeline_metrics.error_rate < 0.01);
@@ -242,25 +238,24 @@ fn test_optimized_junction_basic_functionality() {
 fn test_default_synchronous_mode() {
     let (app_ctx, stream_def) = setup_test_context();
 
-    // Test that default configuration uses synchronous mode
+    // The default configuration is synchronous
     let config = JunctionConfig::new("TestStream".to_string());
     assert!(
         !config.is_async,
         "Default configuration should be synchronous (is_async: false)"
     );
 
-    // Create junction with default config
     let junction =
         StreamJunctionFactory::create(config, stream_def.clone(), app_ctx.clone(), None).unwrap();
 
-    // Verify it's NOT using async mode internally
+    // The junction must NOT use async mode internally
     let metrics = junction.lock().unwrap().get_performance_metrics();
     assert!(
         !metrics.is_async,
         "Default junction should not be in async mode"
     );
 
-    // Test that we can explicitly enable async mode if needed
+    // Async mode can still be turned on explicitly
     let async_config = JunctionConfig::new("AsyncTestStream".to_string())
         .with_async(true)
         .with_expected_throughput(100_000);
@@ -354,8 +349,8 @@ fn test_synchronous_mode_ordering_guarantee() {
         junction.send_event(event).unwrap();
     }
 
-    // In synchronous mode, processing should be immediate
-    // Give a small buffer for any system delays, but it should be very quick
+    // In synchronous mode, processing happens during send. The 10 ms sleep only
+    // covers system delays.
     std::thread::sleep(Duration::from_millis(10));
     junction.stop_processing();
 
@@ -408,8 +403,8 @@ fn test_junction_factory_auto_selection() {
     );
 }
 
-// Note: test_optimized_vs_standard_performance removed
-// Standard implementation no longer exists - all junctions now use high-performance implementation
+// test_optimized_vs_standard_performance was removed. The standard implementation
+// no longer exists, and every junction now uses the crossbeam pipeline.
 
 #[test]
 fn test_concurrent_publishers_optimized_junction() {
@@ -459,11 +454,11 @@ fn test_concurrent_publishers_optimized_junction() {
                     ],
                 );
 
-                // Handle potential backpressure gracefully
+                // A send can fail under backpressure. That event is dropped, which is
+                // expected, and the thread backs off for 1 microsecond.
                 match junction_clone.lock().unwrap().send_event(event) {
                     Ok(_) => {}
                     Err(_) => {
-                        // Some events may be dropped due to backpressure, which is expected
                         thread::sleep(Duration::from_micros(1));
                     }
                 }
@@ -471,12 +466,11 @@ fn test_concurrent_publishers_optimized_junction() {
         }));
     }
 
-    // Wait for all publishers to complete
     for handle in handles {
         handle.join().unwrap();
     }
 
-    // Wait for processing to complete
+    // Give processing 1 second to finish
     thread::sleep(Duration::from_millis(1000));
     junction.lock().unwrap().stop_processing();
 
@@ -488,7 +482,7 @@ fn test_concurrent_publishers_optimized_junction() {
         total_sent, events_received, throughput, avg_latency
     );
 
-    // Due to backpressure, we might not receive all events, but should receive most
+    // Backpressure may drop some events, but more than 80% must arrive
     let success_rate = events_received as f64 / total_sent as f64;
     assert!(
         success_rate > 0.8,
@@ -509,10 +503,10 @@ fn test_concurrent_publishers_optimized_junction() {
 
 #[test]
 fn test_pipeline_drop_backpressure_is_exact() {
-    // The deterministic pin for Drop-on-full semantics (#139): a standalone
-    // EventPipeline has NO consumers (the junction spawns those at its own
-    // construction), so publishing past capacity cannot race anything —
-    // exactly `capacity` publishes succeed and the rest are rejected.
+    // The reliable check for dropping when full (#139). A bare EventPipeline has
+    // NO consumers, because the junction spawns those when it is built. So
+    // publishing past capacity cannot race anything. Exactly `capacity` publishes
+    // succeed and the rest are rejected.
     let capacity = 64;
     let pipeline = EventPipeline::new(PipelineConfig {
         capacity,
@@ -543,24 +537,23 @@ fn test_pipeline_drop_backpressure_is_exact() {
 
 #[test]
 fn test_junction_backpressure_invariants() {
-    // At the junction level the flood outcome is inherently racy: async
-    // consumers start at junction CONSTRUCTION and drain the bounded queue
-    // into the executor as fast as they can pop, so how many sends observe
-    // a full queue depends on thread scheduling. (Two prior versions of
-    // this test asserted `dropped > 0` and both flaked — #139.) What IS
-    // guaranteed, and asserted here: every send either succeeds or reports
-    // a drop, the metrics agree with the send-side outcomes, and every
-    // accepted event is delivered exactly once.
+    // At the junction level the result of a flood always depends on timing. Async
+    // consumers start when the junction is BUILT and move events from the bounded
+    // queue to the executor as fast as they can, so how many sends see a full queue
+    // depends on thread scheduling. Two earlier versions of this test asserted
+    // `dropped > 0` and both were flaky (#139). What IS guaranteed, and checked
+    // here, is that every send either succeeds or reports a drop, the metrics match
+    // what the senders saw, and every accepted event is delivered exactly once.
     let (app_ctx, stream_def) = setup_test_context();
 
     let junction = StreamJunction::new_with_backpressure(
         "BackpressureTest".to_string(),
         stream_def,
         app_ctx,
-        64, // Minimum buffer size
+        64, // buffer size
         true,
         None,
-        BackpressureStrategy::Drop, // Immediately drop when buffer is full
+        BackpressureStrategy::Drop, // drop right away when the buffer is full
     )
     .unwrap();
 
@@ -659,17 +652,17 @@ fn test_junction_metrics_accuracy() {
 
     let metrics = junction.get_performance_metrics();
 
-    // Verify metrics accuracy (adjusted for synchronous mode)
+    // Metrics as expected for synchronous mode
     assert_eq!(metrics.events_processed, num_events as u64);
-    assert_eq!(metrics.events_dropped, 0); // No drops expected in sync mode
-    assert_eq!(metrics.processing_errors, 0); // No errors expected
-    assert!(!metrics.is_async); // Should be in synchronous mode
+    assert_eq!(metrics.events_dropped, 0); // sync mode never drops
+    assert_eq!(metrics.processing_errors, 0);
+    assert!(!metrics.is_async);
 
-    // In synchronous mode, pipeline metrics may not be populated the same way
-    // Focus on basic functionality verification
-    assert!(metrics.health_score() > 0.0); // Should have some health score
+    // Pipeline metrics may be filled differently in synchronous mode, so only
+    // check that there is some health score
+    assert!(metrics.health_score() > 0.0);
 
-    // Test legacy compatibility methods
+    // Older compatibility method
     assert_eq!(junction.total_events().unwrap(), num_events as u64);
 
     println!(

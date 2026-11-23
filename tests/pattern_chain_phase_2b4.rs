@@ -15,11 +15,12 @@
  * limitations under the License.
  */
 
-//! Phase 2b.4: WITHIN Time Constraints
+//! Phase 2b.4. WITHIN time constraints
 //!
-//! Tests for WITHIN functionality in pattern chains - time-based event expiry
+//! Tests for WITHIN in pattern chains, where partial matches expire after a time limit.
 //!
-//! Reference: feat/pattern_processing/STATE_MACHINE_DESIGN.md Phase 2b.4
+//! Follows Phase 2b.4 of feat/pattern_processing/STATE_MACHINE_DESIGN.md. That doc
+//! is no longer in the repo.
 
 mod common;
 
@@ -27,13 +28,13 @@ use common::pattern_chain_test_utils::*;
 use eventflux::core::query::input::stream::state::stream_pre_state_processor::StateType;
 
 // ============================================================================
-// PHASE 2b.4 TESTS: WITHIN Time Constraints
+// PHASE 2b.4 TESTS. WITHIN Time Constraints
 // ============================================================================
-// Note: build_pattern_chain_with_within() is provided by common module
+// build_pattern_chain_with_within() comes from the common module
 
-/// Test 0: WITHIN constraint - events arrive within time window
-/// Pattern: A → B (WITHIN 10000ms / 10 seconds)
-/// Events: [A(t=0), B(t=5000)] → MATCH (B arrives within 10s of A)
+/// Test 0. WITHIN constraint where the events arrive inside the time window.
+/// Pattern A → B (WITHIN 10000 ms, which is 10 seconds)
+/// Events [A(t=0), B(t=5000)] → MATCH, because B arrives within 10 s of A
 #[test]
 fn test_2b4_0_within_success() {
     println!("\n=== Testing A -> B (WITHIN 10s), events [A(t=0), B(t=5000)] ===");
@@ -57,7 +58,7 @@ fn test_2b4_0_within_success() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send B at t=5000 (5 seconds later, within 10s window)
+    // Send B at t=5000, 5 seconds later and inside the 10 s window
     let event_b = create_stream_event(5000);
     println!("Sending B (timestamp 5000, +5s from A)");
     chain.pre_processors[1]
@@ -66,7 +67,6 @@ fn test_2b4_0_within_success() {
         .process(Some(Box::new(event_b)));
     chain.update_state();
 
-    // Verify output
     let outputs = collector.get_outputs();
     println!("  After B, outputs = {}", outputs.len());
     assert_eq!(
@@ -78,14 +78,13 @@ fn test_2b4_0_within_success() {
     println!("SUCCESS: Pattern matched within WITHIN constraint");
 }
 
-/// Test 1: WITHIN constraint - events arrive outside time window (expired)
-/// Pattern: A → B (WITHIN 10000ms / 10 seconds)
-/// Events: [A(t=0), B(t=15000)] → EXPIRED (B arrives 15s after A, exceeds 10s window)
+/// Test 1. WITHIN constraint where the events arrive outside the time window.
+/// Pattern A → B (WITHIN 10000 ms, which is 10 seconds)
+/// Events [A(t=0), B(t=15000)] → EXPIRED, because B arrives 15 s after A
 ///
-/// NOTE: This test is currently ignored because proactive WITHIN expiry checking
-/// is deferred to Phase 3 (Absent patterns) as noted in STATE_MACHINE_DESIGN.md.
-/// The current implementation requires explicit expire_events() calls or
-/// TimerWheel for automatic expiry, which is not yet implemented.
+/// Ignored because checking WITHIN expiry ahead of time was put off to Phase 3
+/// (absent patterns). Expiry currently needs explicit expire_events() calls, or a
+/// TimerWheel for automatic expiry, which does not exist yet.
 #[test]
 #[ignore = "Proactive WITHIN expiry deferred to Phase 3"]
 fn test_2b4_1_within_expired() {
@@ -110,10 +109,10 @@ fn test_2b4_1_within_expired() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send B at t=15000 (15 seconds later, outside 10s window)
-    // When B is processed at processor[1], it should check if the time elapsed
-    // from A (at position 0) exceeds the WITHIN constraint (10s)
-    // Age = 15000 - 0 = 15000ms > 10000ms, so the state should be rejected
+    // Send B at t=15000, 15 seconds later and outside the 10 s window.
+    // When processor[1] handles B, it should check whether the time since A
+    // (at position 0) exceeds the 10 s WITHIN limit.
+    // Age = 15000 - 0 = 15000 ms > 10000 ms, so the state should be rejected.
     let event_b = create_stream_event(15000);
     println!("Sending B (timestamp 15000, +15s from A - exceeds 10s WITHIN window)");
     chain.pre_processors[1]
@@ -122,7 +121,7 @@ fn test_2b4_1_within_expired() {
         .process(Some(Box::new(event_b)));
     chain.update_state();
 
-    // Verify no output (B arrived too late, WITHIN constraint violated)
+    // No output, because B arrived too late for the WITHIN limit
     let outputs = collector.get_outputs();
     println!("  After B, outputs = {}", outputs.len());
     assert_eq!(
@@ -134,9 +133,9 @@ fn test_2b4_1_within_expired() {
     println!("SUCCESS: Pattern rejected due to WITHIN constraint violation");
 }
 
-/// Test 2: WITHIN constraint with Pattern mode ignoring non-matching events
-/// Pattern: A → B (Pattern mode, WITHIN 10000ms / 10 seconds)
-/// Events: [A(t=0), X(t=3000), B(t=9000)] → MATCH (X ignored, B within 10s of A)
+/// Test 2. WITHIN constraint in Pattern mode, which skips events that do not match.
+/// Pattern A → B (Pattern mode, WITHIN 10000 ms, which is 10 seconds)
+/// Events [A(t=0), X(t=3000), B(t=9000)] → MATCH, X is skipped and B is within 10 s of A
 #[test]
 fn test_2b4_2_within_pattern_mode() {
     println!(
@@ -148,7 +147,7 @@ fn test_2b4_2_within_pattern_mode() {
             ("e1".to_string(), "A".to_string(), 1, 1),
             ("e2".to_string(), "B".to_string(), 1, 1),
         ],
-        StateType::Pattern, // Pattern mode ignores non-matching events
+        StateType::Pattern, // Pattern mode skips events that do not match
         10000,              // WITHIN 10 seconds (10000ms)
     );
 
@@ -162,7 +161,7 @@ fn test_2b4_2_within_pattern_mode() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send X at t=3000 (non-matching, should be ignored in Pattern mode)
+    // Send X at t=3000. It does not match, so Pattern mode skips it.
     let event_x = create_stream_event(3000);
     println!("Sending X (timestamp 3000, non-matching)");
     chain.pre_processors[0]
@@ -172,7 +171,7 @@ fn test_2b4_2_within_pattern_mode() {
     chain.update_state();
     println!("  After X, outputs = {}", collector.get_outputs().len());
 
-    // Send B at t=9000 (9 seconds after A, within 10s window)
+    // Send B at t=9000, 9 seconds after A and inside the 10 s window
     let event_b = create_stream_event(9000);
     println!("Sending B (timestamp 9000, +9s from A)");
     chain.pre_processors[1]
@@ -181,7 +180,7 @@ fn test_2b4_2_within_pattern_mode() {
         .process(Some(Box::new(event_b)));
     chain.update_state();
 
-    // Verify output (Pattern mode ignored X, B arrived within 10s of A)
+    // One match. Pattern mode skipped X and B arrived within 10 s of A.
     let outputs = collector.get_outputs();
     println!("  After B, outputs = {}", outputs.len());
     assert_eq!(
@@ -195,9 +194,9 @@ fn test_2b4_2_within_pattern_mode() {
     );
 }
 
-/// Test 3: WITHIN constraint with Sequence mode - immediate failure breaks pattern
-/// Pattern: A → B (Sequence mode, WITHIN 10000ms / 10 seconds)
-/// Events: [A(t=0), C(t=5000)] → FAIL (C breaks sequence immediately, not due to expiry)
+/// Test 3. WITHIN constraint in Sequence mode, where a wrong event breaks the pattern at once.
+/// Pattern A → B (Sequence mode, WITHIN 10000 ms, which is 10 seconds)
+/// Events [A(t=0), C(t=5000)] → FAIL, C breaks the sequence right away, not by expiry
 #[test]
 fn test_2b4_3_within_sequence_immediate_failure() {
     println!("\n=== Testing A -> B (Sequence, WITHIN 10s), events [A(t=0), C(t=5000)] ===");
@@ -207,7 +206,7 @@ fn test_2b4_3_within_sequence_immediate_failure() {
             ("e1".to_string(), "A".to_string(), 1, 1),
             ("e2".to_string(), "B".to_string(), 1, 1),
         ],
-        StateType::Sequence, // Sequence mode breaks on non-matching events
+        StateType::Sequence, // Sequence mode breaks on any event that does not match
         10000,               // WITHIN 10 seconds (10000ms)
     );
 
@@ -221,18 +220,17 @@ fn test_2b4_3_within_sequence_immediate_failure() {
     chain.update_state();
     println!("  After A, outputs = {}", collector.get_outputs().len());
 
-    // Send C at t=5000 (wrong event, breaks sequence immediately)
+    // Send C at t=5000. It is the wrong event, so the sequence breaks right away.
     let event_c = create_stream_event(5000);
     println!("Sending C (timestamp 5000, wrong event - breaks sequence)");
-    // In Sequence mode, C would be sent to processor[0], not processor[1]
-    // This would not match the pattern for the next step
+    // C goes to processor[0], not processor[1], so it cannot complete the next step
     chain.pre_processors[0]
         .lock()
         .unwrap()
         .process(Some(Box::new(event_c)));
     chain.update_state();
 
-    // Verify no output (sequence broken by C, not expired)
+    // No output, because C broke the sequence. Nothing expired.
     let outputs = collector.get_outputs();
     println!("  After C, outputs = {}", outputs.len());
     assert_eq!(

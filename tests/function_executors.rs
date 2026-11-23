@@ -39,8 +39,8 @@ fn test_coalesce_function() {
     assert_eq!(exec.execute(None), Some(AttributeValue::String("x".into())));
 }
 
-// Note: ifThenElse function was replaced by SQL standard CASE expression
-// See tests/app_runner_case_expression.rs for comprehensive CASE expression tests
+// The ifThenElse function was replaced by the standard SQL CASE expression.
+// CASE is tested in tests/app_runner_case_expression.rs.
 
 #[test]
 fn test_uuid_function() {

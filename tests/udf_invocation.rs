@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-// TODO: NOT PART OF M1 - UDF invocation test uses old EventFluxQL syntax
-// Test uses "define stream" which is not supported by SQL parser.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. The UDF invocation test is ignored because it uses the old
+// EventFluxQL syntax ("define stream"), which the SQL parser does not support.
+// See feat/grammar/GRAMMAR.md for the grammar status.
 
 #[path = "common/mod.rs"]
 mod common;

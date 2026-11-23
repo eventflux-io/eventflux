@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-//! Shutdown-drain behavior of async StreamJunctions (#138):
-//! `wait_quiescent` must observe queued events and in-flight subscriber
-//! dispatches, and `abandon_pending` must count what a timed-out drain leaves
+//! How async StreamJunctions drain on shutdown (#138).
+//! `wait_quiescent` must see both queued events and subscriber dispatches still
+//! in flight, and `abandon_pending` must count what a timed out drain leaves
 //! behind.
 
 use eventflux::core::config::eventflux_app_context::EventFluxAppContext;
@@ -145,8 +145,8 @@ fn make_junction(
     (junction, processor)
 }
 
-/// A slow-but-finite subscriber drains fully within the timeout: quiescence is
-/// reached, every event is processed, nothing is dropped.
+/// A subscriber that is slow but not too slow drains fully within the timeout.
+/// The junction goes idle, every event is processed and nothing is dropped.
 #[test]
 fn test_wait_quiescent_drains_slow_subscriber() {
     let (junction, processor) = make_junction(None, Duration::from_millis(20));
@@ -161,7 +161,7 @@ fn test_wait_quiescent_drains_slow_subscriber() {
         "junction should reach quiescence within the drain timeout"
     );
 
-    // Quiescent means queue empty AND all subscriber dispatches finished
+    // Quiescent means the queue is empty AND every subscriber dispatch has finished
     let received = processor.lock().unwrap().events.lock().unwrap().len();
     assert_eq!(received, 100, "all events must reach the subscriber");
 
@@ -172,16 +172,15 @@ fn test_wait_quiescent_drains_slow_subscriber() {
     assert_eq!((queued, in_flight), (0, 0));
 }
 
-/// A subscriber too slow for the timeout: quiescence fails, and after
-/// halt_processing + settle the frozen backlog is counted via abandon_pending
-/// (mirroring the runtime's timeout path: halt → settle → abandon).
+/// A subscriber too slow for the timeout. wait_quiescent fails, and after
+/// halt_processing and settling, abandon_pending counts the frozen backlog.
+/// This follows the runtime's timeout path of halt → settle → abandon.
 #[test]
 fn test_drain_timeout_halts_and_abandons_pending() {
-    // Single-threaded executor forces inline subscriber processing, so the
-    // slow subscriber backs the queue up deterministically. The junction
-    // spawns num_cpus/2 consumer threads, each of which may hold one popped
-    // event at halt time — size the burst well past that so a backlog is
-    // guaranteed to remain on any machine.
+    // A single thread executor forces inline subscriber processing, so the slow
+    // subscriber always backs up the queue. The junction spawns num_cpus/2
+    // consumer threads, and each may hold one popped event at halt time. The
+    // burst is sized well past that so a backlog remains on any machine.
     let consumers = std::thread::available_parallelism()
         .map(|n| (n.get() / 2).max(1))
         .unwrap_or(1) as u64;
@@ -199,9 +198,9 @@ fn test_drain_timeout_halts_and_abandons_pending() {
         "10ms cannot drain {total_events} events at 20ms each"
     );
 
-    // Mirrors the runtime's timeout path: halt (no further popping), settle
-    // (each consumer finishes the one event it already holds — they serialize
-    // on the subscriber Mutex), then count the frozen backlog.
+    // Same steps as the runtime's timeout path. Halt so nothing more is popped.
+    // Settle, where each consumer finishes the one event it already holds, one at
+    // a time because they share the subscriber Mutex. Then count the frozen backlog.
     junction.halt_processing();
     assert!(
         eventflux::core::stream::stream_junction::poll_settled(
@@ -222,7 +221,7 @@ fn test_drain_timeout_halts_and_abandons_pending() {
         "abandoned events must be counted in events_dropped"
     );
 
-    // Settled + halted means the backlog is frozen: nothing may deliver the
+    // Settled and halted means the backlog is frozen. Nothing may deliver the
     // abandoned events behind the caller's back.
     thread::sleep(Duration::from_millis(200));
     let (queued, in_flight) = junction.pending_drain_estimate();
@@ -232,8 +231,8 @@ fn test_drain_timeout_halts_and_abandons_pending() {
         "halted junction must not keep draining abandoned events"
     );
 
-    // Restarting after an abandoned drain must discard the backlog (it was
-    // already reported as dropped), not replay it into the restarted app.
+    // Restarting after an abandoned drain must throw the backlog away, because it
+    // was already reported as dropped. It must not replay it into the restarted app.
     junction
         .restart_processing()
         .expect("restart after halt should succeed once consumers exited");
@@ -250,7 +249,7 @@ fn test_drain_timeout_halts_and_abandons_pending() {
 }
 
 /// An idle junction must report quiescent even when the caller's time budget
-/// is already exhausted — the confirming pass is a second read, not a wait.
+/// is already used up. The confirming pass is a second read, not a wait.
 #[test]
 fn test_wait_quiescent_zero_timeout_on_idle_junction() {
     let (junction, _processor) = make_junction(None, Duration::from_millis(0));
@@ -260,16 +259,16 @@ fn test_wait_quiescent_zero_timeout_on_idle_junction() {
     );
 }
 
-/// Restarting while a consumer from the previous run is still wedged inside a
-/// subscriber must be refused (clearing the sticky flags would revive the
-/// straggler alongside the fresh set, leaking a consumer set per restart) and
-/// must succeed once the previous run settles.
+/// Restarting while a consumer from the previous run is still stuck inside a
+/// subscriber must be refused, and must succeed once the previous run settles.
+/// Clearing the shutdown flags early would wake the leftover consumer next to
+/// the new set, leaking one set of consumers per restart.
 #[test]
 fn test_restart_refused_while_previous_run_unsettled() {
     use eventflux::core::stream::stream_junction::poll_settled;
 
-    // Single-threaded executor → inline processing: the consumer itself sits
-    // inside the 4s handler, keeping active_consumers non-zero.
+    // A single thread executor means inline processing. The consumer itself sits
+    // inside the 4 s handler, so active_consumers stays above zero.
     let executor = Arc::new(ExecutorService::new("wedged-restart-test", 1));
     let (junction, _processor) = make_junction(Some(executor), Duration::from_secs(4));
 

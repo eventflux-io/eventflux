@@ -17,10 +17,11 @@
 
 // tests/redis_vs_memory_comparison.rs
 
-//! Direct comparison test between InMemory and Redis persistence stores
-//! to isolate where the problem lies.
+//! Runs the same persist and restore steps against the InMemory and Redis
+//! persistence stores, so a failure points at the store rather than the runtime.
 //!
-//! All tests updated to use M1 SQL syntax (CREATE STREAM, INSERT INTO, WINDOW)
+//! All tests use M1 SQL syntax (CREATE STREAM, INSERT INTO, WINDOW). The Redis
+//! test skips itself when Redis is not reachable.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -34,7 +35,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn test_memory_store_simple_works() {
-    // Test persist and restore within the same runtime (M1 pattern)
+    // Persist and restore within the same runtime
     let store: Arc<dyn PersistenceStore> = Arc::new(InMemoryPersistenceStore::new());
     let app = "\
         CREATE STREAM In (v INT);\n\
@@ -46,7 +47,7 @@ async fn test_memory_store_simple_works() {
     runner.send("In", vec![AttributeValue::Int(2)]);
     let rev = runner.persist();
     runner.send("In", vec![AttributeValue::Int(3)]);
-    // Restore to previous state (before event 3)
+    // Go back to the state before event 3
     runner.restore_revision(&rev);
     runner.send("In", vec![AttributeValue::Int(4)]);
     let out = runner.shutdown();
@@ -64,31 +65,31 @@ async fn test_memory_store_with_count() {
 
     let runner = AppRunner::new_with_store(app, "Out", Arc::clone(&store)).await;
 
-    // Build window state: send 3 events to fill the window
-    runner.send("In", vec![AttributeValue::Int(1)]); // Window: [1] COUNT=1
-    runner.send("In", vec![AttributeValue::Int(2)]); // Window: [1,2] COUNT=2
-    runner.send("In", vec![AttributeValue::Int(3)]); // Window: [1,2,3] COUNT=3
+    // Fill the window with 3 events
+    runner.send("In", vec![AttributeValue::Int(1)]); // Window [1] COUNT=1
+    runner.send("In", vec![AttributeValue::Int(2)]); // Window [1,2] COUNT=2
+    runner.send("In", vec![AttributeValue::Int(3)]); // Window [1,2,3] COUNT=3
 
     let rev = runner.persist();
 
-    // Send event after checkpoint - window slides to [2,3,4] COUNT=3
+    // After the checkpoint the window slides to [2,3,4] COUNT=3
     runner.send("In", vec![AttributeValue::Int(4)]);
 
-    // Restore from checkpoint - back to window state [1,2,3], count=3
+    // Restore the checkpoint, back to window [1,2,3] with count=3
     runner.restore_revision(&rev);
 
-    // Send new event - window becomes [2,3,5], COUNT=3
+    // The window becomes [2,3,5], COUNT=3
     runner.send("In", vec![AttributeValue::Int(5)]);
 
     let out = runner.shutdown();
 
-    // Verify output structure:
-    // Events 1,2,3 each generate 1 output (count 1,2,3)
-    // Event 4 generates 2 outputs (expired event 1 with count 2, current event 4 with count 3)
-    // After restore: Event 5 generates 2 outputs (expired event 1 with count 2, current event 5 with count 3)
+    // Expected outputs
+    // Events 1, 2 and 3 give 1 output each, with count 1, 2 and 3.
+    // Event 4 gives 2 outputs, event 1 expiring with count 2, then event 4 with count 3.
+    // After the restore, event 5 gives the same 2 outputs, event 1 expiring with
+    // count 2, then event 5 with count 3.
     assert_eq!(out.len(), 7, "Should have 7 output events");
 
-    // Verify the final count is 3
     let last_event = out.last().expect("Expected at least one output event");
     assert_eq!(
         last_event.get(1),
@@ -96,13 +97,13 @@ async fn test_memory_store_with_count() {
         "Count should be 3 for length(3) window"
     );
 
-    // Verify restoration worked: event 5 should cause event 1 to expire again
+    // The restore worked if event 5 makes event 1 expire again
     let event_5_idx = out
         .iter()
         .position(|e| e.first() == Some(&AttributeValue::Int(5)))
         .expect("Event 5 should be in output");
 
-    // The event before event 5 should be event 1 expiring with count 2
+    // The output just before event 5 must be event 1 expiring with count 2
     if event_5_idx > 0 {
         let prev_event = &out[event_5_idx - 1];
         assert_eq!(
@@ -120,7 +121,7 @@ async fn test_memory_store_with_count() {
 
 #[tokio::test]
 async fn test_count_aggregator_multiple_checkpoints() {
-    // This test verifies COUNT aggregator works correctly with multiple checkpoint/restore cycles
+    // COUNT must stay correct across several checkpoints and a restore to an older one
     let store: Arc<dyn PersistenceStore> = Arc::new(InMemoryPersistenceStore::new());
     let app = "\
         CREATE STREAM In (v INT);\n\
@@ -129,30 +130,30 @@ async fn test_count_aggregator_multiple_checkpoints() {
 
     let runner = AppRunner::new_with_store(app, "Out", Arc::clone(&store)).await;
 
-    // Phase 1: Fill window [10,20,30]
+    // Phase 1. Fill the window [10,20,30]
     runner.send("In", vec![AttributeValue::Int(10)]);
     runner.send("In", vec![AttributeValue::Int(20)]);
     runner.send("In", vec![AttributeValue::Int(30)]);
     let checkpoint1 = runner.persist();
 
-    // Phase 2: Slide window to [30,40,50]
+    // Phase 2. Slide the window to [30,40,50]
     runner.send("In", vec![AttributeValue::Int(40)]);
     runner.send("In", vec![AttributeValue::Int(50)]);
     let _checkpoint2 = runner.persist();
 
-    // Phase 3: Continue sliding
+    // Phase 3. Keep sliding
     runner.send("In", vec![AttributeValue::Int(60)]);
 
-    // Restore to checkpoint1 - window resets to [10,20,30]
+    // Restore checkpoint1, which puts the window back to [10,20,30]
     runner.restore_revision(&checkpoint1);
 
-    // Send new events - behaves as if checkpoint2 and phase3 never happened
+    // New events behave as if checkpoint2 and phase 3 never happened
     runner.send("In", vec![AttributeValue::Int(70)]); // Window: [20,30,70]
     runner.send("In", vec![AttributeValue::Int(80)]); // Window: [30,70,80]
 
     let out = runner.shutdown();
 
-    // Verify: event 80 should have count=3 (window is [30,70,80])
+    // Event 80 must have count=3 because the window is [30,70,80]
     let event_80_idx = out
         .iter()
         .rposition(|e| e.first() == Some(&AttributeValue::Int(80)))
@@ -183,8 +184,8 @@ async fn test_redis_store_with_count() {
         }
     };
 
-    // `new_with_config` is intentionally lazy in async contexts; validate connectivity
-    // up-front so this test cleanly skips when Redis isn't reachable.
+    // `new_with_config` does not connect yet in async contexts, on purpose. Check the
+    // connection first so this test skips cleanly when Redis is not reachable.
     if store.test_connection().is_err() {
         println!("Redis not reachable, skipping test");
         return;
@@ -199,25 +200,25 @@ async fn test_redis_store_with_count() {
 
     let runner = AppRunner::new_with_store(app, "Out", Arc::clone(&store)).await;
 
-    // Build window state: send 3 events to fill the window
+    // Fill the window with 3 events
     runner.send("In", vec![AttributeValue::Int(1)]);
     runner.send("In", vec![AttributeValue::Int(2)]);
     runner.send("In", vec![AttributeValue::Int(3)]);
 
     let rev = runner.persist();
 
-    // Send event after checkpoint - window slides to [2,3,4]
+    // After the checkpoint the window slides to [2,3,4]
     runner.send("In", vec![AttributeValue::Int(4)]);
 
-    // Restore from checkpoint - back to window state [1,2,3]
+    // Restore the checkpoint, back to window [1,2,3]
     runner.restore_revision(&rev);
 
-    // Send new event - window becomes [2,3,5], COUNT=3
+    // The window becomes [2,3,5], COUNT=3
     runner.send("In", vec![AttributeValue::Int(5)]);
 
     let out = runner.shutdown();
 
-    // Verify the final count is 3 for length(3) window
+    // The final count must be 3 for a length(3) window
     let last_event = out.last().expect("Expected at least one output event");
     assert_eq!(
         last_event.get(1),

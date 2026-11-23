@@ -29,7 +29,7 @@ fn test_cache_insert_and_eviction() {
     table.insert(&r1).unwrap();
     table.insert(&r2).unwrap();
     table.insert(&r3).unwrap();
-    // r1 should be evicted
+    // The cache holds 2 rows, so the oldest row, r1, is evicted
     assert!(!table
         .contains(&InMemoryCompiledCondition { values: r1 })
         .unwrap());

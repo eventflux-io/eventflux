@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Filter Compatibility Tests
+// Filter compatibility tests
 // Reference: query/FilterTestCase1.java, query/FilterTestCase2.java
 
 use super::common::AppRunner;
@@ -25,7 +25,7 @@ use eventflux::core::event::value::AttributeValue;
 // BASIC COMPARISON OPERATORS
 // ============================================================================
 
-/// Filter test1 - basic greater than comparison
+/// Filter test1, basic greater than comparison
 /// Reference: FilterTestCase1.java:filterTest1
 #[tokio::test]
 async fn filter_test1_basic_greater_than() {
@@ -56,7 +56,7 @@ async fn filter_test1_basic_greater_than() {
     assert_eq!(out[0][0], AttributeValue::String("MSFT".to_string()));
 }
 
-/// Filter test2 - volume filter with long type
+/// Filter test2, filter on a BIGINT volume
 /// Reference: FilterTestCase1.java:filterTest2
 #[tokio::test]
 async fn filter_test2_volume_filter() {
@@ -87,7 +87,7 @@ async fn filter_test2_volume_filter() {
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
 }
 
-/// Filter test3 - filter with multiple matching events
+/// Filter test3, several events match
 /// Reference: FilterTestCase1.java:testFilterQuery3
 #[tokio::test]
 async fn filter_test3_multiple_matches() {
@@ -125,7 +125,7 @@ async fn filter_test3_multiple_matches() {
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test4 - attribute greater than literal
+/// Filter test4, attribute greater than a literal
 /// Reference: FilterTestCase1.java:testFilterQuery4
 #[tokio::test]
 async fn filter_test4_attribute_gt_literal() {
@@ -163,7 +163,7 @@ async fn filter_test4_attribute_gt_literal() {
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test - less than operator
+/// Less than operator
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test5_less_than() {
@@ -194,7 +194,7 @@ async fn filter_test5_less_than() {
     assert_eq!(out[0][0], AttributeValue::String("MSFT".to_string()));
 }
 
-/// Filter test - greater than or equal
+/// Greater than or equal operator
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test6_greater_than_equal() {
@@ -232,7 +232,7 @@ async fn filter_test6_greater_than_equal() {
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test - less than or equal
+/// Less than or equal operator
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test7_less_than_equal() {
@@ -274,7 +274,7 @@ async fn filter_test7_less_than_equal() {
 // STRING COMPARISONS
 // ============================================================================
 
-/// Filter test - equality with string
+/// String equality
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test8_string_equality() {
@@ -312,7 +312,7 @@ async fn filter_test8_string_equality() {
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test - inequality with string
+/// String inequality
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test9_string_inequality() {
@@ -347,7 +347,7 @@ async fn filter_test9_string_inequality() {
 // LOGICAL OPERATORS
 // ============================================================================
 
-/// Filter test - AND operator
+/// AND operator
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test10_and_operator() {
@@ -386,7 +386,7 @@ async fn filter_test10_and_operator() {
     assert_eq!(out[0][0], AttributeValue::String("A".to_string()));
 }
 
-/// Filter test - OR operator
+/// OR operator
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test11_or_operator() {
@@ -424,7 +424,7 @@ async fn filter_test11_or_operator() {
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test - NOT operator
+/// NOT operator
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test12_not_operator() {
@@ -455,7 +455,7 @@ async fn filter_test12_not_operator() {
     assert_eq!(out[0][0], AttributeValue::String("A".to_string()));
 }
 
-/// Filter test - complex condition with parentheses
+/// Condition grouped with parentheses
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test13_complex_condition() {
@@ -497,7 +497,7 @@ async fn filter_test13_complex_condition() {
 // TYPE COERCION TESTS
 // ============================================================================
 
-/// Filter test14 - double type comparison
+/// Filter test14, DOUBLE comparison
 /// Reference: FilterTestCase1.java:testFilterQuery7
 #[tokio::test]
 async fn filter_test14_double_comparison() {
@@ -535,8 +535,8 @@ async fn filter_test14_double_comparison() {
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test15: int compared to double literal
-/// Tests: quantity > 4d (int field vs double literal)
+/// Filter test15, INT field compared to a DOUBLE literal
+/// Reference query `quantity > 4d`, written here as `quantity > 4.0`
 /// Reference: FilterTestCase1.java testFilterQuery15
 #[tokio::test]
 async fn filter_test15_int_gt_double_literal() {
@@ -574,12 +574,12 @@ async fn filter_test15_int_gt_double_literal() {
         ],
     );
     let out = runner.shutdown();
-    // Only quantity=5 passes (> 4.0)
+    // Only quantity=5 passes, since 5 > 4.0
     assert!(!out.is_empty());
 }
 
-/// Filter test16: long compared to double literal
-/// Tests: volume > 50d (long field vs double literal)
+/// Filter test16, BIGINT field compared to a DOUBLE literal
+/// Reference query `volume > 50d`, written here as `volume > 50.0`
 /// Reference: FilterTestCase1.java testFilterQuery16
 #[tokio::test]
 async fn filter_test16_long_gt_double_literal() {
@@ -618,7 +618,7 @@ async fn filter_test16_long_gt_double_literal() {
     assert!(out.len() >= 2);
 }
 
-/// Filter test - int type comparison
+/// INT comparison
 /// Reference: FilterTestCase1.java
 #[tokio::test]
 async fn filter_test17_int_comparison() {
@@ -649,8 +649,8 @@ async fn filter_test17_int_comparison() {
     assert_eq!(out[0][0], AttributeValue::String("A".to_string()));
 }
 
-/// Filter test20: less than with long
-/// Tests: volume < 100 (long field)
+/// Filter test20, less than on a BIGINT field
+/// Query `volume < 100`
 /// Reference: FilterTestCase1.java testFilterQuery20
 #[tokio::test]
 async fn filter_test20_less_than() {
@@ -677,13 +677,13 @@ async fn filter_test20_less_than() {
         ],
     );
     let out = runner.shutdown();
-    // Only volume=10 passes (< 100)
+    // Only volume=10 passes
     assert!(!out.is_empty());
     assert_eq!(out[0][2], AttributeValue::Long(10));
 }
 
-/// Filter test21: not equal with long
-/// Tests: volume != 100
+/// Filter test21, not equal on a BIGINT field
+/// Query `volume != 100`
 /// Reference: FilterTestCase1.java testFilterQuery21
 #[tokio::test]
 async fn filter_test21_not_equal_long() {
@@ -710,13 +710,13 @@ async fn filter_test21_not_equal_long() {
         ],
     );
     let out = runner.shutdown();
-    // Only volume=10 passes (!= 100)
+    // Only volume=10 passes
     assert!(!out.is_empty());
     assert_eq!(out[0][2], AttributeValue::Long(10));
 }
 
-/// Filter test22: complex AND with mixed types
-/// Tests: volume > 12L and price < 56
+/// Filter test22, AND across a DOUBLE and a FLOAT field
+/// Reference query `volume > 12L and price < 56`, written here without the `L`
 /// Reference: FilterTestCase1.java testFilterQuery22
 #[tokio::test]
 async fn filter_test22_complex_and_mixed_types() {
@@ -743,13 +743,14 @@ async fn filter_test22_complex_and_mixed_types() {
         ],
     );
     let out = runner.shutdown();
-    // Only first event passes (volume=100 > 12 AND price=55.6 < 56)
+    // Only the first event passes, with volume=100 > 12 AND price=55.6 < 56
     assert!(!out.is_empty());
     assert_eq!(out[0][2], AttributeValue::Double(100.0));
 }
 
-/// Filter test23: complex AND with string and numeric inequalities
-/// Tests: symbol != 'MSFT' and volume != 55L and price != 45f
+/// Filter test23, AND of string and number inequalities
+/// Reference query `symbol != 'MSFT' and volume != 55L and price != 45f`, written
+/// here as `volume != 55` and `price != 45.0`
 /// Reference: FilterTestCase1.java testFilterQuery23
 #[tokio::test]
 async fn filter_test23_complex_and_multiple_not_equal() {
@@ -777,12 +778,12 @@ async fn filter_test23_complex_and_multiple_not_equal() {
         ],
     );
     let out = runner.shutdown();
-    // Second event passes (symbol=IBM != MSFT, volume=50 != 55, price=35 != 45)
+    // The second event passes, with symbol=IBM, volume=50 and price=35
     assert!(!out.is_empty());
 }
 
-/// Filter test24: not equal with float literal comparison to long
-/// Tests: volume != 50f
+/// Filter test24, BIGINT field not equal to a decimal literal
+/// Reference query `volume != 50f`, written here as `volume != 50.0`
 /// Reference: FilterTestCase1.java testFilterQuery24
 #[tokio::test]
 async fn filter_test24_not_equal_float_to_long() {
@@ -809,12 +810,12 @@ async fn filter_test24_not_equal_float_to_long() {
         ],
     );
     let out = runner.shutdown();
-    // First event passes (volume=100 != 50)
+    // The first event passes, with volume=100
     assert!(!out.is_empty());
 }
 
-/// Filter test26: double not equal conditions
-/// Tests: volume != 100 and volume != 70d
+/// Filter test26, two not equal conditions on the same field
+/// Reference query `volume != 100 and volume != 70d`, written here with `70` for `70d`
 /// Reference: FilterTestCase1.java testFilterQuery26
 #[tokio::test]
 async fn filter_test26_double_not_equal() {
@@ -841,12 +842,12 @@ async fn filter_test26_double_not_equal() {
         ],
     );
     let out = runner.shutdown();
-    // Second event passes (volume=10 != 100 and != 70)
+    // The second event passes, with volume=10
     assert!(!out.is_empty());
 }
 
-/// Filter test27: OR with not equal
-/// Tests: price != 53.6d or price != 87
+/// Filter test27, OR of two not equal conditions
+/// Reference query `price != 53.6d or price != 87`, written here with `53.6` and `87.0`
 /// Reference: FilterTestCase1.java testFilterQuery27
 #[tokio::test]
 async fn filter_test27_or_not_equal() {
@@ -873,7 +874,7 @@ async fn filter_test27_or_not_equal() {
         ],
     );
     let out = runner.shutdown();
-    // Both events pass due to OR condition
+    // Both events pass because no price equals both values, so the OR is always true
     assert!(out.len() >= 2);
 }
 
@@ -881,8 +882,8 @@ async fn filter_test27_or_not_equal() {
 // BOOLEAN TESTS
 // ============================================================================
 
-/// Filter test30: boolean not equal
-/// Tests: available != true
+/// Filter test30, BOOLEAN not equal
+/// Query `available != true`
 /// Reference: FilterTestCase1.java testFilterQuery30
 #[tokio::test]
 async fn filter_test30_boolean_not_equal() {
@@ -909,12 +910,12 @@ async fn filter_test30_boolean_not_equal() {
         ],
     );
     let out = runner.shutdown();
-    // Only second event passes (available=false != true)
+    // Only the second event passes, with available=false
     assert!(!out.is_empty());
     assert_eq!(out[0][0], AttributeValue::String("MSFT".to_string()));
 }
 
-/// NOT operator test
+/// NOT on a BOOLEAN field
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_not_boolean() {
@@ -941,16 +942,16 @@ async fn filter_test_not_boolean() {
         ],
     );
     let out = runner.shutdown();
-    // NOT available: available=false -> true (include)
+    // Events with available=false pass, since NOT false is true
     assert!(!out.is_empty());
 }
 
 // ============================================================================
-// FILTERCASE2 TESTS (Type Literal Comparisons)
+// FILTERCASE2 TESTS, fields compared to literals of another type
 // ============================================================================
 
-/// Filter test83: double less than long literal
-/// Tests: volume < 60L (double field vs long literal)
+/// Filter test83, DOUBLE field less than an integer literal
+/// Reference query `volume < 60L`, written here as `volume < 60`
 /// Reference: FilterTestCase2.java testFilterQuery83
 #[tokio::test]
 async fn filter_test83_double_lt_long_literal() {
@@ -988,12 +989,12 @@ async fn filter_test83_double_lt_long_literal() {
         ],
     );
     let out = runner.shutdown();
-    // Only first event passes (volume=50 < 60)
+    // Only the first event passes, with volume=50
     assert!(!out.is_empty());
 }
 
-/// Filter test84: float less than long literal
-/// Tests: price < 60L (float field vs long literal)
+/// Filter test84, FLOAT field less than an integer literal
+/// Reference query `price < 60L`, written here as `price < 60`
 /// Reference: FilterTestCase2.java testFilterQuery84
 #[tokio::test]
 async fn filter_test84_float_lt_long_literal() {
@@ -1031,12 +1032,12 @@ async fn filter_test84_float_lt_long_literal() {
         ],
     );
     let out = runner.shutdown();
-    // Only third event passes (price=50 < 60)
+    // Only the third event passes, with price=50
     assert!(!out.is_empty());
 }
 
-/// Filter test85: int less than long literal
-/// Tests: quantity < 4L (int field vs long literal)
+/// Filter test85, INT field less than an integer literal
+/// Reference query `quantity < 4L`, written here as `quantity < 4`
 /// Reference: FilterTestCase2.java testFilterQuery85
 #[tokio::test]
 async fn filter_test85_int_lt_long_literal() {
@@ -1074,12 +1075,12 @@ async fn filter_test85_int_lt_long_literal() {
         ],
     );
     let out = runner.shutdown();
-    // Only second event passes (quantity=2 < 4)
+    // Only the second event passes, with quantity=2
     assert!(!out.is_empty());
 }
 
-/// Filter test87: float less than double literal
-/// Tests: price < 50d (float field vs double literal)
+/// Filter test87, FLOAT field less than a decimal literal
+/// Reference query `price < 50d`, written here as `price < 50.0`
 /// Reference: FilterTestCase2.java testFilterQuery87
 #[tokio::test]
 async fn filter_test87_float_lt_double_literal() {
@@ -1114,12 +1115,12 @@ async fn filter_test87_float_lt_double_literal() {
         ],
     );
     let out = runner.shutdown();
-    // Only third event passes (price=44 < 50)
+    // Only the third event passes, with price=44
     assert!(!out.is_empty());
 }
 
-/// Filter test88: float less than float literal
-/// Tests: price < 55f
+/// Filter test88, FLOAT field less than a decimal literal
+/// Reference query `price < 55f`, written here as `price < 55.0`
 /// Reference: FilterTestCase2.java testFilterQuery88
 #[tokio::test]
 async fn filter_test88_float_lt_float_literal() {
@@ -1154,16 +1155,16 @@ async fn filter_test88_float_lt_float_literal() {
         ],
     );
     let out = runner.shutdown();
-    // First and third events pass (price=50 < 55, price=44 < 55)
+    // The first and third events pass, with price=50 and price=44
     assert!(out.len() >= 2);
 }
 
 // ============================================================================
-// IS NULL / IS NOT NULL TESTS
+// IS NULL AND IS NOT NULL TESTS
 // Reference: FilterTestCase2.java
 // ============================================================================
 
-/// Filter test - IS NULL operator
+/// IS NULL operator
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_is_null() {
@@ -1200,7 +1201,7 @@ async fn filter_test_is_null() {
     assert_eq!(out[0][0], AttributeValue::String("MSFT".to_string()));
 }
 
-/// Filter test - IS NOT NULL operator
+/// IS NOT NULL operator
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_is_not_null() {
@@ -1232,11 +1233,11 @@ async fn filter_test_is_not_null() {
         ],
     );
     let out = runner.shutdown();
-    // IBM and GOOG have non-null price
+    // IBM and GOOG have a price that is not NULL
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test - Combined IS NULL with AND
+/// IS NULL combined with AND
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_is_null_combined() {
@@ -1281,7 +1282,7 @@ async fn filter_test_is_null_combined() {
 // Reference: FilterTestCase2.java
 // ============================================================================
 
-/// Filter test - IN operator with string list
+/// IN operator with a list of strings
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_in_string_list() {
@@ -1317,7 +1318,7 @@ async fn filter_test_in_string_list() {
     assert_eq!(out.len(), 3);
 }
 
-/// Filter test - NOT IN operator
+/// NOT IN operator
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_not_in() {
@@ -1349,11 +1350,11 @@ async fn filter_test_not_in() {
         ],
     );
     let out = runner.shutdown();
-    // MSFT and MSFT are not in the list
+    // Both MSFT events pass because MSFT is not in the list
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test - IN operator with integer list
+/// IN operator with a list of integers
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_in_int_list() {
@@ -1389,7 +1390,7 @@ async fn filter_test_in_int_list() {
 // Reference: FilterTestCase2.java
 // ============================================================================
 
-/// Filter test - BETWEEN operator
+/// BETWEEN operator
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_between() {
@@ -1432,7 +1433,7 @@ async fn filter_test_between() {
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test - NOT BETWEEN operator
+/// NOT BETWEEN operator
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_not_between() {
@@ -1473,7 +1474,7 @@ async fn filter_test_not_between() {
 // Reference: FilterTestCase2.java
 // ============================================================================
 
-/// Filter test - LIKE operator for string patterns
+/// LIKE operator with a prefix pattern
 /// Reference: FilterTestCase2.java
 #[tokio::test]
 async fn filter_test_like_prefix() {
@@ -1505,11 +1506,11 @@ async fn filter_test_like_prefix() {
         ],
     );
     let out = runner.shutdown();
-    // Only names starting with 'test' should match
+    // Only names that start with 'test' match
     assert_eq!(out.len(), 2);
 }
 
-/// Filter test - LIKE operator with suffix pattern
+/// LIKE operator with a suffix pattern
 #[tokio::test]
 async fn filter_test_like_suffix() {
     let app = "\
@@ -1566,8 +1567,8 @@ async fn filter_test_arithmetic_in_where() {
         ],
     );
     let out = runner.shutdown();
-    // IBM: 100 - 20 = 80 > 50 (passes)
-    // MSFT: 60 - 20 = 40 > 50 (fails)
+    // IBM passes, 100 - 20 = 80 > 50
+    // MSFT fails, 60 - 20 = 40 is not > 50
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("IBM".to_string()));
 }
@@ -1598,8 +1599,8 @@ async fn filter_test_multiply_in_where() {
         ],
     );
     let out = runner.shutdown();
-    // Laptop: 2 * 500 = 1000 > 100 (passes)
-    // Mouse: 5 * 10 = 50 > 100 (fails)
+    // Laptop passes, 2 * 500 = 1000 > 100
+    // Mouse fails, 5 * 10 = 50 is not > 100
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("Laptop".to_string()));
 }
@@ -1630,8 +1631,8 @@ async fn filter_test_division_in_where() {
         ],
     );
     let out = runner.shutdown();
-    // A: 100 / 20 = 5 < 10 (passes)
-    // B: 100 / 5 = 20 < 10 (fails)
+    // A passes, 100 / 20 = 5 < 10
+    // B fails, 100 / 5 = 20 is not < 10
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::String("A".to_string()));
 }
@@ -1640,7 +1641,7 @@ async fn filter_test_division_in_where() {
 // NESTED LOGICAL EXPRESSION TESTS
 // ============================================================================
 
-/// Filter with deeply nested AND/OR expressions
+/// Filter with AND groups joined by OR
 #[tokio::test]
 async fn filter_test_deeply_nested_logic() {
     let app = "\
@@ -1675,9 +1676,9 @@ async fn filter_test_deeply_nested_logic() {
         ],
     );
     let out = runner.shutdown();
-    // A: 60 > 50 AND 150 > 100 (passes first condition)
-    // B: 25 < 30 AND 600 > 500 (passes second condition)
-    // C: neither condition passes
+    // A passes the first group, 60 > 50 AND 150 > 100
+    // B passes the second group, 25 < 30 AND 600 > 500
+    // C passes neither group
     assert_eq!(out.len(), 2);
 }
 
@@ -1789,9 +1790,9 @@ async fn filter_test_with_function_call() {
         ],
     );
     let out = runner.shutdown();
-    // IBM: length 3, not > 3 (fails)
-    // GOOG: length 4 > 3 (passes)
-    // MICROSOFT: length 9 > 3 (passes)
+    // IBM fails, length 3 is not > 3
+    // GOOG passes, length 4 > 3
+    // MICROSOFT passes, length 9 > 3
     assert_eq!(out.len(), 2);
 }
 
@@ -1862,8 +1863,9 @@ async fn filter_test_with_case_when() {
 // NULL COMPARISON EDGE CASES
 // ============================================================================
 
-/// Filter comparing with NULL using coalesce workaround
-/// Note: coalesce requires same types, use DOUBLE for consistency
+/// Filter that uses coalesce to give a NULL price a value before comparing
+/// coalesce needs both arguments to have the same type, so price and the
+/// fallback are both DOUBLE
 #[tokio::test]
 async fn filter_test_null_coalesce_workaround() {
     let app = "\
@@ -2384,8 +2386,7 @@ async fn filter_test_negative_numbers() {
     assert_eq!(out.len(), 2);
 }
 
-/// Negative to negative comparison
-/// Note: Unary minus in WHERE clause not yet supported
+/// Compare against a negative literal, which uses unary minus in WHERE
 #[tokio::test]
 async fn filter_test_negative_to_negative() {
     let app = "\
@@ -2673,7 +2674,7 @@ async fn filter_test_zero_comparison() {
     assert_eq!(out[1][0], AttributeValue::Int(3));
 }
 
-/// Filter with AND and OR combined (precedence test)
+/// Filter with AND and OR together, to check that AND binds tighter than OR
 #[tokio::test]
 async fn filter_test_and_or_precedence() {
     let app = "\
@@ -2682,7 +2683,7 @@ async fn filter_test_and_or_precedence() {
         INSERT INTO outputStream\n\
         SELECT id FROM productStream WHERE price < 100.0 AND inStock = true OR price > 500.0;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // price < 100 AND inStock => id=1 matches
+    // id=1 matches, price < 100 AND inStock
     runner.send(
         "productStream",
         vec![
@@ -2691,7 +2692,7 @@ async fn filter_test_and_or_precedence() {
             AttributeValue::Bool(true),
         ],
     );
-    // price < 100 AND NOT inStock => no match
+    // No match, price < 100 but not in stock
     runner.send(
         "productStream",
         vec![
@@ -2700,7 +2701,7 @@ async fn filter_test_and_or_precedence() {
             AttributeValue::Bool(false),
         ],
     );
-    // price > 500 => id=3 matches
+    // id=3 matches through the OR branch, price > 500
     runner.send(
         "productStream",
         vec![
@@ -2724,7 +2725,7 @@ async fn filter_test_parentheses_precedence() {
         INSERT INTO outputStream\n\
         SELECT id FROM productStream WHERE (price < 100.0 OR price > 500.0) AND inStock = true;\n";
     let runner = AppRunner::new(app, "outputStream").await;
-    // price < 100 AND inStock => id=1 matches
+    // id=1 matches, price < 100 AND inStock
     runner.send(
         "productStream",
         vec![
@@ -2733,7 +2734,7 @@ async fn filter_test_parentheses_precedence() {
             AttributeValue::Bool(true),
         ],
     );
-    // price > 500 BUT NOT inStock => no match
+    // No match, price > 500 but not in stock
     runner.send(
         "productStream",
         vec![
@@ -2742,7 +2743,7 @@ async fn filter_test_parentheses_precedence() {
             AttributeValue::Bool(false),
         ],
     );
-    // price > 500 AND inStock => id=3 matches
+    // id=3 matches, price > 500 AND inStock
     runner.send(
         "productStream",
         vec![
@@ -2757,7 +2758,7 @@ async fn filter_test_parentheses_precedence() {
     assert_eq!(out[1][0], AttributeValue::Int(3));
 }
 
-/// Filter with LIKE pattern - starts with
+/// Filter with a LIKE pattern that matches the start
 #[tokio::test]
 async fn filter_test_like_starts_with() {
     let app = "\
@@ -2791,7 +2792,7 @@ async fn filter_test_like_starts_with() {
     assert_eq!(out.len(), 2);
 }
 
-/// Filter with LIKE pattern - ends with
+/// Filter with a LIKE pattern that matches the end
 #[tokio::test]
 async fn filter_test_like_ends_with() {
     let app = "\
@@ -2872,7 +2873,7 @@ async fn filter_test_not_null_multiple() {
     assert_eq!(out[1][0], AttributeValue::Int(3));
 }
 
-/// Filter with chained comparisons (compound range check)
+/// Filter with two comparisons that form a range check
 #[tokio::test]
 async fn filter_test_chained_range() {
     let app = "\
@@ -2903,7 +2904,7 @@ async fn filter_test_chained_range() {
     assert_eq!(out[1][0], AttributeValue::Int(4));
 }
 
-/// Filter with type coercion (INT vs FLOAT comparison)
+/// Filter that compares across types, INT and FLOAT
 #[tokio::test]
 async fn filter_test_type_coercion() {
     let app = "\
@@ -2929,7 +2930,7 @@ async fn filter_test_type_coercion() {
     assert_eq!(out[0][0], AttributeValue::Int(2));
 }
 
-/// Filter with case-sensitive string comparison
+/// String comparison is case sensitive
 #[tokio::test]
 async fn filter_test_case_sensitive() {
     let app = "\
@@ -3032,7 +3033,7 @@ async fn filter_test_string_length_where() {
     assert_eq!(out[1][0], AttributeValue::Int(3));
 }
 
-/// Filter with case-insensitive comparison using upper()
+/// Filter that ignores case by comparing upper() values
 #[tokio::test]
 async fn filter_test_case_insensitive_upper() {
     let app = "\
@@ -3070,7 +3071,7 @@ async fn filter_test_case_insensitive_upper() {
         ],
     );
     let out = runner.shutdown();
-    // All "active" variations (1, 2, 4) should match
+    // Every case variant of "active" matches, ids 1, 2 and 4
     assert_eq!(out.len(), 3);
 }
 
@@ -3102,8 +3103,8 @@ async fn filter_test_complex_arithmetic_where() {
         ],
     );
     let out = runner.shutdown();
-    // Order 1: (50*3) - 20 = 130 > 100 (passes)
-    // Order 2: (20*4) - 10 = 70 > 100 (fails)
+    // Order 1 passes, (50*3) - 20 = 130 > 100
+    // Order 2 fails, (20*4) - 10 = 70 is not > 100
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -3315,9 +3316,9 @@ async fn filter_test_arithmetic_and_logical() {
         ],
     );
     let out = runner.shutdown();
-    // Order 1: 20*5=100 > 50 AND premium=true (passes)
-    // Order 2: 20*5=100 > 50 AND premium=false (fails)
-    // Order 3: 5*5=25 > 50 AND premium=true (fails)
+    // Order 1 passes, 20*5=100 > 50 AND premium=true
+    // Order 2 fails, 20*5=100 > 50 but premium=false
+    // Order 3 fails, 5*5=25 is not > 50
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -3525,8 +3526,8 @@ async fn filter_test_parentheses_grouping() {
         ],
     );
     let out = runner.shutdown();
-    // First two pass: (1>0 OR 0>0) AND 1>0, (0>0 OR 1>0) AND 1>0
-    // Third fails: (1>0 OR 1>0) AND 0>0
+    // The first two pass, (1>0 OR 0>0) AND 1>0 and (0>0 OR 1>0) AND 1>0
+    // The third fails, (1>0 OR 1>0) AND 0>0
     assert_eq!(out.len(), 2);
 }
 
@@ -3558,7 +3559,7 @@ async fn filter_test_string_special_chars() {
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
 
-/// Float vs Int comparison (type coercion)
+/// FLOAT field compared to an INT literal
 #[tokio::test]
 async fn filter_test_float_int_comparison() {
     let app = "\
@@ -3650,7 +3651,7 @@ async fn filter_test_subtraction_where() {
         ],
     );
     let out = runner.shutdown();
-    // Order 1: 100-30=70 > 50 (pass), Order 2: 60-20=40 (fail)
+    // Order 1 passes with 100-30=70 > 50. Order 2 fails with 60-20=40
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -3681,7 +3682,7 @@ async fn filter_test_multiplication_where() {
         ],
     );
     let out = runner.shutdown();
-    // Product 1: 10*100=1000 > 500 (pass), Product 2: 5*50=250 (fail)
+    // Product 1 passes with 10*100=1000 > 500. Product 2 fails with 5*50=250
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -3712,7 +3713,7 @@ async fn filter_test_division_where() {
         ],
     );
     let out = runner.shutdown();
-    // Data 1: 100/5=20 > 10 (pass), Data 2: 30/5=6 (fail)
+    // Data 1 passes with 100/5=20 > 10. Data 2 fails with 30/5=6
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -3865,7 +3866,7 @@ async fn filter_test_multi_column_compare() {
         ],
     );
     let out = runner.shutdown();
-    // Order 1: 100 >= 50 (pass), Order 2: 30 >= 50 (fail)
+    // Order 1 passes with 100 >= 50. Order 2 fails with 30
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
 }
@@ -4162,7 +4163,7 @@ async fn filter_test_arithmetic_select_where() {
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][0], AttributeValue::Int(1));
-    // Arithmetic operations may return Long
+    // INT arithmetic may come back as Long, so accept both
     let revenue = match &out[0][1] {
         AttributeValue::Int(v) => *v as i64,
         AttributeValue::Long(v) => *v,
@@ -4779,7 +4780,7 @@ async fn filter_test_or_condition() {
         ],
     );
     let out = runner.shutdown();
-    // critical and warning(level>90)
+    // The critical alert and the warning with level > 90
     assert_eq!(out.len(), 2);
 }
 
