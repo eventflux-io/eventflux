@@ -1310,7 +1310,7 @@ If DLQ stream fails during event processing → **Fall back to configured fallba
 |----------|----------|----------|
 | `log` | Log detailed error and discard event | **Default** - Full error visibility without blocking |
 | `fail` | Terminate application immediately | Critical data requiring guaranteed DLQ delivery |
-| `retry` | Retry DLQ delivery with backoff | Transient DLQ failures, eventually consistent |
+| `retry` | Retry the DLQ send with backoff (`dlq.fallback-retry.*`, its own attempt budget, independent of `error.retry.*`), then log and discard. The failed event is not reprocessed | Transient DLQ failures, eventually consistent |
 
 **Configuration Examples**:
 

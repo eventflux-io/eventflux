@@ -143,9 +143,7 @@ impl SourceErrorContext {
 
     /// Whether the bound worker has been told to stop
     pub fn is_cancelled(&self) -> bool {
-        self.running
-            .as_ref()
-            .is_some_and(|r| !r.load(Ordering::SeqCst))
+        is_stopping(&self.running)
     }
 
     /// Create from FlatConfig (convenience method)
@@ -227,28 +225,25 @@ impl SourceErrorContext {
         event: Option<&Event>,
         error: &EventFluxError,
     ) -> ErrorAction {
-        let action = self.handler.handle_error(event, error);
+        // DLQ fallback retries wait inside the handler; source retries come
+        // back as `Retry` and wait here. Both waits honour `stop()`.
+        let running = &self.running;
+        let action = self
+            .handler
+            .handle_error_with_backoff(event, error, &mut |delay| {
+                sleep_unless_cancelled(running, delay)
+            });
 
-        if let ErrorAction::Retry { delay } = &action {
-            // Blocking sleep is intentional (sources are synchronous), but
-            // it is sliced against the bound running flag: a user-configured
-            // delay must never hold `stop()` past the worker grace period.
-            const SLICE: Duration = Duration::from_millis(50);
-            let mut remaining = *delay;
-            while !remaining.is_zero() {
-                if self.is_cancelled() {
-                    log::info!(
-                        "[{}] Stop requested during retry backoff — aborting retries",
-                        self.handler.stream_name()
-                    );
-                    // NOT Fail: Fail is a poison-message verdict (RabbitMQ
-                    // rejects without requeue). Cancellation must leave the
-                    // record for redelivery.
-                    return ErrorAction::Cancelled;
-                }
-                let slice = remaining.min(SLICE);
-                thread::sleep(slice);
-                remaining -= slice;
+        if let ErrorAction::Retry { delay } = action {
+            if !sleep_unless_cancelled(running, delay) {
+                log::info!(
+                    "[{}] Stop requested during retry backoff — aborting retries",
+                    self.handler.stream_name()
+                );
+                // NOT Fail: Fail is a poison-message verdict (RabbitMQ
+                // rejects without requeue). Cancellation must leave the
+                // record for redelivery.
+                return ErrorAction::Cancelled;
             }
         }
 
@@ -292,6 +287,30 @@ impl SourceErrorContext {
     pub fn set_dlq_junction(&mut self, stream_name: &str, junction: Arc<Mutex<InputHandler>>) {
         self.handler.set_dlq_junction(stream_name, junction);
     }
+}
+
+/// Whether the worker owning `running` has been told to stop (an unbound
+/// context never is)
+fn is_stopping(running: &Option<Arc<AtomicBool>>) -> bool {
+    running.as_ref().is_some_and(|r| !r.load(Ordering::SeqCst))
+}
+
+/// Sleep for `delay`, returning `false` as soon as the worker is told to
+/// stop. Blocking sleep is intentional (sources are synchronous), but it is
+/// sliced against the running flag: a user-configured delay must never hold
+/// `stop()` past the worker grace period.
+fn sleep_unless_cancelled(running: &Option<Arc<AtomicBool>>, delay: Duration) -> bool {
+    const SLICE: Duration = Duration::from_millis(50);
+    let mut remaining = delay;
+    while !remaining.is_zero() {
+        if is_stopping(running) {
+            return false;
+        }
+        let slice = remaining.min(SLICE);
+        thread::sleep(slice);
+        remaining -= slice;
+    }
+    true
 }
 
 impl std::fmt::Debug for SourceErrorContext {

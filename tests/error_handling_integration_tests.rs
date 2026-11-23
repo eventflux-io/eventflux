@@ -478,19 +478,20 @@ fn test_dlq_fallback_retry_when_dlq_unavailable() {
     let event = Event::new_with_data(123, vec![AttributeValue::Int(42)]);
     let error = EventFluxError::Other("Test error".to_string());
 
-    // First attempt should retry DLQ delivery
-    let action = handler.handle_error(Some(&event), &error);
-    assert!(
-        matches!(action, ErrorAction::Retry { .. }),
-        "Should retry DLQ delivery (attempt 1)"
-    );
-
-    // Second attempt should drop (max fallback retries of 2 exceeded)
-    let action = handler.handle_error(Some(&event), &error);
+    // The DLQ send itself is retried inside the handler (the event is not
+    // handed back to the source as a `Retry`): with max_attempts = 2, one
+    // resend after a 10ms backoff, then drop once the budget is spent
+    let mut waits = Vec::new();
+    let action = handler.handle_error_with_backoff(Some(&event), &error, &mut |delay| {
+        waits.push(delay);
+        true
+    });
+    assert_eq!(waits, vec![Duration::from_millis(10)], "one DLQ resend");
     assert!(
         matches!(action, ErrorAction::Drop),
-        "Should drop after max fallback retry attempts"
+        "Should drop after max fallback retry attempts, got {action:?}"
     );
+    assert_eq!(handler.consecutive_error_count(), 0);
 }
 
 // ============================================================================
