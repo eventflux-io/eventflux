@@ -2,8 +2,8 @@
 -- EventFlux Example: RabbitMQ Source → Log Sink
 -- ============================================================================
 --
--- A simple example demonstrating stream processing from RabbitMQ to console output.
--- This is ideal for development and debugging workflows.
+-- A simple example that reads events from RabbitMQ and logs them to the console.
+-- Handy for development and debugging.
 --
 -- ============================================================================
 -- PREREQUISITES
@@ -21,7 +21,8 @@
 --      -p 15672:15672 \
 --      rabbitmq:3-management
 --
--- 2. Create the input queue via Management UI (http://localhost:15672):
+-- 2. Create the input queue in the Management UI (http://localhost:15672).
+--    This step is optional. The source creates a missing queue by default.
 --    - Username: guest, Password: guest
 --    - Go to "Queues" → "Add a new queue"
 --    - Name: event-queue
@@ -37,19 +38,18 @@
 -- TESTING
 -- ============================================================================
 --
--- Publish test messages via RabbitMQ Management UI:
+-- Publish test messages in the RabbitMQ Management UI:
 -- 1. Go to "Queues" → "event-queue" → "Publish message"
 -- 2. Payload:
 --
 --    {"id":"evt-001","name":"temperature","value":23.5}
 --
--- You should see output in the console:
---
---    [LOG] Event { data: ["evt-001", "temperature", 23.5] }
+-- You should see a log line with the [LOG] prefix followed by the event as
+-- JSON. The sink writes at info level, so info logging must be enabled.
 --
 -- ============================================================================
 
--- Input stream: Consume JSON events from RabbitMQ queue
+-- Input stream. Reads JSON events from a RabbitMQ queue.
 CREATE STREAM EventInput (
     id STRING,
     name STRING,
@@ -65,7 +65,7 @@ CREATE STREAM EventInput (
     "rabbitmq.password" = 'guest'
 );
 
--- Output stream: Log events to console (built-in log sink)
+-- Output stream. Logs events to the console with the built in log sink.
 CREATE STREAM EventOutput (
     id STRING,
     name STRING,
@@ -76,7 +76,7 @@ CREATE STREAM EventOutput (
     format = 'json'
 );
 
--- Processing: Pass through all events to log sink
+-- Forward every event to the log sink.
 INSERT INTO EventOutput
 SELECT id, name, value
 FROM EventInput;

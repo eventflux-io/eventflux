@@ -1,4 +1,4 @@
-// VS Code API interface for webview communication
+// Wrapper around the VS Code webview API, used to talk to the extension
 
 interface VSCodeAPI {
   postMessage(message: unknown): void;
@@ -12,7 +12,8 @@ declare global {
   }
 }
 
-// Mock API for development outside VS Code
+// Stand in API for running the webview outside VS Code. Messages go to the console
+// and state is kept in localStorage under 'vscode-state'.
 function createMockApi(): VSCodeAPI {
   console.warn('Running outside VS Code - using mock API');
   return {
@@ -29,7 +30,8 @@ function createMockApi(): VSCodeAPI {
   };
 }
 
-// Acquire VS Code API (only available in VS Code webview context)
+// acquireVsCodeApi exists only inside a VS Code webview. VS Code allows calling it
+// once, so the result is kept here.
 const vsCodeApi: VSCodeAPI = typeof window.acquireVsCodeApi === 'function'
   ? window.acquireVsCodeApi()
   : createMockApi();

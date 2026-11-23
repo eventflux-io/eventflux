@@ -2,10 +2,10 @@
 -- EventFlux RabbitMQ Source/Sink Example
 -- ============================================================================
 --
--- This example demonstrates end-to-end stream processing with RabbitMQ:
---   1. RabbitMQ Source: Consumes JSON events from a queue
---   2. EventFlux Query: Filters by volume and adds price_category via CASE
---   3. RabbitMQ Sink: Publishes processed events to an exchange
+-- This example runs a full stream pipeline with RabbitMQ.
+--   1. RabbitMQ source. Reads JSON events from a queue.
+--   2. EventFlux query. Filters by volume and adds price_category with CASE.
+--   3. RabbitMQ sink. Publishes the results to an exchange.
 --
 -- ============================================================================
 -- PREREQUISITES
@@ -74,21 +74,21 @@
 --    - Go to "Exchanges" -> "trade-input-exchange" -> "Publish message"
 --    - Routing key: trades
 --    - Properties: content_type = application/json
---    - Payload (events that PASS filter - volume > 1000):
+--    - Payload with events that PASS the filter (volume > 1000):
 --
 --      {"symbol":"AAPL","price":185.50,"volume":5000}
 --      {"symbol":"GOOGL","price":142.30,"volume":2500}
 --      {"symbol":"MSFT","price":378.25,"volume":1500}
 --
---    - Payload (events that FAIL filter - volume <= 1000):
+--    - Payload with events that FAIL the filter (volume <= 1000):
 --
 --      {"symbol":"META","price":325.00,"volume":800}
 --      {"symbol":"NVDA","price":495.50,"volume":500}
 --
 -- 3. Check the output queue for processed results:
 --    - Go to "Queues" -> "trade-output-queue" -> "Get messages"
---    - Only 3 events should appear (volume > 1000 filter applied)
---    - Each event will have a new `price_category` field:
+--    - Only 3 events should appear, because of the volume > 1000 filter
+--    - Each event has a new `price_category` field:
 --      - price < 150: "low" (GOOGL)
 --      - price < 300: "medium" (AAPL)
 --      - price >= 300: "high" (MSFT)
@@ -106,13 +106,13 @@
 -- Input: {"symbol":"MSFT","price":378.25,"volume":1500}
 -- Output: {"symbol":"MSFT","price":378.25,"volume":1500,"price_category":"high"}
 --
--- Events with volume <= 1000 are filtered out (META, NVDA won't appear)
+-- Events with volume <= 1000 are filtered out, so META and NVDA do not appear.
 --
 -- ============================================================================
 -- QUERY DEFINITION
 -- ============================================================================
 
--- Input stream: Consumes JSON events from RabbitMQ queue
+-- Input stream. Reads JSON events from a RabbitMQ queue.
 CREATE STREAM TradeInput (
     symbol STRING,
     price DOUBLE,
@@ -128,7 +128,7 @@ CREATE STREAM TradeInput (
     "rabbitmq.password" = 'guest'
 );
 
--- Output stream: Publishes JSON events to RabbitMQ exchange
+-- Output stream. Publishes JSON events to a RabbitMQ exchange.
 CREATE STREAM TradeOutput (
     symbol STRING,
     price DOUBLE,
@@ -146,7 +146,7 @@ CREATE STREAM TradeOutput (
     "rabbitmq.password" = 'guest'
 );
 
--- Processing query with filter and CASE expression
+-- Keep trades with volume above 1000 and tag each with a price category.
 INSERT INTO TradeOutput
 SELECT
     symbol,
@@ -166,31 +166,32 @@ WHERE volume > 1000;
 --
 -- RabbitMQ Source Options:
 -- ------------------------
---   "rabbitmq.host"       - Broker hostname (required)
---   "rabbitmq.port"       - Broker port (default: 5672)
---   "rabbitmq.queue"      - Queue to consume from (required)
---   "rabbitmq.username"   - Authentication username (default: guest)
---   "rabbitmq.password"   - Authentication password (default: guest)
---   "rabbitmq.vhost"      - Virtual host (default: /)
---   "rabbitmq.auto.ack"   - Auto-acknowledge messages (default: true)
---   "rabbitmq.prefetch"   - Prefetch count (default: 10)
+--   "rabbitmq.host"          Broker hostname. Required.
+--   "rabbitmq.port"          Broker port. Default 5672.
+--   "rabbitmq.queue"         Queue to read from. Required.
+--   "rabbitmq.username"      Login username. Default guest.
+--   "rabbitmq.password"      Login password. Default guest.
+--   "rabbitmq.vhost"         Virtual host. Default /.
+--   "rabbitmq.auto.ack"      Acknowledge messages on delivery. Default true.
+--   "rabbitmq.prefetch"      How many unacknowledged messages to hold. Default 10.
+--   "rabbitmq.declare.queue" Create the queue if it is missing. Default true.
 --
 -- RabbitMQ Sink Options:
 -- ----------------------
---   "rabbitmq.host"         - Broker hostname (required)
---   "rabbitmq.port"         - Broker port (default: 5672)
---   "rabbitmq.exchange"     - Exchange to publish to (required)
---   "rabbitmq.routing.key"  - Routing key for messages (default: "")
---   "rabbitmq.username"     - Authentication username (default: guest)
---   "rabbitmq.password"     - Authentication password (default: guest)
---   "rabbitmq.vhost"        - Virtual host (default: /)
---   "rabbitmq.content.type" - Message content type (default: application/octet-stream)
---   "rabbitmq.mandatory"    - Mandatory flag (default: false)
+--   "rabbitmq.host"          Broker hostname. Required.
+--   "rabbitmq.port"          Broker port. Default 5672.
+--   "rabbitmq.exchange"      Exchange to publish to. Required.
+--   "rabbitmq.routing.key"   Routing key for messages. Default "".
+--   "rabbitmq.username"      Login username. Default guest.
+--   "rabbitmq.password"      Login password. Default guest.
+--   "rabbitmq.vhost"         Virtual host. Default /.
+--   "rabbitmq.content.type"  Message content type. Not set by default.
+--   "rabbitmq.mandatory"     Mandatory flag. Default false.
 --
 -- Mapper Options:
 -- ---------------
---   format = 'json'  - Parse/serialize as JSON
---   format = 'csv'   - Parse/serialize as CSV (requires delimiter config)
+--   format = 'json'  Read and write JSON
+--   format = 'csv'   Read and write CSV. Needs delimiter config.
 --
 -- ============================================================================
 -- TROUBLESHOOTING
@@ -201,7 +202,8 @@ WHERE volume > 1000;
 --    - Check port 5672 is accessible: nc -zv localhost 5672
 --
 -- 2. Queue not found:
---    - Ensure queue exists before starting EventFlux
+--    - The source creates a missing queue unless "rabbitmq.declare.queue" is
+--      'false'. In that case create the queue before starting EventFlux.
 --    - Check queue name spelling in Management UI
 --
 -- 3. No messages appearing in output:
@@ -210,7 +212,7 @@ WHERE volume > 1000;
 --    - Ensure input messages are valid JSON with correct field names
 --
 -- 4. Authentication failed:
---    - Verify username/password (default: guest/guest)
---    - guest user only works for localhost connections by default
+--    - Check the username and password. Both default to guest.
+--    - By default the guest user works only for localhost connections
 --
 -- ============================================================================

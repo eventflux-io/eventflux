@@ -30,7 +30,6 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
-    // Set webview options
     webviewPanel.webview.options = {
       enableScripts: true,
       localResourceRoots: [
@@ -39,33 +38,28 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
       ],
     };
 
-    // Set the webview HTML content
     webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview);
 
-    // Handle messages from the webview
     const messageDisposable = webviewPanel.webview.onDidReceiveMessage(
       (message) => this.handleMessage(document, webviewPanel, message)
     );
 
-    // Handle document changes
+    // Reload the webview whenever this document changes, including edits made elsewhere
     const changeDocumentDisposable = vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.uri.toString() === document.uri.toString()) {
         this.updateWebview(webviewPanel.webview, document);
       }
     });
 
-    // Clean up on dispose
     webviewPanel.onDidDispose(() => {
       messageDisposable.dispose();
       changeDocumentDisposable.dispose();
     });
 
-    // Initial load
     this.updateWebview(webviewPanel.webview, document);
   }
 
   private getHtmlForWebview(webview: vscode.Webview): string {
-    // Get URIs for webview resources
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'dist', 'index.js')
     );
@@ -73,7 +67,7 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
       vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'dist', 'index.css')
     );
 
-    // Use a nonce to only allow specific scripts to run
+    // The CSP lets a local script run only if it carries this random nonce
     const nonce = getNonce();
 
     return `<!DOCTYPE html>
@@ -117,48 +111,46 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
   ): Promise<void> {
     switch (message.type) {
       case 'ready':
-        // Webview is ready, send initial data
+        // The webview finished loading, so send it the current document
         this.updateWebview(panel.webview, document);
         break;
 
       case 'update':
-        // Update document with new content
+        // Replace the whole document with the new content and save it
         await this.updateDocument(document, message.content);
         break;
 
       case 'generateSQL':
-        // Generate SQL from visual model
+        // generateSQL returns a placeholder for now
         const sql = await this.generateSQL(message.application);
         panel.webview.postMessage({ type: 'sqlGenerated', sql });
         break;
 
       case 'showSQL':
-        // Show generated SQL in new editor
+        // Open the SQL in an untitled editor beside the studio
         if (message.sql) {
           await this.showGeneratedSQL(message.sql);
         }
         break;
 
       case 'saveSQL':
-        // Save SQL to file (legacy, kept for backwards compatibility)
+        // Older message that writes only the .eventflux file. Kept so old webviews still work.
         if (message.sql) {
           await this.saveSQL(document, message.sql);
         }
         break;
 
       case 'export':
-        // Export SQL and TOML config files
+        // Write the .eventflux SQL file and, when any node has config, a .toml file
         await this.exportApplication(document, message.sql, message.nodes);
         break;
 
       case 'getTemplates':
-        // Return available templates
         const templates = await this.getTemplates();
         panel.webview.postMessage({ type: 'templates', templates });
         break;
 
       case 'loadTemplate':
-        // Load a specific template
         if (message.templateId) {
           const template = await this.loadTemplate(message.templateId);
           panel.webview.postMessage({ type: 'templateLoaded', template });
@@ -166,13 +158,13 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
         break;
 
       case 'runSimulation':
-        // Run simulation with test data
+        // runSimulation is a stub that returns an empty result
         const result = await this.runSimulation(message.application, message.testData);
         panel.webview.postMessage({ type: 'simulationResult', result });
         break;
 
       case 'getConfig':
-        // Return VS Code configuration
+        // Send the eventflux.* VS Code settings, with defaults for unset keys
         const config = vscode.workspace.getConfiguration('eventflux');
         panel.webview.postMessage({
           type: 'config',
@@ -197,14 +189,12 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
     );
     const success = await vscode.workspace.applyEdit(edit);
     if (success) {
-      // Save the document to disk
       await document.save();
     }
   }
 
   private async generateSQL(application: unknown): Promise<string> {
-    // TODO: Implement proper SQL generation
-    // For now, return a placeholder
+    // TODO: Build SQL from the application. Until then this returns a fixed placeholder.
     return '-- Generated by EventFlux Studio\n-- Implementation coming soon';
   }
 
@@ -232,14 +222,13 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
       const basePath = document.uri.fsPath.replace('.eventflux.studio', '').replace('.efstudio', '');
       const exportedFiles: string[] = [];
 
-      // Export SQL file
       if (sql) {
         const sqlUri = vscode.Uri.file(`${basePath}.eventflux`);
         await vscode.workspace.fs.writeFile(sqlUri, Buffer.from(sql));
         exportedFiles.push(path.basename(sqlUri.fsPath));
       }
 
-      // Generate and export TOML config if there are sources/sinks with config
+      // generateTOML returns null when no source, sink or table has config
       if (nodes && nodes.length > 0) {
         const toml = this.generateTOML(nodes);
         if (toml) {
@@ -267,12 +256,10 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
       '',
     ];
 
-    // Collect source and sink configurations
     const sources = nodes.filter(n => n.type === 'source');
     const sinks = nodes.filter(n => n.type === 'sink');
     const tables = nodes.filter(n => n.type === 'table');
 
-    // Check if any node has config to export
     const hasConfig = [...sources, ...sinks, ...tables].some(
       n => n.data?.config && Object.keys(n.data.config).length > 0
     );
@@ -281,12 +268,12 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
       return null;
     }
 
-    // Generate [application] section with common defaults
+    // [application] section with a fixed default buffer_size
     lines.push('[application]');
     lines.push('buffer_size = "1024"');
     lines.push('');
 
-    // Generate [streams.Name] sections for sources
+    // One [streams.Name] section per source that has config. Others are skipped.
     for (const source of sources) {
       const data = source.data as SourceData;
       if (!data?.sourceName || !data?.config || Object.keys(data.config).length === 0) {
@@ -296,16 +283,14 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
       lines.push(`[streams.${data.sourceName}]`);
       const sourceType = data.sourceType || 'websocket';
 
-      // Group config by connector type prefix
       for (const [key, value] of Object.entries(data.config)) {
-        // Convert common config keys to TOML format
         const tomlKey = this.convertConfigKey(key, sourceType);
         lines.push(`${tomlKey} = "${this.escapeTomlValue(String(value))}"`);
       }
       lines.push('');
     }
 
-    // Generate sink configurations (as output streams)
+    // Sinks are streams too, so they also get [streams.Name] sections
     for (const sink of sinks) {
       const data = sink.data as SinkData;
       if (!data?.sinkName || !data?.config || Object.keys(data.config).length === 0) {
@@ -322,7 +307,7 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
       lines.push('');
     }
 
-    // Generate [tables.Name] sections
+    // Table config keys are written as is, with no connector prefix
     for (const table of tables) {
       const data = table.data as TableData;
       if (!data?.tableName || !data?.config || Object.keys(data.config).length === 0) {
@@ -340,7 +325,7 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   private escapeTomlValue(value: string): string {
-    // Escape special characters for TOML string values
+    // Escape backslash, quote, newline, carriage return and tab for a TOML basic string
     return value
       .replace(/\\/g, '\\\\')
       .replace(/"/g, '\\"')
@@ -350,7 +335,7 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   private convertConfigKey(key: string, connectorType: string): string {
-    // Convert common config keys like "bootstrap.servers" to "kafka.brokers"
+    // Map known connector keys to EventFlux keys, such as "bootstrap.servers" to "kafka.brokers"
     const keyMappings: Record<string, Record<string, string>> = {
       kafka: {
         'bootstrap.servers': 'kafka.brokers',
@@ -380,7 +365,7 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
       return mapping[key];
     }
 
-    // If no mapping, prefix with connector type if not already prefixed
+    // Unmapped key with no dot gets the connector type as a prefix. Dotted keys stay as they are.
     if (!key.includes('.')) {
       return `${connectorType}.${key}`;
     }
@@ -423,7 +408,7 @@ export class StudioEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   private async runSimulation(application: unknown, testData: unknown): Promise<unknown> {
-    // TODO: Implement simulation engine
+    // TODO: Run the application against testData. For now this always returns an empty result.
     return {
       success: true,
       message: 'Simulation not yet implemented',

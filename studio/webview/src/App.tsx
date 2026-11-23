@@ -35,37 +35,37 @@ function Flow({ onConnectionError }: { onConnectionError: (message: string) => v
     edges: storeEdges,
   } = useApplicationStore();
 
-  // Use React Flow's built-in state management - initialize from store
+  // React Flow owns the live canvas state. It starts from the store.
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(storeNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(storeEdges);
 
-  // Track sync direction to prevent infinite loops
+  // Track which way a sync is going so the two effects below do not loop
   const syncingToStore = useRef(false);
   const lastStoreUpdate = useRef<string>('');
 
-  // Sync to store when nodes change (for SQL generation and properties panel)
+  // Push canvas changes to the store, which feeds SQL generation and the properties panel
   useEffect(() => {
-    // Create a signature of current nodes to detect actual changes
+    // The signature covers node ids and positions and edge ends, not node data
     const nodeSignature = nodes.map(n => `${n.id}:${n.position.x}:${n.position.y}`).join(',');
     const edgeSignature = edges.map(e => `${e.id}:${e.source}:${e.target}`).join(',');
     const currentSignature = `${nodeSignature}|${edgeSignature}`;
 
-    // Only sync if there's an actual change and we're not already syncing
+    // Sync only when the signature changed since the last push
     if (currentSignature !== lastStoreUpdate.current) {
       syncingToStore.current = true;
       lastStoreUpdate.current = currentSignature;
       setStoreNodes(nodes);
       setStoreEdges(edges);
-      // Reset after a tick to allow store update to complete
+      // Clear the flag on the next tick, after the store update has run
       setTimeout(() => {
         syncingToStore.current = false;
       }, 0);
     }
   }, [nodes, edges, setStoreNodes, setStoreEdges]);
 
-  // Sync property changes from store back to local state (only for data updates)
+  // Pull node data edits from the store back onto the canvas. Positions are not copied.
   useEffect(() => {
-    // Skip if we just synced to store or if store is empty
+    // Skip while our own push is in flight, or when the store is empty
     if (syncingToStore.current || storeNodes.length === 0) return;
 
     setNodes((currentNodes) => {
@@ -84,7 +84,6 @@ function Flow({ onConnectionError }: { onConnectionError: (message: string) => v
 
   const onConnect = useCallback(
     (params: Connection) => {
-      // Validate connection before adding
       const validation = validateConnection(params, nodes, edges);
       if (!validation.valid) {
         onConnectionError(validation.reason || 'Invalid connection');
@@ -108,9 +107,8 @@ function Flow({ onConnectionError }: { onConnectionError: (message: string) => v
 
   const onEdgeClick = useCallback(
     (_: React.MouseEvent, edge: Edge) => {
-      // Deselect nodes and select this edge
+      // Clear the node selection, then mark only this edge as selected
       selectElement(null);
-      // Visually select the edge by updating its style
       setEdges((eds) =>
         eds.map((e) => ({
           ...e,
@@ -210,7 +208,6 @@ function App() {
   }, [showToast]);
 
   useEffect(() => {
-    // Listen for messages from VS Code
     const handleMessage = (event: MessageEvent) => {
       const message = event.data;
       switch (message.type) {
@@ -230,7 +227,7 @@ function App() {
 
     window.addEventListener('message', handleMessage);
 
-    // Tell VS Code we're ready
+    // Ask the extension for the document and the settings
     vscode.postMessage({ type: 'ready' });
     vscode.postMessage({ type: 'getConfig' });
 
@@ -244,12 +241,12 @@ function App() {
       <div className="h-screen flex flex-col bg-vscode-bg text-vscode-fg">
         <Toolbar onOpenTemplates={() => setShowTemplates(true)} />
         <div className="flex-1 flex overflow-hidden">
-          {/* Palette - only show in visual or split mode */}
+          {/* Palette. Hidden in SQL mode. */}
           {viewMode !== 'sql' && <Palette />}
 
           {/* Main content area */}
           <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Visual canvas - always mounted, hidden when in SQL-only mode */}
+            {/* Visual canvas. Always mounted so its state survives, only hidden in SQL mode. */}
             <div
               className={`${viewMode === 'split' ? 'h-1/2' : 'flex-1'} relative`}
               style={{
@@ -273,11 +270,11 @@ function App() {
               )}
             </div>
 
-            {/* SQL Editor - show in sql or split mode */}
+            {/* SQL editor. Shown in SQL and split modes. */}
             {viewMode !== 'visual' && <SQLEditor />}
           </div>
 
-          {/* Right panel - only show in visual or split mode */}
+          {/* Right panel. Hidden in SQL mode. */}
           {viewMode !== 'sql' && (
             <div className="w-72 border-l border-vscode-border bg-gray-900/30 flex flex-col">
               {/* Panel tabs */}
@@ -326,12 +323,13 @@ function App() {
   );
 }
 
-// Extract PropertiesPanel content (without outer wrapper since we're using shared wrapper)
+// PropertiesPanel without its own outer wrapper, because it sits in the shared wrapper
 function PropertiesPanelContent() {
   return <PropertiesPanel />;
 }
 
-// Helper to generate unique names for elements
+// Returns one more than the highest N in names like Source3 for this node type.
+// Used to give new elements a unique default name. Returns 1 when there is none.
 function getNextNumber(nodes: Node[], type: string, nameField: string): number {
   const pattern = new RegExp(`^${type.charAt(0).toUpperCase() + type.slice(1)}(\\d+)$`);
   let maxNum = 0;

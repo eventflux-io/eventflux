@@ -11,7 +11,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
   const { name, isDirty, save, generatedSQL, viewMode, setViewMode, nodes, setNodes, undo, redo, past, future, pushHistory } = useApplicationStore();
   const { fitView } = useReactFlow();
 
-  // Compute canUndo/canRedo reactively (subscribing to past and future arrays)
+  // Read from the subscribed past and future arrays so the buttons update on change
   const canUndo = past.length > 0;
   const canRedo = future.length > 0;
 
@@ -22,10 +22,11 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
   const handleAutoLayout = () => {
     if (nodes.length === 0) return;
 
-    // Save current state for undo
+    // Save the current state so the layout can be undone
     pushHistory();
 
-    // Simple auto-layout: arrange nodes in a grid/flow pattern
+    // Simple auto layout. Each node kind gets a column, left to right in flow order.
+    // Sizes and gaps are in pixels.
     const nodeWidth = 200;
     const nodeHeight = 100;
     const horizontalGap = 80;
@@ -33,7 +34,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
     const startX = 50;
     const startY = 50;
 
-    // Group nodes by type for better organization
+    // Every node that is not a source, sink, stream, table or trigger counts as processing
     const sourceNodes = nodes.filter(n => n.type === 'source');
     const triggerNodes = nodes.filter(n => n.type === 'trigger');
     const streamNodes = nodes.filter(n => n.type === 'stream');
@@ -45,7 +46,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
     let currentY = startY;
     const updatedNodes = [...nodes];
 
-    // Position sources on the left
+    // Column 1, sources
     sourceNodes.forEach((node, i) => {
       const idx = updatedNodes.findIndex(n => n.id === node.id);
       if (idx !== -1) {
@@ -56,7 +57,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
       }
     });
 
-    // Position triggers below sources (same column)
+    // Column 1, triggers below the sources
     const sourceOffset = sourceNodes.length * (nodeHeight + verticalGap);
     triggerNodes.forEach((node, i) => {
       const idx = updatedNodes.findIndex(n => n.id === node.id);
@@ -68,7 +69,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
       }
     });
 
-    // Position streams in the middle-left
+    // Column 2, streams
     currentX += nodeWidth + horizontalGap;
     streamNodes.forEach((node, i) => {
       const idx = updatedNodes.findIndex(n => n.id === node.id);
@@ -80,7 +81,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
       }
     });
 
-    // Position processing nodes in the middle
+    // Column 3, processing nodes
     currentX += nodeWidth + horizontalGap;
     processingNodes.forEach((node, i) => {
       const idx = updatedNodes.findIndex(n => n.id === node.id);
@@ -92,7 +93,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
       }
     });
 
-    // Position sinks on the right
+    // Column 4, sinks
     currentX += nodeWidth + horizontalGap;
     sinkNodes.forEach((node, i) => {
       const idx = updatedNodes.findIndex(n => n.id === node.id);
@@ -104,7 +105,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
       }
     });
 
-    // Position tables below
+    // Tables go in one row under the tallest column, starting at column 2
     currentX = startX + nodeWidth + horizontalGap;
     const maxY = Math.max(sourceNodes.length + triggerNodes.length, streamNodes.length, processingNodes.length, sinkNodes.length) * (nodeHeight + verticalGap) + startY;
     tableNodes.forEach((node, i) => {
@@ -119,7 +120,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
 
     setNodes(updatedNodes);
 
-    // Fit view after layout
+    // Wait 50 ms so React Flow has the new positions before fitting the view
     setTimeout(() => fitView({ padding: 0.2, duration: 300 }), 50);
   };
 
@@ -128,7 +129,7 @@ export function Toolbar({ onOpenTemplates }: ToolbarProps) {
   };
 
   const handleExport = () => {
-    // Send SQL and nodes data (for config extraction) to extension
+    // The extension writes the SQL and builds the TOML config from the node data
     vscode.postMessage({
       type: 'export',
       sql: generatedSQL,

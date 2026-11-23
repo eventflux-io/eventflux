@@ -2,12 +2,12 @@
 -- EventFlux HTTP Source/Sink Example
 -- ============================================================================
 --
--- This example demonstrates end-to-end stream processing over HTTP:
---   1. HTTP Source (webhook): receives JSON alerts via POST
---   2. EventFlux Query: keeps only CRITICAL alerts
---   3. HTTP Sink: forwards them to an escalation webhook
+-- This example runs a full stream pipeline over HTTP.
+--   1. HTTP source in webhook mode. Receives JSON alerts by POST.
+--   2. EventFlux query. Keeps only CRITICAL alerts.
+--   3. HTTP sink. Forwards them to an escalation webhook.
 --
--- Everything is testable with curl alone — no external infrastructure.
+-- You can test all of it with curl. No other services needed.
 --
 -- ============================================================================
 -- PREREQUISITES
@@ -27,7 +27,7 @@
 --
 --    cargo run --features http --bin run_eventflux examples/http.eventflux
 --
--- 3. Send test alerts (pipe the JSON via --data):
+-- 3. Send test alerts. curl -d sends the JSON as the request body.
 --
 --    curl -s -X POST http://localhost:8081/alerts \
 --      -H 'X-Webhook-Token: dev-token' \
@@ -37,8 +37,8 @@
 --      -H 'X-Webhook-Token: dev-token' \
 --      -d '{"service":"web","level":"INFO","message":"deploy ok"}'
 --
---    The CRITICAL alert appears at the receiver from step 1; the INFO alert
---    is filtered out by the query.
+--    The CRITICAL alert appears at the receiver from step 1. The query
+--    filters out the INFO alert.
 --
 -- ============================================================================
 
@@ -67,8 +67,8 @@ CREATE STREAM Escalations (
     format = 'json',
     "http.url" = 'http://localhost:9090/escalate',
     "http.retry.max-attempts" = '3',
-    -- The nc receiver can't answer a HEAD probe reliably; skip the
-    -- startup reachability check for this demo
+    -- The nc receiver cannot answer a HEAD probe reliably, so skip the
+    -- startup reachability check for this demo. The default method is HEAD.
     "http.validation.method" = 'none'
 );
 

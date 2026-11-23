@@ -66,7 +66,8 @@ export function ExpressionBuilder({ value, onChange, availableAttributes = [], p
   );
 }
 
-// Simple expression builder for basic conditions
+// Builds one comparison, attribute operator value, from dropdowns and a text box.
+// A value that parses as a number becomes a double constant, anything else a string.
 function SimpleExpressionBuilder({
   value,
   onChange,
@@ -80,7 +81,7 @@ function SimpleExpressionBuilder({
   placeholder?: string;
   onSwitchMode: () => void;
 }) {
-  // Extract values from expression
+  // Read the current comparison. The operator defaults to '>'.
   const leftVar = (value?.left as Expression)?.variableName || '';
   const leftStream = (value?.left as Expression)?.streamId || '';
   const operator = value?.operator || '>';
@@ -110,7 +111,7 @@ function SimpleExpressionBuilder({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        {/* Left side - attribute */}
+        {/* Left side, the attribute */}
         <select
           value={leftStream ? `${leftStream}.${leftVar}` : leftVar}
           onChange={(e) => {
@@ -149,7 +150,7 @@ function SimpleExpressionBuilder({
           ))}
         </select>
 
-        {/* Right side - value */}
+        {/* Right side, the value */}
         <input
           type="text"
           value={rightValue}
@@ -169,7 +170,8 @@ function SimpleExpressionBuilder({
   );
 }
 
-// Advanced expression builder with tree structure
+// Free text expression input. Only a single comparison is understood, see
+// parseSimpleExpression. Text it cannot parse leaves the last value unchanged.
 function AdvancedExpressionBuilder({
   value,
   onChange,
@@ -185,7 +187,7 @@ function AdvancedExpressionBuilder({
 
   const handleRawChange = (input: string) => {
     setRawInput(input);
-    // Simple parsing - in a real implementation this would use a proper parser
+    // Regex parsing only. A real parser would be needed for AND, OR and functions.
     const expr = parseSimpleExpression(input);
     if (expr) {
       onChange(expr);
@@ -217,7 +219,8 @@ function AdvancedExpressionBuilder({
   );
 }
 
-// Helper: Convert expression to string
+// Turns an expression back into text. AND and OR are wrapped in parentheses.
+// Returns '' for null or an unknown expression type.
 function expressionToString(expr: Expression | null): string {
   if (!expr) return '';
 
@@ -250,11 +253,12 @@ function expressionToString(expr: Expression | null): string {
   }
 }
 
-// Helper: Parse simple expression string
+// Parses one comparison like `price > 100` or `s.symbol = 'IBM'`.
+// A quoted value becomes a string, a number becomes a double, anything else a string.
+// Returns null for empty input or anything that is not a single comparison.
 function parseSimpleExpression(input: string): Expression | null {
   if (!input.trim()) return null;
 
-  // Try to parse simple comparison: attr op value
   const comparisonMatch = input.match(/^(\w+(?:\.\w+)?)\s*(=|!=|>|<|>=|<=)\s*(.+)$/);
   if (comparisonMatch) {
     const [, left, op, right] = comparisonMatch;
@@ -282,7 +286,7 @@ function parseSimpleExpression(input: string): Expression | null {
   return null;
 }
 
-// Standalone function selector for aggregations
+// Dropdown of built in functions. Pass category to list only that group.
 export function FunctionSelector({
   value,
   onChange,
@@ -306,7 +310,8 @@ export function FunctionSelector({
   );
 }
 
-// Attribute selector with type info
+// Dropdown of attributes with their types. Switches to a text box when the user picks
+// custom or when value is not in the list.
 export function AttributeSelector({
   value,
   onChange,

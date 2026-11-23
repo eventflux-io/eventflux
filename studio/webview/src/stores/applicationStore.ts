@@ -6,7 +6,7 @@ import { vscode } from '../utils/vscode';
 import { parseSQL, validateSQL } from '../utils/sqlParser';
 import { getSourceTypes, getSinkTypes, getSourceSchema, getSinkSchema, getWindowTypes } from '../schemas';
 
-// Debounce utility to prevent rapid saves
+// Returns a wrapper that runs fn only after delay ms with no new call. Used to batch saves.
 function debounce<T extends (...args: unknown[]) => void>(fn: T, delay: number): T {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   return ((...args: unknown[]) => {
@@ -15,15 +15,15 @@ function debounce<T extends (...args: unknown[]) => void>(fn: T, delay: number):
   }) as T;
 }
 
-// Schema information for upstream attributes
+// An attribute that reaches an element from upstream
 export interface UpstreamAttribute {
   name: string;
   type: string;
   streamId?: string;
-  source: string; // element ID that defined this attribute
+  source: string; // id of the element that defined this attribute
 }
 
-// History snapshot for undo/redo
+// Canvas state saved for undo and redo
 interface HistorySnapshot {
   nodes: Node[];
   edges: Edge[];
@@ -53,7 +53,7 @@ interface ApplicationState {
   // Configuration
   config: StudioConfig;
 
-  // Undo/Redo history (past = states to undo to, future = states to redo to)
+  // Undo and redo history. past holds states to undo to, future holds states to redo to.
   past: HistorySnapshot[];
   future: HistorySnapshot[];
 
@@ -86,7 +86,7 @@ interface ApplicationState {
   debouncedSave: () => void;
   setConfig: (config: Partial<StudioConfig>) => void;
 
-  // Undo/Redo
+  // Undo and redo
   pushHistory: () => void;
   undo: () => void;
   redo: () => void;
@@ -106,10 +106,10 @@ const defaultConfig: StudioConfig = {
   enginePort: 9090,
 };
 
-// Store reference for debounced save - will be set after store creation
+// The store's save function. Set on the first debouncedSave call, after the store exists.
 let saveToVSCode: (() => void) | null = null;
 
-// Debounced save function (500ms delay to batch rapid changes)
+// Saves 500 ms after the last change, so a burst of edits causes one save
 const debouncedSave = debounce(() => {
   if (saveToVSCode) saveToVSCode();
 }, 500);
@@ -133,7 +133,7 @@ export const useApplicationStore = create<ApplicationState>()(
     past: [],
     future: [],
 
-    // Load application from VS Code
+    // Replace the whole canvas with a loaded application and clear undo history
     loadApplication: (data) => {
       const nodes: Node[] = data.application.elements.map((el) => ({
         id: el.id,
@@ -164,7 +164,7 @@ export const useApplicationStore = create<ApplicationState>()(
       get().regenerateSQL();
     },
 
-    // React Flow node/edge state
+    // React Flow node and edge state. These keep application in step with the canvas.
     setNodes: (nodes) => {
       const elements: VisualElement[] = nodes.map((node) => ({
         id: node.id,
@@ -226,7 +226,7 @@ export const useApplicationStore = create<ApplicationState>()(
 
     // Element management
     addElement: (type, position, properties = {}) => {
-      // Push current state to history before making changes
+      // Save the current state so this change can be undone
       get().pushHistory();
 
       const id = `${type}-${Date.now()}`;
@@ -260,7 +260,7 @@ export const useApplicationStore = create<ApplicationState>()(
     },
 
     removeElement: (id) => {
-      // Push current state to history before making changes
+      // Save the current state so this change can be undone
       get().pushHistory();
 
       set((state) => ({
@@ -287,7 +287,8 @@ export const useApplicationStore = create<ApplicationState>()(
         const updatedNodes = state.nodes.map((node) => {
           if (node.id !== id) return node;
 
-          // Handle data updates (from properties panel)
+          // A data change from the properties panel is merged into the existing data.
+          // updateElement does not push undo history.
           const nodeChanges = changes as { data?: Record<string, unknown> };
           if (nodeChanges.data) {
             return {
@@ -296,11 +297,11 @@ export const useApplicationStore = create<ApplicationState>()(
             };
           }
 
-          // Handle other changes
+          // Any other change is spread onto the node as is
           return { ...node, ...changes };
         });
 
-        // Sync application.elements
+        // Keep application.elements in step with the updated node
         const updatedElements = state.application.elements.map((el) => {
           if (el.id !== id) return el;
           const node = updatedNodes.find((n) => n.id === id);
@@ -328,9 +329,10 @@ export const useApplicationStore = create<ApplicationState>()(
       }
     },
 
-    // Connection management
+    // Connection management. These update edges only, not application.connections,
+    // and do not trigger an auto save.
     addConnection: (connection) => {
-      // Push current state to history before making changes
+      // Save the current state so this change can be undone
       get().pushHistory();
 
       const edge: Edge = {
@@ -351,7 +353,7 @@ export const useApplicationStore = create<ApplicationState>()(
     },
 
     removeConnection: (id) => {
-      // Push current state to history before making changes
+      // Save the current state so this change can be undone
       get().pushHistory();
 
       set((state) => ({
@@ -390,19 +392,20 @@ export const useApplicationStore = create<ApplicationState>()(
       set({ viewMode: mode });
     },
 
-    // SQL generation
+    // Rebuild the SQL from application. This overwrites any manual SQL edits.
     regenerateSQL: () => {
       const { application } = get();
       const sql = generateSQL(application);
       set({ generatedSQL: sql });
     },
 
-    // SQL sync - update SQL directly (for manual editing)
+    // Store SQL typed by the user. The canvas is not changed until importSQL runs.
     updateSQL: (sql: string) => {
       set({ generatedSQL: sql });
     },
 
-    // Import SQL and convert to visual elements
+    // Parse SQL and replace the canvas with the result. Fails, leaving the canvas
+    // as it was, when parsing reports errors or finds no elements.
     importSQL: (sql: string) => {
       const { elements, errors } = parseSQL(sql);
 
@@ -414,7 +417,6 @@ export const useApplicationStore = create<ApplicationState>()(
         return { success: false, errors: ['No valid elements found in SQL'] };
       }
 
-      // Convert VisualElements to Nodes
       const nodes: Node[] = elements.map((el) => ({
         id: el.id,
         type: el.type,
@@ -422,19 +424,19 @@ export const useApplicationStore = create<ApplicationState>()(
         data: el.properties as unknown as Record<string, unknown>,
       }));
 
-      // Create auto-connections between sequential elements
+      // Connect each element to the next one in parse order. This is a guess at the
+      // flow, not read from the SQL.
       const edges: Edge[] = [];
       for (let i = 0; i < elements.length - 1; i++) {
         const current = elements[i];
         const next = elements[i + 1];
 
-        // Skip connecting unrelated element types
+        // Two definitions in a row (stream, table or trigger) are not connected
         if (['stream', 'table', 'trigger'].includes(current.type) &&
             ['stream', 'table', 'trigger'].includes(next.type)) {
           continue;
         }
 
-        // Connect processing elements in sequence
         edges.push({
           id: `edge-${Date.now()}-${i}`,
           source: current.id,
@@ -469,12 +471,12 @@ export const useApplicationStore = create<ApplicationState>()(
       return { success: true, errors: [] };
     },
 
-    // Validate SQL without importing
     getSQLValidation: (sql: string) => {
       return validateSQL(sql);
     },
 
-    // Save - actual save implementation
+    // Send the full project to the extension, which writes it to disk.
+    // Built from nodes and edges, not from application.
     save: () => {
       const state = get();
       const elements: VisualElement[] = state.nodes.map((node) => ({
@@ -514,9 +516,8 @@ export const useApplicationStore = create<ApplicationState>()(
       set({ isDirty: false });
     },
 
-    // Debounced save for autoSave
+    // Save used by auto save. Runs 500 ms after the last call.
     debouncedSave: () => {
-      // Set the reference for debounced save if not set
       if (!saveToVSCode) {
         saveToVSCode = () => get().save();
       }
@@ -530,13 +531,13 @@ export const useApplicationStore = create<ApplicationState>()(
       }));
     },
 
-    // Schema detection - get available attributes from upstream elements
+    // Attributes available to an element, gathered from the elements upstream of it
     getUpstreamSchema: (elementId: string): UpstreamAttribute[] => {
       const { nodes, edges } = get();
       const attributes: UpstreamAttribute[] = [];
       const visited = new Set<string>();
 
-      // Find all upstream elements through connections
+      // Walk incoming edges back through the graph. visited guards against cycles.
       const findUpstreamElements = (nodeId: string): Node[] => {
         if (visited.has(nodeId)) return [];
         visited.add(nodeId);
@@ -557,7 +558,8 @@ export const useApplicationStore = create<ApplicationState>()(
 
       const upstreamNodes = findUpstreamElements(elementId);
 
-      // Extract attributes from upstream elements
+      // Streams and tables add their attributes. Projections add aliases and
+      // aggregations add their outputs. Other node types add nothing.
       for (const node of upstreamNodes) {
         const data = node.data as Record<string, unknown>;
 
@@ -589,16 +591,16 @@ export const useApplicationStore = create<ApplicationState>()(
             break;
           }
           case 'projection': {
-            // Projections can introduce aliases
+            // Only items with an alias add a new attribute
             const selectList = (data.selectList as { expression: Record<string, unknown>; alias?: string }[]) || [];
             for (const item of selectList) {
               const alias = item.alias;
               const expr = item.expression;
               if (alias) {
-                // Get type from expression if possible, default to STRING
+                // A plain variable keeps the type of the attribute it names, if
+                // that attribute was already found. Anything else is STRING.
                 let attrType = 'STRING';
                 if (expr?.type === 'variable' && expr?.variableName) {
-                  // Find original attribute type
                   const origAttr = attributes.find((a) => a.name === expr.variableName);
                   if (origAttr) attrType = origAttr.type;
                 }
@@ -612,15 +614,15 @@ export const useApplicationStore = create<ApplicationState>()(
             break;
           }
           case 'aggregation': {
-            // Aggregations create new attributes
+            // Each aggregation adds its alias. COUNT and DISTINCTCOUNT give LONG,
+            // FIRST and LAST give STRING, everything else DOUBLE.
             const aggs = (data.aggregations as { type: string; alias: string }[]) || [];
             for (const agg of aggs) {
-              // Determine result type based on aggregation
               let resultType = 'DOUBLE';
               if (agg.type === 'COUNT' || agg.type === 'DISTINCTCOUNT') {
                 resultType = 'LONG';
               } else if (agg.type === 'FIRST' || agg.type === 'LAST') {
-                // Would need to look at input expression type
+                // The real type is the input type, which is not looked up here
                 resultType = 'STRING';
               }
               attributes.push({
@@ -637,7 +639,7 @@ export const useApplicationStore = create<ApplicationState>()(
       return attributes;
     },
 
-    // Get all defined streams and tables
+    // Every stream and table on the canvas, connected or not
     getAllStreams: () => {
       const { nodes } = get();
       const result: { id: string; name: string; attributes: UpstreamAttribute[] }[] = [];
@@ -677,17 +679,17 @@ export const useApplicationStore = create<ApplicationState>()(
       return result;
     },
 
-    // Undo/Redo implementation using past/future stacks
+    // Undo and redo with past and future stacks. Snapshots are deep copies made
+    // through JSON, and hold nodes and edges only.
     pushHistory: () => {
       const { nodes, edges, past } = get();
-      // Save current state to past
       const snapshot: HistorySnapshot = {
         nodes: JSON.parse(JSON.stringify(nodes)),
         edges: JSON.parse(JSON.stringify(edges)),
       };
-      // Add to past, clear future (new action invalidates redo)
+      // A new change makes the redo stack meaningless, so clear it
       const newPast = [...past, snapshot];
-      // Limit history to 50 states
+      // Keep at most 50 states. The oldest is dropped.
       if (newPast.length > 50) {
         newPast.shift();
       }
@@ -698,13 +700,12 @@ export const useApplicationStore = create<ApplicationState>()(
       const { nodes, edges, past, future } = get();
       if (past.length === 0) return;
 
-      // Save current state to future (for redo)
+      // Push the current state onto future so redo can bring it back
       const currentSnapshot: HistorySnapshot = {
         nodes: JSON.parse(JSON.stringify(nodes)),
         edges: JSON.parse(JSON.stringify(edges)),
       };
 
-      // Pop from past and restore
       const newPast = [...past];
       const previousState = newPast.pop()!;
 
@@ -716,7 +717,8 @@ export const useApplicationStore = create<ApplicationState>()(
         isDirty: true,
       });
 
-      // Regenerate SQL after undo
+      // Regenerate on the next tick. regenerateSQL reads application, which undo does not
+      // restore, so the SQL can still show the state before the undo.
       setTimeout(() => get().regenerateSQL(), 0);
     },
 
@@ -724,13 +726,12 @@ export const useApplicationStore = create<ApplicationState>()(
       const { nodes, edges, past, future } = get();
       if (future.length === 0) return;
 
-      // Save current state to past
+      // Push the current state onto past so undo can bring it back
       const currentSnapshot: HistorySnapshot = {
         nodes: JSON.parse(JSON.stringify(nodes)),
         edges: JSON.parse(JSON.stringify(edges)),
       };
 
-      // Pop from future and restore
       const newFuture = [...future];
       const nextState = newFuture.pop()!;
 
@@ -742,7 +743,8 @@ export const useApplicationStore = create<ApplicationState>()(
         isDirty: true,
       });
 
-      // Regenerate SQL after redo
+      // Regenerate on the next tick. regenerateSQL reads application, which redo does not
+      // restore, so the SQL can still show the state before the redo.
       setTimeout(() => get().regenerateSQL(), 0);
     },
 
@@ -751,15 +753,15 @@ export const useApplicationStore = create<ApplicationState>()(
   }))
 );
 
-// Helper functions
+// Helpers
 function getDefaultProperties(type: ElementType): Record<string, unknown> {
   switch (type) {
     case 'source': {
-      // Default to websocket, fallback to first available from schema
+      // Prefer websocket, then the first schema source type, then 'timer'
       const sourceTypes = getSourceTypes();
       const defaultSourceType = sourceTypes.includes('websocket') ? 'websocket' : sourceTypes[0] || 'timer';
       const schema = getSourceSchema(defaultSourceType);
-      // Initialize config with required parameters
+      // Start with an empty entry for each required parameter
       const config: Record<string, string> = {};
       if (schema?.requiredParameters) {
         for (const param of schema.requiredParameters) {
@@ -773,11 +775,11 @@ function getDefaultProperties(type: ElementType): Record<string, unknown> {
       };
     }
     case 'sink': {
-      // Get first available sink type from schema
+      // First sink type in the schema, or 'log' when there is none
       const sinkTypes = getSinkTypes();
       const defaultSinkType = sinkTypes[0] || 'log';
       const schema = getSinkSchema(defaultSinkType);
-      // Initialize config with required parameters
+      // Start with an empty entry for each required parameter
       const config: Record<string, string> = {};
       if (schema?.requiredParameters) {
         for (const param of schema.requiredParameters) {
@@ -813,7 +815,7 @@ function getDefaultProperties(type: ElementType): Record<string, unknown> {
         atEvery: 1000,
       };
     case 'window': {
-      // Get first available window type from schema
+      // Prefer length, then the first schema window type
       const windowTypes = getWindowTypes();
       const defaultWindowType = windowTypes.includes('length') ? 'length' : windowTypes[0] || 'length';
       return {
@@ -860,7 +862,6 @@ function generateSQL(application: { elements: VisualElement[]; connections: Conn
   const lines: string[] = [];
   const { elements, connections } = application;
 
-  // Find streams and generate CREATE STREAM statements
   const streams = elements.filter((el) => el.type === 'stream');
   for (const stream of streams) {
     const props = stream.properties as { streamName: string; attributes: { name: string; type: string }[] };
@@ -868,7 +869,6 @@ function generateSQL(application: { elements: VisualElement[]; connections: Conn
     lines.push(`CREATE STREAM ${props.streamName} (${attrs});`);
   }
 
-  // Find tables and generate CREATE TABLE statements
   const tables = elements.filter((el) => el.type === 'table');
   for (const table of tables) {
     const props = table.properties as { tableName: string; attributes: { name: string; type: string }[] };
@@ -876,7 +876,6 @@ function generateSQL(application: { elements: VisualElement[]; connections: Conn
     lines.push(`CREATE TABLE ${props.tableName} (${attrs});`);
   }
 
-  // Find triggers and generate CREATE TRIGGER statements
   const triggers = elements.filter((el) => el.type === 'trigger');
   for (const trigger of triggers) {
     const props = trigger.properties as { triggerId: string; triggerType: string; atEvery?: number; cronExpression?: string };
@@ -893,8 +892,8 @@ function generateSQL(application: { elements: VisualElement[]; connections: Conn
     lines.push('');
   }
 
-  // Find streams that are targets of processing elements (INSERT INTO targets)
-  // A stream is a target if it receives connections from processing elements (not sources)
+  // One INSERT INTO query per connection from a processing element into a stream.
+  // Connections from sources do not produce queries.
   const processingTypes = ['window', 'filter', 'projection', 'aggregation', 'groupBy', 'join', 'pattern', 'partition'];
 
   let queryCount = 0;
@@ -902,12 +901,10 @@ function generateSQL(application: { elements: VisualElement[]; connections: Conn
     const sourceEl = elements.find((el) => el.id === conn.sourceElementId);
     const targetEl = elements.find((el) => el.id === conn.targetElementId);
 
-    // Check if this is a processing element connecting to a stream (INSERT INTO pattern)
     if (sourceEl && targetEl && processingTypes.includes(sourceEl.type) && targetEl.type === 'stream') {
       const targetStreamName = (targetEl.properties as { streamName: string }).streamName;
       const query = buildQueryFromProcessingToStream(sourceEl, targetStreamName, elements, connections);
       if (query) {
-        // Add blank line between queries
         if (queryCount > 0) {
           lines.push('');
         }
@@ -917,25 +914,23 @@ function generateSQL(application: { elements: VisualElement[]; connections: Conn
     }
   }
 
-  // Also handle simple stream-to-sink flows
-  // If a stream connects directly to a sink, we may need to log that differently
-  // For now, we only generate INSERT INTO queries for processing-to-stream connections
+  // A stream connected straight to a sink produces no query yet. Only connections
+  // from a processing element into a stream produce INSERT INTO queries.
 
   return lines.join('\n');
 }
 
-// Build a query from a processing element that connects to a target stream (INSERT INTO)
+// Builds an INSERT INTO query for a processing element that feeds targetStreamName.
+// Returns null when there is no pipeline to build from.
 function buildQueryFromProcessingToStream(
   processingElement: VisualElement,
   targetStreamName: string,
   elements: VisualElement[],
   connections: Connection[]
 ): string | null {
-  // Trace back through the pipeline from the processing element
   const pipeline = traceBackPipeline(processingElement.id, elements, connections);
   if (pipeline.length === 0) return null;
 
-  // Build the query from the pipeline
   let fromClause = '';
   let windowClause = '';
   let whereClause = '';
@@ -1027,7 +1022,7 @@ function traceBackPipeline(
 
     result.unshift(element);
 
-    // Find input connection
+    // Follow only the first incoming connection. There is no cycle check.
     const inputConn = connections.find((c) => c.targetElementId === currentId);
     currentId = inputConn ? inputConn.sourceElementId : null;
   }

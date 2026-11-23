@@ -2,63 +2,66 @@ import type { Node, Edge, Connection } from '@xyflow/react';
 import type { ElementType } from '../types';
 
 /**
- * Connection cardinality rules for each element type
- * - maxInputs: maximum number of incoming connections (null = unlimited)
- * - maxOutputs: maximum number of outgoing connections (null = unlimited)
- * - canBeSource: can this element be the starting point of a pipeline?
- * - canBeSink: can this element be the ending point of a pipeline?
+ * How many connections each element type may have, and to which types.
+ * - maxInputs is the most incoming connections allowed. null means no limit.
+ * - maxOutputs is the most outgoing connections allowed. null means no limit.
+ * - canBeSource says whether a pipeline may start at this element.
+ * - canBeSink says whether a pipeline may end at this element.
+ *
+ * validateConnection checks both sides. A connection must be in the source's
+ * allowedTargets and in the target's allowedSources, when each list is set.
  */
 interface CardinalityRule {
   maxInputs: number | null;
   maxOutputs: number | null;
   canBeSource: boolean;
   canBeSink: boolean;
-  allowedSources?: ElementType[]; // Which element types can connect TO this element
-  allowedTargets?: ElementType[]; // Which element types this element can connect TO
+  allowedSources?: ElementType[]; // element types that may connect into this one
+  allowedTargets?: ElementType[]; // element types this one may connect into
 }
 
 const cardinalityRules: Record<ElementType, CardinalityRule> = {
   // External connectors
   source: {
-    maxInputs: 0, // No inputs - data comes from external system
-    maxOutputs: 1, // Connects to exactly one stream
+    maxInputs: 0, // data comes from an external system
+    maxOutputs: 1, // feeds at most one stream
     canBeSource: true,
     canBeSink: false,
-    allowedTargets: ['stream'], // Can ONLY connect to streams
+    allowedTargets: ['stream'], // streams only
   },
   sink: {
-    maxInputs: 1, // Receives from one stream
-    maxOutputs: 0, // No outputs - data goes to external system
+    maxInputs: 1, // fed by at most one stream
+    maxOutputs: 0, // data goes to an external system
     canBeSource: false,
     canBeSink: true,
-    allowedSources: ['stream'], // Can receive from streams (which may be query outputs via INSERT INTO)
+    allowedSources: ['stream'], // the stream may itself be a query output
   },
 
-  // Data channels - Streams are bidirectional
+  // Streams carry data both in and out
   stream: {
-    maxInputs: null, // Can receive from Source OR processing elements (INSERT INTO)
-    maxOutputs: null, // Can feed many processing elements or sinks
+    maxInputs: null, // fed by a source or by queries that insert into it
+    maxOutputs: null, // can feed many processing elements or sinks
     canBeSource: true,
-    canBeSink: true, // Can be target of INSERT INTO
-    allowedSources: ['source', 'window', 'filter', 'projection', 'aggregation', 'groupBy', 'join', 'pattern', 'partition'], // Source or query results
-    allowedTargets: ['window', 'filter', 'projection', 'aggregation', 'groupBy', 'join', 'pattern', 'partition', 'sink', 'stream'], // Can also connect to another stream
+    canBeSink: true, // can be the target of INSERT INTO
+    allowedSources: ['source', 'window', 'filter', 'projection', 'aggregation', 'groupBy', 'join', 'pattern', 'partition'], // a source or query results
+    allowedTargets: ['window', 'filter', 'projection', 'aggregation', 'groupBy', 'join', 'pattern', 'partition', 'sink', 'stream'], // 'stream' is listed, but allowedSources above rejects it
   },
   trigger: {
-    maxInputs: 0, // No inputs
-    maxOutputs: null, // Can trigger many queries
+    maxInputs: 0,
+    maxOutputs: null, // can drive many queries
     canBeSource: true,
     canBeSink: false,
     allowedTargets: ['window', 'filter', 'projection', 'aggregation', 'groupBy', 'stream'],
   },
   table: {
-    maxInputs: null, // Can receive from multiple queries (writes)
-    maxOutputs: null, // Can be read by multiple queries
+    maxInputs: null, // many queries can write to it
+    maxOutputs: null, // many queries can read from it
     canBeSource: true,
     canBeSink: true,
     allowedTargets: ['window', 'filter', 'projection', 'aggregation', 'groupBy', 'join', 'stream'],
   },
 
-  // Processing elements - typically 1:1, can output to stream (INSERT INTO)
+  // Processing elements. Mostly one input and one output. They can write to a stream with INSERT INTO.
   window: {
     maxInputs: 1,
     maxOutputs: 1,
@@ -102,7 +105,7 @@ const cardinalityRules: Record<ElementType, CardinalityRule> = {
 
   // Special processing elements
   join: {
-    maxInputs: 2, // Exactly 2 inputs for join
+    maxInputs: 2, // left and right side. Only the upper limit is enforced.
     maxOutputs: 1,
     canBeSource: false,
     canBeSink: false,
@@ -110,7 +113,7 @@ const cardinalityRules: Record<ElementType, CardinalityRule> = {
     allowedTargets: ['filter', 'projection', 'aggregation', 'groupBy', 'stream'],
   },
   pattern: {
-    maxInputs: null, // Multiple streams can be part of pattern
+    maxInputs: null, // a pattern can span many streams
     maxOutputs: 1,
     canBeSource: false,
     canBeSink: false,
@@ -133,7 +136,8 @@ export interface ValidationResult {
 }
 
 /**
- * Validates if a new connection is allowed based on cardinality rules
+ * Checks whether a new connection is allowed by the rules above.
+ * Returns valid false with a reason the UI can show when it is not.
  */
 export function validateConnection(
   connection: Connection,
@@ -157,7 +161,6 @@ export function validateConnection(
     return { valid: false, reason: 'Unknown element type' };
   }
 
-  // Check if source can have more outputs
   if (sourceRule.maxOutputs !== null) {
     const currentOutputs = edges.filter((e) => e.source === connection.source).length;
     if (currentOutputs >= sourceRule.maxOutputs) {
@@ -168,7 +171,6 @@ export function validateConnection(
     }
   }
 
-  // Check if target can have more inputs
   if (targetRule.maxInputs !== null) {
     const currentInputs = edges.filter((e) => e.target === connection.target).length;
     if (currentInputs >= targetRule.maxInputs) {
@@ -179,7 +181,6 @@ export function validateConnection(
     }
   }
 
-  // Check if this source type is allowed to connect to this target type
   if (sourceRule.allowedTargets && !sourceRule.allowedTargets.includes(targetType)) {
     return {
       valid: false,
@@ -187,7 +188,6 @@ export function validateConnection(
     };
   }
 
-  // Check if this target type accepts connections from this source type
   if (targetRule.allowedSources && !targetRule.allowedSources.includes(sourceType)) {
     return {
       valid: false,
@@ -195,7 +195,6 @@ export function validateConnection(
     };
   }
 
-  // Check for duplicate connections
   const duplicateConnection = edges.find(
     (e) => e.source === connection.source && e.target === connection.target
   );
@@ -203,9 +202,8 @@ export function validateConnection(
     return { valid: false, reason: 'Connection already exists' };
   }
 
-  // Special rule: A stream can only have ONE external connector (either Source OR Sink, not both)
+  // A stream may have only ONE external connector, a Source or a Sink, not both
   if (sourceType === 'source' && targetType === 'stream') {
-    // Check if stream already has a Source
     const existingSourceConnection = edges.find((e) => {
       const edgeSourceNode = nodes.find((n) => n.id === e.source);
       return edgeSourceNode?.type === 'source' && e.target === connection.target;
@@ -213,7 +211,6 @@ export function validateConnection(
     if (existingSourceConnection) {
       return { valid: false, reason: 'Stream already has a Source connected.' };
     }
-    // Check if stream already has a Sink
     const existingSinkConnection = edges.find((e) => {
       const edgeTargetNode = nodes.find((n) => n.id === e.target);
       return e.source === connection.target && edgeTargetNode?.type === 'sink';
@@ -224,7 +221,6 @@ export function validateConnection(
   }
 
   if (sourceType === 'stream' && targetType === 'sink') {
-    // Check if stream already has a Sink
     const existingSinkConnection = edges.find((e) => {
       const edgeTargetNode = nodes.find((n) => n.id === e.target);
       return e.source === connection.source && edgeTargetNode?.type === 'sink';
@@ -232,7 +228,6 @@ export function validateConnection(
     if (existingSinkConnection) {
       return { valid: false, reason: 'Stream already connects to a Sink.' };
     }
-    // Check if stream already has a Source
     const existingSourceConnection = edges.find((e) => {
       const edgeSourceNode = nodes.find((n) => n.id === e.source);
       return edgeSourceNode?.type === 'source' && e.target === connection.source;
@@ -242,7 +237,6 @@ export function validateConnection(
     }
   }
 
-  // Check for self-connection
   if (connection.source === connection.target) {
     return { valid: false, reason: 'Cannot connect element to itself' };
   }
@@ -251,7 +245,7 @@ export function validateConnection(
 }
 
 /**
- * Gets the display label for an element type
+ * Display label for an element type. Falls back to the raw type.
  */
 function getElementLabel(type: ElementType): string {
   const labels: Record<ElementType, string> = {
@@ -273,7 +267,7 @@ function getElementLabel(type: ElementType): string {
 }
 
 /**
- * Checks if a node can accept more input connections
+ * Whether a node can take another incoming connection. False for an unknown node or type.
  */
 export function canAcceptInput(nodeId: string, nodes: Node[], edges: Edge[]): boolean {
   const node = nodes.find((n) => n.id === nodeId);
@@ -289,7 +283,7 @@ export function canAcceptInput(nodeId: string, nodes: Node[], edges: Edge[]): bo
 }
 
 /**
- * Checks if a node can have more output connections
+ * Whether a node can take another outgoing connection. False for an unknown node or type.
  */
 export function canHaveOutput(nodeId: string, nodes: Node[], edges: Edge[]): boolean {
   const node = nodes.find((n) => n.id === nodeId);
@@ -305,7 +299,7 @@ export function canHaveOutput(nodeId: string, nodes: Node[], edges: Edge[]): boo
 }
 
 /**
- * Gets connection info for displaying in UI
+ * Input and output limits as text for the UI. No limit shows as ∞, an unknown type as ?.
  */
 export function getConnectionInfo(type: ElementType): { inputs: string; outputs: string } {
   const rule = cardinalityRules[type];

@@ -1,25 +1,25 @@
--- EventFlux Advanced Demo: Real-Time Bitcoin Trend Detection
+-- EventFlux advanced demo. Live Bitcoin trend detection.
 --
--- Demonstrates PATTERN PROCESSING for detecting market activity and price trends
+-- Uses PATTERN matching to spot changes in market activity and price.
 --
--- Architecture:
+-- Flow
 --   RawTrades (source) ─> ActivityStats (internal) ─┬─> ActivityPulse (sink)
 --                                                   └─> TrendSignal (sink)
 --
--- Features demonstrated:
+-- What it shows
 --   - WebSocket source with live Bitcoin trades
---   - Tumbling window aggregation (10-second periods)
---   - CAST expression for type conversion (VARCHAR price to DOUBLE)
---   - PATTERN with EVERY for continuous trend detection
---   - Same-stream pattern (e1=Stream -> e2=Stream)
---   - Arithmetic expressions in pattern queries (e2.count - e1.count)
---   - Multi-query pipeline processing
+--   - Tumbling window aggregation over 10 second periods
+--   - CAST to turn the VARCHAR price into a DOUBLE
+--   - PATTERN with EVERY to keep matching trends
+--   - A pattern over one stream (e1=Stream -> e2=Stream)
+--   - Arithmetic in pattern queries (e2.count - e1.count)
+--   - Several queries chained into a pipeline
 
 -- =============================================================================
 -- STREAMS
 -- =============================================================================
 
--- Source: Real BTC/USDT trades from Binance (no API key required)
+-- Source. Live BTC/USDT trades from Binance. No API key needed.
 CREATE STREAM RawTrades (
     price VARCHAR,
     quantity VARCHAR,
@@ -38,9 +38,8 @@ CREATE STREAM RawTrades (
     "json.mapping.trade_time" = '$.T'
 );
 
--- Internal: 10-second activity statistics
--- This stream aggregates raw trades into periodic activity summaries
--- Uses CAST to convert VARCHAR price to DOUBLE for averaging
+-- Internal. Trade count and average price for each 10 second period.
+-- Query 1 fills it from RawTrades.
 CREATE STREAM ActivityStats (
     symbol VARCHAR,
     trade_count BIGINT,
@@ -48,7 +47,7 @@ CREATE STREAM ActivityStats (
     period_end BIGINT
 );
 
--- Sink 1: Activity pulse - shows each 10-second period's activity and average price
+-- Sink 1. Logs the trade count and average price of each 10 second period.
 CREATE STREAM ActivityPulse (
     symbol VARCHAR,
     trades BIGINT,
@@ -60,8 +59,8 @@ CREATE STREAM ActivityPulse (
     "log.prefix" = '[PULSE]'
 );
 
--- Sink 2: Trend signal - sequence-detected activity and price trends
--- Compares consecutive 10-second periods to detect momentum
+-- Sink 2. Logs activity and price trends.
+-- Compares each 10 second period with the one before it.
 CREATE STREAM TrendSignal (
     symbol VARCHAR,
     prev_trades BIGINT,
@@ -81,9 +80,9 @@ CREATE STREAM TrendSignal (
 -- QUERIES
 -- =============================================================================
 
--- Query 1: Aggregate raw trades into 10-second activity windows
--- Counts trades per period and calculates average price
--- Uses CAST to convert VARCHAR price to DOUBLE for averaging
+-- Query 1. Group raw trades into 10 second tumbling windows.
+-- Counts trades per period and averages the price.
+-- The price arrives as VARCHAR, so CAST turns it into DOUBLE first.
 INSERT INTO ActivityStats
 SELECT
     symbol,
@@ -94,7 +93,7 @@ FROM RawTrades
 WINDOW('tumbling', INTERVAL '10' SECOND)
 GROUP BY symbol;
 
--- Query 2: Pass through to activity pulse sink
+-- Query 2. Forward each period to the pulse sink.
 INSERT INTO ActivityPulse
 SELECT
     symbol,
@@ -102,25 +101,25 @@ SELECT
     avg_price
 FROM ActivityStats;
 
--- Query 3: PATTERN-BASED TREND DETECTION (Continuous Matching)
--- Uses PATTERN with EVERY to continuously match consecutive 10-second periods
--- Detects if market activity and price are increasing or decreasing
+-- Query 3. Trend detection with a pattern.
+-- PATTERN with EVERY matches each pair of back to back 10 second periods.
+-- It shows whether activity and price are going up or down.
 --
--- Pattern: EVERY (e1=ActivityStats -> e2=ActivityStats)
--- - e1 represents the previous period
--- - e2 represents the current period
--- - EVERY enables continuous matching (restarts after each match)
+-- Pattern EVERY (e1=ActivityStats -> e2=ActivityStats)
+-- - e1 is the previous period
+-- - e2 is the current period
+-- - EVERY starts a new match after each match, so matching never stops
 --
--- Note: SEQUENCE would provide strict consecutive matching but currently
--- only matches once. Use PATTERN with EVERY for continuous matching.
+-- SEQUENCE would force strictly back to back events, but today it matches
+-- only once. Use PATTERN with EVERY to keep matching.
 --
--- Output:
---   prev_trades: trade count in previous 10-second period
---   curr_trades: trade count in current 10-second period
---   activity_change: difference (positive = increasing activity)
---   prev_price: average price in previous period
---   curr_price: average price in current period
---   price_change_pct: percentage change (positive = price increasing)
+-- Output columns
+--   prev_trades       trade count in the previous 10 second period
+--   curr_trades       trade count in the current 10 second period
+--   activity_change   curr minus prev. Positive means activity is rising.
+--   prev_price        average price in the previous period
+--   curr_price        average price in the current period
+--   price_change_pct  percent change. Positive means the price is rising.
 INSERT INTO TrendSignal
 SELECT
     e2.symbol AS symbol,

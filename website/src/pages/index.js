@@ -80,7 +80,7 @@ function HeroSection() {
   );
 }
 
-// Features Section with scroll-triggered scenarios
+// Scenario section. Each scenario animates in as it scrolls into view.
 function FlowSection() {
   const scenarios = [
     {
@@ -347,7 +347,7 @@ function FeaturesSection() {
   );
 }
 
-// CTA Section
+// Call to action section
 function CTASection() {
   return (
     <section className={styles.ctaSection}>

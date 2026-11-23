@@ -3,7 +3,7 @@
 -- ============================================================================
 --
 -- This example is configured for running inside Docker Compose.
--- Uses 'rabbitmq' as hostname (Docker service name) instead of 'localhost'.
+-- It uses 'rabbitmq', the Docker service name, as the hostname instead of 'localhost'.
 --
 -- ============================================================================
 -- RUNNING WITH DOCKER COMPOSE
@@ -15,25 +15,26 @@
 -- 2. Wait for services to be healthy:
 --    docker compose ps
 --
--- 3. Create the queue via RabbitMQ Management UI (http://localhost:15672):
+-- 3. Create the queue in the RabbitMQ Management UI (http://localhost:15672).
+--    This step is optional. The source creates a missing queue by default.
 --    - Go to "Queues" → "Add a new queue"
 --    - Name: event-queue
 --    - Click "Add queue"
 --
--- 4. Run EventFlux (if not already started by docker compose):
+-- 4. Run EventFlux, if docker compose has not started it already:
 --    docker compose run --rm --no-deps eventflux /app/queries/rabbitmq_to_log_docker.eventflux
 --
--- 5. Publish test messages via RabbitMQ Management UI:
+-- 5. Publish test messages in the RabbitMQ Management UI:
 --    - Go to "Queues" → "event-queue" → "Publish message"
---    - Payload: {"id":"evt-001","name":"temperature","value":23.5}
+--    - Payload {"id":"evt-001","name":"temperature","value":23.5}
 --
 -- 6. View logs:
 --    docker compose logs -f eventflux
 --
 -- ============================================================================
 
--- Input stream: Consume JSON events from RabbitMQ queue
--- Note: 'rabbitmq' is the Docker Compose service name
+-- Input stream. Reads JSON events from a RabbitMQ queue.
+-- The host 'rabbitmq' is the Docker Compose service name.
 CREATE STREAM EventInput (
     id STRING,
     name STRING,
@@ -49,7 +50,7 @@ CREATE STREAM EventInput (
     "rabbitmq.password" = 'guest'
 );
 
--- Output stream: Log events to console
+-- Output stream. Logs events to the console.
 CREATE STREAM EventOutput (
     id STRING,
     name STRING,
@@ -60,7 +61,7 @@ CREATE STREAM EventOutput (
     format = 'json'
 );
 
--- Processing: Pass through all events to log sink
+-- Forward every event to the log sink.
 INSERT INTO EventOutput
 SELECT id, name, value
 FROM EventInput;

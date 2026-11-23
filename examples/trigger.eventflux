@@ -1,9 +1,9 @@
 define trigger Tick at every 1 sec;
 
--- Simple query logging each trigger event
+-- Copy the time of each trigger tick into OutStream
 from Tick
 select triggered_time
 insert into OutStream;
 
--- Output stream for logging
+-- Output stream that receives one event per second
 define stream OutStream (triggered_time long);

@@ -2,12 +2,12 @@
 -- EventFlux File Source/Sink Example
 -- ============================================================================
 --
--- This example demonstrates end-to-end stream processing over files:
---   1. File Source: replays an existing JSONL file, then keeps following it
---   2. EventFlux Query: keeps only high-volume trades
---   3. File Sink: appends matches to an output JSONL file
+-- This example runs a full stream pipeline over files.
+--   1. File source. Replays an existing JSONL file, then keeps following it.
+--   2. EventFlux query. Keeps only trades with volume above 1000.
+--   3. File sink. Appends matches to an output JSONL file.
 --
--- Everything is testable with printf/echo/tail alone — no external infrastructure.
+-- You can test all of it with printf, echo and tail. No other services needed.
 --
 -- ============================================================================
 -- PREREQUISITES
@@ -30,9 +30,9 @@
 --    cargo run --features file --bin run_eventflux examples/file.eventflux
 --
 --    The AAPL trade (volume > 1000) appears in /tmp/high_volume.jsonl
---    immediately; GOOGL is filtered out.
+--    right away. GOOGL is filtered out.
 --
--- 3. The source keeps observing — append more trades from another terminal:
+-- 3. The source keeps watching the file. Append more trades from another terminal:
 --
 --    echo '{"symbol":"MSFT","price":378.25,"volume":1500}' >> /tmp/trades.jsonl
 --
@@ -51,7 +51,7 @@ CREATE STREAM Trades (
     extension = 'file',
     format = 'json',
     "file.path" = '/tmp/trades.jsonl',
-    -- Replay existing content, then follow appends (this is the default)
+    -- Replay existing content, then follow appends. This is the default.
     "file.start.position" = 'beginning',
     "file.poll.interval.ms" = '200'
 );

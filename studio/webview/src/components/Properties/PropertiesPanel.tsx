@@ -66,7 +66,8 @@ const elementNames: Record<ElementType, string> = {
 
 const attributeTypes: AttributeType[] = ['INT', 'LONG', 'DOUBLE', 'FLOAT', 'STRING', 'BOOL'];
 
-// Reusable AttributeSelect component with autocomplete
+// Attribute dropdown with a "Custom..." choice that switches to a text box.
+// Picking "Custom..." sets the value to '__custom__', which shows an empty text box.
 function AttributeSelect({
   value,
   onChange,
@@ -85,7 +86,7 @@ function AttributeSelect({
   const hasAttributes = attributes.length > 0;
   const isInList = attributes.some((a) => a.name === value || `${a.streamId}.${a.name}` === value);
 
-  // If we have attributes and value is in list or empty, show select
+  // Show the dropdown when there are attributes and the value is empty or in the list
   if (hasAttributes && (isInList || !value)) {
     return (
       <select
@@ -107,7 +108,7 @@ function AttributeSelect({
     );
   }
 
-  // Otherwise show input with option to switch to select
+  // Otherwise show a text box. The button clears the value to go back to the dropdown.
   return (
     <div className={`flex items-center gap-1 ${className}`}>
       <input
@@ -170,13 +171,12 @@ export function PropertiesPanel() {
     return nodes.find((n) => n.id === selectedElementIds[0]) || null;
   }, [nodes, selectedElementIds]);
 
-  // Get upstream schema for the selected element
+  // Attributes that flow into the selected element from upstream nodes
   const upstreamSchema = useMemo(() => {
     if (!selectedNode) return [];
     return getUpstreamSchema(selectedNode.id);
   }, [selectedNode, getUpstreamSchema]);
 
-  // Get all available streams
   const allStreams = useMemo(() => {
     return getAllStreams();
   }, [getAllStreams]);
@@ -195,7 +195,7 @@ export function PropertiesPanel() {
   const typeName = elementNames[selectedNode.type as ElementType] || selectedNode.type;
 
   const handleUpdate = (newData: Record<string, unknown>) => {
-    // Update the node's data directly
+    // The store merges newData into the node data. Keys left out are kept, not removed.
     updateElement(selectedNode.id, { data: newData });
   };
 
@@ -277,7 +277,7 @@ function PropertyEditor({ type, data, onChange, upstreamSchema, allStreams }: Pr
   }
 }
 
-// Generate source connector types from schema
+// Source connector choices built from the connector schemas
 function getSourceConnectorTypes() {
   return getSourceTypes().map(type => {
     const schema = getSourceSchema(type);
@@ -289,7 +289,7 @@ function getSourceConnectorTypes() {
   });
 }
 
-// Generate sink connector types from schema
+// Sink connector choices built from the connector schemas
 function getSinkConnectorTypes() {
   return getSinkTypes().map(type => {
     const schema = getSinkSchema(type);
@@ -301,7 +301,7 @@ function getSinkConnectorTypes() {
   });
 }
 
-// Source Property Editor - External data ingestion connector
+// Source property editor. A source brings external data into the app.
 function SourcePropertyEditor({ data, onChange }: { data: Record<string, unknown>; onChange: (changes: Record<string, unknown>) => void }) {
   const sourceName = (data.sourceName as string) || '';
   const sourceType = (data.sourceType as string) || getSourceTypes()[0] || 'rabbitmq';
@@ -312,7 +312,7 @@ function SourcePropertyEditor({ data, onChange }: { data: Record<string, unknown
   const schemaParams = currentSchema ? getConnectorParameters(currentSchema) : [];
 
   const handleSourceTypeChange = (type: string) => {
-    // Initialize config with required parameters from schema
+    // Drop the old config and start with an empty entry for each required parameter
     const schema = getSourceSchema(type);
     const newConfig: Record<string, string> = {};
     if (schema) {
@@ -342,7 +342,7 @@ function SourcePropertyEditor({ data, onChange }: { data: Record<string, unknown
     onChange({ ...data, config: newConfig });
   };
 
-  // Separate params into: schema-defined (required/optional) and custom
+  // Keys the schema does not define, required or optional, show as custom config
   const schemaParamKeys = new Set(schemaParams.map(p => p.key));
   const customConfigKeys = Object.keys(config).filter(k => !schemaParamKeys.has(k));
 
@@ -375,7 +375,7 @@ function SourcePropertyEditor({ data, onChange }: { data: Record<string, unknown
         </select>
       </div>
 
-      {/* Schema-defined parameters */}
+      {/* Parameters defined by the schema */}
       {schemaParams.length > 0 && (
         <div className="form-group">
           <label className="form-label">Parameters</label>
@@ -399,7 +399,7 @@ function SourcePropertyEditor({ data, onChange }: { data: Record<string, unknown
         </div>
       )}
 
-      {/* Custom configuration (non-schema params) */}
+      {/* Custom config, for keys the schema does not define */}
       <div className="form-group">
         <div className="flex items-center justify-between mb-2">
           <label className="form-label mb-0">Custom Config</label>
@@ -457,7 +457,7 @@ function SourcePropertyEditor({ data, onChange }: { data: Record<string, unknown
   );
 }
 
-// Sink Property Editor - External data output connector
+// Sink property editor. A sink sends data out of the app.
 function SinkPropertyEditor({ data, onChange }: { data: Record<string, unknown>; onChange: (changes: Record<string, unknown>) => void }) {
   const sinkName = (data.sinkName as string) || '';
   const sinkType = (data.sinkType as string) || getSinkTypes()[0] || 'log';
@@ -468,7 +468,7 @@ function SinkPropertyEditor({ data, onChange }: { data: Record<string, unknown>;
   const schemaParams = currentSchema ? getConnectorParameters(currentSchema) : [];
 
   const handleSinkTypeChange = (type: string) => {
-    // Initialize config with required parameters from schema
+    // Drop the old config and start with an empty entry for each required parameter
     const schema = getSinkSchema(type);
     const newConfig: Record<string, string> = {};
     if (schema) {
@@ -498,7 +498,7 @@ function SinkPropertyEditor({ data, onChange }: { data: Record<string, unknown>;
     onChange({ ...data, config: newConfig });
   };
 
-  // Separate params into: schema-defined (required/optional) and custom
+  // Keys the schema does not define, required or optional, show as custom config
   const schemaParamKeys = new Set(schemaParams.map(p => p.key));
   const customConfigKeys = Object.keys(config).filter(k => !schemaParamKeys.has(k));
 
@@ -531,7 +531,7 @@ function SinkPropertyEditor({ data, onChange }: { data: Record<string, unknown>;
         </select>
       </div>
 
-      {/* Schema-defined parameters */}
+      {/* Parameters defined by the schema */}
       {schemaParams.length > 0 && (
         <div className="form-group">
           <label className="form-label">Parameters</label>
@@ -555,7 +555,7 @@ function SinkPropertyEditor({ data, onChange }: { data: Record<string, unknown>;
         </div>
       )}
 
-      {/* Custom configuration (non-schema params) */}
+      {/* Custom config, for keys the schema does not define */}
       <div className="form-group">
         <div className="flex items-center justify-between mb-2">
           <label className="form-label mb-0">Custom Config</label>
@@ -613,7 +613,7 @@ function SinkPropertyEditor({ data, onChange }: { data: Record<string, unknown>;
   );
 }
 
-// Stream Property Editor - Central data channel
+// Stream property editor. A stream carries events between elements.
 function StreamPropertyEditor({ data, onChange }: { data: Record<string, unknown>; onChange: (changes: Record<string, unknown>) => void }) {
   const streamName = (data.streamName as string) || '';
   const attributes = (data.attributes as AttributeDefinition[]) || [];
@@ -707,7 +707,7 @@ function StreamPropertyEditor({ data, onChange }: { data: Record<string, unknown
   );
 }
 
-// Table Property Editor
+// Table property editor
 function TablePropertyEditor({ data, onChange }: { data: Record<string, unknown>; onChange: (changes: Record<string, unknown>) => void }) {
   const availableTableExtensions = getTableExtensions();
   const tableName = (data.tableName as string) || '';
@@ -716,7 +716,6 @@ function TablePropertyEditor({ data, onChange }: { data: Record<string, unknown>
   const primaryKey = (data.primaryKey as string[]) || [];
   const withConfig = (data.withConfig as Record<string, string>) || {};
 
-  // Display names for table extensions
   const extensionDisplayNames: Record<string, string> = {
     inMemory: 'In-Memory',
     cache: 'Cache (Redis)',
@@ -756,7 +755,7 @@ function TablePropertyEditor({ data, onChange }: { data: Record<string, unknown>
   };
 
   const handleExtensionChange = (ext: string) => {
-    // Set default config based on extension
+    // Replace withConfig with starter values for cache and jdbc. In memory tables get none.
     let defaultConfig: Record<string, string> = {};
     if (ext === 'cache') {
       defaultConfig = {
@@ -812,7 +811,7 @@ function TablePropertyEditor({ data, onChange }: { data: Record<string, unknown>
         >
           <option value="">In-Memory (default)</option>
           {availableTableExtensions
-            .filter((ext) => ext !== 'inMemory') // inMemory is the default (empty value)
+            .filter((ext) => ext !== 'inMemory') // inMemory is the default, shown as the empty choice
             .map((ext) => (
               <option key={ext} value={ext}>
                 {extensionDisplayNames[ext] || ext}
@@ -1000,7 +999,7 @@ function WindowPropertyEditor({ data, onChange }: { data: Record<string, unknown
     onChange({ ...data, parameters: { ...parameters, [param]: value } });
   };
 
-  // Format window type name for display (e.g., "lengthBatch" -> "Length Batch")
+  // Turns a window type into a display name, such as "lengthBatch" into "Length Batch"
   const formatWindowTypeName = (type: string): string => {
     return type
       .replace(/([A-Z])/g, ' $1')
@@ -1097,7 +1096,7 @@ function WindowPropertyEditor({ data, onChange }: { data: Record<string, unknown
 function FilterPropertyEditor({ data, onChange, upstreamSchema }: { data: Record<string, unknown>; onChange: (changes: Record<string, unknown>) => void; upstreamSchema: UpstreamAttribute[] }) {
   const condition = data.condition as Record<string, unknown> | null;
 
-  // Simple expression builder for now
+  // The filter is a single comparison for now. The operator defaults to '>'.
   const leftVar = (condition?.left as Record<string, unknown>)?.variableName as string || '';
   const operator = (condition?.operator as string) || '>';
   const rawRightValue = (condition?.right as Record<string, unknown>)?.constantValue;
@@ -1121,7 +1120,7 @@ function FilterPropertyEditor({ data, onChange, upstreamSchema }: { data: Record
       <div className="form-group">
         <label className="form-label">Condition</label>
         <div className="space-y-2">
-          {/* Attribute selector - full width */}
+          {/* Attribute selector, full width */}
           <AttributeSelect
             value={leftVar}
             onChange={(val) => handleChange(val, operator, rightValue)}
@@ -1343,7 +1342,7 @@ function AggregationPropertyEditor({ data, onChange, upstreamSchema }: { data: R
 
   const aggregationTypes = ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'STDDEV', 'VARIANCE', 'FIRST', 'LAST', 'DISTINCTCOUNT'];
 
-  // Add * as a special option for COUNT
+  // Offer * first so COUNT(*) can be picked
   const attributeOptions: UpstreamAttribute[] = [
     { name: '*', type: 'ALL', source: '' },
     ...upstreamSchema,
@@ -1477,7 +1476,7 @@ function GroupByPropertyEditor({ data, onChange, upstreamSchema }: { data: Recor
     onChange({ ...data, groupByAttributes: newAttributes });
   };
 
-  // Simple HAVING condition builder
+  // HAVING is a single comparison, attribute operator value. The operator defaults to '>'.
   const havingLeft = (havingCondition?.left as Record<string, unknown>)?.variableName as string || '';
   const havingOp = (havingCondition?.operator as string) || '>';
   const rawHavingRight = (havingCondition?.right as Record<string, unknown>)?.constantValue;
@@ -1577,13 +1576,12 @@ function JoinPropertyEditor({ data, onChange, allStreams }: { data: Record<strin
   const trigger = (data.trigger as string) || 'all';
   const within = data.within as { value: number; unit: string } | undefined;
 
-  // Simple ON condition builder: left.attr = right.attr
+  // The ON condition is a single equality, left.attr = right.attr
   const leftStream = (onCondition?.left as Record<string, unknown>)?.streamId as string || '';
   const leftAttr = (onCondition?.left as Record<string, unknown>)?.variableName as string || '';
   const rightStream = (onCondition?.right as Record<string, unknown>)?.streamId as string || '';
   const rightAttr = (onCondition?.right as Record<string, unknown>)?.variableName as string || '';
 
-  // Get attributes for selected streams
   const leftStreamAttrs = allStreams.find((s) => s.name === leftStream)?.attributes || [];
   const rightStreamAttrs = allStreams.find((s) => s.name === rightStream)?.attributes || [];
 
@@ -1720,7 +1718,8 @@ function PatternPropertyEditor({ data, onChange, allStreams }: { data: Record<st
   const patternExpression = data.patternExpression as Record<string, unknown> || { type: 'stream' };
   const withinConstraint = data.withinConstraint as { type: string; value: number; unit?: string } | undefined;
 
-  // For now, support a simple pattern: stream1 alias1 [filter1] -> stream2 alias2 [filter2]
+  // Only simple patterns are supported for now, either one stream or
+  // stream1 alias1 -> stream2 alias2. Filters on the streams cannot be set here.
   const leftStreamName = (patternExpression?.left as Record<string, unknown>)?.streamName as string ||
                          (patternExpression?.streamName as string) || '';
   const leftAlias = (patternExpression?.left as Record<string, unknown>)?.streamAlias as string ||
@@ -1740,7 +1739,7 @@ function PatternPropertyEditor({ data, onChange, allStreams }: { data: Record<st
         },
       });
     } else {
-      // Two-stream sequence pattern
+      // Two streams joined with next (->)
       onChange({
         ...data,
         patternExpression: {
@@ -1924,7 +1923,6 @@ function PartitionPropertyEditor({ data, onChange, allStreams }: { data: Record<
     onChange({ ...data, partitionBy: newPartitions });
   };
 
-  // Get attributes for selected stream
   const getStreamAttrs = (streamName: string): UpstreamAttribute[] => {
     return allStreams.find((s) => s.name === streamName)?.attributes || [];
   };
