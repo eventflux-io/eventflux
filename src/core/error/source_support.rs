@@ -299,18 +299,25 @@ fn is_stopping(running: &Option<Arc<AtomicBool>>) -> bool {
 /// stop. Blocking sleep is intentional (sources are synchronous), but it is
 /// sliced against the running flag: a user-configured delay must never hold
 /// `stop()` past the worker grace period.
+///
+/// The flag is checked before every slice, including when `delay` is zero
+/// and after the last slice, so a stopping worker never proceeds to another
+/// attempt (and a disposed record is not acknowledged) just because no
+/// sleep happened.
 fn sleep_unless_cancelled(running: &Option<Arc<AtomicBool>>, delay: Duration) -> bool {
     const SLICE: Duration = Duration::from_millis(50);
     let mut remaining = delay;
-    while !remaining.is_zero() {
+    loop {
         if is_stopping(running) {
             return false;
+        }
+        if remaining.is_zero() {
+            return true;
         }
         let slice = remaining.min(SLICE);
         thread::sleep(slice);
         remaining -= slice;
     }
-    true
 }
 
 impl std::fmt::Debug for SourceErrorContext {
@@ -600,6 +607,55 @@ mod tests {
             elapsed < std::time::Duration::from_secs(2),
             "a 30s backoff must abort within the stop window, took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn test_sleep_unless_cancelled_checks_stop_even_without_sleeping() {
+        let zero = std::time::Duration::ZERO;
+        let stopped = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let running = Some(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+
+        assert!(
+            !sleep_unless_cancelled(&stopped, zero),
+            "zero delay still sees stop"
+        );
+        assert!(sleep_unless_cancelled(&running, zero));
+        assert!(sleep_unless_cancelled(&None, zero), "unbound never cancels");
+    }
+
+    #[test]
+    fn test_zero_delay_dlq_retry_cancels_on_stop() {
+        // A stopping worker whose DLQ send keeps failing must get Cancelled
+        // (record redelivered), not Drop (record acknowledged), even when the
+        // DLQ fallback retry delay is 0ms
+        let zero = std::time::Duration::ZERO;
+        let dlq = crate::core::error::DlqConfig {
+            stream: "ErrorStream".to_string(),
+            fallback_strategy: crate::core::error::DlqFallbackStrategy::Retry,
+            fallback_retry: Some(RetryConfig {
+                max_attempts: 3,
+                backoff: BackoffStrategy::Fixed,
+                initial_delay: zero,
+                max_delay: zero,
+            }),
+        };
+        let config = ErrorConfig::new(
+            crate::core::error::ErrorStrategy::Dlq,
+            crate::core::error::LogLevel::Warn,
+            None,
+            Some(dlq),
+            None,
+        )
+        .unwrap();
+        // No DLQ junction wired: every DLQ send fails
+        let mut ctx = SourceErrorContext::new(config, None, "TestStream".to_string());
+        ctx.bind_cancellation(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+
+        let action = ctx.handle_error_with_action(
+            Some(&create_test_event()),
+            &EventFluxError::Other("mapping failed".to_string()),
+        );
+        assert_eq!(action, ErrorAction::Cancelled);
     }
 
     #[test]
