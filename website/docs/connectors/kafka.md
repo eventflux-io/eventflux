@@ -147,18 +147,18 @@ clause options on the source stream):
 | Option | Default | Description |
 |--------|---------|-------------|
 | `error.strategy` | `drop` | What to do when the pipeline rejects a record: `drop`, `retry`, `dlq`, `fail` |
-| `error.retry.max-attempts` | `3` | Max retries before falling back to drop |
+| `error.retry.max-attempts` | `3` | Max attempts before falling back to drop (or to the DLQ, if `error.dlq.stream` is set) |
 | `error.retry.backoff` | `exponential` | Backoff strategy: `exponential`, `linear`, or `fixed` |
 | `error.retry.initial-delay` | `100ms` | First retry delay (duration string) |
 | `error.retry.max-delay` | `30s` | Retry delay ceiling (duration string) |
 | `error.log-level` | `warn` | Log level for handled errors |
-| `error.dlq.stream` | - | Dead-letter stream name (required when strategy is `dlq`) |
+| `error.dlq.stream` | - | Dead-letter stream name (required when strategy is `dlq`; optional with `retry`, receiving records whose retries are exhausted). Validated at app creation: the stream must exist with the exact DLQ schema |
 | `error.dlq.fallback-strategy` | `log` | What to do when DLQ delivery itself fails |
 
 Strategy semantics and their offset interaction:
 
 - `drop`: skip the failing record (offset committed)
-- `retry`: retry delivery with exponential backoff
+- `retry`: retry delivery with exponential backoff; when retries are exhausted the record is dropped, or dead-lettered if `error.dlq.stream` is set
 - `dlq`: route the raw payload to a dead-letter stream (offset committed)
 - `fail`: stop the source; the record is **not** committed and is redelivered after restart
 

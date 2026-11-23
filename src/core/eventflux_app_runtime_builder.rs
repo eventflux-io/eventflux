@@ -177,6 +177,21 @@ impl EventFluxAppRuntimeBuilder {
             )
         };
 
+        // Fail fast on a broken DLQ reference: a missing or misnamed DLQ
+        // stream would otherwise surface only at the first failed event,
+        // which is then dropped instead of dead-lettered (#207)
+        crate::core::validation::validate_source_dlq_configs(
+            &resolved_configs,
+            &api_eventflux_app.stream_definition_map,
+        )
+        .map_err(|errors| {
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+
         Ok(EventFluxAppRuntime {
             name: self.eventflux_app_context.name.clone(),
             eventflux_app: api_eventflux_app, // The original parsed API definition

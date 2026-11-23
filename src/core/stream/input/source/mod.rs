@@ -116,15 +116,27 @@ pub trait Source: Debug + Send + Sync {
     ///
     /// This method allows setting the DLQ junction after source creation,
     /// enabling DLQ strategy when the factory creates a source before the DLQ
-    /// junction is available. The stream_initializer wires it after creation.
+    /// junction is available. `EventFluxAppRuntime` wires it when attaching
+    /// the source to its stream.
     ///
-    /// Sources that support DLQ error handling should override this method.
-    /// The default implementation is a no-op for sources that don't support DLQ.
+    /// Sources that support DLQ error handling must override this method.
+    /// The default rejects the junction, so a DLQ configured on a source
+    /// that cannot dead-letter fails attachment instead of silently
+    /// dropping failed events.
     ///
     /// # Arguments
+    /// * `stream_name` - Name of the stream this source feeds; DLQ events
+    ///   report it as `streamName`
     /// * `_junction` - The InputHandler for the DLQ stream
-    fn set_error_dlq_junction(&mut self, _junction: Arc<Mutex<InputHandler>>) {
-        // Default: no-op for sources that don't support DLQ
+    fn set_error_dlq_junction(
+        &mut self,
+        stream_name: &str,
+        _junction: Arc<Mutex<InputHandler>>,
+    ) -> Result<(), EventFluxError> {
+        Err(EventFluxError::configuration_with_key(
+            format!("The source for stream '{stream_name}' does not support DLQ routing"),
+            crate::core::error::DLQ_STREAM_KEY,
+        ))
     }
 }
 

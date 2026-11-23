@@ -35,7 +35,13 @@ pub trait Source: Debug + Send + Sync {
     fn stop(&mut self);
     fn clone_box(&self) -> Box<dyn Source>;
     fn validate_connectivity(&self) -> Result<(), EventFluxError> { Ok(()) }
-    fn set_error_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>) {}
+    // Override to support DLQ routing; the default returns an error, so a
+    // DLQ configured on a source that cannot dead-letter fails at start
+    fn set_error_dlq_junction(
+        &mut self,
+        stream_name: &str,
+        junction: Arc<Mutex<InputHandler>>,
+    ) -> Result<(), EventFluxError>;
 }
 ```
 
@@ -171,6 +177,12 @@ Sources can integrate with EventFlux's error handling strategies
 `SourceErrorContext`. The pattern — retry loop around `callback.on_data`,
 acknowledge only after success, DLQ fallback events from raw bytes — is shown
 end-to-end in the RabbitMQ source.
+
+Factories build sources before the DLQ stream is known. To support
+`error.dlq.stream`, override `set_error_dlq_junction` to pass the junction and
+stream name to `SourceErrorContext::set_dlq_junction`; the runtime calls it
+when attaching the source. A source that keeps the default implementation
+rejects any DLQ configuration at start.
 
 ## Contributing a Connector Upstream
 

@@ -80,7 +80,7 @@ pub const SOURCE_ERROR_PARAMETERS: &[&str] = &[
     "error.retry.backoff",
     "error.retry.initial-delay",
     "error.retry.max-delay",
-    "error.dlq.stream",
+    super::dlq::DLQ_STREAM_KEY,
     "error.dlq.fallback-strategy",
 ];
 use crate::core::stream::input::input_handler::InputHandler;
@@ -143,9 +143,7 @@ impl SourceErrorContext {
 
     /// Whether the bound worker has been told to stop
     pub fn is_cancelled(&self) -> bool {
-        self.running
-            .as_ref()
-            .is_some_and(|r| !r.load(Ordering::SeqCst))
+        is_stopping(&self.running)
     }
 
     /// Create from FlatConfig (convenience method)
@@ -227,28 +225,25 @@ impl SourceErrorContext {
         event: Option<&Event>,
         error: &EventFluxError,
     ) -> ErrorAction {
-        let action = self.handler.handle_error(event, error);
+        // DLQ fallback retries wait inside the handler; source retries come
+        // back as `Retry` and wait here. Both waits honour `stop()`.
+        let running = &self.running;
+        let action = self
+            .handler
+            .handle_error_with_backoff(event, error, &mut |delay| {
+                sleep_unless_cancelled(running, delay)
+            });
 
-        if let ErrorAction::Retry { delay } = &action {
-            // Blocking sleep is intentional (sources are synchronous), but
-            // it is sliced against the bound running flag: a user-configured
-            // delay must never hold `stop()` past the worker grace period.
-            const SLICE: Duration = Duration::from_millis(50);
-            let mut remaining = *delay;
-            while !remaining.is_zero() {
-                if self.is_cancelled() {
-                    log::info!(
-                        "[{}] Stop requested during retry backoff — aborting retries",
-                        self.handler.stream_name()
-                    );
-                    // NOT Fail: Fail is a poison-message verdict (RabbitMQ
-                    // rejects without requeue). Cancellation must leave the
-                    // record for redelivery.
-                    return ErrorAction::Cancelled;
-                }
-                let slice = remaining.min(SLICE);
-                thread::sleep(slice);
-                remaining -= slice;
+        if let ErrorAction::Retry { delay } = action {
+            if !sleep_unless_cancelled(running, delay) {
+                log::info!(
+                    "[{}] Stop requested during retry backoff — aborting retries",
+                    self.handler.stream_name()
+                );
+                // NOT Fail: Fail is a poison-message verdict (RabbitMQ
+                // rejects without requeue). Cancellation must leave the
+                // record for redelivery.
+                return ErrorAction::Cancelled;
             }
         }
 
@@ -283,13 +278,45 @@ impl SourceErrorContext {
     ///
     /// This method allows setting the DLQ junction after context creation,
     /// which is needed when the factory creates a source before the DLQ
-    /// junction is available (stream_initializer wires it later).
+    /// junction is available (the runtime wires it on attachment).
     ///
     /// # Arguments
+    /// * `stream_name` - Name of the stream whose failures are dead-lettered
     /// * `junction` - The InputHandler for the DLQ stream
     #[inline]
-    pub fn set_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>) {
-        self.handler.set_dlq_junction(junction);
+    pub fn set_dlq_junction(&mut self, stream_name: &str, junction: Arc<Mutex<InputHandler>>) {
+        self.handler.set_dlq_junction(stream_name, junction);
+    }
+}
+
+/// Whether the worker owning `running` has been told to stop (an unbound
+/// context never is)
+fn is_stopping(running: &Option<Arc<AtomicBool>>) -> bool {
+    running.as_ref().is_some_and(|r| !r.load(Ordering::SeqCst))
+}
+
+/// Sleep for `delay`, returning `false` as soon as the worker is told to
+/// stop. Blocking sleep is intentional (sources are synchronous), but it is
+/// sliced against the running flag: a user-configured delay must never hold
+/// `stop()` past the worker grace period.
+///
+/// The flag is checked before every slice, including when `delay` is zero
+/// and after the last slice, so a stopping worker never proceeds to another
+/// attempt (and a disposed record is not acknowledged) just because no
+/// sleep happened.
+fn sleep_unless_cancelled(running: &Option<Arc<AtomicBool>>, delay: Duration) -> bool {
+    const SLICE: Duration = Duration::from_millis(50);
+    let mut remaining = delay;
+    loop {
+        if is_stopping(running) {
+            return false;
+        }
+        if remaining.is_zero() {
+            return true;
+        }
+        let slice = remaining.min(SLICE);
+        thread::sleep(slice);
+        remaining -= slice;
     }
 }
 
@@ -580,6 +607,55 @@ mod tests {
             elapsed < std::time::Duration::from_secs(2),
             "a 30s backoff must abort within the stop window, took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn test_sleep_unless_cancelled_checks_stop_even_without_sleeping() {
+        let zero = std::time::Duration::ZERO;
+        let stopped = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let running = Some(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+
+        assert!(
+            !sleep_unless_cancelled(&stopped, zero),
+            "zero delay still sees stop"
+        );
+        assert!(sleep_unless_cancelled(&running, zero));
+        assert!(sleep_unless_cancelled(&None, zero), "unbound never cancels");
+    }
+
+    #[test]
+    fn test_zero_delay_dlq_retry_cancels_on_stop() {
+        // A stopping worker whose DLQ send keeps failing must get Cancelled
+        // (record redelivered), not Drop (record acknowledged), even when the
+        // DLQ fallback retry delay is 0ms
+        let zero = std::time::Duration::ZERO;
+        let dlq = crate::core::error::DlqConfig {
+            stream: "ErrorStream".to_string(),
+            fallback_strategy: crate::core::error::DlqFallbackStrategy::Retry,
+            fallback_retry: Some(RetryConfig {
+                max_attempts: 3,
+                backoff: BackoffStrategy::Fixed,
+                initial_delay: zero,
+                max_delay: zero,
+            }),
+        };
+        let config = ErrorConfig::new(
+            crate::core::error::ErrorStrategy::Dlq,
+            crate::core::error::LogLevel::Warn,
+            None,
+            Some(dlq),
+            None,
+        )
+        .unwrap();
+        // No DLQ junction wired: every DLQ send fails
+        let mut ctx = SourceErrorContext::new(config, None, "TestStream".to_string());
+        ctx.bind_cancellation(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+
+        let action = ctx.handle_error_with_action(
+            Some(&create_test_event()),
+            &EventFluxError::Other("mapping failed".to_string()),
+        );
+        assert_eq!(action, ErrorAction::Cancelled);
     }
 
     #[test]

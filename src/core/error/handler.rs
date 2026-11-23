@@ -149,6 +149,24 @@ impl ErrorHandler {
     /// # Returns
     /// `ErrorAction` indicating what the caller should do next
     pub fn handle_error(&mut self, event: Option<&Event>, error: &EventFluxError) -> ErrorAction {
+        self.handle_error_with_backoff(event, error, &mut |delay| {
+            std::thread::sleep(delay);
+            true
+        })
+    }
+
+    /// [`Self::handle_error`] with a caller-supplied backoff wait
+    ///
+    /// `wait` sleeps between DLQ delivery retries (`fallback-strategy=retry`)
+    /// and returns `false` if the caller was told to stop, which aborts the
+    /// retries with [`ErrorAction::Cancelled`]. Sources pass a wait that
+    /// honours `stop()`.
+    pub fn handle_error_with_backoff(
+        &mut self,
+        event: Option<&Event>,
+        error: &EventFluxError,
+        wait: &mut dyn FnMut(Duration) -> bool,
+    ) -> ErrorAction {
         // Log error if configured
         if self.config.should_log(super::config::LogLevel::Error) {
             eprintln!(
@@ -164,8 +182,8 @@ impl ErrorHandler {
         // Apply strategy
         match self.config.strategy {
             ErrorStrategy::Drop => self.handle_drop(error),
-            ErrorStrategy::Retry => self.handle_retry(error),
-            ErrorStrategy::Dlq => self.handle_dlq(event, error),
+            ErrorStrategy::Retry => self.handle_retry(event, error, wait),
+            ErrorStrategy::Dlq => self.handle_dlq(event, error, wait),
             ErrorStrategy::Fail => self.handle_fail(error),
         }
     }
@@ -186,11 +204,17 @@ impl ErrorHandler {
     ///
     /// This method allows setting the DLQ junction after handler creation,
     /// which is needed when the factory creates a source before the DLQ
-    /// junction is available (stream_initializer wires it later).
+    /// junction is available (the runtime wires it on attachment).
+    ///
+    /// Factories only know a connector-level tag (topic, file path, ...), so
+    /// the stream name is set here too: it is what DLQ events report in
+    /// their `streamName` field.
     ///
     /// # Arguments
+    /// * `stream_name` - Name of the stream whose failures are dead-lettered
     /// * `junction` - The InputHandler for the DLQ stream
-    pub fn set_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>) {
+    pub fn set_dlq_junction(&mut self, stream_name: &str, junction: Arc<Mutex<InputHandler>>) {
+        self.stream_name = stream_name.to_string();
         self.dlq_junction = Some(junction);
     }
 
@@ -222,7 +246,15 @@ impl ErrorHandler {
     }
 
     /// Handle Retry strategy
-    fn handle_retry(&mut self, error: &EventFluxError) -> ErrorAction {
+    ///
+    /// Once retries are exhausted (or the error is not retriable) the event
+    /// goes to the DLQ when one is configured, and is dropped otherwise.
+    fn handle_retry(
+        &mut self,
+        event: Option<&Event>,
+        error: &EventFluxError,
+        wait: &mut dyn FnMut(Duration) -> bool,
+    ) -> ErrorAction {
         // Increment error counter
         self.consecutive_errors += 1;
 
@@ -242,9 +274,15 @@ impl ErrorHandler {
             ErrorAction::Retry { delay }
         } else {
             // Max retries exceeded or error not retriable
+            let has_dlq = self.config.dlq.is_some();
+            let outcome = if has_dlq {
+                "Sending event to DLQ"
+            } else {
+                "Dropping event"
+            };
             if error.is_retriable() {
                 eprintln!(
-                    "[{}] Max retries ({}) exceeded. Dropping event.",
+                    "[{}] Max retries ({}) exceeded. {outcome}.",
                     self.stream_name,
                     self.config
                         .retry
@@ -253,27 +291,44 @@ impl ErrorHandler {
                         .unwrap_or(0)
                 );
             } else {
-                eprintln!(
-                    "[{}] Non-retriable error. Dropping event.",
-                    self.stream_name
-                );
+                eprintln!("[{}] Non-retriable error. {outcome}.", self.stream_name);
             }
 
+            if has_dlq {
+                return self.dead_letter(event, error, wait);
+            }
             self.consecutive_errors = 0; // Reset for next event
             ErrorAction::Drop
         }
     }
 
     /// Handle DLQ strategy
-    fn handle_dlq(&mut self, event: Option<&Event>, error: &EventFluxError) -> ErrorAction {
+    fn handle_dlq(
+        &mut self,
+        event: Option<&Event>,
+        error: &EventFluxError,
+        wait: &mut dyn FnMut(Duration) -> bool,
+    ) -> ErrorAction {
         self.consecutive_errors += 1;
+        self.dead_letter(event, error, wait)
+    }
 
+    /// Send a failed event to the DLQ, applying the DLQ fallback strategy if
+    /// delivery fails. `consecutive_errors` must already count this failure:
+    /// it is reported as the DLQ event's `attemptCount`.
+    fn dead_letter(
+        &mut self,
+        event: Option<&Event>,
+        error: &EventFluxError,
+        wait: &mut dyn FnMut(Duration) -> bool,
+    ) -> ErrorAction {
         // Need an event to send to DLQ
         let Some(event) = event else {
             eprintln!(
                 "[{}] Cannot send to DLQ: no event available",
                 self.stream_name
             );
+            self.consecutive_errors = 0; // Reset for next event
             return ErrorAction::Drop;
         };
 
@@ -295,7 +350,7 @@ impl ErrorHandler {
                     "[{}] DLQ delivery failed: {}. Applying fallback strategy.",
                     self.stream_name, dlq_error
                 );
-                self.apply_dlq_fallback(event, error, &dlq_error)
+                self.apply_dlq_fallback(event, error, &dlq_error, wait)
             }
         }
     }
@@ -326,7 +381,7 @@ impl ErrorHandler {
                     "DLQ stream '{}' junction not found. DLQ stream may not exist or not be initialized.",
                     dlq_config.stream
                 ),
-                config_key: Some("error.dlq.stream".to_string()),
+                config_key: Some(super::dlq::DLQ_STREAM_KEY.to_string()),
             }
         })?;
 
@@ -349,8 +404,10 @@ impl ErrorHandler {
         event: &Event,
         original_error: &EventFluxError,
         dlq_error: &EventFluxError,
+        wait: &mut dyn FnMut(Duration) -> bool,
     ) -> ErrorAction {
         let dlq_config = self.config.dlq.as_ref().unwrap();
+        let fallback_retry = dlq_config.fallback_retry.clone();
 
         match dlq_config.fallback_strategy {
             DlqFallbackStrategy::Log => {
@@ -376,15 +433,30 @@ impl ErrorHandler {
             }
 
             DlqFallbackStrategy::Retry => {
-                // Retry DLQ delivery with fallback retry config
-                if let Some(fallback_retry) = &dlq_config.fallback_retry {
-                    if self.consecutive_errors < fallback_retry.max_attempts {
-                        let delay = fallback_retry.calculate_delay(self.consecutive_errors);
-                        eprintln!(
-                            "[{}] DLQ FALLBACK: Retrying DLQ delivery (attempt {}/{})",
-                            self.stream_name, self.consecutive_errors, fallback_retry.max_attempts
-                        );
-                        return ErrorAction::Retry { delay };
+                // Retry only the DLQ send, on its own attempt budget. The
+                // source's retry budget (`consecutive_errors`) may already be
+                // spent, and re-running the source callback would re-process
+                // an event that already failed.
+                let retry = fallback_retry.unwrap_or_default();
+                let mut last_error = dlq_error.to_string();
+
+                // The failed first send counts as attempt 1
+                for attempt in 2..=retry.max_attempts {
+                    let delay = retry.calculate_delay(attempt - 1);
+                    eprintln!(
+                        "[{}] DLQ FALLBACK: Retrying DLQ delivery in {:?} (attempt {}/{})",
+                        self.stream_name, delay, attempt, retry.max_attempts
+                    );
+                    if !wait(delay) {
+                        self.consecutive_errors = 0;
+                        return ErrorAction::Cancelled;
+                    }
+                    match self.send_to_dlq(event, original_error) {
+                        Ok(()) => {
+                            self.consecutive_errors = 0;
+                            return ErrorAction::SendToDlq;
+                        }
+                        Err(e) => last_error = e.to_string(),
                     }
                 }
 
@@ -394,7 +466,7 @@ impl ErrorHandler {
                     self.stream_name
                 );
                 eprintln!("  Original error: {}", original_error);
-                eprintln!("  DLQ error: {}", dlq_error);
+                eprintln!("  DLQ error: {}", last_error);
                 self.consecutive_errors = 0;
                 ErrorAction::Drop
             }
@@ -418,7 +490,7 @@ impl std::fmt::Debug for ErrorHandler {
 mod tests {
     use super::*;
 
-    use crate::core::error::{BackoffStrategy, RetryConfig};
+    use crate::core::error::{BackoffStrategy, DlqConfig, RetryConfig};
     use crate::core::event::AttributeValue;
 
     fn create_test_event() -> Event {
@@ -509,6 +581,139 @@ mod tests {
         // Non-retriable error should drop immediately
         let action = handler.handle_error(Some(&create_test_event()), &error);
         assert_eq!(action, ErrorAction::Drop);
+    }
+
+    /// Retry strategy whose exhausted events go to a DLQ that has no junction
+    /// wired, with `fallback` applied when DLQ delivery fails. Reaching the
+    /// fallback proves the event was routed to the DLQ, not dropped.
+    fn retry_handler_with_dlq(max_attempts: usize, fallback: DlqFallbackStrategy) -> ErrorHandler {
+        let fast_retry = |max_attempts| RetryConfig {
+            max_attempts,
+            backoff: BackoffStrategy::Fixed,
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        };
+        let retry_config = fast_retry(max_attempts);
+        let dlq_config = DlqConfig {
+            stream: "ErrorStream".to_string(),
+            fallback_strategy: fallback,
+            // Same budget as the source retries: the case where a shared
+            // counter would leave no DLQ retries at all
+            fallback_retry: (fallback == DlqFallbackStrategy::Retry)
+                .then(|| fast_retry(max_attempts)),
+        };
+        let config = ErrorConfig::new(
+            ErrorStrategy::Retry,
+            super::super::config::LogLevel::Warn,
+            Some(retry_config),
+            Some(dlq_config),
+            None,
+        )
+        .unwrap();
+        ErrorHandler::new(config, None, "TestStream".to_string())
+    }
+
+    #[test]
+    fn test_retry_strategy_exhausted_retries_go_to_dlq() {
+        // max_attempts counts every attempt: 3 attempts = 2 retries
+        let mut handler = retry_handler_with_dlq(3, DlqFallbackStrategy::Fail);
+        let event = create_test_event();
+        let error = EventFluxError::ConnectionUnavailable {
+            message: "Test error".to_string(),
+            source: None,
+        };
+
+        // Retries first
+        for _ in 0..2 {
+            let action = handler.handle_error(Some(&event), &error);
+            assert!(
+                matches!(action, ErrorAction::Retry { .. }),
+                "got {action:?}"
+            );
+        }
+
+        // Exhausted: routed to the DLQ, whose (unwired) delivery fails over
+        // to fallback-strategy=fail
+        let action = handler.handle_error(Some(&event), &error);
+        assert_eq!(action, ErrorAction::Fail);
+    }
+
+    /// Drive `handler` with a counting wait; returns the action and how many
+    /// DLQ-retry waits happened
+    fn handle_counting_waits(
+        handler: &mut ErrorHandler,
+        error: &EventFluxError,
+        allow: bool,
+    ) -> (ErrorAction, usize) {
+        let mut waits = 0;
+        let action =
+            handler.handle_error_with_backoff(Some(&create_test_event()), error, &mut |_| {
+                waits += 1;
+                allow
+            });
+        (action, waits)
+    }
+
+    #[test]
+    fn test_dlq_fallback_retry_has_own_budget_after_source_retries() {
+        let mut handler = retry_handler_with_dlq(3, DlqFallbackStrategy::Retry);
+        let error = EventFluxError::ConnectionUnavailable {
+            message: "Test error".to_string(),
+            source: None,
+        };
+
+        // Spend the source retry budget (3 attempts = 2 retries)
+        for _ in 0..2 {
+            let (action, waits) = handle_counting_waits(&mut handler, &error, true);
+            assert!(
+                matches!(action, ErrorAction::Retry { .. }),
+                "got {action:?}"
+            );
+            assert_eq!(waits, 0, "source retries wait in the caller");
+        }
+
+        // Exhausted: the DLQ send (unwired, so it always fails) is retried on
+        // its own 3-attempt budget — 2 resends, each after a wait — and never
+        // hands the event back to the source as a `Retry`
+        let (action, waits) = handle_counting_waits(&mut handler, &error, true);
+        assert_eq!(action, ErrorAction::Drop);
+        assert_eq!(waits, 2);
+        assert_eq!(handler.consecutive_error_count(), 0);
+    }
+
+    #[test]
+    fn test_dlq_fallback_retry_aborts_when_cancelled() {
+        let mut handler = retry_handler_with_dlq(1, DlqFallbackStrategy::Retry);
+        let error = EventFluxError::Configuration {
+            message: "Bad config".to_string(),
+            config_key: None,
+        };
+
+        // max_attempts = 1 leaves no resends: dropped without waiting
+        let (action, waits) = handle_counting_waits(&mut handler, &error, false);
+        assert_eq!(action, ErrorAction::Drop);
+        assert_eq!(waits, 0);
+
+        // With resends available, a refused wait (stop requested) cancels
+        let mut handler = retry_handler_with_dlq(3, DlqFallbackStrategy::Retry);
+        let (action, waits) = handle_counting_waits(&mut handler, &error, false);
+        assert_eq!(action, ErrorAction::Cancelled);
+        assert_eq!(waits, 1);
+    }
+
+    #[test]
+    fn test_retry_strategy_non_retriable_error_goes_to_dlq() {
+        let mut handler = retry_handler_with_dlq(3, DlqFallbackStrategy::Log);
+        let error = EventFluxError::Configuration {
+            message: "Bad config".to_string(),
+            config_key: None,
+        };
+
+        // No retry for a non-retriable error: straight to the DLQ, then
+        // fallback-strategy=log drops it and resets the counter
+        let action = handler.handle_error(Some(&create_test_event()), &error);
+        assert_eq!(action, ErrorAction::Drop);
+        assert_eq!(handler.consecutive_error_count(), 0);
     }
 
     #[test]

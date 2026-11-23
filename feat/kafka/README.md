@@ -85,7 +85,7 @@ pipeline via `SourceCallback`.
 | `error.retry.backoff` | No | exponential | Backoff strategy: exponential/linear/fixed |
 | `error.retry.initial-delay` | No | 100ms | Initial retry delay (duration string) |
 | `error.retry.max-delay` | No | 30s | Max retry delay (duration string) |
-| `error.dlq.stream` | No | - | DLQ stream name (required when strategy=dlq) |
+| `error.dlq.stream` | No | - | DLQ stream name (required when strategy=dlq; with strategy=retry, receives exhausted records) |
 
 Reserved keys (`bootstrap.servers`, `group.id`, offset/commit settings) may not be overridden via
 `kafka.rdkafka.*` — config parsing rejects them with a clear error.
@@ -136,7 +136,7 @@ impl Source for KafkaSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>);  // worker.start(|running| poll loop)
     fn stop(&mut self);          // worker.stop() — synchronous, joined, idempotent
     fn clone_box(&self) -> Box<dyn Source>;
-    fn set_error_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>);
+    fn set_error_dlq_junction(&mut self, stream_name: &str, junction: Arc<Mutex<InputHandler>>) -> Result<(), EventFluxError>;
     fn validate_connectivity(&self) -> Result<(), EventFluxError>;
 }
 ```
@@ -303,9 +303,10 @@ rdkafka = { version = "0.37", features = ["cmake-build", "ssl-vendored"], option
 ## Error Handling
 
 Identical integration to RabbitMQ: `ErrorConfigBuilder` / `SourceErrorContext`, strategies
-drop / retry / dlq / fail, DLQ junction wired post-creation by `stream_initializer` via
-`set_error_dlq_junction()`. The source factory uses the topic name as the error-context stream
-identifier (RabbitMQ uses the queue name).
+drop / retry / dlq / fail, DLQ junction wired post-creation by `EventFluxAppRuntime` via
+`set_error_dlq_junction()`, which also sets the stream name reported in DLQ events. Until then
+the source factory uses the topic name as the error-context stream identifier (RabbitMQ uses
+the queue name).
 
 Additional Kafka-specific handling:
 - librdkafka transient errors (broker down, timeouts) are retried internally; the source only

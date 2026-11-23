@@ -48,16 +48,17 @@ pub mod window;
 // Re-export key public-facing structs from core
 pub use self::data_source::{DataSource, DataSourceConfig, SqliteDataSource};
 pub use self::error::{
-    create_dlq_event, error_properties_to_flat_config, extract_error_properties, BackoffStrategy,
-    DlqConfig, DlqFallbackStrategy, ErrorAction, ErrorConfig, ErrorConfigBuilder, ErrorHandler,
-    ErrorIntegrationHelper, ErrorStrategy, FailConfig, LogLevel, RetryConfig, SourceErrorContext,
+    create_dlq_event, BackoffStrategy, DlqConfig, DlqFallbackStrategy, ErrorAction, ErrorConfig,
+    ErrorConfigBuilder, ErrorHandler, ErrorStrategy, FailConfig, LogLevel, RetryConfig,
+    SourceErrorContext, DLQ_STREAM_KEY,
 };
 pub use self::eventflux_app_runtime::EventFluxAppRuntime;
 pub use self::eventflux_app_runtime_builder::EventFluxAppRuntimeBuilder;
 pub use self::eventflux_manager::EventFluxManager; // Added
 pub use self::exception::{EventFluxError, EventFluxResult};
 pub use self::validation::{
-    detect_circular_dependencies, validate_dlq_schema, validate_dlq_stream_name,
-    validate_no_recursive_dlq, QuerySourceExtractor,
+    detect_circular_dependencies, validate_dlq_reference, validate_dlq_schema,
+    validate_dlq_stream_name, validate_no_recursive_dlq, validate_source_dlq_configs,
+    QuerySourceExtractor,
 };
 // Other important re-exports will be added as these modules are built out.

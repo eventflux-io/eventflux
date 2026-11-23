@@ -54,7 +54,7 @@ Consumes messages from a RabbitMQ queue and delivers them to the EventFlux pipel
 | `error.retry.backoff` | No | exponential | Backoff strategy: exponential/linear/fixed |
 | `error.retry.initial-delay` | No | 100ms | Initial retry delay (duration string) |
 | `error.retry.max-delay` | No | 30s | Max retry delay (duration string) |
-| `error.dlq.stream` | No | - | DLQ stream name (required when strategy=dlq) |
+| `error.dlq.stream` | No | - | DLQ stream name (required when strategy=dlq; with strategy=retry, receives exhausted records) |
 
 ### Usage Example
 

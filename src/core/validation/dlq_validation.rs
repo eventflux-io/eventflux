@@ -21,38 +21,32 @@
 //! - Phase 1: DLQ stream name existence validation
 //! - Phase 2: DLQ schema validation and recursive restriction validation
 
+use crate::core::config::{ElementType, ResolvedElementConfig};
+use crate::core::error::{DLQ_FIELDS, DLQ_STREAM_KEY};
 use crate::core::exception::{EventFluxError, EventFluxResult};
-use crate::query_api::definition::attribute::Type as AttributeType;
 use crate::query_api::definition::StreamDefinition;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Required DLQ stream schema fields
-///
-/// DLQ streams MUST have exactly these fields with exact types:
-/// - originalEvent: STRING (serialized original event)
-/// - errorMessage: STRING (error description)
-/// - errorType: STRING (error classification)
-/// - timestamp: LONG (error occurrence time)
-/// - attemptCount: INT (number of retry attempts)
-/// - streamName: STRING (source stream name)
-const REQUIRED_DLQ_FIELDS: &[(&str, AttributeType)] = &[
-    ("originalEvent", AttributeType::STRING),
-    ("errorMessage", AttributeType::STRING),
-    ("errorType", AttributeType::STRING),
-    ("timestamp", AttributeType::LONG),
-    ("attemptCount", AttributeType::INT),
-    ("streamName", AttributeType::STRING),
-];
+/// The required DLQ schema as SQL column declarations, e.g.
+/// `originalEvent STRING, errorMessage STRING, ...`
+fn required_dlq_schema() -> String {
+    DLQ_FIELDS
+        .iter()
+        .map(|(name, attribute_type)| format!("{name} {attribute_type:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
-/// Validate DLQ stream schema against required fields
+/// Validate DLQ stream schema against [`DLQ_FIELDS`]
 ///
 /// **Phase 2 Validation** (Application Initialization)
 ///
-/// Validates that the DLQ stream has the exact required schema:
-/// - Exact field count (no more, no less)
-/// - All required fields present with correct types
-/// - No extra fields beyond requirements
+/// Validates that the DLQ stream declares exactly the DLQ fields, with the
+/// exact types, in the exact order. DLQ events are positional and always
+/// carry their values in `DLQ_FIELDS` order, so any other order would put
+/// values under the wrong attributes. Duplicate and extra fields fail the
+/// count or position checks.
 ///
 /// # Arguments
 /// * `stream_name` - Name of the stream using the DLQ
@@ -86,75 +80,51 @@ pub fn validate_dlq_schema(
                 "DLQ stream '{}' not found for stream '{}'",
                 dlq_stream_name, stream_name
             ),
-            "error.dlq.stream",
+            DLQ_STREAM_KEY,
         )
     })?;
 
-    // 2. Extract actual schema from DLQ stream definition
-    let actual_fields: HashMap<String, AttributeType> = dlq_stream
-        .abstract_definition
-        .attribute_list
-        .iter()
-        .map(|attr| (attr.name.clone(), attr.attribute_type))
-        .collect();
-
-    // 3. Validate exact field count (no more, no less)
-    if actual_fields.len() != REQUIRED_DLQ_FIELDS.len() {
-        return Err(EventFluxError::configuration_with_key(
+    let schema_error = |detail: String| {
+        EventFluxError::configuration_with_key(
             format!(
-                "DLQ stream '{}' has {} fields, but exactly {} required (originalEvent, errorMessage, errorType, timestamp, attemptCount, streamName)",
-                dlq_stream_name,
-                actual_fields.len(),
-                REQUIRED_DLQ_FIELDS.len()
+                "DLQ stream '{dlq_stream_name}' {detail}. DLQ streams must declare exactly, \
+                 in this order: {}",
+                required_dlq_schema()
             ),
-            "error.dlq.stream",
-        ));
+            DLQ_STREAM_KEY,
+        )
+    };
+
+    // 2. Exact field count (no more, no less)
+    let attributes = &dlq_stream.abstract_definition.attribute_list;
+    if attributes.len() != DLQ_FIELDS.len() {
+        return Err(schema_error(format!(
+            "has {} fields, but exactly {} required",
+            attributes.len(),
+            DLQ_FIELDS.len()
+        )));
     }
 
-    // 4. Validate each required field present with correct type
-    for (required_name, required_type) in REQUIRED_DLQ_FIELDS {
-        match actual_fields.get(*required_name) {
-            Some(actual_type) if actual_type == required_type => {
-                // ✅ Field present with correct type
-            }
-            Some(actual_type) => {
-                return Err(EventFluxError::configuration_with_key(
-                    format!(
-                        "DLQ stream '{}' field '{}' has type {:?}, expected {:?}",
-                        dlq_stream_name, required_name, actual_type, required_type
-                    ),
-                    "error.dlq.stream",
-                ));
-            }
-            None => {
-                return Err(EventFluxError::configuration_with_key(
-                    format!(
-                        "DLQ stream '{}' missing required field '{} {:?}'",
-                        dlq_stream_name, required_name, required_type
-                    ),
-                    "error.dlq.stream",
-                ));
-            }
+    // 3. Each position holds the required field with the required type
+    for (position, (attr, (required_name, required_type))) in
+        attributes.iter().zip(DLQ_FIELDS).enumerate()
+    {
+        if attr.name != *required_name {
+            return Err(schema_error(format!(
+                "field {} is '{}', expected '{}'",
+                position + 1,
+                attr.name,
+                required_name
+            )));
+        }
+        if attr.attribute_type != *required_type {
+            return Err(schema_error(format!(
+                "field '{}' has type {:?}, expected {:?}",
+                required_name, attr.attribute_type, required_type
+            )));
         }
     }
 
-    // 5. Check for extra fields not in required schema
-    for actual_name in actual_fields.keys() {
-        if !REQUIRED_DLQ_FIELDS
-            .iter()
-            .any(|(req_name, _)| req_name == actual_name)
-        {
-            return Err(EventFluxError::configuration_with_key(
-                format!(
-                    "DLQ stream '{}' has extra field '{}' not in required schema",
-                    dlq_stream_name, actual_name
-                ),
-                "error.dlq.stream",
-            ));
-        }
-    }
-
-    // ✅ Schema validation passed
     Ok(())
 }
 
@@ -184,7 +154,7 @@ pub fn validate_dlq_stream_name(
                 "DLQ stream '{}' referenced by stream '{}' does not exist",
                 dlq_stream_name, stream_name
             ),
-            "error.dlq.stream",
+            DLQ_STREAM_KEY,
         ));
     }
 
@@ -199,7 +169,7 @@ pub fn validate_dlq_stream_name(
 ///
 /// # Arguments
 /// * `stream_name` - Name of the stream being validated
-/// * `dlq_config_key` - Optional DLQ configuration key
+/// * `dlq_config_key` - The stream's own `error.dlq.stream` value, if configured
 /// * `is_dlq_stream` - Whether this stream is itself a DLQ for another stream
 ///
 /// # Returns
@@ -216,16 +186,91 @@ pub fn validate_no_recursive_dlq(
                 "DLQ stream '{}' cannot have its own DLQ (recursive error handling not allowed)",
                 stream_name
             ),
-            "error.dlq.stream",
+            DLQ_STREAM_KEY,
         ));
     }
 
     Ok(())
 }
 
+/// Validate one source stream's DLQ reference
+///
+/// **Phase 2 Validation** (Application Initialization)
+///
+/// Runs every DLQ rule for `stream_name -> dlq_stream_name`: the DLQ stream
+/// exists, has the exact DLQ schema, and does not route its own failures to
+/// another DLQ. A stream naming itself as its DLQ fails the recursion rule.
+///
+/// # Arguments
+/// * `stream_name` - Name of the stream using the DLQ
+/// * `dlq_stream_name` - Name of the DLQ stream
+/// * `dlq_stream_own_dlq` - The DLQ stream's own `error.dlq.stream`, if any
+/// * `stream_definitions` - Map of all stream definitions in the app
+pub fn validate_dlq_reference(
+    stream_name: &str,
+    dlq_stream_name: &str,
+    dlq_stream_own_dlq: Option<&str>,
+    stream_definitions: &HashMap<String, Arc<StreamDefinition>>,
+) -> EventFluxResult<()> {
+    validate_dlq_stream_name(stream_name, dlq_stream_name, stream_definitions)?;
+    validate_dlq_schema(stream_name, dlq_stream_name, stream_definitions)?;
+    validate_no_recursive_dlq(dlq_stream_name, dlq_stream_own_dlq, true)
+}
+
+/// The DLQ stream that `stream`'s source routes failures to, if its resolved
+/// configuration sets `error.dlq.stream` (a source-only property)
+pub fn source_dlq_stream<'a>(
+    resolved_configs: &'a HashMap<String, ResolvedElementConfig>,
+    stream: &str,
+) -> Option<&'a str> {
+    resolved_configs
+        .get(&ElementType::Source.config_key(stream))
+        .and_then(|config| config.get(DLQ_STREAM_KEY))
+        .map(String::as_str)
+}
+
+/// Validate the DLQ reference of every source stream in an app
+///
+/// **Phase 2 Validation** (Application Initialization)
+///
+/// Checks each source whose resolved configuration (YAML + SQL WITH) sets
+/// `error.dlq.stream`, using [`validate_dlq_reference`]. Runs whatever the
+/// error strategy, since an explicit stream reference that is wrong is a
+/// configuration mistake either way. Every violation is reported, not just
+/// the first, in stream-name order.
+///
+/// # Arguments
+/// * `resolved_configs` - Resolved element configs keyed by
+///   [`ElementType::config_key`]
+/// * `stream_definitions` - Map of all stream definitions in the app
+pub fn validate_source_dlq_configs(
+    resolved_configs: &HashMap<String, ResolvedElementConfig>,
+    stream_definitions: &HashMap<String, Arc<StreamDefinition>>,
+) -> Result<(), Vec<EventFluxError>> {
+    let dlq_of = |stream: &str| source_dlq_stream(resolved_configs, stream);
+
+    let mut stream_names: Vec<&String> = stream_definitions.keys().collect();
+    stream_names.sort();
+
+    let errors: Vec<EventFluxError> = stream_names
+        .into_iter()
+        .filter_map(|stream| {
+            let dlq_stream = dlq_of(stream)?;
+            validate_dlq_reference(stream, dlq_stream, dlq_of(dlq_stream), stream_definitions).err()
+        })
+        .collect();
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query_api::definition::attribute::Type as AttributeType;
     use crate::query_api::definition::StreamDefinition;
 
     fn create_valid_dlq_stream() -> StreamDefinition {
@@ -292,6 +337,40 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_dlq_schema_duplicate_field() {
+        // All six required fields plus a second originalEvent: the duplicate
+        // must not collapse into a six-field schema that passes
+        let stream_def =
+            create_valid_dlq_stream().attribute("originalEvent".to_string(), AttributeType::STRING);
+        // Six fields, but originalEvent twice in place of streamName
+        let six_with_duplicate = StreamDefinition::new("DupSixDLQ".to_string())
+            .attribute("originalEvent".to_string(), AttributeType::STRING)
+            .attribute("errorMessage".to_string(), AttributeType::STRING)
+            .attribute("errorType".to_string(), AttributeType::STRING)
+            .attribute("timestamp".to_string(), AttributeType::LONG)
+            .attribute("attemptCount".to_string(), AttributeType::INT)
+            .attribute("originalEvent".to_string(), AttributeType::STRING);
+
+        let parsed_streams = HashMap::from([
+            ("DupDLQ".to_string(), Arc::new(stream_def)),
+            ("DupSixDLQ".to_string(), Arc::new(six_with_duplicate)),
+        ]);
+
+        let err = validate_dlq_schema("Orders", "DupDLQ", &parsed_streams)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("has 7 fields"), "got: {err}");
+
+        let err = validate_dlq_schema("Orders", "DupSixDLQ", &parsed_streams)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("field 6 is 'originalEvent', expected 'streamName'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn test_validate_dlq_schema_extra_field() {
         let mut stream_def = create_valid_dlq_stream();
         stream_def = stream_def.attribute("extraField".to_string(), AttributeType::STRING);
@@ -326,7 +405,10 @@ mod tests {
 
         let err = result.unwrap_err();
         let err_msg = err.to_string();
-        assert!(err_msg.contains("missing required field 'originalEvent"));
+        assert!(
+            err_msg.contains("field 1 is 'original_event', expected 'originalEvent'"),
+            "got: {err_msg}"
+        );
     }
 
     #[test]
@@ -381,8 +463,9 @@ mod tests {
     }
 
     #[test]
-    fn test_dlq_schema_field_order_independence() {
-        // Fields can be in any order as long as all are present
+    fn test_dlq_schema_rejects_noncanonical_field_order() {
+        // DLQ events are positional and always emitted in DLQ_FIELDS order,
+        // so the right fields in another order would receive swapped values
         let stream_def = StreamDefinition::new("ReorderedDLQ".to_string())
             .attribute("streamName".to_string(), AttributeType::STRING)
             .attribute("attemptCount".to_string(), AttributeType::INT)
@@ -394,7 +477,158 @@ mod tests {
         let mut parsed_streams = HashMap::new();
         parsed_streams.insert("ReorderedDLQ".to_string(), Arc::new(stream_def));
 
-        let result = validate_dlq_schema("Orders", "ReorderedDLQ", &parsed_streams);
-        assert!(result.is_ok());
+        let err = validate_dlq_schema("Orders", "ReorderedDLQ", &parsed_streams)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("field 1 is 'streamName', expected 'originalEvent'"),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("in this order: originalEvent STRING, errorMessage STRING"),
+            "error spells out the required schema, got: {err}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // validate_dlq_reference / validate_source_dlq_configs
+    // ------------------------------------------------------------------
+
+    fn plain_stream(name: &str) -> Arc<StreamDefinition> {
+        Arc::new(
+            StreamDefinition::new(name.to_string())
+                .attribute("id".to_string(), AttributeType::STRING),
+        )
+    }
+
+    /// Streams: `Orders`, `Payments` (plain) and `OrderErrors` (valid DLQ)
+    fn app_streams() -> HashMap<String, Arc<StreamDefinition>> {
+        HashMap::from([
+            ("Orders".to_string(), plain_stream("Orders")),
+            ("Payments".to_string(), plain_stream("Payments")),
+            (
+                "OrderErrors".to_string(),
+                Arc::new(create_valid_dlq_stream()),
+            ),
+        ])
+    }
+
+    fn config_with_dlq(element_type: ElementType, dlq: &str) -> ResolvedElementConfig {
+        let mut config = ResolvedElementConfig::new(element_type);
+        config
+            .properties
+            .insert(DLQ_STREAM_KEY.to_string(), dlq.to_string());
+        config
+    }
+
+    fn source_with_dlq(stream: &str, dlq: &str) -> (String, ResolvedElementConfig) {
+        (
+            ElementType::Source.config_key(stream),
+            config_with_dlq(ElementType::Source, dlq),
+        )
+    }
+
+    fn error_messages(errors: Vec<EventFluxError>) -> Vec<String> {
+        errors.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn test_validate_dlq_reference_valid() {
+        let result = validate_dlq_reference("Orders", "OrderErrors", None, &app_streams());
+        assert!(result.is_ok(), "got: {result:?}");
+    }
+
+    #[test]
+    fn test_validate_dlq_reference_missing_stream() {
+        let err = validate_dlq_reference("Orders", "OrderDeadLetters", None, &app_streams())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("'OrderDeadLetters'"), "got: {err}");
+        assert!(err.contains("does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn test_validate_dlq_reference_bad_schema() {
+        let err = validate_dlq_reference("Orders", "Payments", None, &app_streams())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exactly 6 required"), "got: {err}");
+    }
+
+    #[test]
+    fn test_validate_dlq_reference_recursive() {
+        let err = validate_dlq_reference("Orders", "OrderErrors", Some("Other"), &app_streams())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot have its own DLQ"), "got: {err}");
+    }
+
+    #[test]
+    fn test_validate_source_dlq_configs_valid() {
+        let resolved = HashMap::from([source_with_dlq("Orders", "OrderErrors")]);
+        assert!(validate_source_dlq_configs(&resolved, &app_streams()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_source_dlq_configs_without_dlq() {
+        let resolved = HashMap::from([(
+            ElementType::Source.config_key("Orders"),
+            ResolvedElementConfig::new(ElementType::Source),
+        )]);
+        assert!(validate_source_dlq_configs(&resolved, &app_streams()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_source_dlq_configs_ignores_non_source_configs() {
+        // error.dlq.stream is a source property; other element kinds never
+        // consume it, so it is not validated for them
+        let resolved = HashMap::from([(
+            ElementType::Sink.config_key("Orders"),
+            config_with_dlq(ElementType::Sink, "Missing"),
+        )]);
+        assert!(validate_source_dlq_configs(&resolved, &app_streams()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_source_dlq_configs_rejects_dlq_with_own_dlq() {
+        // OrderErrors is a valid DLQ for Orders, but is itself a source that
+        // routes failures to Payments: recursive error handling
+        let resolved = HashMap::from([
+            source_with_dlq("Orders", "OrderErrors"),
+            source_with_dlq("OrderErrors", "Payments"),
+        ]);
+        let errors =
+            error_messages(validate_source_dlq_configs(&resolved, &app_streams()).unwrap_err());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("'OrderErrors' cannot have its own DLQ")),
+            "got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_source_dlq_configs_rejects_self_reference() {
+        let resolved = HashMap::from([source_with_dlq("OrderErrors", "OrderErrors")]);
+        let errors =
+            error_messages(validate_source_dlq_configs(&resolved, &app_streams()).unwrap_err());
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert!(
+            errors[0].contains("cannot have its own DLQ"),
+            "got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_source_dlq_configs_reports_every_error_in_stream_order() {
+        let resolved = HashMap::from([
+            source_with_dlq("Payments", "Missing"),
+            source_with_dlq("Orders", "Payments"),
+        ]);
+        let errors =
+            error_messages(validate_source_dlq_configs(&resolved, &app_streams()).unwrap_err());
+        assert_eq!(errors.len(), 2, "got: {errors:?}");
+        assert!(errors[0].contains("exactly 6 required"), "got: {errors:?}");
+        assert!(errors[1].contains("'Missing'"), "got: {errors:?}");
     }
 }

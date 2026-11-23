@@ -103,18 +103,14 @@
 pub mod config;
 pub mod dlq;
 pub mod handler;
-pub mod integration;
 pub mod retry;
 pub mod source_support;
 pub mod strategy;
 
 // Re-export main types for convenience
 pub use config::{ErrorConfig, FailConfig, LogLevel};
-pub use dlq::{create_dlq_event, DlqConfig, DlqFallbackStrategy};
+pub use dlq::{create_dlq_event, DlqConfig, DlqFallbackStrategy, DLQ_FIELDS, DLQ_STREAM_KEY};
 pub use handler::{ErrorAction, ErrorHandler};
-pub use integration::{
-    error_properties_to_flat_config, extract_error_properties, ErrorIntegrationHelper,
-};
 pub use retry::{
     calculate_backoff, exponential_backoff, linear_backoff, parse_duration, BackoffStrategy,
     RetryConfig,

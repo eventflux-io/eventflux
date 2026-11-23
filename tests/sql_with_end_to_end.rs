@@ -613,3 +613,37 @@ streams:
         "timer source attached from SQL should produce events"
     );
 }
+
+/// A DLQ on a source that cannot dead-letter (the timer source) must fail
+/// start() instead of being silently ignored (#207)
+#[tokio::test]
+async fn test_sql_with_dlq_on_source_without_dlq_support_fails_start() {
+    let manager = EventFluxManager::new();
+    manager.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
+
+    let sql = r#"
+        CREATE STREAM TimerInput (tick STRING) WITH (
+            type = 'source',
+            extension = 'timer',
+            "timer.interval" = '100',
+            "error.strategy" = 'dlq',
+            "error.dlq.stream" = 'TimerErrors'
+        );
+
+        CREATE STREAM TimerErrors (originalEvent STRING, errorMessage STRING,
+            errorType STRING, timestamp LONG, attemptCount INT, streamName STRING);
+    "#;
+
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(sql)
+        .await
+        .expect("a valid DLQ reference passes app creation");
+    let err = runtime
+        .start()
+        .expect_err("timer source cannot dead-letter")
+        .to_string();
+    runtime.shutdown();
+
+    assert!(err.contains("does not support DLQ routing"), "got: {err}");
+    assert!(err.contains("'TimerInput'"), "got: {err}");
+}

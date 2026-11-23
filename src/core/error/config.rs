@@ -25,7 +25,7 @@ use std::str::FromStr;
 
 use crate::core::config::FlatConfig;
 
-use super::dlq::DlqConfig;
+use super::dlq::{DlqConfig, DLQ_STREAM_KEY};
 use super::retry::RetryConfig;
 use super::strategy::ErrorStrategy;
 
@@ -123,7 +123,8 @@ impl Default for FailConfig {
 /// - `error.strategy` - Main error handling strategy (drop/retry/dlq/fail)
 /// - `error.log-level` - Logging level for errors
 /// - `error.retry.*` - Retry configuration (if strategy=retry)
-/// - `error.dlq.*` - DLQ configuration (if strategy=dlq)
+/// - `error.dlq.*` - DLQ configuration (if strategy=dlq, or strategy=retry
+///   with `error.dlq.stream` set)
 /// - `error.fail.*` - Fail configuration (if strategy=fail)
 #[derive(Debug, Clone)]
 pub struct ErrorConfig {
@@ -136,7 +137,8 @@ pub struct ErrorConfig {
     /// Retry configuration (only if strategy is Retry)
     pub retry: Option<RetryConfig>,
 
-    /// DLQ configuration (only if strategy is Dlq)
+    /// DLQ configuration (strategy Dlq, or Retry with a DLQ stream as the
+    /// destination for exhausted retries)
     pub dlq: Option<DlqConfig>,
 
     /// Fail configuration (only if strategy is Fail)
@@ -176,7 +178,8 @@ impl ErrorConfig {
     /// - strategy: drop (default)
     /// - log-level: warn (default)
     /// - retry: Only parsed if strategy=retry
-    /// - dlq: Only parsed if strategy=dlq
+    /// - dlq: Parsed if strategy=dlq, or strategy=retry with `error.dlq.stream`
+    ///   set (events whose retries are exhausted go to the DLQ)
     /// - fail: Only parsed if strategy=fail
     ///
     /// # Example Configuration
@@ -216,10 +219,14 @@ impl ErrorConfig {
             None
         };
 
-        let dlq = if matches!(strategy, ErrorStrategy::Dlq) {
-            Some(DlqConfig::from_flat_config(config)?)
-        } else {
-            None
+        // DLQ routing: always for strategy=dlq; for strategy=retry when a DLQ
+        // stream is named, which receives events whose retries are exhausted
+        let dlq = match strategy {
+            ErrorStrategy::Dlq => Some(DlqConfig::from_flat_config(config)?),
+            ErrorStrategy::Retry if config.get(DLQ_STREAM_KEY).is_some() => {
+                Some(DlqConfig::from_flat_config(config)?)
+            }
+            _ => None,
         };
 
         let fail = if matches!(strategy, ErrorStrategy::Fail) {
@@ -287,6 +294,7 @@ impl Default for ErrorConfig {
 mod tests {
     use super::*;
     use crate::core::config::PropertySource;
+    use crate::core::error::DlqFallbackStrategy;
 
     // ========================================================================
     // LogLevel Tests
@@ -431,6 +439,37 @@ mod tests {
 
         let retry = error_config.retry.unwrap();
         assert_eq!(retry.max_attempts, 5);
+        assert!(error_config.dlq.is_none(), "no DLQ stream named");
+    }
+
+    #[test]
+    fn test_error_config_from_flat_config_retry_with_dlq_stream() {
+        // retry + error.dlq.stream: exhausted retries go to the DLQ
+        let mut config = FlatConfig::new();
+        config.set("error.strategy", "retry", PropertySource::SqlWith);
+        config.set("error.dlq.stream", "ErrorStream", PropertySource::SqlWith);
+        config.set(
+            "error.dlq.fallback-strategy",
+            "fail",
+            PropertySource::SqlWith,
+        );
+
+        let error_config = ErrorConfig::from_flat_config(&config).unwrap();
+        assert_eq!(error_config.strategy, ErrorStrategy::Retry);
+        assert!(error_config.retry.is_some());
+        let dlq = error_config.dlq.expect("DLQ parsed for retry + dlq stream");
+        assert_eq!(dlq.stream, "ErrorStream");
+        assert_eq!(dlq.fallback_strategy, DlqFallbackStrategy::Fail);
+    }
+
+    #[test]
+    fn test_error_config_from_flat_config_drop_ignores_dlq_stream() {
+        let mut config = FlatConfig::new();
+        config.set("error.strategy", "drop", PropertySource::SqlWith);
+        config.set("error.dlq.stream", "ErrorStream", PropertySource::SqlWith);
+
+        let error_config = ErrorConfig::from_flat_config(&config).unwrap();
+        assert!(error_config.dlq.is_none());
     }
 
     #[test]

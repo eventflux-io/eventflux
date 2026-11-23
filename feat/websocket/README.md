@@ -86,7 +86,7 @@ impl Source for WebSocketSource {
     fn stop(&mut self);
     fn clone_box(&self) -> Box<dyn Source>;
     fn validate_connectivity(&self) -> Result<(), EventFluxError>;
-    fn set_error_dlq_junction(&mut self, junction: Arc<Mutex<InputHandler>>);
+    fn set_error_dlq_junction(&mut self, stream_name: &str, junction: Arc<Mutex<InputHandler>>) -> Result<(), EventFluxError>;
 }
 
 /// Factory for creating WebSocket source instances

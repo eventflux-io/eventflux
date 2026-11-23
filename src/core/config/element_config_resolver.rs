@@ -116,6 +116,15 @@ impl std::fmt::Display for ElementType {
     }
 }
 
+impl ElementType {
+    /// Key of an element's entry in the resolved-config map produced by
+    /// [`ElementConfigResolver::resolve_all`], in the form `"type:name"`
+    /// (e.g. `"source:Orders"`).
+    pub fn config_key(self, name: &str) -> String {
+        format!("{self}:{name}")
+    }
+}
+
 /// Tracks where a configuration property originated from
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigSource {
@@ -254,7 +263,7 @@ impl<'a> ElementConfigResolver<'a> {
         // Resolve all stream definitions
         for (name, stream_def) in stream_definitions {
             if let Some(config) = self.resolve_stream(name, stream_def) {
-                let key = format!("{}:{}", config.element_type, name);
+                let key = config.element_type.config_key(name);
                 log::debug!(
                     "[ElementConfigResolver] Resolved {} '{}': {}",
                     config.element_type,
@@ -268,7 +277,7 @@ impl<'a> ElementConfigResolver<'a> {
         // Resolve all table definitions
         for (name, table_def) in table_definitions {
             if let Some(config) = self.resolve_table(name, table_def) {
-                let key = format!("table:{}", name);
+                let key = ElementType::Table.config_key(name);
                 log::debug!(
                     "[ElementConfigResolver] Resolved table '{}': {}",
                     name,
