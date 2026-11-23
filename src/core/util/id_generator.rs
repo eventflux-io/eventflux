@@ -15,10 +15,11 @@
  * limitations under the License.
  */
 
-// src/core/util/id_generator.rs
-// Lightweight equivalent of io.eventflux.core.util.IdGenerator.
+// Simple version of io.eventflux.core.util.IdGenerator.
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Hands out increasing numeric ids as strings, starting at "1". Safe to share between
+/// threads. A clone continues from the same count but counts on its own after that.
 #[derive(Debug)]
 pub struct IdGenerator {
     counter: AtomicU64,
@@ -45,7 +46,7 @@ impl IdGenerator {
         Self::default()
     }
 
-    /// Returns a new monotonically increasing id as a String.
+    /// Returns the next id as a String. Each call gives a number one higher than the last.
     pub fn create_new_id(&self) -> String {
         let next = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
         next.to_string()

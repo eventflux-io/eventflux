@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/util/executor_service.rs
-// Simple executor service backed by rayon thread pool.
+// Simple executor service backed by a rayon thread pool.
 
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
@@ -24,21 +23,22 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-/// Counts in-flight tasks submitted via [`ExecutorService::execute_tracked`].
+/// Counts tasks still running that were submitted through
+/// [`ExecutorService::execute_tracked`].
 ///
-/// A task is "in flight" from the moment it is submitted (not when it starts
-/// running) until its closure returns or unwinds.
+/// A task counts from the moment it is submitted, not when it starts running, until
+/// its closure returns or unwinds.
 ///
-/// Memory-model caveat: a reader with no happens-before edge to a `register()`
-/// call can legally observe a stale pre-registration zero, so `in_flight() ==
-/// 0` means "no tracked work" only for readers synchronized with every
-/// registration — e.g. the junction drain, whose read order (consumed counter
-/// before tracker) supplies that edge, since consumers register dispatches
-/// before Release-incrementing the consumed counter.
+/// Memory ordering caveat. A reader that has no happens before link to a `register()`
+/// call can see an old zero from before the registration. So `in_flight() == 0` means
+/// "no tracked work" only for readers that are synchronized with every registration.
+/// The junction drain is one. It reads the consumed counter before the tracker, and
+/// consumers register a dispatch before they increment the consumed counter with
+/// Release, which gives it that link.
 #[derive(Debug, Default)]
 pub struct TaskTracker {
-    // CachePadded keeps the hot per-dispatch increments/decrements off the
-    // cache line holding the Arc's reference counts.
+    // CachePadded keeps the frequent per dispatch increments and decrements off the
+    // cache line that holds the Arc reference counts.
     in_flight: crossbeam_utils::CachePadded<AtomicU64>,
 }
 
@@ -47,8 +47,8 @@ impl TaskTracker {
         Self::default()
     }
 
-    /// Register one unit of in-flight work. The returned guard decrements the
-    /// counter when dropped, including during a panic unwind.
+    /// Counts one more task. The returned guard takes it off the count when dropped,
+    /// including during a panic unwind.
     pub fn register(self: &Arc<Self>) -> TaskGuard {
         self.in_flight.fetch_add(1, Ordering::AcqRel);
         TaskGuard {
@@ -60,9 +60,9 @@ impl TaskTracker {
         self.in_flight.load(Ordering::Acquire)
     }
 
-    /// Poll until `in_flight` reaches zero or `timeout` elapses, sleeping
+    /// Polls until `in_flight` reaches zero or `timeout` passes, sleeping
     /// `poll_interval` between checks. Returns whether zero was reached.
-    /// A timeout too large for `Instant` arithmetic means "wait forever".
+    /// A timeout too large to add to an `Instant` means wait forever.
     pub fn wait_for_zero(
         &self,
         timeout: std::time::Duration,
@@ -79,7 +79,8 @@ impl TaskTracker {
     }
 }
 
-/// RAII guard for one tracked task; see [`TaskTracker::register`].
+/// Guard for one tracked task. Dropping it takes the task off the count. See
+/// [`TaskTracker::register`].
 #[derive(Debug)]
 pub struct TaskGuard {
     tracker: Arc<TaskTracker>,
@@ -91,6 +92,10 @@ impl Drop for TaskGuard {
     }
 }
 
+/// Thread pool for running tasks in the background.
+///
+/// The default pool size comes from `EVENTFLUX_EXECUTOR_THREADS`, or the number of CPUs
+/// when that is unset or not a number.
 #[derive(Debug)]
 pub struct ExecutorService {
     pool: ThreadPool,
@@ -108,7 +113,11 @@ impl Default for ExecutorService {
 }
 
 impl ExecutorService {
-    /// Create a new executor with the given number of worker threads.
+    /// Creates an executor with the given number of worker threads, named
+    /// "<name>-<index>". A panicking task is logged and the pool keeps running.
+    ///
+    /// # Panics
+    /// Panics if rayon cannot build the thread pool.
     pub fn new(name: &str, threads: usize) -> Self {
         let name_str = name.to_string();
         let name_for_panic = name.to_string();
@@ -116,7 +125,7 @@ impl ExecutorService {
             .num_threads(threads)
             .thread_name(move |i| format!("{name_str}-{i}"))
             // Without a panic handler rayon aborts the whole process when a
-            // spawned task panics; log and keep the pool alive instead.
+            // spawned task panics. Log it and keep the pool alive instead.
             .panic_handler(move |panic| {
                 let msg = panic
                     .downcast_ref::<&str>()
@@ -130,7 +139,7 @@ impl ExecutorService {
         Self { pool, threads }
     }
 
-    /// Submit a task for asynchronous execution.
+    /// Queues a task to run on the pool and returns at once.
     pub fn execute<F>(&self, task: F)
     where
         F: FnOnce() + Send + 'static,
@@ -138,10 +147,10 @@ impl ExecutorService {
         self.pool.spawn(task);
     }
 
-    /// Submit a task whose completion is observable through `tracker`.
+    /// Queues a task whose completion can be watched through `tracker`.
     ///
     /// The guard is created on the caller's thread before the task is queued,
-    /// so there is no window where the task is enqueued but uncounted.
+    /// so a queued task is never left uncounted.
     pub fn execute_tracked<F>(&self, tracker: &Arc<TaskTracker>, task: F)
     where
         F: FnOnce() + Send + 'static,
@@ -153,10 +162,10 @@ impl ExecutorService {
         });
     }
 
-    /// Does NOT wait — this is a no-op (rayon manages its own threads and
-    /// offers no queued-task barrier). Callers that need completion
-    /// signalling must opt in via [`ExecutorService::execute_tracked`] and
-    /// poll the [`TaskTracker`]. Making this a real wait is tracked in #75.
+    /// Does NOT wait. It does nothing, because rayon manages its own threads and has
+    /// no way to wait for queued tasks. Callers that need to know when tasks finish
+    /// must use [`ExecutorService::execute_tracked`] and poll the [`TaskTracker`].
+    /// Making this a real wait is tracked in #75.
     pub fn wait_all(&self) {}
 
     pub fn pool_size(&self) -> usize {
@@ -168,8 +177,8 @@ impl Drop for ExecutorService {
     fn drop(&mut self) {}
 }
 
-/// Determine thread count from an environment variable of the form
-/// `EVENTFLUX_POOL_<NAME>_THREADS`. Falls back to the provided default.
+/// Reads the thread count from `EVENTFLUX_POOL_<NAME>_THREADS`, with the name upper
+/// cased. Falls back to `default` when it is unset or not a number.
 pub fn pool_size_from_env(name: &str, default: usize) -> usize {
     let var = format!("EVENTFLUX_POOL_{}_THREADS", name.to_uppercase());
     std::env::var(&var)
@@ -178,29 +187,31 @@ pub fn pool_size_from_env(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-/// Registry for managing multiple named executor services.
+/// Holds named executor services.
 #[derive(Debug, Default)]
 pub struct ExecutorServiceRegistry {
     pools: RwLock<HashMap<String, Arc<ExecutorService>>>,
 }
 
 impl ExecutorServiceRegistry {
-    /// Create a new, empty registry.
+    /// Creates an empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Register a pool under the given name.
+    /// Registers a pool under the given name, replacing any pool with that name.
     pub fn register_named(&self, name: String, exec: Arc<ExecutorService>) {
         self.pools.write().unwrap().insert(name, exec);
     }
 
-    /// Get a pool by name if present.
+    /// Returns the pool with this name, if any.
     pub fn get(&self, name: &str) -> Option<Arc<ExecutorService>> {
         self.pools.read().unwrap().get(name).cloned()
     }
 
-    /// Get a pool if it exists or create one with the provided size.
+    /// Returns the pool with this name, or creates and registers one with `threads`
+    /// threads. The check and insert are not atomic, so two callers racing can each
+    /// create a pool and the last one registered wins.
     pub fn get_or_create(&self, name: &str, threads: usize) -> Arc<ExecutorService> {
         if let Some(e) = self.get(name) {
             return e;
@@ -210,7 +221,7 @@ impl ExecutorServiceRegistry {
         exec
     }
 
-    /// Get or create a pool using `pool_size_from_env` with the provided default.
+    /// Same as `get_or_create`, with the size from `pool_size_from_env(name, default)`.
     pub fn get_or_create_from_env(&self, name: &str, default: usize) -> Arc<ExecutorService> {
         let threads = pool_size_from_env(name, default);
         self.get_or_create(name, threads)
@@ -256,8 +267,8 @@ mod tests {
         let exec = ExecutorService::new("panic-test", 2);
         let tracker = Arc::new(TaskTracker::new());
 
-        // Requires the pool's panic_handler — without it rayon aborts the
-        // process and this test could never observe the decrement.
+        // Needs the pool's panic_handler. Without it rayon aborts the process and
+        // this test could never see the decrement.
         exec.execute_tracked(&tracker, || panic!("subscriber blew up"));
 
         assert!(

@@ -15,9 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/function/default_function_executor.rs
-// Implements default(value, defaultValue) - returns defaultValue if value is null
-
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
@@ -25,9 +22,11 @@ use crate::core::executor::expression_executor::ExpressionExecutor;
 use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use std::sync::Arc;
 
-/// DefaultFunctionExecutor implements the default(value, defaultValue) function.
-/// Returns defaultValue if value is null, otherwise returns value.
-/// This is essentially a 2-argument version of coalesce.
+/// The default(value, defaultValue) function. Returns defaultValue when value is NULL or
+/// gives no value, otherwise returns value. A two argument coalesce.
+///
+/// The declared return type is the wider of the two numeric types, but the value that
+/// comes back is not converted to it. It keeps the type of whichever argument produced it.
 #[derive(Debug)]
 pub struct DefaultFunctionExecutor {
     value_executor: Box<dyn ExpressionExecutor>,
@@ -36,6 +35,10 @@ pub struct DefaultFunctionExecutor {
 }
 
 impl DefaultFunctionExecutor {
+    /// # Errors
+    ///
+    /// Returns an error unless there are exactly 2 arguments whose types are the same or
+    /// both numeric.
     pub fn new(args: Vec<Box<dyn ExpressionExecutor>>) -> Result<Self, String> {
         if args.len() != 2 {
             return Err(format!(
@@ -51,7 +54,6 @@ impl DefaultFunctionExecutor {
         let value_type = value_executor.get_return_type();
         let default_type = default_executor.get_return_type();
 
-        // Allow exact type match
         if value_type == default_type {
             return Ok(Self {
                 value_executor,
@@ -60,7 +62,7 @@ impl DefaultFunctionExecutor {
             });
         }
 
-        // Allow numeric type widening (INT -> LONG -> FLOAT -> DOUBLE)
+        // Types differ, so both must be numeric. Widen INT -> LONG -> FLOAT -> DOUBLE.
         let return_type = Self::widen_numeric_types(value_type, default_type)?;
 
         Ok(Self {
@@ -70,15 +72,14 @@ impl DefaultFunctionExecutor {
         })
     }
 
-    /// Determines the widest compatible numeric type for two types.
-    /// Returns an error if types are incompatible.
+    /// Returns the wider of two numeric types, in the order INT < LONG < FLOAT < DOUBLE.
+    /// Returns an error if either type is not numeric.
     fn widen_numeric_types(
         t1: ApiAttributeType,
         t2: ApiAttributeType,
     ) -> Result<ApiAttributeType, String> {
         use ApiAttributeType::*;
 
-        // Check if both are numeric
         let is_numeric = |t: ApiAttributeType| matches!(t, INT | LONG | FLOAT | DOUBLE);
 
         if !is_numeric(t1) || !is_numeric(t2) {
@@ -88,7 +89,6 @@ impl DefaultFunctionExecutor {
             ));
         }
 
-        // Numeric widening hierarchy: INT < LONG < FLOAT < DOUBLE
         let type_rank = |t: ApiAttributeType| match t {
             INT => 1,
             LONG => 2,
@@ -97,7 +97,6 @@ impl DefaultFunctionExecutor {
             _ => 0,
         };
 
-        // Return the wider type
         if type_rank(t1) >= type_rank(t2) {
             Ok(t1)
         } else {
@@ -108,14 +107,13 @@ impl DefaultFunctionExecutor {
 
 impl ExpressionExecutor for DefaultFunctionExecutor {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
-        // Execute the value expression
         match self.value_executor.execute(event) {
             Some(AttributeValue::Null) | None => {
-                // Value is null, return the default
+                // NULL or no value, so use the default
                 self.default_executor.execute(event)
             }
             Some(value) => {
-                // Value is not null, return it
+                // Not NULL, so return it unchanged
                 Some(value)
             }
         }

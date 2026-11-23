@@ -15,15 +15,18 @@
  * limitations under the License.
  */
 
-// src/core/executor/condition/or_expression_executor.rs
 // Corresponds to io.eventflux.core.executor.condition.OrConditionExpressionExecutor
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum
-use std::sync::Arc; // For EventFluxAppContext in clone_executor // For clone_executor
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
+use std::sync::Arc;
 
+/// Logical OR of two BOOL conditions. Short circuits when the left side is true.
+///
+/// NULL or a non BOOL result counts as false, so the result is always a BOOL. No value
+/// from the left side gives false without running the right side.
 #[derive(Debug)]
 pub struct OrExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
@@ -59,29 +62,27 @@ impl ExpressionExecutor for OrExpressionExecutor {
         let left_val = self.left_executor.execute(event);
 
         match left_val {
-            Some(AttributeValue::Bool(true)) => Some(AttributeValue::Bool(true)), // Left is true, so OR is true
+            Some(AttributeValue::Bool(true)) => Some(AttributeValue::Bool(true)),
             Some(AttributeValue::Bool(false)) | Some(AttributeValue::Null) => {
-                // Left is false or null, result depends on right
+                // Left is false or NULL, so the right side decides
                 let right_val = self.right_executor.execute(event);
                 match right_val {
                     Some(AttributeValue::Bool(b)) => Some(AttributeValue::Bool(b)),
-                    Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // false OR null is false
-                    None => Some(AttributeValue::Bool(false)), // Error/no-value from right, effectively false
+                    Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // NULL counts as false
+                    None => Some(AttributeValue::Bool(false)), // No value counts as false
                     _ => {
-                        // Type error: right operand did not return a Bool or Null
+                        // Right side returned something other than BOOL or NULL
                         Some(AttributeValue::Bool(false))
                     }
                 }
             }
-            None => Some(AttributeValue::Bool(false)), // Error/no-value from left, effectively false for OR unless right is true
-            // To be fully robust, if left is None (error), OR could still be true if right is true.
-            // This requires evaluating right:
+            None => Some(AttributeValue::Bool(false)), // No value from the left gives false
+            // The right side is not run here, so a true right side is ignored. A fuller
+            // version would evaluate it:
             // let right_val = self.right_executor.execute(event);
             // return right_val.map_or(None, |v| if let AttributeValue::Bool(b_val) = v { Some(AttributeValue::Bool(b_val)) } else { None } );
-            // For now, simplified: None on left makes OR false unless right is definitively true.
-            // The current logic is: if left is None, result is effectively false.
             _ => {
-                // Type error: left operand did not return a Bool or Null
+                // Left side returned something other than BOOL or NULL
                 Some(AttributeValue::Bool(false))
             }
         }

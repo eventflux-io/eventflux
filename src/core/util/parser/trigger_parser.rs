@@ -15,8 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/util/parser/trigger_parser.rs
-
 use std::sync::Arc;
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
@@ -42,7 +40,7 @@ impl TriggerParser {
 
         let junction_config = JunctionConfig::new(definition.id.clone())
             .with_buffer_size(eventflux_app_context.buffer_size as usize)
-            .with_async(false); // Triggers use synchronous mode
+            .with_async(false); // Trigger junctions are always synchronous
 
         let junction = StreamJunctionFactory::create(
             junction_config,

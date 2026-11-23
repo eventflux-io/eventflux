@@ -17,10 +17,10 @@
 
 //! Collection Aggregation Executors for Pattern Event Collections
 //!
-//! These executors compute aggregate values over event collections created by count
-//! quantifiers in pattern queries. Unlike window aggregators (which use incremental
-//! add/remove semantics), collection aggregators perform batch computation over
-//! a complete, bounded event chain.
+//! These executors compute aggregate values over the event collections that count
+//! quantifiers build in pattern queries. Window aggregators update a running value as
+//! events are added and removed. Collection aggregators instead compute the whole
+//! result in one go over a complete, bounded event chain.
 //!
 //! # Key Differences from Window Aggregators
 //!
@@ -41,13 +41,14 @@
 //!
 //! # Architecture
 //!
-//! Collection aggregators require a `StateEvent` (from pattern matching) to function:
-//! 1. Pattern queries build StateEvents containing stream events at multiple positions
-//! 2. Count quantifiers create chains of events at each position (e.g., e1{3,5})
+//! Collection aggregators need a `StateEvent` from pattern matching. Any other event,
+//! or no event, gives `None`.
+//! 1. Pattern queries build StateEvents that hold stream events at several positions
+//! 2. Count quantifiers build a chain of events at each position (for example e1{3,5})
 //! 3. Collection aggregators compute over these bounded, complete chains
 //!
-//! The executors use `StateEvent::get_event_chain(position)` to retrieve all events,
-//! then compute the aggregate in a single pass.
+//! The executors read all events with `StateEvent::get_event_chain(position)` and
+//! compute the aggregate from them. `count` uses `StateEvent::count_events_at` instead.
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
@@ -83,9 +84,8 @@ fn numeric_from_attribute(value: &AttributeValue) -> Option<NumericValue> {
     }
 }
 
-/// Convert AttributeValue to f64 for numeric operations.
-///
-/// Supports INT, LONG, FLOAT, DOUBLE types. Returns None for non-numeric types.
+/// Converts an INT, LONG, FLOAT or DOUBLE value to f64. Returns `None` for any other
+/// type, NULL included.
 #[inline]
 fn value_as_f64(v: &AttributeValue) -> Option<f64> {
     match v {
@@ -97,11 +97,14 @@ fn value_as_f64(v: &AttributeValue) -> Option<f64> {
     }
 }
 
-/// Extract attribute value from a StreamEvent at the specified position.
+/// Reads one attribute value from a StreamEvent.
 ///
-/// Position format: [data_type_index, attribute_index]
-/// - data_type_index: BEFORE_WINDOW_DATA_INDEX, OUTPUT_DATA_INDEX, etc.
-/// - attribute_index: index within that data array
+/// Position format is [data_type_index, attribute_index]
+/// - data_type_index picks the data array. BEFORE_WINDOW_DATA_INDEX,
+///   OUTPUT_DATA_INDEX, STATE_OUTPUT_DATA_INDEX or ON_AFTER_WINDOW_DATA_INDEX.
+/// - attribute_index is the index within that array
+///
+/// If nothing is found there, falls back to the same index in `output_data`.
 #[inline]
 fn get_attribute_from_event(
     event: &StreamEvent,
@@ -120,7 +123,7 @@ fn get_attribute_from_event(
         _ => None,
     };
 
-    // Fallback to output_data if attribute not found in specified section
+    // Not found in the given array, so try output_data
     if result.is_some() {
         result
     } else {
@@ -136,11 +139,11 @@ fn get_attribute_from_event(
 // CollectionCountExecutor
 // ============================================================================
 
-/// Executor for counting events in a pattern collection: `count(e1)`
+/// Counts the events in a pattern collection, `count(e1)`.
 ///
-/// Counts the number of events in the event chain at a specific position.
-/// This is used with count quantifiers like `e1{3,5}` to get the actual
-/// number of events that matched.
+/// Counts the events in the chain at one position. Used with count quantifiers like
+/// `e1{3,5}` to get how many events actually matched. An empty or missing position
+/// gives 0.
 ///
 /// # Example
 ///
@@ -177,10 +180,9 @@ impl ExpressionExecutor for CollectionCountExecutor {
     fn execute(&self, event_opt: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
         let complex_event = event_opt?;
 
-        // Collection aggregations only work on StateEvent from pattern matching
+        // Collection aggregations only work on a StateEvent from pattern matching
         let state_event = complex_event.as_any().downcast_ref::<StateEvent>()?;
 
-        // Use the optimized count_events_at method
         let count = state_event.count_events_at(self.chain_index);
 
         Some(AttributeValue::Long(count as i64))
@@ -202,10 +204,14 @@ impl ExpressionExecutor for CollectionCountExecutor {
 // CollectionSumExecutor
 // ============================================================================
 
-/// Executor for summing an attribute over a pattern collection: `sum(e1.price)`
+/// Sums an attribute over a pattern collection, `sum(e1.price)`.
 ///
-/// Sums the values of a specific attribute across all events in the event chain.
-/// Null values are skipped (SQL-like null handling).
+/// Sums one attribute across all events in the chain. NULL and other non numeric
+/// values are skipped, as in SQL. Returns `None` when the chain is empty or has no
+/// numeric value.
+///
+/// Integers are summed exactly in i128. Once a float value appears, or the sum
+/// leaves the i64 range, the rest is summed as f64.
 ///
 /// # Example
 ///
@@ -216,16 +222,18 @@ impl ExpressionExecutor for CollectionCountExecutor {
 ///
 /// # Return Type
 ///
-/// Returns LONG for integer types, DOUBLE for floating-point types.
+/// Follows `return_type`. INT and LONG give an Int or Long when the sum is an exact
+/// integer in range, and a Double otherwise. FLOAT gives a Float. Anything else gives
+/// a Double.
 #[derive(Debug, Clone)]
 pub struct CollectionSumExecutor {
     /// Position in StateEvent.stream_events[] (e1=0, e2=1, ...)
     pub chain_index: usize,
 
-    /// Attribute position: [data_type_index, attribute_index]
+    /// Attribute position as [data_type_index, attribute_index]
     pub attribute_position: [i32; 2],
 
-    /// Return type based on input attribute type
+    /// Declared result type, set from the input attribute type
     pub return_type: ApiAttributeType,
 }
 
@@ -235,7 +243,7 @@ impl CollectionSumExecutor {
     /// # Arguments
     /// * `chain_index` - Position in StateEvent (e1=0, e2=1, ...)
     /// * `attribute_position` - [data_type_index, attribute_index]
-    /// * `return_type` - Expected return type (LONG or DOUBLE)
+    /// * `return_type` - Declared result type (see the struct docs)
     pub fn new(
         chain_index: usize,
         attribute_position: [i32; 2],
@@ -304,7 +312,7 @@ impl ExpressionExecutor for CollectionSumExecutor {
             }
         }
 
-        // Return None if no valid numeric values were found (all nulls)
+        // No numeric value found, for example all NULL
         if !has_value {
             return None;
         }
@@ -358,10 +366,11 @@ impl ExpressionExecutor for CollectionSumExecutor {
 // CollectionAvgExecutor
 // ============================================================================
 
-/// Executor for averaging an attribute over a pattern collection: `avg(e1.price)`
+/// Averages an attribute over a pattern collection, `avg(e1.price)`.
 ///
-/// Computes the average of a specific attribute across all events in the event chain.
-/// Null values are excluded from both sum and count (SQL-like null handling).
+/// Averages one attribute across all events in the chain. NULL and other non numeric
+/// values are left out of both the sum and the count, as in SQL. Returns `None` when
+/// no numeric value is found.
 ///
 /// # Example
 ///
@@ -378,7 +387,7 @@ pub struct CollectionAvgExecutor {
     /// Position in StateEvent.stream_events[] (e1=0, e2=1, ...)
     pub chain_index: usize,
 
-    /// Attribute position: [data_type_index, attribute_index]
+    /// Attribute position as [data_type_index, attribute_index]
     pub attribute_position: [i32; 2],
 }
 
@@ -429,7 +438,7 @@ impl ExpressionExecutor for CollectionAvgExecutor {
             }
         }
 
-        // Return None if no valid numeric values (division by zero protection)
+        // No numeric value, so avoid dividing by zero
         if count == 0 {
             return None;
         }
@@ -453,19 +462,19 @@ impl ExpressionExecutor for CollectionAvgExecutor {
 // CollectionMinMaxExecutor
 // ============================================================================
 
-/// The type of min/max operation to perform.
+/// Whether to find the minimum or the maximum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MinMaxType {
-    /// Find the minimum value
     Min,
-    /// Find the maximum value
     Max,
 }
 
-/// Executor for min/max over a pattern collection: `min(e1.price)`, `max(e1.price)`
+/// Finds the min or max of an attribute over a pattern collection, `min(e1.price)` or
+/// `max(e1.price)`.
 ///
-/// Finds the minimum or maximum value of a specific attribute across all events
-/// in the event chain. Null values are ignored (SQL-like null handling).
+/// NULL and other non numeric values are ignored, as in SQL. Returns `None` when no
+/// numeric value is found. Integers are compared exactly until a float value appears,
+/// then all comparisons use f64.
 ///
 /// # Example
 ///
@@ -476,19 +485,20 @@ pub enum MinMaxType {
 ///
 /// # Return Type
 ///
-/// Preserves the input attribute type (INT, LONG, FLOAT, or DOUBLE).
+/// Follows `return_type` (INT, LONG, FLOAT, or DOUBLE). An integer result that does
+/// not fit INT or LONG comes back as a Double. A float result is cast to the return
+/// type, so it truncates for INT and LONG.
 #[derive(Debug, Clone)]
 pub struct CollectionMinMaxExecutor {
     /// Position in StateEvent.stream_events[] (e1=0, e2=1, ...)
     pub chain_index: usize,
 
-    /// Attribute position: [data_type_index, attribute_index]
+    /// Attribute position as [data_type_index, attribute_index]
     pub attribute_position: [i32; 2],
 
-    /// Whether to find min or max
     pub min_max_type: MinMaxType,
 
-    /// Return type (preserved from input attribute type)
+    /// Result type, taken from the input attribute type
     pub return_type: ApiAttributeType,
 }
 
@@ -531,7 +541,7 @@ impl CollectionMinMaxExecutor {
         }
     }
 
-    /// Create a new CollectionMinMaxExecutor with explicit min/max type.
+    /// Create a new CollectionMinMaxExecutor with the given min or max type.
     ///
     /// # Arguments
     /// * `chain_index` - Position in StateEvent (e1=0, e2=1, ...)
@@ -572,7 +582,7 @@ impl CollectionMinMaxExecutor {
         self.min_max_type == MinMaxType::Max
     }
 
-    /// Convert f64 result to the appropriate AttributeValue based on return type.
+    /// Casts an f64 result to the return type. INT and LONG truncate.
     #[inline]
     fn to_result_value(&self, value: f64) -> AttributeValue {
         match self.return_type {
@@ -622,7 +632,7 @@ impl ExpressionExecutor for CollectionMinMaxExecutor {
                             });
                         }
                         (NumericValue::Float(f), false) => {
-                            // Switch to float comparisons, carrying prior int_result if present.
+                            // Switch to float comparisons and carry over any int result so far
                             let starting = int_result.map(|v| v as f64);
                             use_float = true;
                             float_result = Some(match starting {
@@ -685,13 +695,15 @@ impl ExpressionExecutor for CollectionMinMaxExecutor {
 }
 
 // ============================================================================
-// CollectionStdDevExecutor (Bonus: Standard Deviation)
+// CollectionStdDevExecutor (Standard Deviation)
 // ============================================================================
 
-/// Executor for computing standard deviation over a pattern collection: `stdDev(e1.price)`
+/// Computes the standard deviation of an attribute over a pattern collection,
+/// `stdDev(e1.price)`.
 ///
-/// Computes the population standard deviation of a specific attribute across all
-/// events in the event chain. Null values are excluded (SQL-like null handling).
+/// Uses the population standard deviation (divides by n, not n - 1). NULL and other
+/// non numeric values are left out, as in SQL. Returns `None` when no numeric value
+/// is found.
 ///
 /// # Formula
 ///
@@ -712,7 +724,7 @@ pub struct CollectionStdDevExecutor {
     /// Position in StateEvent.stream_events[] (e1=0, e2=1, ...)
     pub chain_index: usize,
 
-    /// Attribute position: [data_type_index, attribute_index]
+    /// Attribute position as [data_type_index, attribute_index]
     pub attribute_position: [i32; 2],
 }
 
@@ -751,7 +763,7 @@ impl ExpressionExecutor for CollectionStdDevExecutor {
             return None;
         }
 
-        // First pass: collect all numeric values
+        // Collect the values first, since the mean is needed before the squared differences
         let values: Vec<f64> = chain
             .iter()
             .filter_map(|stream_event| {
@@ -766,13 +778,10 @@ impl ExpressionExecutor for CollectionStdDevExecutor {
 
         let n = values.len() as f64;
 
-        // Calculate mean
         let mean: f64 = values.iter().sum::<f64>() / n;
 
-        // Calculate sum of squared differences
         let sum_sq_diff: f64 = values.iter().map(|x| (x - mean).powi(2)).sum();
 
-        // Population standard deviation
         let std_dev = (sum_sq_diff / n).sqrt();
 
         Some(AttributeValue::Double(std_dev))
@@ -1516,7 +1525,7 @@ mod tests {
     fn test_collection_stddev_zero() {
         let executor = CollectionStdDevExecutor::new(0, [BEFORE_WINDOW_DATA_INDEX as i32, 0]);
 
-        // All same values - stddev should be 0
+        // All values the same, so stddev is 0
         let events = create_numeric_events(&[5.0, 5.0, 5.0, 5.0]);
         let state_event = create_state_event_with_events(0, events);
 

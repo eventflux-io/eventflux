@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/function/string_functions.rs
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
@@ -225,7 +224,8 @@ impl ExpressionExecutor for SubstringFunctionExecutor {
 
         let start_val = self.start_executor.execute(event)?;
         let start_idx = to_i32(&start_val)?;
-        // Use 0-based indexing (Rust native) - SQL 1-based conversion happens at converter level
+        // Start is 0 based here. The SQL converter already turned the 1 based SQL index into
+        // this. Indexes count bytes, not characters.
         let start = if start_idx < 0 { 0 } else { start_idx as usize };
 
         let substr = if let Some(le) = &self.length_executor {
@@ -307,9 +307,9 @@ impl LikeFunctionExecutor {
         })
     }
 
-    /// Convert SQL LIKE pattern to regex pattern
-    /// % matches any sequence of characters
-    /// _ matches any single character
+    /// Converts a SQL LIKE pattern to an anchored regex.
+    /// `%` matches any run of characters, `_` matches any single character, and `\`
+    /// makes the next character literal. Everything else is matched literally.
     fn like_to_regex(pattern: &str) -> String {
         let mut regex = String::from("^");
         let mut chars = pattern.chars().peekable();
@@ -319,7 +319,7 @@ impl LikeFunctionExecutor {
                 '%' => regex.push_str(".*"),
                 '_' => regex.push('.'),
                 '\\' => {
-                    // Escape next character
+                    // Next character is literal. A trailing `\` is dropped.
                     if let Some(&next) = chars.peek() {
                         chars.next();
                         regex.push_str(&regex::escape(&next.to_string()));
@@ -415,7 +415,8 @@ impl ExpressionExecutor for ReplaceFunctionExecutor {
     }
 }
 
-/// LeftFunctionExecutor implements left(str, n) - returns leftmost n characters.
+/// LeftFunctionExecutor implements left(str, n). Returns the first n characters.
+/// NULL in gives NULL. `n` must be INT or LONG.
 #[derive(Debug)]
 pub struct LeftFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -466,7 +467,8 @@ impl ExpressionExecutor for LeftFunctionExecutor {
     }
 }
 
-/// RightFunctionExecutor implements right(str, n) - returns rightmost n characters.
+/// RightFunctionExecutor implements right(str, n). Returns the last n characters.
+/// NULL in gives NULL. `n` must be INT or LONG.
 #[derive(Debug)]
 pub struct RightFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -519,7 +521,7 @@ impl ExpressionExecutor for RightFunctionExecutor {
     }
 }
 
-/// LtrimFunctionExecutor implements ltrim(str) - trims leading whitespace.
+/// LtrimFunctionExecutor implements ltrim(str). Removes leading whitespace.
 #[derive(Debug)]
 pub struct LtrimFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -551,7 +553,7 @@ impl ExpressionExecutor for LtrimFunctionExecutor {
     }
 }
 
-/// RtrimFunctionExecutor implements rtrim(str) - trims trailing whitespace.
+/// RtrimFunctionExecutor implements rtrim(str). Removes trailing whitespace.
 #[derive(Debug)]
 pub struct RtrimFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -583,7 +585,7 @@ impl ExpressionExecutor for RtrimFunctionExecutor {
     }
 }
 
-/// ReverseFunctionExecutor implements reverse(str) - reverses the string.
+/// ReverseFunctionExecutor implements reverse(str). Reverses the string by characters.
 #[derive(Debug)]
 pub struct ReverseFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -615,7 +617,8 @@ impl ExpressionExecutor for ReverseFunctionExecutor {
     }
 }
 
-/// RepeatFunctionExecutor implements repeat(str, n) - repeats the string n times.
+/// RepeatFunctionExecutor implements repeat(str, n). Repeats the string n times.
+/// NULL in gives NULL. `n` must be INT or LONG.
 #[derive(Debug)]
 pub struct RepeatFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -665,8 +668,9 @@ impl ExpressionExecutor for RepeatFunctionExecutor {
     }
 }
 
-/// PositionFunctionExecutor implements position(substr, str) - returns 1-based position of substring.
-/// Returns 0 if substring is not found (SQL convention).
+/// PositionFunctionExecutor implements position(substr, str). Returns the 1 based position
+/// of the first match, or 0 if not found, as in SQL. The position counts bytes, not
+/// characters. NULL in gives NULL.
 #[derive(Debug)]
 pub struct PositionFunctionExecutor {
     substr_executor: Box<dyn ExpressionExecutor>,
@@ -693,7 +697,7 @@ impl ExpressionExecutor for PositionFunctionExecutor {
         match (&substr_val, &str_val) {
             (AttributeValue::Null, _) | (_, AttributeValue::Null) => Some(AttributeValue::Null),
             (AttributeValue::String(substr), AttributeValue::String(s)) => {
-                // SQL position is 1-based, returns 0 if not found
+                // Turn the 0 based byte offset into a 1 based position
                 match s.find(substr.as_str()) {
                     Some(idx) => Some(AttributeValue::Int((idx + 1) as i32)),
                     None => Some(AttributeValue::Int(0)),
@@ -715,8 +719,8 @@ impl ExpressionExecutor for PositionFunctionExecutor {
     }
 }
 
-/// AsciiFunctionExecutor implements ascii(str) - returns ASCII code of first character.
-/// Returns NULL if string is empty.
+/// AsciiFunctionExecutor implements ascii(str). Returns the Unicode code point of the first
+/// character, which is its ASCII code for ASCII text. Returns NULL for NULL or an empty string.
 #[derive(Debug)]
 pub struct AsciiFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -736,7 +740,6 @@ impl ExpressionExecutor for AsciiFunctionExecutor {
                 if s.is_empty() {
                     Some(AttributeValue::Null)
                 } else {
-                    // Get the first character's ASCII/Unicode code point
                     let first_char = s.chars().next()?;
                     Some(AttributeValue::Int(first_char as i32))
                 }
@@ -756,7 +759,8 @@ impl ExpressionExecutor for AsciiFunctionExecutor {
     }
 }
 
-/// ChrFunctionExecutor implements chr(code) - returns character from ASCII/Unicode code point.
+/// ChrFunctionExecutor implements chr(code). Returns the character for an ASCII or Unicode
+/// code point. NULL or an invalid code point gives NULL.
 #[derive(Debug)]
 pub struct ChrFunctionExecutor {
     code_executor: Box<dyn ExpressionExecutor>,
@@ -779,7 +783,6 @@ impl ExpressionExecutor for ChrFunctionExecutor {
             _ => return None,
         };
 
-        // Convert code point to character
         match char::from_u32(code) {
             Some(c) => Some(AttributeValue::String(c.to_string())),
             None => Some(AttributeValue::Null), // Invalid code point
@@ -797,8 +800,10 @@ impl ExpressionExecutor for ChrFunctionExecutor {
     }
 }
 
-/// LpadFunctionExecutor implements lpad(str, len, pad) - left-pads string to specified length.
-/// If string is longer than len, it is truncated to len characters.
+/// LpadFunctionExecutor implements lpad(str, len, pad). Pads the string on the left with
+/// `pad`, repeated as needed, up to `len` characters.
+/// A longer string is cut to `len` characters. An empty `pad` returns the string unchanged.
+/// NULL in any argument gives NULL.
 #[derive(Debug)]
 pub struct LpadFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -826,7 +831,6 @@ impl ExpressionExecutor for LpadFunctionExecutor {
         let len_val = self.len_executor.execute(event)?;
         let pad_val = self.pad_executor.execute(event)?;
 
-        // Handle NULL inputs
         if matches!(str_val, AttributeValue::Null)
             || matches!(len_val, AttributeValue::Null)
             || matches!(pad_val, AttributeValue::Null)
@@ -854,17 +858,15 @@ impl ExpressionExecutor for LpadFunctionExecutor {
 
         let current_len = s.chars().count();
         if current_len >= target_len {
-            // Truncate to target length
             let truncated: String = s.chars().take(target_len).collect();
             return Some(AttributeValue::String(truncated));
         }
 
-        // Need to pad
         let pad_len = target_len - current_len;
         let pad_chars: Vec<char> = pad.chars().collect();
         let mut result = String::with_capacity(target_len);
 
-        // Add padding characters
+        // Cycle through the pad characters
         for i in 0..pad_len {
             result.push(pad_chars[i % pad_chars.len()]);
         }
@@ -886,8 +888,10 @@ impl ExpressionExecutor for LpadFunctionExecutor {
     }
 }
 
-/// RpadFunctionExecutor implements rpad(str, len, pad) - right-pads string to specified length.
-/// If string is longer than len, it is truncated to len characters.
+/// RpadFunctionExecutor implements rpad(str, len, pad). Pads the string on the right with
+/// `pad`, repeated as needed, up to `len` characters.
+/// A longer string is cut to `len` characters. An empty `pad` returns the string unchanged.
+/// NULL in any argument gives NULL.
 #[derive(Debug)]
 pub struct RpadFunctionExecutor {
     str_executor: Box<dyn ExpressionExecutor>,
@@ -915,7 +919,6 @@ impl ExpressionExecutor for RpadFunctionExecutor {
         let len_val = self.len_executor.execute(event)?;
         let pad_val = self.pad_executor.execute(event)?;
 
-        // Handle NULL inputs
         if matches!(str_val, AttributeValue::Null)
             || matches!(len_val, AttributeValue::Null)
             || matches!(pad_val, AttributeValue::Null)
@@ -943,17 +946,15 @@ impl ExpressionExecutor for RpadFunctionExecutor {
 
         let current_len = s.chars().count();
         if current_len >= target_len {
-            // Truncate to target length
             let truncated: String = s.chars().take(target_len).collect();
             return Some(AttributeValue::String(truncated));
         }
 
-        // Need to pad
         let pad_len = target_len - current_len;
         let pad_chars: Vec<char> = pad.chars().collect();
         let mut result = s.clone();
 
-        // Add padding characters
+        // Cycle through the pad characters
         for i in 0..pad_len {
             result.push(pad_chars[i % pad_chars.len()]);
         }

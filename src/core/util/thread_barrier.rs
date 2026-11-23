@@ -18,7 +18,11 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
-/// Coordinates event flow between threads similar to EventFlux's ThreadBarrier.
+/// Gate that can stop threads from entering, like the Java ThreadBarrier.
+///
+/// Threads call `enter` and `exit` around their work. While locked, `enter` blocks.
+/// Locking does not wait for threads already inside, so callers check
+/// `get_active_threads` for that.
 #[derive(Debug)]
 pub struct ThreadBarrier {
     locked: Mutex<bool>,
@@ -35,7 +39,7 @@ impl ThreadBarrier {
         }
     }
 
-    /// Block until the barrier is unlocked and increment active thread count.
+    /// Blocks while the barrier is locked, then counts this thread as active.
     pub fn enter(&self) {
         let mut locked = self.locked.lock().unwrap();
         while *locked {
@@ -44,7 +48,7 @@ impl ThreadBarrier {
         self.counter.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Decrement active thread count.
+    /// Counts this thread as no longer active. Call once per `enter`.
     pub fn exit(&self) {
         self.counter.fetch_sub(1, Ordering::SeqCst);
     }
@@ -54,13 +58,13 @@ impl ThreadBarrier {
         self.counter.load(Ordering::SeqCst)
     }
 
-    /// Lock the barrier preventing new threads from entering.
+    /// Locks the barrier so new threads block in `enter`.
     pub fn lock(&self) {
         let mut locked = self.locked.lock().unwrap();
         *locked = true;
     }
 
-    /// Unlock the barrier releasing waiting threads.
+    /// Unlocks the barrier and wakes all waiting threads.
     pub fn unlock(&self) {
         let mut locked = self.locked.lock().unwrap();
         *locked = false;

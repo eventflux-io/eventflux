@@ -15,21 +15,27 @@
  * limitations under the License.
  */
 
-// src/core/executor/math/mod_expression_executor.rs
 use super::common::CoerceNumeric;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum // Use CoerceNumeric from common.rs
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
 
+/// Remainder of two numbers with `%`. The result has the sign of the left operand.
+///
+/// NULL on either side, or a zero right side, gives NULL. No value on either side gives
+/// `None`.
 #[derive(Debug)]
 pub struct ModExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
     right_executor: Box<dyn ExpressionExecutor>,
-    return_type: ApiAttributeType, // Modulo result type usually matches operand types after promotion
+    return_type: ApiAttributeType, // The widest operand type
 }
 
 impl ModExpressionExecutor {
+    /// # Errors
+    ///
+    /// Returns an error if either operand is STRING, BOOL or OBJECT.
     pub fn new(
         left: Box<dyn ExpressionExecutor>,
         right: Box<dyn ExpressionExecutor>,
@@ -37,10 +43,11 @@ impl ModExpressionExecutor {
         let left_type = left.get_return_type();
         let right_type = right.get_return_type();
 
-        // Type promotion for modulo: result type is usually the type of the dividend after promoting both to a common numeric type.
-        // EventFlux's typed ModExpressionExecutors (Int, Long, Float, Double) imply the result type matches this promoted type.
+        // Both operands widen to a shared numeric type (INT < LONG < FLOAT < DOUBLE), which is
+        // also the result type. This matches the Java typed ModExpressionExecutors (Int,
+        // Long, Float, Double).
         let return_type = match (left_type, right_type) {
-            // Handle error cases first
+            // Unsupported types first
             (ApiAttributeType::STRING, _)
             | (_, ApiAttributeType::STRING)
             | (ApiAttributeType::BOOL, _)
@@ -51,7 +58,7 @@ impl ModExpressionExecutor {
                     "Modulo not supported for input types {left_type:?} and {right_type:?}"
                 ));
             }
-            // Handle numeric types in order of precedence
+            // Then numeric types, widest first
             (ApiAttributeType::DOUBLE, ApiAttributeType::DOUBLE) => ApiAttributeType::DOUBLE,
             (ApiAttributeType::DOUBLE, _) | (_, ApiAttributeType::DOUBLE) => {
                 ApiAttributeType::DOUBLE
@@ -84,8 +91,8 @@ impl ExpressionExecutor for ModExpressionExecutor {
                     return Some(AttributeValue::Null);
                 }
 
-                // Division by zero check for modulo
-                let temp_r_for_zero_check = right_val.to_f64_or_err_str("Mod")?; // Check as f64 to catch all numeric zeros
+                // Modulo by zero gives NULL. Checking as f64 catches a zero of any numeric type.
+                let temp_r_for_zero_check = right_val.to_f64_or_err_str("Mod")?;
                 if temp_r_for_zero_check == 0.0 {
                     // log_error!("Modulo by zero error");
                     return Some(AttributeValue::Null);
@@ -97,7 +104,7 @@ impl ExpressionExecutor for ModExpressionExecutor {
                         let r = right_val.to_i32_or_err_str("Mod")?;
                         if r == 0 {
                             return Some(AttributeValue::Null);
-                        } // Explicit check for integer 0
+                        } // Also catches a fraction that truncates to 0
                         Some(AttributeValue::Int(l % r))
                     }
                     ApiAttributeType::LONG => {

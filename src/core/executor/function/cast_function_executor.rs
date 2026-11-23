@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/function/cast_function_executor.rs
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;

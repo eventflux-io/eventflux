@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/function/nullif_function_executor.rs
 // NULLIF(a, b) returns NULL if a = b, otherwise returns a
 
 use crate::core::event::complex_event::ComplexEvent;
@@ -49,7 +48,8 @@ impl ExpressionExecutor for NullIfFunctionExecutor {
         let first_value = self.first_executor.execute(event)?;
         let second_value = self.second_executor.execute(event)?;
 
-        // NULLIF returns NULL if the two values are equal, otherwise returns the first value
+        // Plain value equality, so values of different types (Int 1 and Long 1) are not equal.
+        // No value on either side gives None above.
         if first_value == second_value {
             Some(AttributeValue::Null)
         } else {

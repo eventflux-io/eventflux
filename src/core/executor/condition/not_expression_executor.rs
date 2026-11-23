@@ -15,14 +15,16 @@
  * limitations under the License.
  */
 
-// src/core/executor/condition/not_expression_executor.rs
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
-use crate::core::event::complex_event::ComplexEvent; // Trait
+use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum
-use std::sync::Arc; // For EventFluxAppContext in clone_executor // For clone_executor
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
+use std::sync::Arc;
 
+/// Logical NOT of a BOOL condition.
+///
+/// NOT NULL is NULL and no value stays no value. A non BOOL result gives false.
 #[derive(Debug)]
 pub struct NotExpressionExecutor {
     executor: Box<dyn ExpressionExecutor>,
@@ -31,7 +33,6 @@ pub struct NotExpressionExecutor {
 impl NotExpressionExecutor {
     pub fn new(executor: Box<dyn ExpressionExecutor>) -> Result<Self, String> {
         if executor.get_return_type() != ApiAttributeType::BOOL {
-            // Corrected
             return Err(format!(
                 "Operand for NOT executor returns {:?} instead of BOOL",
                 executor.get_return_type()
@@ -46,17 +47,16 @@ impl ExpressionExecutor for NotExpressionExecutor {
         match self.executor.execute(event) {
             Some(AttributeValue::Bool(b)) => Some(AttributeValue::Bool(!b)),
             Some(AttributeValue::Null) => Some(AttributeValue::Null), // NOT NULL is NULL
-            None => None, // Error or no value from child
+            None => None, // No value from the inner expression
             _ => {
-                // Type error
-                Some(AttributeValue::Bool(false)) // Or None or Err
+                // Inner expression returned something other than BOOL or NULL
+                Some(AttributeValue::Bool(false))
             }
         }
     }
 
     fn get_return_type(&self) -> ApiAttributeType {
-        // Corrected
-        ApiAttributeType::BOOL // Corrected
+        ApiAttributeType::BOOL
     }
 
     fn clone_executor(

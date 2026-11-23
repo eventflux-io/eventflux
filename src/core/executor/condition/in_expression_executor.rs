@@ -15,27 +15,24 @@
  * limitations under the License.
  */
 
-// src/core/executor/condition/in_expression_executor.rs
 // Corresponds to io.eventflux.core.executor.condition.InConditionExpressionExecutor
-use crate::core::config::eventflux_app_context::EventFluxAppContext; // For clone_executor
+use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
 use crate::core::table::InMemoryCompiledCondition;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum
-use std::sync::Arc; // For EventFluxAppContext in clone_executor
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
+use std::sync::Arc;
 
+/// `value IN table` check. True when the table contains a row keyed by the value.
+///
+/// The table is looked up by id on every call. False when the value is NULL or
+/// missing, when the table is not found, or when the lookup fails (the error is logged).
 #[derive(Debug)]
 pub struct InExpressionExecutor {
-    // Java fields:
-    // private final int streamEventSize;
-    // private final boolean isMatchingEventAStateEvent;
-    // private final int matchingStreamIndex;
-    // private final CompiledCondition compiledCondition;
-    // private Table table;
-
-    // Simplified implementation fields
-    value_executor: Box<dyn ExpressionExecutor>, // Executes the expression whose value is checked for "IN"
+    // Simpler than the Java version, which also kept streamEventSize,
+    // isMatchingEventAStateEvent, matchingStreamIndex, a CompiledCondition and the Table.
+    value_executor: Box<dyn ExpressionExecutor>, // Gives the value to look for in the table
     table_id: String,
     eventflux_app_context: Arc<EventFluxAppContext>,
 }
@@ -84,7 +81,7 @@ impl ExpressionExecutor for InExpressionExecutor {
                 }
             }
         } else {
-            // If the table is not found, treat as false
+            // Table not found
             Some(AttributeValue::Bool(false))
         }
     }

@@ -15,37 +15,32 @@
  * limitations under the License.
  */
 
-// src/core/executor/expression_executor.rs
 // Corresponds to io.eventflux.core.executor.ExpressionExecutor (interface)
 
-use crate::core::event::complex_event::ComplexEvent; // The ComplexEvent trait
-use crate::core::event::value::AttributeValue; // The enum for actual data values
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum
+use crate::core::event::complex_event::ComplexEvent;
+use crate::core::event::value::AttributeValue;
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use std::any::Any;
 use std::fmt::Debug;
 // use std::sync::Arc; // Not needed for trait definition itself
 
-// ExpressionExecutor is an interface in Java. In Rust, it's a trait.
-// It's responsible for executing a parsed EventFlux expression and returning a value.
-/// Trait for all expression executors which can be executed on an event.
+/// Trait for all expression executors. An executor runs one parsed EventFlux expression
+/// against an event and returns its value.
 pub trait ExpressionExecutor: Debug + Send + Sync + 'static {
-    // `event` is Option<&dyn ComplexEvent> because some expressions (like constants)
-    // don't need an event to be evaluated. Others (like variables) do.
-    // The Option<&dyn ComplexEvent> allows passing None for constant expressions.
-    // The return type is Option<AttributeValue> because an expression might evaluate to null,
-    // or an error could occur during execution (though errors might be better handled by Result).
-    // Java returns Object, which can be null.
+    // `event` is optional because some expressions, like constants, do not need an event.
+    // Others, like variables, do.
+    // Returns None when there is no value or the expression could not be evaluated, much
+    // like Java returning null. Errors are not reported separately.
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue>;
 
-    // Returns the data type of the value that this executor will return.
+    // Type of the value this executor returns
     fn get_return_type(&self) -> ApiAttributeType;
 
-    // Method to clone the executor.
-    // This is useful if the execution plan needs to be cloned (e.g., for partitioning).
-    // Requires EventFluxAppContext because some executors might hold references or need context for cloning.
-    // For stateless executors like ConstantExpressionExecutor, context might not be strictly needed for cloning itself,
-    // but the interface should be consistent.
-    // Child executors (if any) would be cloned recursively using their own clone_executor methods.
+    // Makes an independent copy of the executor, for example when the execution plan is
+    // copied for partitioning. Implementations copy child executors by calling their own
+    // clone_executor. The context is passed to every implementation so executors that hold
+    // context can use the new one, even though stateless ones like
+    // ConstantExpressionExecutor ignore it.
     fn clone_executor(
         &self,
         eventflux_app_context: &Arc<EventFluxAppContext>,
@@ -62,24 +57,20 @@ pub trait ExpressionExecutor: Debug + Send + Sync + 'static {
         false
     }
 
-    /// Returns true if this executor is a VariableExpressionExecutor (accesses event attributes)
-    /// This is used for validation in contexts where only variable expressions are allowed
+    /// Returns true if this executor is a VariableExpressionExecutor, which reads event
+    /// attributes. Used to validate places where only variable expressions are allowed.
     fn is_variable_executor(&self) -> bool {
         false
     }
 }
 
-// To allow `Box<dyn ExpressionExecutor>` to be `Clone`.
-// This requires that all implementors of `ExpressionExecutor` are also `Clone`
-// and that their `clone_executor` method correctly reconstructs them.
-// However, making the trait itself require Clone (pub trait ExpressionExecutor: Debug + Send + Sync + Clone)
-// is often problematic with trait objects. The clone_box pattern (or clone_executor here) is preferred.
-// We don't need `impl Clone for Box<dyn ExpressionExecutor>` if we just call `executor.clone_executor()`.
+// There is no `impl Clone for Box<dyn ExpressionExecutor>`. A Clone bound on the trait does
+// not work well with trait objects, and Clone::clone cannot take the app context. Call
+// `executor.clone_executor(ctx)` instead.
 //         self.clone_executor(???) // Problem: clone() doesn't take app_context
 //     }
 // }
-// So, direct calls to `some_box_dyn_exec.clone_executor(ctx)` are better.
 
-// Added Arc import, which might be needed by clone_executor implementations if they store Arc<EventFluxAppContext>
+// Used by the clone_executor signature above
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use std::sync::Arc;

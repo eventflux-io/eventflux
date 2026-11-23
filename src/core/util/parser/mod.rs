@@ -15,20 +15,18 @@
  * limitations under the License.
  */
 
-// src/core/util/parser/mod.rs
-
-pub mod eventflux_app_parser; // Added
+pub mod eventflux_app_parser;
 pub mod expression_parser;
-pub mod query_parser; // Added
+pub mod query_parser;
 pub mod trigger_parser;
-// Other parsers will be added here later:
+// Parsers still to be ported go here, for example:
 // pub mod aggregation_parser;
 // ... etc.
 
-pub use self::eventflux_app_parser::EventFluxAppParser; // Added
+pub use self::eventflux_app_parser::EventFluxAppParser;
 pub use self::expression_parser::{
     parse_expression, ExpressionParseError, ExpressionParserContext,
 };
-pub use self::query_parser::QueryParser; // Added
+pub use self::query_parser::QueryParser;
 pub use self::trigger_parser::TriggerParser;
 pub use crate::core::partition::parser::PartitionParser;

@@ -18,15 +18,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// Simple wrapper around a `Mutex` identified by an id.
+/// A shared `Mutex` with an id. Two wrappers are equal when their ids match, whatever
+/// mutex they hold.
 #[derive(Debug, Clone)]
 pub struct LockWrapper {
     lock_id: String,
-    lock: Arc<Mutex<()>>, // always initialized
+    lock: Arc<Mutex<()>>, // Always set, starting with a mutex of its own
 }
 
 impl LockWrapper {
-    /// Create a new lock wrapper with the given id.
+    /// Creates a wrapper with the given id and its own new mutex.
     pub fn new(lock_id: &str) -> Self {
         Self {
             lock_id: lock_id.to_string(),
@@ -34,17 +35,20 @@ impl LockWrapper {
         }
     }
 
-    /// Acquire the underlying lock.
+    /// Takes the lock and blocks until it is free.
+    ///
+    /// # Panics
+    /// Panics if the mutex is poisoned.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
         self.lock.lock().unwrap()
     }
 
-    /// Replace the internal lock with another `Arc`.
+    /// Swaps in another shared mutex.
     pub fn set_lock(&mut self, lock: Arc<Mutex<()>>) {
         self.lock = lock;
     }
 
-    /// Get the current lock `Arc`.
+    /// Returns the current shared mutex.
     pub fn get_lock(&self) -> Arc<Mutex<()>> {
         Arc::clone(&self.lock)
     }
@@ -57,9 +61,10 @@ impl PartialEq for LockWrapper {
 }
 impl Eq for LockWrapper {}
 
-/// Synchronizes two or more `LockWrapper`s so that they share the same mutex.
+/// Makes two or more `LockWrapper`s share the same mutex.
 #[derive(Debug, Default)]
 pub struct LockSynchronizer {
+    // For each lock id, the wrappers it has been synced with
     holder_map: HashMap<String, Vec<Arc<Mutex<LockWrapper>>>>,
 }
 
@@ -70,8 +75,11 @@ impl LockSynchronizer {
         }
     }
 
-    /// Ensure both wrappers share the same lock and update any previously
-    /// synchronized wrappers as well.
+    /// Makes both wrappers share one mutex.
+    ///
+    /// If neither was synced before, both get a new mutex. If only one was, the other
+    /// takes its mutex. If both were, `two` and the wrappers synced with `two` take the
+    /// mutex of `one`.
     pub fn sync(&mut self, one: Arc<Mutex<LockWrapper>>, two: Arc<Mutex<LockWrapper>>) {
         let id1 = one.lock().unwrap().lock_id.clone();
         let id2 = two.lock().unwrap().lock_id.clone();

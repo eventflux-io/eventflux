@@ -15,30 +15,28 @@
  * limitations under the License.
  */
 
-// src/core/executor/constant_expression_executor.rs
 // Corresponds to io.eventflux.core.executor.ConstantExpressionExecutor
 use super::expression_executor::ExpressionExecutor;
-use crate::core::event::complex_event::ComplexEvent; // Trait
-use crate::core::event::value::AttributeValue; // Enum for actual data
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum
+use crate::core::event::complex_event::ComplexEvent;
+use crate::core::event::value::AttributeValue;
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
 
-/// Executor that returns a constant value.
-#[derive(Debug, Clone)] // Constant values are cloneable
+/// Executor that returns a constant value. It ignores the event.
+#[derive(Debug, Clone)]
 pub struct ConstantExpressionExecutor {
-    value: AttributeValue, // Stores the constant value directly using our AttributeValue enum
-    return_type: ApiAttributeType, // Stores the type of the constant
+    value: AttributeValue,
+    return_type: ApiAttributeType,
 }
 
 impl ConstantExpressionExecutor {
+    /// Does not check that `value` matches `return_type`. The caller, such as
+    /// ExpressionParser, must pass a matching pair, for example AttributeValue::Int with
+    /// Attribute::Type::INT.
     pub fn new(value: AttributeValue, return_type: ApiAttributeType) -> Self {
-        // In a more robust implementation, we might validate that the AttributeValue variant
-        // matches the provided Attribute::Type.
-        // e.g., if return_type is Attribute::Type::INT, value should be AttributeValue::Int.
-        // For now, assuming the caller provides consistent types, as in ExpressionParser.
         Self { value, return_type }
     }
 
-    // Getter for the value if needed (not in Java ExpressionExecutor interface)
+    // Not part of the Java ExpressionExecutor interface
     pub fn get_value(&self) -> &AttributeValue {
         &self.value
     }
@@ -46,8 +44,6 @@ impl ConstantExpressionExecutor {
 
 impl ExpressionExecutor for ConstantExpressionExecutor {
     fn execute(&self, _event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
-        // Constants don't depend on the event, so _event is ignored.
-        // Return a clone of the stored constant value.
         Some(self.value.clone())
     }
 
@@ -69,9 +65,9 @@ impl ExpressionExecutor for ConstantExpressionExecutor {
 mod tests {
     use super::*;
     use crate::core::event::value::AttributeValue;
-    // ApiAttributeType is already imported in the outer scope
-    use crate::core::config::eventflux_app_context::EventFluxAppContext; // For clone_executor signature
-    use crate::core::executor::expression_executor::ExpressionExecutor; // Trait
+    // ApiAttributeType comes from the parent module through super::*
+    use crate::core::config::eventflux_app_context::EventFluxAppContext;
+    use crate::core::executor::expression_executor::ExpressionExecutor;
     use std::sync::Arc;
 
     #[test]
@@ -80,7 +76,7 @@ mod tests {
             AttributeValue::String("hello".to_string()),
             ApiAttributeType::STRING,
         );
-        let result = exec.execute(None); // Event is None for constant
+        let result = exec.execute(None);
         assert_eq!(result, Some(AttributeValue::String("hello".to_string())));
         assert_eq!(exec.get_return_type(), ApiAttributeType::STRING);
     }

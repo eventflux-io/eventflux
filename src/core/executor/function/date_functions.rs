@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/function/date_functions.rs
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
@@ -24,7 +23,7 @@ use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use chrono::{NaiveDateTime, Utc};
 use std::sync::Arc;
 
-/// NOW() function - returns current timestamp in milliseconds
+/// NOW() function. Returns the current UTC time as epoch milliseconds (LONG).
 #[derive(Debug, Default, Clone)]
 pub struct NowFunctionExecutor;
 

@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/variable_expression_executor.rs
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
 use crate::core::event::stream::stream_event::StreamEvent;
@@ -28,17 +27,21 @@ use crate::core::util::eventflux_constants::{
 };
 use crate::query_api::definition::attribute::Type as ApiAttributeType;
 
-/// Executor that retrieves a variable's value from an event. Current impl is simplified.
+/// Reads a variable (attribute) value from an event.
+///
+/// For a StreamEvent it reads the section and index from `position`, falling back to
+/// `output_data`. For a StateEvent it uses `StateEvent::get_attribute`. For any other event
+/// it reads `get_output_data` at the attribute index. No event gives `None`.
 #[derive(Debug, Clone)]
 pub struct VariableExpressionExecutor {
-    /// EventFlux position array for locating the attribute within a `ComplexEvent`.
+    /// EventFlux position array that locates the attribute in a `ComplexEvent`.
     ///
     /// `position[STREAM_EVENT_CHAIN_INDEX]`  - index of the stream event in a `StateEvent` chain.
-    /// `position[STREAM_EVENT_INDEX_IN_CHAIN]` - index within the chain if the stream has multiple
-    ///   events (not commonly used in this simplified implementation).
-    /// `position[STREAM_ATTRIBUTE_TYPE_INDEX]` - which data section to access (before window,
-    ///   output, etc.).
-    /// `position[STREAM_ATTRIBUTE_INDEX_IN_TYPE]` - attribute index within the selected section.
+    /// `position[STREAM_EVENT_INDEX_IN_CHAIN]` - index within the chain when the stream has
+    ///   several events. Only used for StateEvents.
+    /// `position[STREAM_ATTRIBUTE_TYPE_INDEX]` - which data section to read (before window,
+    ///   output, and so on).
+    /// `position[STREAM_ATTRIBUTE_INDEX_IN_TYPE]` - attribute index within that section.
     pub position: [i32; 4],
     pub return_type: ApiAttributeType,
     pub attribute_name_for_debug: String,
@@ -57,15 +60,14 @@ impl VariableExpressionExecutor {
         }
     }
 
-    /// Return the current EventFlux position array describing this variable.
+    /// Returns the current EventFlux position array for this variable.
     pub fn get_position(&self) -> [i32; 4] {
         self.position
     }
 
-    /// Update the executor's position information.  This mirrors the behaviour
-    /// of the Java implementation where a position can be specified either as a
-    /// two element array (attribute type and index) for simple stream queries or
-    /// a full four element array for state events and table lookups.
+    /// Updates the position. As in the Java version, `position` is either two elements
+    /// (attribute type and index) for simple stream queries, or all four for state events
+    /// and table lookups. A slice of any other length is ignored.
     pub fn set_position(&mut self, position: &[i32]) {
         if position.len() == 2 {
             self.position[STREAM_ATTRIBUTE_TYPE_INDEX] = position[0];
@@ -78,9 +80,8 @@ impl VariableExpressionExecutor {
         }
     }
 
-    /// Convenience method used when performing table lookups where the data is
-    /// provided as a plain attribute array rather than wrapped in a
-    /// [`ComplexEvent`].
+    /// Reads the attribute from a plain row of values instead of a [`ComplexEvent`]. Used
+    /// for table lookups. Only the attribute index is used.
     pub fn execute_on_row(&self, values: &[AttributeValue]) -> Option<AttributeValue> {
         values
             .get(self.position[STREAM_ATTRIBUTE_INDEX_IN_TYPE] as usize)
@@ -108,9 +109,9 @@ impl ExpressionExecutor for VariableExpressionExecutor {
                 return attr;
             }
 
-            // MetaStreamEvent in the simplified parser may place all attributes
-            // in `output_data` while positions point at `before_window_data`.
-            // Fall back to output_data when the requested section is empty.
+            // The parser's MetaStreamEvent can put all attributes in `output_data` while the
+            // position points at `before_window_data`. So fall back to output_data when the
+            // value is not in the requested section.
             return stream_event
                 .output_data
                 .as_ref()
@@ -122,7 +123,7 @@ impl ExpressionExecutor for VariableExpressionExecutor {
             return state_event.get_attribute(&self.position).cloned();
         }
 
-        // Fallback to whatever data the ComplexEvent exposes via `get_output_data`.
+        // Any other event type. Use whatever it exposes through `get_output_data`.
         complex_event
             .get_output_data()
             .and_then(|d| d.get(self.position[STREAM_ATTRIBUTE_INDEX_IN_TYPE] as usize))
@@ -139,12 +140,12 @@ impl ExpressionExecutor for VariableExpressionExecutor {
             crate::core::config::eventflux_app_context::EventFluxAppContext,
         >,
     ) -> Box<dyn ExpressionExecutor> {
-        // If eventflux_app_context was stored on self, it would be cloned:
+        // Holds no context, so a plain clone is enough. If it stored one, it would copy it:
         // eventflux_app_context: self.eventflux_app_context.as_ref().map(Arc::clone),
         Box::new(self.clone())
     }
 
-    /// Returns true for VariableExpressionExecutor - used for validation
+    /// Always true here. Used for validation.
     fn is_variable_executor(&self) -> bool {
         true
     }
@@ -154,17 +155,16 @@ impl ExpressionExecutor for VariableExpressionExecutor {
 mod tests {
     use super::*;
     use crate::core::event::complex_event::{ComplexEvent, ComplexEventType};
-    use crate::core::event::stream::stream_event::StreamEvent; // Using StreamEvent as a concrete ComplexEvent
+    use crate::core::event::stream::stream_event::StreamEvent; // A concrete ComplexEvent
     use crate::core::event::value::AttributeValue;
     use crate::core::util::eventflux_constants::{
         BEFORE_WINDOW_DATA_INDEX, STREAM_ATTRIBUTE_INDEX_IN_TYPE,
     };
-    // ApiAttributeType is imported in the outer scope
+    // ApiAttributeType comes from the parent module through super::*
     use crate::core::config::eventflux_app_context::EventFluxAppContext;
     use std::sync::Arc;
 
-    // Mock ComplexEvent or use StreamEvent for testing
-    // This StreamEvent has its output_data set for testing VEE.
+    // StreamEvent with only output_data set
     fn create_test_stream_event_with_output_data(
         output_data_vec: Vec<AttributeValue>,
     ) -> StreamEvent {
@@ -173,7 +173,7 @@ mod tests {
         se
     }
 
-    // New helper for testing VEE with before_window_data
+    // StreamEvent with only before_window_data set
     fn create_test_stream_event_with_before_window_data(
         data_array: Vec<AttributeValue>,
     ) -> StreamEvent {
@@ -184,14 +184,12 @@ mod tests {
 
     #[test]
     fn test_variable_access_from_before_window_data_string() {
-        // Renamed and adapted
         let exec = VariableExpressionExecutor::new(
             [0, 0, BEFORE_WINDOW_DATA_INDEX as i32, 0],
             ApiAttributeType::STRING,
             "test_attr".to_string(),
         );
         let event_data = vec![AttributeValue::String("val1".to_string())];
-        // Use the new helper that populates before_window_data
         let test_event = create_test_stream_event_with_before_window_data(event_data);
 
         let result = exec.execute(Some(&test_event as &dyn ComplexEvent));
@@ -200,33 +198,25 @@ mod tests {
 
     #[test]
     fn test_variable_access_from_before_window_data_int_out_of_bounds() {
-        // Renamed and adapted
         let exec = VariableExpressionExecutor::new(
             [0, 0, BEFORE_WINDOW_DATA_INDEX as i32, 1],
             ApiAttributeType::INT,
             "test_attr_int".to_string(),
         );
-        let event_data = vec![AttributeValue::Int(123)]; // Only one element at index 0
-                                                         // Use the new helper that populates before_window_data
+        let event_data = vec![AttributeValue::Int(123)]; // Only one element, at index 0
         let test_event = create_test_stream_event_with_before_window_data(event_data);
 
         let result = exec.execute(Some(&test_event as &dyn ComplexEvent));
-        // Now expects None because it only checks before_window_data for StreamEvent
-        // and the index is out of bounds for that array.
+        // Index 1 is out of bounds in before_window_data, and output_data has no values, so
+        // the fallback finds nothing either
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_variable_access_output_data_for_non_stream_event_fallback() {
-        // This test checks the fallback behavior for non-StreamEvent types (or failed downcast)
-        // For this, we need a mock ComplexEvent that is not a StreamEvent but has output_data.
-        // Or, we assume that if it's not a StreamEvent, it uses get_output_data().
-        // The current code will use get_output_data() if the downcast to StreamEvent fails.
-        // We can simulate this by using a StreamEvent but relying on the VEE to *not* find it
-        // in before_window_data if we make before_window_data empty, and then it would hit the else branch.
-        // However, the modified VEE execute for StreamEvent now returns None if not in before_window_data.
-        // So, to test the `else` branch of `if let Some(stream_event) = ...`, we need a non-StreamEvent.
-        // Let's create a simple mock for that.
+        // Checks the last branch, for events that are neither StreamEvent nor StateEvent.
+        // Those read get_output_data(). A StreamEvent cannot reach that branch, so this uses
+        // a small mock event that only has output_data.
 
         #[derive(Debug)]
         struct MockComplexEvent {
@@ -307,7 +297,6 @@ mod tests {
 
     #[test]
     fn test_variable_clone() {
-        // This test needs to be re-evaluated based on new execute logic
         let exec = VariableExpressionExecutor::new(
             [0, 0, BEFORE_WINDOW_DATA_INDEX as i32, 0],
             ApiAttributeType::STRING,
@@ -318,7 +307,6 @@ mod tests {
 
         assert_eq!(cloned_exec.get_return_type(), ApiAttributeType::STRING);
 
-        // Test with before_window_data
         let event_data_before = vec![AttributeValue::String("clone_val_before".to_string())];
         let test_event_before = create_test_stream_event_with_before_window_data(event_data_before);
         let result_before = cloned_exec.execute(Some(&test_event_before as &dyn ComplexEvent));

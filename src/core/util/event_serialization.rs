@@ -15,10 +15,11 @@
  * limitations under the License.
  */
 
-//! Advanced Event Serialization System
+//! Event Serialization
 //!
-//! This module provides enterprise-grade serialization for StreamEvents and AttributeValues,
-//! with proper handling of all types including the problematic Box<dyn Any> variant.
+//! Turns StreamEvents and AttributeValues into bytes and back. Every value type is
+//! supported except the content of `AttributeValue::Object`, which holds a Box<dyn Any>
+//! that cannot be serialized. An object comes back as `AttributeValue::Object(None)`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,21 +29,25 @@ use crate::core::event::stream::stream_event::StreamEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::persistence::state_holder::StateError;
 
-/// Storage strategy for event serialization based on use case
+/// How much of an event to store.
+///
+/// Today only `Reference` behaves differently. It drops Object values from
+/// `before_window_data`. `Full`, `Essential` and `Compressed` all store every value, and
+/// `Compressed` does not compress anything.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum StorageStrategy {
-    /// Store complete event data for full recovery
+    /// Store all event data
     Full,
-    /// Store essential data only (excludes complex objects)
+    /// Store the essential data. Currently the same as `Full`.
     #[default]
     Essential,
-    /// Store only references/metadata (minimal storage)
+    /// Store less. Drops Object values from `before_window_data`.
     Reference,
-    /// Store compressed event data
+    /// Meant for compressed storage. Currently the same as `Full`.
     Compressed,
 }
 
-/// Serializable representation of AttributeValue that handles all types safely
+/// Serializable copy of an AttributeValue
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SerializableAttributeValue {
     String(String),
@@ -51,14 +56,15 @@ pub enum SerializableAttributeValue {
     Float(f32),
     Double(f64),
     Bool(bool),
-    /// Raw binary data for passthrough scenarios
+    /// Raw bytes, passed through as is
     Bytes(Vec<u8>),
-    /// Object variant with type information and serialized data
+    /// Placeholder for an Object value. The object itself is not stored.
     Object {
+        /// Always "dynamic_object" today
         type_name: String,
+        /// Whether the original held an object
         is_some: bool,
-        /// For known types, we store a string representation
-        /// For unknown types, we store None and reconstruct as empty
+        /// Meant for a string form of known types. Always None today.
         serialized_data: Option<String>,
     },
     Null,
@@ -75,12 +81,11 @@ impl From<&AttributeValue> for SerializableAttributeValue {
             AttributeValue::Bool(b) => SerializableAttributeValue::Bool(*b),
             AttributeValue::Bytes(bytes) => SerializableAttributeValue::Bytes(bytes.clone()),
             AttributeValue::Object(obj_opt) => {
-                // Handle the Box<dyn Any> case
                 SerializableAttributeValue::Object {
                     type_name: "dynamic_object".to_string(),
                     is_some: obj_opt.is_some(),
-                    // For now, we cannot serialize arbitrary Box<dyn Any> objects
-                    // In a production system, we would register known object types
+                    // A Box<dyn Any> cannot be serialized. Doing so would need a registry
+                    // of known object types.
                     serialized_data: None,
                 }
             }
@@ -100,10 +105,10 @@ impl From<SerializableAttributeValue> for AttributeValue {
             SerializableAttributeValue::Bool(b) => AttributeValue::Bool(b),
             SerializableAttributeValue::Bytes(bytes) => AttributeValue::Bytes(bytes),
             SerializableAttributeValue::Object { is_some, .. } => {
-                // Reconstruct as None for now - in production we'd have a registry
-                // of known object types that can be deserialized properly
+                // Always Object(None), since the object was never stored. Rebuilding it
+                // would need a registry of known object types.
                 if is_some {
-                    // We know there was an object but can't reconstruct it
+                    // There was an object, but it cannot be rebuilt
                     AttributeValue::Object(None)
                 } else {
                     AttributeValue::Object(None)
@@ -114,20 +119,21 @@ impl From<SerializableAttributeValue> for AttributeValue {
     }
 }
 
-/// Serializable event data with configurable storage strategy
+/// Serializable copy of a StreamEvent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableEventData {
     pub timestamp: i64,
     pub before_window_data: Vec<SerializableAttributeValue>,
     pub on_after_window_data: Vec<SerializableAttributeValue>,
+    /// Empty when the event had no output data
     pub output_data: Vec<SerializableAttributeValue>,
+    /// True for an Expired event. Any other type comes back as Current.
     pub is_expired: bool,
     pub storage_strategy: StorageStrategy,
-    /// Event metadata for reconstruction
     pub metadata: EventMetadata,
 }
 
-/// Metadata for event reconstruction
+/// Extra details stored with an event. Not used when rebuilding the StreamEvent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventMetadata {
     pub event_key: String,
@@ -148,7 +154,8 @@ impl Default for EventMetadata {
 }
 
 impl SerializableEventData {
-    /// Create serializable event data from a StreamEvent with specified strategy
+    /// Copies a StreamEvent with the given strategy. Only `before_window_data` depends on
+    /// the strategy. The event key is set to "event_<timestamp>".
     pub fn from_stream_event(event: &StreamEvent, strategy: StorageStrategy) -> Self {
         let before_window_data = match strategy {
             StorageStrategy::Full | StorageStrategy::Essential => event
@@ -157,20 +164,19 @@ impl SerializableEventData {
                 .map(SerializableAttributeValue::from)
                 .collect(),
             StorageStrategy::Reference => {
-                // Store only basic types, skip complex objects entirely
+                // Keep only plain values and drop Object values. This shifts the index of
+                // any value after a dropped one.
                 event
                     .before_window_data
                     .iter()
-                    .filter_map(|attr| {
-                        match attr {
-                            AttributeValue::Object(_) => None, // Skip objects in reference mode
-                            _ => Some(SerializableAttributeValue::from(attr)),
-                        }
+                    .filter_map(|attr| match attr {
+                        AttributeValue::Object(_) => None,
+                        _ => Some(SerializableAttributeValue::from(attr)),
                     })
                     .collect()
             }
             StorageStrategy::Compressed => {
-                // Similar to essential but with additional compression hints
+                // Same as Essential for now. Nothing is compressed.
                 event
                     .before_window_data
                     .iter()
@@ -199,14 +205,15 @@ impl SerializableEventData {
             storage_strategy: strategy,
             metadata: EventMetadata {
                 event_key: format!("event_{}", event.timestamp),
-                source_stream: None, // Could be populated from context
+                source_stream: None, // Not known here
                 processing_stage: None,
                 custom_properties: HashMap::new(),
             },
         }
     }
 
-    /// Convert back to StreamEvent
+    /// Rebuilds the StreamEvent. Empty output data becomes `None`. Object values come
+    /// back as `Object(None)`.
     pub fn to_stream_event(&self) -> StreamEvent {
         let before_window_data: Vec<AttributeValue> = self
             .before_window_data
@@ -249,7 +256,10 @@ impl SerializableEventData {
         stream_event
     }
 
-    /// Serialize to bytes with compression support
+    /// Serializes to bytes with `crate::core::util::to_bytes`. No compression is applied.
+    ///
+    /// # Errors
+    /// Returns `StateError::SerializationError` if encoding fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>, StateError> {
         use crate::core::util::to_bytes;
 
@@ -258,7 +268,10 @@ impl SerializableEventData {
         })
     }
 
-    /// Deserialize from bytes
+    /// Reads data written by [`to_bytes`](Self::to_bytes).
+    ///
+    /// # Errors
+    /// Returns `StateError::DeserializationError` if the bytes do not decode.
     pub fn from_bytes(data: &[u8]) -> Result<Self, StateError> {
         use crate::core::util::from_bytes;
 
@@ -267,37 +280,40 @@ impl SerializableEventData {
         })
     }
 
-    /// Get storage size estimate
+    /// Rough size in bytes. The struct size plus 50 bytes per stored value.
     pub fn estimate_size(&self) -> usize {
-        // Rough estimate based on data
         let base_size = std::mem::size_of::<Self>();
         let data_size = (self.before_window_data.len()
             + self.on_after_window_data.len()
             + self.output_data.len())
-            * 50; // Rough estimate per attribute
+            * 50; // Rough guess per value
         base_size + data_size
     }
 }
 
-/// Batch serialization for multiple events
+/// Several serialized events stored together
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventBatch {
     pub events: Vec<SerializableEventData>,
     pub batch_metadata: BatchMetadata,
 }
 
-/// Metadata for event batches
+/// Details about an event batch
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchMetadata {
+    /// "batch_<current time in ms>"
     pub batch_id: String,
+    /// (min, max) event timestamp, or (0, 0) for an empty batch
     pub timestamp_range: (i64, i64),
     pub event_count: usize,
     pub storage_strategy: StorageStrategy,
+    /// Always false today
     pub compression_applied: bool,
 }
 
 impl EventBatch {
-    /// Create a new event batch
+    /// Creates a batch and fills in its metadata. `strategy` is only recorded. The
+    /// events must already be built with it.
     pub fn new(events: Vec<SerializableEventData>, strategy: StorageStrategy) -> Self {
         let timestamp_range = if events.is_empty() {
             (0, 0)
@@ -321,7 +337,10 @@ impl EventBatch {
         }
     }
 
-    /// Serialize batch to bytes
+    /// Serializes the batch to bytes.
+    ///
+    /// # Errors
+    /// Returns `StateError::SerializationError` if encoding fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>, StateError> {
         use crate::core::util::to_bytes;
 
@@ -330,7 +349,10 @@ impl EventBatch {
         })
     }
 
-    /// Deserialize batch from bytes
+    /// Reads a batch written by [`to_bytes`](Self::to_bytes).
+    ///
+    /// # Errors
+    /// Returns `StateError::DeserializationError` if the bytes do not decode.
     pub fn from_bytes(data: &[u8]) -> Result<Self, StateError> {
         use crate::core::util::from_bytes;
 
@@ -339,7 +361,7 @@ impl EventBatch {
         })
     }
 
-    /// Convert all events to StreamEvents
+    /// Rebuilds every event as a StreamEvent
     pub fn to_stream_events(&self) -> Vec<StreamEvent> {
         self.events
             .iter()
@@ -347,7 +369,7 @@ impl EventBatch {
             .collect()
     }
 
-    /// Estimate total storage size
+    /// Rough total size in bytes. See [`SerializableEventData::estimate_size`].
     pub fn estimate_size(&self) -> usize {
         let base_size = std::mem::size_of::<Self>();
         let events_size: usize = self.events.iter().map(|e| e.estimate_size()).sum();
@@ -355,7 +377,8 @@ impl EventBatch {
     }
 }
 
-/// High-level event serialization service
+/// Serializes events and batches with a default storage strategy. The default is
+/// `Essential`.
 #[derive(Debug, Clone)]
 pub struct EventSerializationService {
     default_strategy: StorageStrategy,
@@ -366,14 +389,14 @@ impl EventSerializationService {
         Self { default_strategy }
     }
 
-    /// Serialize a single event with default strategy
+    /// Serializes one event with the default strategy
     pub fn serialize_event(&self, event: &StreamEvent) -> Result<Vec<u8>, StateError> {
         let serializable =
             SerializableEventData::from_stream_event(event, self.default_strategy.clone());
         serializable.to_bytes()
     }
 
-    /// Serialize a single event with custom strategy
+    /// Serializes one event with the given strategy
     pub fn serialize_event_with_strategy(
         &self,
         event: &StreamEvent,
@@ -383,13 +406,13 @@ impl EventSerializationService {
         serializable.to_bytes()
     }
 
-    /// Deserialize a single event
+    /// Reads one event written by `serialize_event` or `serialize_event_with_strategy`
     pub fn deserialize_event(&self, data: &[u8]) -> Result<StreamEvent, StateError> {
         let serializable = SerializableEventData::from_bytes(data)?;
         Ok(serializable.to_stream_event())
     }
 
-    /// Serialize a batch of events
+    /// Serializes events as one [`EventBatch`] with the default strategy
     pub fn serialize_event_batch(&self, events: &[StreamEvent]) -> Result<Vec<u8>, StateError> {
         let serializable_events: Vec<SerializableEventData> = events
             .iter()
@@ -402,13 +425,13 @@ impl EventSerializationService {
         batch.to_bytes()
     }
 
-    /// Deserialize a batch of events
+    /// Reads a batch written by `serialize_event_batch`
     pub fn deserialize_event_batch(&self, data: &[u8]) -> Result<Vec<StreamEvent>, StateError> {
         let batch = EventBatch::from_bytes(data)?;
         Ok(batch.to_stream_events())
     }
 
-    /// Get storage size estimate for events
+    /// Rough total size in bytes of the events stored with the default strategy
     pub fn estimate_storage_size(&self, events: &[StreamEvent]) -> usize {
         events
             .iter()

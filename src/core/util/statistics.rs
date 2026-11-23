@@ -24,7 +24,8 @@ pub trait StatisticsManager: Send + Sync {
     fn cleanup(&self);
 }
 
-/// Simple in-memory statistics manager used for tests.
+/// Minimal statistics manager. It only records whether reporting is on and reports
+/// nothing. No code in the crate uses it today.
 #[derive(Debug, Default)]
 pub struct DefaultStatisticsManager {
     running: AtomicBool,

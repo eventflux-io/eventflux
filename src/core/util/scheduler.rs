@@ -15,25 +15,28 @@
  * limitations under the License.
  */
 
-//! Scheduler for time-based event triggering
+//! Scheduler for time based event triggering
 //!
 //! # Threading Model
 //!
-//! The Scheduler uses a **dedicated thread pool** separate from event processing to avoid
-//! blocking event processing threads. Scheduling tasks use `std::thread::sleep` for delays,
-//! which is acceptable because:
+//! The runtime gives the Scheduler its **own thread pool**, apart from event processing.
+//! Scheduled tasks wait with `std::thread::sleep`, which is fine because:
 //!
-//! - Scheduler has its own isolated ExecutorService (rayon ThreadPool)
-//! - Blocking sleep in scheduler threads doesn't affect event processing throughput
-//! - Event processing uses lock-free crossbeam queues and non-blocking operations
+//! - The Scheduler has its own ExecutorService (a rayon ThreadPool)
+//! - A sleeping scheduler thread does not slow event processing
+//! - Event processing uses lock free crossbeam queues and calls that do not block
+//!
+//! Each scheduled task holds one pool thread for as long as it runs, and periodic and
+//! cron tasks run until stopped or their limit is reached. So more long running tasks
+//! than pool threads will delay the extra ones.
 //!
 //! # Configuration
 //!
-//! The scheduler thread pool size can be configured via:
-//! - `EVENTFLUX_EXECUTOR_THREADS` environment variable (for default executor)
-//! - Or by providing a custom `ExecutorService` with desired thread count
+//! Set the pool size with:
+//! - the `EVENTFLUX_EXECUTOR_THREADS` environment variable (for the default executor)
+//! - or a custom `ExecutorService` with the thread count you want
 //!
-//! Default: Uses `num_cpus::get()` threads for maximum scheduling parallelism
+//! Default: `num_cpus::get()` threads
 
 use crate::core::util::executor_service::ExecutorService;
 use chrono::Utc;
@@ -43,14 +46,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Something the Scheduler calls back when its time comes.
 pub trait Schedulable: Send + Sync {
+    /// Called with the scheduled time in epoch milliseconds, which can be slightly
+    /// earlier than the real time of the call.
     fn on_time(&self, timestamp: i64);
 }
 
-/// Scheduler for time-based event triggering with dedicated thread pool
+/// Scheduler for time based event triggering on its own thread pool
 ///
-/// **Important:** This scheduler uses a dedicated ExecutorService to prevent blocking
-/// event processing threads. See module documentation for threading details.
+/// **Important:** Give this scheduler its own ExecutorService so its sleeps never block
+/// event processing threads. See the module docs for threading details.
 #[derive(Debug, Clone)]
 pub struct Scheduler {
     executor: Arc<ExecutorService>,
@@ -61,6 +67,11 @@ impl Scheduler {
         Self { executor }
     }
 
+    /// Calls `target.on_time(timestamp)` once at `timestamp` (epoch milliseconds), or
+    /// right away if that time has passed.
+    ///
+    /// # Panics
+    /// The task panics if the system clock is before the Unix epoch.
     pub fn notify_at(&self, timestamp: i64, target: Arc<dyn Schedulable>) {
         self.executor.execute(move || {
             let now = SystemTime::now()
@@ -73,6 +84,9 @@ impl Scheduler {
         });
     }
 
+    /// Calls `target.on_time` every `period_ms` milliseconds, starting one period from
+    /// now. Stops after `limit` calls if given, or once `running` is false. `running` is
+    /// checked before each wait, so a call already waiting still runs after a stop.
     pub fn schedule_periodic(
         &self,
         period_ms: i64,
@@ -112,6 +126,12 @@ impl Scheduler {
         });
     }
 
+    /// Calls `target.on_time` at each upcoming time of `cron_expr`, in UTC. Stops after
+    /// `limit` calls if given, or once `running` is false. `running` is checked before
+    /// each wait, so a call already waiting still runs after a stop.
+    ///
+    /// # Errors
+    /// Returns an error if `cron_expr` does not parse.
     pub fn schedule_cron(
         &self,
         cron_expr: &str,
@@ -146,6 +166,8 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Calls `ExecutorService::wait_all`, which does nothing today. Tasks already
+    /// scheduled keep running. Stop periodic and cron tasks through their `running` flag.
     pub fn shutdown(&self) {
         self.executor.wait_all();
     }

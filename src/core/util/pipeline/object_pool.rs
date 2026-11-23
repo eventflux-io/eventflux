@@ -15,25 +15,28 @@
  * limitations under the License.
  */
 
-//! Object Pool for Zero-Allocation Event Processing
+//! Object Pool for event holders
 //!
-//! Provides lock-free object pooling to minimize allocations in the hot path,
-//! critical for achieving >1M events/second throughput.
+//! A lock free pool of reusable event holders, meant to cut allocations on the hot path
+//! toward the >1M events/second goal.
 //!
 //! ## Current Status
 //!
-//! **NOT YET INTEGRATED**: This pool is instantiated in StreamJunction but not actively used.
-//! The _event_pool field is reserved for future object pooling optimizations.
+//! EventPipeline uses its own pool. It takes a holder in `publish` and gives it back with
+//! `release` after the event is consumed. StreamJunction also creates a pool in its
+//! `_event_pool` field, but that one is never used. The StreamEvent itself is still
+//! allocated for every event.
 //!
 //! ## Known Issues
 //!
-//! 1. **Drop-based recycling doesn't work**: PooledEvent.pool is set to None on creation (line 142),
-//!    so the Drop impl never returns events to the pool. Events must be manually released via
-//!    EventPool::release() for now.
+//! 1. **Recycling on drop does not work**: `acquire` creates holders with `pool` set to
+//!    None, so the Drop impl never returns them. Holders must be returned by hand with
+//!    EventPool::release(). A holder that is dropped instead never comes back and its
+//!    slot stays counted in `current_size`.
 //!
-//! 2. **Integration pending**: Need to integrate with StreamEvent lifecycle to actually use pooling.
+//! 2. **Not tied to the StreamEvent lifecycle**: pooling covers the holder, not the event.
 //!
-//! ## Future Work (Performance Optimization - M4+)
+//! ## Future Work (Performance Optimization, M4 and later)
 //!
 //! - Fix PooledEvent to maintain Arc<EventPool> reference for automatic recycling
 //! - Integrate with StreamJunction event processing pipeline
@@ -46,18 +49,17 @@ use std::sync::Arc;
 
 use crate::core::event::stream::StreamEvent;
 
-/// A pooled event holder that can be reused to minimize allocations
+/// A reusable holder for one event and its sequence number
 pub struct PooledEvent {
-    /// The actual event data
     event: Option<StreamEvent>,
-    /// Sequence number for ordering
+    /// Sequence number, used for ordering
     sequence: u64,
-    /// Pool to return to when dropped
+    /// Pool to go back to when dropped. Always None for holders from `acquire`.
     pool: Option<Arc<EventPool>>,
 }
 
 impl PooledEvent {
-    /// Create a new pooled event
+    /// Creates a holder tied to `pool`. Not used today.
     #[allow(dead_code)]
     fn new(pool: Arc<EventPool>) -> Self {
         Self {
@@ -67,32 +69,32 @@ impl PooledEvent {
         }
     }
 
-    /// Set the event data
+    /// Stores the event, replacing any event already held
     pub fn set_event(&mut self, event: StreamEvent) {
         self.event = Some(event);
     }
 
-    /// Get a reference to the event
     pub fn event(&self) -> Option<&StreamEvent> {
         self.event.as_ref()
     }
 
-    /// Take the event, leaving None
+    /// Takes the event out, leaving the holder empty.
+    ///
+    /// # Panics
+    /// Panics if the holder is empty.
     pub fn take_event(&mut self) -> StreamEvent {
         self.event.take().expect("Event should be present")
     }
 
-    /// Set the sequence number
     pub fn set_sequence(&mut self, sequence: u64) {
         self.sequence = sequence;
     }
 
-    /// Get the sequence number
     pub fn sequence(&self) -> u64 {
         self.sequence
     }
 
-    /// Reset the pooled event for reuse
+    /// Clears the event and sequence for reuse
     fn reset(&mut self) {
         self.event = None;
         self.sequence = 0;
@@ -101,7 +103,7 @@ impl PooledEvent {
 
 impl Drop for PooledEvent {
     fn drop(&mut self) {
-        // Return to pool when dropped
+        // Only holders tied to a pool go back. See Known Issues in the module docs.
         if let Some(pool) = self.pool.take() {
             self.reset();
             pool.return_to_pool(self);
@@ -109,24 +111,24 @@ impl Drop for PooledEvent {
     }
 }
 
-/// Lock-free object pool for event holders
+/// Lock free pool of event holders. Holders are created on demand, up to `capacity`.
 pub struct EventPool {
-    /// Pool of available event holders
+    /// Holders ready for reuse
     pool: SegQueue<PooledEvent>,
-    /// Pool capacity
+    /// Most holders this pool will ever create
     capacity: usize,
-    /// Current pool size
+    /// Holders created so far. Never goes down.
     current_size: AtomicU64,
-    /// Total allocations made
+    /// Holders created, counting since the last stats reset
     total_allocated: AtomicU64,
-    /// Total acquisitions
+    /// `acquire` calls, failed ones included
     total_acquired: AtomicU64,
-    /// Total releases
+    /// `release` calls
     total_released: AtomicU64,
 }
 
 impl EventPool {
-    /// Create a new event pool with the specified capacity
+    /// Creates an empty pool that will create at most `capacity` holders
     pub fn new(capacity: usize) -> Self {
         let pool = SegQueue::new();
 
@@ -140,29 +142,27 @@ impl EventPool {
         }
     }
 
-    /// Acquire a pooled event from the pool
+    /// Takes a holder from the pool, or creates one if the pool is empty and fewer than
+    /// `capacity` exist. Returns None when the pool is exhausted.
+    ///
+    /// A reused holder is returned as released, so it may still hold its old event.
     pub fn acquire(&self) -> Option<PooledEvent> {
         self.total_acquired.fetch_add(1, Ordering::Relaxed);
 
-        // Try to get from pool first
         if let Some(pooled_event) = self.pool.pop() {
-            // Set the pool reference - we'll use a simpler approach without transmute
-            // The pool reference is already set when creating the pooled_event
             return Some(pooled_event);
         }
 
-        // Pool is empty - try to create new if under capacity
-        // Use a loop with compare_exchange_weak to handle spurious failures
+        // Pool is empty, so create a new holder if under capacity. compare_exchange_weak
+        // can fail spuriously, so loop.
         loop {
             let current = self.current_size.load(Ordering::Relaxed);
 
-            // Check capacity limit
             if current >= self.capacity as u64 {
-                // Pool exhausted
                 return None;
             }
 
-            // Try to increment size atomically
+            // Reserve a slot
             match self.current_size.compare_exchange_weak(
                 current,
                 current + 1,
@@ -170,48 +170,47 @@ impl EventPool {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    // Successfully reserved a slot - create new event
                     self.total_allocated.fetch_add(1, Ordering::Relaxed);
                     let pooled_event = PooledEvent {
                         event: None,
                         sequence: 0,
-                        pool: None, // We'll manage pool lifecycle differently
+                        pool: None, // Not tied to the pool. Return it with `release`.
                     };
                     return Some(pooled_event);
                 }
                 Err(_) => {
-                    // CAS failed (spurious or actual) - retry
-                    // On next iteration, we'll recheck capacity with updated value
+                    // Lost a race or failed spuriously. Retry and check capacity again.
                     continue;
                 }
             }
         }
     }
 
-    /// Release a pooled event back to the pool
+    /// Puts a holder back in the pool. It is not cleared, so any event it still holds
+    /// stays in memory until the holder is reused.
     pub fn release(&self, pooled_event: PooledEvent) {
         self.total_released.fetch_add(1, Ordering::Relaxed);
         self.pool.push(pooled_event);
     }
 
-    /// Internal method to return event to pool (called by Drop)
+    /// Called from Drop. Pushes a fresh empty holder in place of the dropped one, since
+    /// the dropped one cannot be moved out of `&mut`.
     fn return_to_pool(&self, _pooled_event: &mut PooledEvent) {
-        // Create a new PooledEvent to avoid moving issues
         let new_pooled = PooledEvent {
             event: None,
             sequence: 0,
-            pool: None, // Simplified without pool self-reference
+            pool: None, // No link back to the pool
         };
         self.pool.push(new_pooled);
     }
 
-    /// Get current pool utilization (0.0 to 1.0)
+    /// Share of `capacity` created so far (0.0 to 1.0). Holders waiting in the pool
+    /// still count.
     pub fn utilization(&self) -> f64 {
         let current = self.current_size.load(Ordering::Relaxed);
         current as f64 / self.capacity as f64
     }
 
-    /// Get pool statistics
     pub fn stats(&self) -> PoolStats {
         PoolStats {
             capacity: self.capacity,
@@ -223,7 +222,7 @@ impl EventPool {
         }
     }
 
-    /// Reset pool statistics
+    /// Resets the allocated, acquired and released counters. `current_size` is kept.
     pub fn reset_stats(&self) {
         self.total_allocated.store(0, Ordering::Relaxed);
         self.total_acquired.store(0, Ordering::Relaxed);
@@ -236,6 +235,7 @@ impl EventPool {
 pub struct PoolStats {
     pub capacity: usize,
     pub current_size: u64,
+    /// Holders waiting in the pool
     pub available: u64,
     pub total_allocated: u64,
     pub total_acquired: u64,
@@ -243,7 +243,8 @@ pub struct PoolStats {
 }
 
 impl PoolStats {
-    /// Calculate pool hit rate (0.0 to 1.0)
+    /// Share of acquires that did not create a holder (0.0 to 1.0). Failed acquires
+    /// count as hits, so an exhausted pool still looks healthy.
     pub fn hit_rate(&self) -> f64 {
         if self.total_acquired == 0 {
             0.0
@@ -253,7 +254,7 @@ impl PoolStats {
         }
     }
 
-    /// Check if pool is healthy (hit rate > 0.8)
+    /// True when the hit rate is above 0.8
     pub fn is_healthy(&self) -> bool {
         self.hit_rate() > 0.8
     }
@@ -285,7 +286,6 @@ mod tests {
     fn test_acquire_and_release() {
         let pool = Arc::new(EventPool::new(5));
 
-        // Acquire event
         let mut pooled_event = pool.acquire().unwrap();
         pooled_event.set_event(create_test_event(42));
         pooled_event.set_sequence(1);
@@ -293,7 +293,6 @@ mod tests {
         assert_eq!(pooled_event.sequence(), 1);
         assert!(pooled_event.event().is_some());
 
-        // Release back to pool
         let stats_before = pool.stats();
         pool.release(pooled_event);
         let stats_after = pool.stats();
@@ -312,12 +311,11 @@ mod tests {
             pool.release(pooled_event);
         }
 
-        // Acquire again - should reuse the same instance
+        // Acquiring again should reuse the same holder
         let stats_before = pool.stats();
         let _pooled_event = pool.acquire().unwrap();
         let stats_after = pool.stats();
 
-        // Should have reused existing instance
         assert_eq!(stats_after.total_allocated, stats_before.total_allocated);
         assert!(stats_after.hit_rate() > 0.0);
     }
@@ -330,9 +328,10 @@ mod tests {
         let _event1 = pool.acquire().unwrap();
         let _event2 = pool.acquire().unwrap();
 
-        // Should still be able to acquire (pool creates on demand)
+        // Both holders are out and the capacity is reached, so this returns None today.
+        // The check below accepts either result.
         let event3 = pool.acquire();
-        assert!(event3.is_some() || event3.is_none()); // May or may not succeed depending on implementation
+        assert!(event3.is_some() || event3.is_none());
 
         let stats = pool.stats();
         assert!(stats.current_size <= 2);
@@ -342,7 +341,6 @@ mod tests {
     fn test_pool_statistics() {
         let pool = Arc::new(EventPool::new(5));
 
-        // Perform some operations
         for i in 0..3 {
             let mut event = pool.acquire().unwrap();
             event.set_event(create_test_event(i));
@@ -362,7 +360,6 @@ mod tests {
         let pool = Arc::new(EventPool::new(100));
         let mut handles = Vec::new();
 
-        // Spawn multiple threads
         for thread_id in 0..4 {
             let pool_clone = pool.clone();
             handles.push(thread::spawn(move || {
@@ -375,7 +372,6 @@ mod tests {
             }));
         }
 
-        // Wait for all threads
         for handle in handles {
             handle.join().unwrap();
         }
