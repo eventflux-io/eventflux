@@ -26,12 +26,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::config::{FlatConfig, PropertySource};
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
+use crate::query_api::definition::attribute::Type as AttributeType;
 
 use super::retry::RetryConfig;
 
 /// Stream property naming the DLQ stream that receives a source's failed
 /// events.
 pub const DLQ_STREAM_KEY: &str = "error.dlq.stream";
+
+/// The DLQ event schema, in order. [`create_dlq_event`] emits its values in
+/// exactly this order, and events are positional, so a DLQ stream must
+/// declare exactly these attributes in this order.
+pub const DLQ_FIELDS: &[(&str, AttributeType)] = &[
+    ("originalEvent", AttributeType::STRING),
+    ("errorMessage", AttributeType::STRING),
+    ("errorType", AttributeType::STRING),
+    ("timestamp", AttributeType::LONG),
+    ("attemptCount", AttributeType::INT),
+    ("streamName", AttributeType::STRING),
+];
 
 /// Fallback strategy when DLQ stream is unavailable or delivery fails
 ///
@@ -261,6 +274,7 @@ pub fn create_dlq_event(
     }
     .to_string();
 
+    // Values in DLQ_FIELDS order
     Event::new_with_data(
         error_timestamp, // Event arrival timestamp
         vec![
@@ -525,5 +539,30 @@ mod tests {
         let dlq_event = create_dlq_event(&original_event, &error, 0, "TestStream");
 
         assert_eq!(dlq_event.data[4], AttributeValue::Int(0));
+    }
+
+    #[test]
+    fn test_create_dlq_event_values_follow_dlq_fields_order() {
+        // DLQ streams are validated against DLQ_FIELDS positionally, so the
+        // emitted values must line up with it type for type
+        let dlq_event = create_dlq_event(
+            &Event::new_with_data(1, vec![AttributeValue::Int(1)]),
+            &EventFluxError::Other("e".to_string()),
+            1,
+            "S",
+        );
+
+        let emitted: Vec<AttributeType> = dlq_event
+            .data
+            .iter()
+            .map(|value| match value {
+                AttributeValue::String(_) => AttributeType::STRING,
+                AttributeValue::Long(_) => AttributeType::LONG,
+                AttributeValue::Int(_) => AttributeType::INT,
+                other => panic!("unexpected DLQ value {other:?}"),
+            })
+            .collect();
+        let declared: Vec<AttributeType> = DLQ_FIELDS.iter().map(|(_, t)| *t).collect();
+        assert_eq!(emitted, declared);
     }
 }

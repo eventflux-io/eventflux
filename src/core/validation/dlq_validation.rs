@@ -22,39 +22,31 @@
 //! - Phase 2: DLQ schema validation and recursive restriction validation
 
 use crate::core::config::{ElementType, ResolvedElementConfig};
-use crate::core::error::DLQ_STREAM_KEY;
+use crate::core::error::{DLQ_FIELDS, DLQ_STREAM_KEY};
 use crate::core::exception::{EventFluxError, EventFluxResult};
-use crate::query_api::definition::attribute::Type as AttributeType;
 use crate::query_api::definition::StreamDefinition;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Required DLQ stream schema fields
-///
-/// DLQ streams MUST have exactly these fields with exact types:
-/// - originalEvent: STRING (serialized original event)
-/// - errorMessage: STRING (error description)
-/// - errorType: STRING (error classification)
-/// - timestamp: LONG (error occurrence time)
-/// - attemptCount: INT (number of retry attempts)
-/// - streamName: STRING (source stream name)
-const REQUIRED_DLQ_FIELDS: &[(&str, AttributeType)] = &[
-    ("originalEvent", AttributeType::STRING),
-    ("errorMessage", AttributeType::STRING),
-    ("errorType", AttributeType::STRING),
-    ("timestamp", AttributeType::LONG),
-    ("attemptCount", AttributeType::INT),
-    ("streamName", AttributeType::STRING),
-];
+/// The required DLQ schema as SQL column declarations, e.g.
+/// `originalEvent STRING, errorMessage STRING, ...`
+fn required_dlq_schema() -> String {
+    DLQ_FIELDS
+        .iter()
+        .map(|(name, attribute_type)| format!("{name} {attribute_type:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
-/// Validate DLQ stream schema against required fields
+/// Validate DLQ stream schema against [`DLQ_FIELDS`]
 ///
 /// **Phase 2 Validation** (Application Initialization)
 ///
-/// Validates that the DLQ stream has the exact required schema:
-/// - Exact field count (no more, no less)
-/// - All required fields present with correct types
-/// - No extra fields beyond requirements
+/// Validates that the DLQ stream declares exactly the DLQ fields, with the
+/// exact types, in the exact order. DLQ events are positional and always
+/// carry their values in `DLQ_FIELDS` order, so any other order would put
+/// values under the wrong attributes. Duplicate and extra fields fail the
+/// count or position checks.
 ///
 /// # Arguments
 /// * `stream_name` - Name of the stream using the DLQ
@@ -92,82 +84,47 @@ pub fn validate_dlq_schema(
         )
     })?;
 
-    // 2. Extract actual schema from DLQ stream definition. A duplicated field
-    // would collapse in the map and slip past the count check, while DLQ
-    // events always carry exactly one value per required field.
-    let mut actual_fields: HashMap<String, AttributeType> = HashMap::new();
-    for attr in &dlq_stream.abstract_definition.attribute_list {
-        if actual_fields
-            .insert(attr.name.clone(), attr.attribute_type)
-            .is_some()
-        {
-            return Err(EventFluxError::configuration_with_key(
-                format!(
-                    "DLQ stream '{}' declares field '{}' more than once",
-                    dlq_stream_name, attr.name
-                ),
-                DLQ_STREAM_KEY,
-            ));
-        }
-    }
-
-    // 3. Validate exact field count (no more, no less)
-    if actual_fields.len() != REQUIRED_DLQ_FIELDS.len() {
-        return Err(EventFluxError::configuration_with_key(
+    let schema_error = |detail: String| {
+        EventFluxError::configuration_with_key(
             format!(
-                "DLQ stream '{}' has {} fields, but exactly {} required (originalEvent, errorMessage, errorType, timestamp, attemptCount, streamName)",
-                dlq_stream_name,
-                actual_fields.len(),
-                REQUIRED_DLQ_FIELDS.len()
+                "DLQ stream '{dlq_stream_name}' {detail}. DLQ streams must declare exactly, \
+                 in this order: {}",
+                required_dlq_schema()
             ),
             DLQ_STREAM_KEY,
-        ));
+        )
+    };
+
+    // 2. Exact field count (no more, no less)
+    let attributes = &dlq_stream.abstract_definition.attribute_list;
+    if attributes.len() != DLQ_FIELDS.len() {
+        return Err(schema_error(format!(
+            "has {} fields, but exactly {} required",
+            attributes.len(),
+            DLQ_FIELDS.len()
+        )));
     }
 
-    // 4. Validate each required field present with correct type
-    for (required_name, required_type) in REQUIRED_DLQ_FIELDS {
-        match actual_fields.get(*required_name) {
-            Some(actual_type) if actual_type == required_type => {
-                // ✅ Field present with correct type
-            }
-            Some(actual_type) => {
-                return Err(EventFluxError::configuration_with_key(
-                    format!(
-                        "DLQ stream '{}' field '{}' has type {:?}, expected {:?}",
-                        dlq_stream_name, required_name, actual_type, required_type
-                    ),
-                    DLQ_STREAM_KEY,
-                ));
-            }
-            None => {
-                return Err(EventFluxError::configuration_with_key(
-                    format!(
-                        "DLQ stream '{}' missing required field '{} {:?}'",
-                        dlq_stream_name, required_name, required_type
-                    ),
-                    DLQ_STREAM_KEY,
-                ));
-            }
+    // 3. Each position holds the required field with the required type
+    for (position, (attr, (required_name, required_type))) in
+        attributes.iter().zip(DLQ_FIELDS).enumerate()
+    {
+        if attr.name != *required_name {
+            return Err(schema_error(format!(
+                "field {} is '{}', expected '{}'",
+                position + 1,
+                attr.name,
+                required_name
+            )));
+        }
+        if attr.attribute_type != *required_type {
+            return Err(schema_error(format!(
+                "field '{}' has type {:?}, expected {:?}",
+                required_name, attr.attribute_type, required_type
+            )));
         }
     }
 
-    // 5. Check for extra fields not in required schema
-    for actual_name in actual_fields.keys() {
-        if !REQUIRED_DLQ_FIELDS
-            .iter()
-            .any(|(req_name, _)| req_name == actual_name)
-        {
-            return Err(EventFluxError::configuration_with_key(
-                format!(
-                    "DLQ stream '{}' has extra field '{}' not in required schema",
-                    dlq_stream_name, actual_name
-                ),
-                DLQ_STREAM_KEY,
-            ));
-        }
-    }
-
-    // ✅ Schema validation passed
     Ok(())
 }
 
@@ -313,6 +270,7 @@ pub fn validate_source_dlq_configs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query_api::definition::attribute::Type as AttributeType;
     use crate::query_api::definition::StreamDefinition;
 
     fn create_valid_dlq_stream() -> StreamDefinition {
@@ -384,15 +342,30 @@ mod tests {
         // must not collapse into a six-field schema that passes
         let stream_def =
             create_valid_dlq_stream().attribute("originalEvent".to_string(), AttributeType::STRING);
+        // Six fields, but originalEvent twice in place of streamName
+        let six_with_duplicate = StreamDefinition::new("DupSixDLQ".to_string())
+            .attribute("originalEvent".to_string(), AttributeType::STRING)
+            .attribute("errorMessage".to_string(), AttributeType::STRING)
+            .attribute("errorType".to_string(), AttributeType::STRING)
+            .attribute("timestamp".to_string(), AttributeType::LONG)
+            .attribute("attemptCount".to_string(), AttributeType::INT)
+            .attribute("originalEvent".to_string(), AttributeType::STRING);
 
-        let mut parsed_streams = HashMap::new();
-        parsed_streams.insert("DupDLQ".to_string(), Arc::new(stream_def));
+        let parsed_streams = HashMap::from([
+            ("DupDLQ".to_string(), Arc::new(stream_def)),
+            ("DupSixDLQ".to_string(), Arc::new(six_with_duplicate)),
+        ]);
 
         let err = validate_dlq_schema("Orders", "DupDLQ", &parsed_streams)
             .unwrap_err()
             .to_string();
+        assert!(err.contains("has 7 fields"), "got: {err}");
+
+        let err = validate_dlq_schema("Orders", "DupSixDLQ", &parsed_streams)
+            .unwrap_err()
+            .to_string();
         assert!(
-            err.contains("declares field 'originalEvent' more than once"),
+            err.contains("field 6 is 'originalEvent', expected 'streamName'"),
             "got: {err}"
         );
     }
@@ -432,7 +405,10 @@ mod tests {
 
         let err = result.unwrap_err();
         let err_msg = err.to_string();
-        assert!(err_msg.contains("missing required field 'originalEvent"));
+        assert!(
+            err_msg.contains("field 1 is 'original_event', expected 'originalEvent'"),
+            "got: {err_msg}"
+        );
     }
 
     #[test]
@@ -487,8 +463,9 @@ mod tests {
     }
 
     #[test]
-    fn test_dlq_schema_field_order_independence() {
-        // Fields can be in any order as long as all are present
+    fn test_dlq_schema_rejects_noncanonical_field_order() {
+        // DLQ events are positional and always emitted in DLQ_FIELDS order,
+        // so the right fields in another order would receive swapped values
         let stream_def = StreamDefinition::new("ReorderedDLQ".to_string())
             .attribute("streamName".to_string(), AttributeType::STRING)
             .attribute("attemptCount".to_string(), AttributeType::INT)
@@ -500,8 +477,17 @@ mod tests {
         let mut parsed_streams = HashMap::new();
         parsed_streams.insert("ReorderedDLQ".to_string(), Arc::new(stream_def));
 
-        let result = validate_dlq_schema("Orders", "ReorderedDLQ", &parsed_streams);
-        assert!(result.is_ok());
+        let err = validate_dlq_schema("Orders", "ReorderedDLQ", &parsed_streams)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("field 1 is 'streamName', expected 'originalEvent'"),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("in this order: originalEvent STRING, errorMessage STRING"),
+            "error spells out the required schema, got: {err}"
+        );
     }
 
     // ------------------------------------------------------------------

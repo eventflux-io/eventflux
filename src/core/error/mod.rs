@@ -109,7 +109,7 @@ pub mod strategy;
 
 // Re-export main types for convenience
 pub use config::{ErrorConfig, FailConfig, LogLevel};
-pub use dlq::{create_dlq_event, DlqConfig, DlqFallbackStrategy, DLQ_STREAM_KEY};
+pub use dlq::{create_dlq_event, DlqConfig, DlqFallbackStrategy, DLQ_FIELDS, DLQ_STREAM_KEY};
 pub use handler::{ErrorAction, ErrorHandler};
 pub use retry::{
     calculate_backoff, exponential_backoff, linear_backoff, parse_duration, BackoffStrategy,

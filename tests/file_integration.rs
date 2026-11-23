@@ -1052,8 +1052,26 @@ async fn test_e2e_sql_dlq_duplicate_field_fails_at_creation() {
     );
 
     let err = creation_error(&sql).await;
+    assert!(err.contains("has 7 fields"), "got: {err}");
+}
+
+#[tokio::test]
+async fn test_e2e_sql_dlq_reordered_fields_fail_at_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+
+    // The right fields, wrong order: DLQ values are positional and would
+    // land under the wrong attributes
+    let sql = format!(
+        r#"{source}
+        CREATE STREAM OrderErrors (streamName STRING, originalEvent STRING,
+            errorMessage STRING, errorType STRING, timestamp LONG, attemptCount INT);"#,
+        source = orders_source_with_dlq(&input, "OrderErrors"),
+    );
+
+    let err = creation_error(&sql).await;
     assert!(
-        err.contains("declares field 'originalEvent' more than once"),
+        err.contains("field 1 is 'streamName', expected 'originalEvent'"),
         "got: {err}"
     );
 }

@@ -1194,7 +1194,7 @@ SELECT * FROM OrderErrors;
 
 **Schema Enforcement**:
 - EventFlux validates DLQ schema at initialization **against CREATE STREAM SQL definition** (not runtime data)
-- DLQ stream must have exactly these attributes (order doesn't matter):
+- DLQ stream must declare exactly these attributes, **in this order** (DLQ events are positional, so any other order would put values under the wrong attributes):
   - `originalEvent` (STRING): Serialized original event
   - `errorMessage` (STRING): Error description
   - `errorType` (STRING): Error category
@@ -1208,81 +1208,18 @@ SELECT * FROM OrderErrors;
 
 > **Note**: Phase 1 already validated DLQ stream name exists. This Phase 2 validation checks schema exactness.
 
-```rust
-fn validate_dlq_schema(stream_name: &str, dlq_stream_name: &str) -> Result<()> {
-    // 1. Look up DLQ stream schema from parsed CREATE STREAM definition
-    // (Phase 1 already verified this stream exists)
-    let dlq_stream = parsed_streams.get(dlq_stream_name)
-        .ok_or(format!("DLQ stream '{}' not found", dlq_stream_name))?;
+`core::validation::validate_dlq_schema` compares the DLQ stream's declared attributes position by position with `core::error::DLQ_FIELDS`, the same list `create_dlq_event` emits values in:
 
-    // 2. Define required DLQ schema (exact match required)
-    let required_fields = HashMap::from([
-        ("originalEvent", DataType::String),
-        ("errorMessage", DataType::String),
-        ("errorType", DataType::String),
-        ("timestamp", DataType::BigInt),
-        ("attemptCount", DataType::Int),
-        ("streamName", DataType::String),
-    ]);
+1. The attribute count must be exactly 6. Extra and duplicate attributes fail here, or at the position check.
+2. Attribute N must have the name and type of `DLQ_FIELDS[N]`.
 
-    // 3. Extract actual schema from DLQ stream definition
-    let actual_fields: HashMap<String, DataType> = dlq_stream.attributes
-        .iter()
-        .map(|attr| (attr.name.clone(), attr.data_type.clone()))
-        .collect();
+**Validation Timing**: Called during Phase 2 (Application Initialization) for every source stream configured with the `error.dlq.stream` property. Along with the schema, it checks that the DLQ stream exists and has no DLQ of its own.
 
-    // 4. Validate exact field count (no more, no less)
-    if actual_fields.len() != required_fields.len() {
-        return Err(format!(
-            "DLQ stream '{}' has {} fields, but exactly 6 required (originalEvent, errorMessage, errorType, timestamp, attemptCount, streamName)",
-            dlq_stream_name, actual_fields.len()
-        ));
-    }
-
-    // 5. Validate each required field present with correct type
-    for (required_name, required_type) in &required_fields {
-        match actual_fields.get(*required_name) {
-            Some(actual_type) if actual_type == required_type => {
-                // ✅ Field present with correct type
-            }
-            Some(actual_type) => {
-                return Err(format!(
-                    "DLQ stream '{}' field '{}' has type {:?}, expected {:?}",
-                    dlq_stream_name, required_name, actual_type, required_type
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "DLQ stream '{}' missing required field '{} {}'",
-                    dlq_stream_name, required_name, type_to_sql(required_type)
-                ));
-            }
-        }
-    }
-
-    // 6. Check for extra fields not in required schema
-    for (actual_name, _) in &actual_fields {
-        if !required_fields.contains_key(actual_name.as_str()) {
-            return Err(format!(
-                "DLQ stream '{}' has extra field '{}' not in required schema",
-                dlq_stream_name, actual_name
-            ));
-        }
-    }
-
-    // ✅ Schema validation passed
-    Ok(())
-}
+**Example Errors** (each followed by the required schema, in order):
 ```
-
-**Validation Timing**: Called during Phase 2 (Application Initialization) for every stream configured with `error.dlq.stream` property.
-
-**Example Errors**:
-```
-❌ "DLQ stream 'OrderErrors' missing required field 'streamName STRING'"
-❌ "DLQ stream 'OrderErrors' field 'timestamp' has type INT, expected BIGINT"
-❌ "DLQ stream 'OrderErrors' has 7 fields, but exactly 6 required"
-❌ "DLQ stream 'OrderErrors' has extra field 'severity' not in required schema"
+❌ "DLQ stream 'OrderErrors' has 7 fields, but exactly 6 required. ..."
+❌ "DLQ stream 'OrderErrors' field 1 is 'streamName', expected 'originalEvent'. ..."
+❌ "DLQ stream 'OrderErrors' field 'timestamp' has type INT, expected LONG. ..."
 ```
 
 #### DLQ Cascading Failure Behavior
