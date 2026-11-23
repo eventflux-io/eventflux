@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/event/stream/operation.rs
-// Corresponds to io.eventflux.core.event.stream.Operation
+// Port of the Java stream Operation.
 #[derive(Debug)]
 pub struct Operation {
     pub operation: Operator,

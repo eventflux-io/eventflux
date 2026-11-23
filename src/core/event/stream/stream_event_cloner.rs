@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/event/stream/stream_event_cloner.rs
-// Utility for cloning StreamEvents similar to io.eventflux.core.event.stream.StreamEventCloner
+// Copies StreamEvents. Port of the Java StreamEventCloner.
 
 use super::{
     meta_stream_event::MetaStreamEvent, stream_event::StreamEvent,
@@ -31,6 +30,7 @@ pub struct StreamEventCloner {
     event_factory: StreamEventFactory,
 }
 
+// The clone gets a fresh factory with an empty pool, since the factory is not Clone.
 impl Clone for StreamEventCloner {
     fn clone(&self) -> Self {
         Self {
@@ -56,7 +56,7 @@ impl StreamEventCloner {
         }
     }
 
-    /// Create a cloner with explicit sizes (useful when MetaStreamEvent doesn't have correct sizes)
+    /// Builds a cloner with explicit sizes, for when the MetaStreamEvent sizes are wrong.
     pub fn new_with_sizes(
         before_window_data_size: usize,
         on_after_window_data_size: usize,
@@ -84,6 +84,9 @@ impl StreamEventCloner {
         }
     }
 
+    // Copies data, type and timestamp into a new event from the factory. The copy has
+    // no `next`. Values past the source length stay Null, and source values past the
+    // cloner sizes are dropped.
     pub fn copy_stream_event(&self, stream_event: &StreamEvent) -> StreamEvent {
         let mut new_event = self.event_factory.new_instance();
         for i in 0..self.before_window_data_size {

@@ -15,19 +15,16 @@
  * limitations under the License.
  */
 
-// src/core/event/stream/meta_stream_event.rs
-// Simplified for initial ExpressionParser - focuses on a single input stream.
-// The full MetaStreamEvent in Java handles multiple input definitions, output defs, etc.
+// Simplified port of the Java MetaStreamEvent. Attribute lookup covers only the main input
+// stream. The Java version also tracks several input definitions, output definitions and more.
 use crate::query_api::definition::{
-    attribute::Type as ApiAttributeType, // Import the Type enum
-    Attribute as ApiAttribute,
+    attribute::Type as ApiAttributeType, Attribute as ApiAttribute,
     StreamDefinition as ApiStreamDefinition,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// MetaStreamEvent in Java has an EventType enum (TABLE, WINDOW, AGGREGATE, DEFAULT)
-// This was defined in subtask 0015, turn 10.
+// Port of the Java MetaStreamEvent.EventType (TABLE, WINDOW, AGGREGATE, DEFAULT).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum MetaStreamEventType {
     #[default]
@@ -39,36 +36,34 @@ pub enum MetaStreamEventType {
 
 #[derive(Debug, Clone)]
 pub struct MetaStreamEvent {
-    // For simple parsing, assumes one input stream providing all attributes.
+    // The one input stream assumed to provide every attribute.
     pub input_stream_definition: Arc<ApiStreamDefinition>,
 
-    // Pre-calculated map for quick attribute lookup from the input_stream_definition.
-    // Maps attribute name to (index_in_event_data_array, attribute_type).
-    // This assumes that the 'data' array in a core::Event or core::StreamEvent
-    // directly corresponds to the attributes in this input_stream_definition.
-    attribute_info: HashMap<String, (usize, ApiAttributeType)>, // Use ApiAttributeType
+    // Attribute name to (index in the event data array, attribute type), built once from
+    // input_stream_definition. Assumes the event data array follows that definition's
+    // attribute order, shifted by any apply_attribute_offset call.
+    attribute_info: HashMap<String, (usize, ApiAttributeType)>,
     pub before_window_data: Vec<ApiAttribute>,
     pub on_after_window_data: Vec<ApiAttribute>,
     pub output_data: Vec<ApiAttribute>,
     pub input_definitions: Vec<Arc<ApiStreamDefinition>>,
     pub input_reference_id: Option<String>,
     pub output_stream_definition: Option<Arc<ApiStreamDefinition>>,
-    pub event_type: MetaStreamEventType, // From Java
+    pub event_type: MetaStreamEventType,
     pub multi_value: bool,
 }
 
 impl MetaStreamEvent {
-    // Constructor for the simplified single input stream case.
+    // Builds a meta event for one input stream. Output data starts as a copy of the
+    // stream's attributes.
     pub fn new_for_single_input(input_stream_def: Arc<ApiStreamDefinition>) -> Self {
         let mut attribute_info = HashMap::new();
-        // Assuming get_attribute_list() is available on ApiStreamDefinition (likely via AbstractDefinition)
         for (index, api_attr) in input_stream_def
             .abstract_definition
             .attribute_list
             .iter()
             .enumerate()
         {
-            // Assuming get_name() and get_type() are available on ApiAttribute
             attribute_info.insert(api_attr.name.clone(), (index, api_attr.attribute_type));
         }
         Self {
@@ -85,19 +80,17 @@ impl MetaStreamEvent {
         }
     }
 
-    // Finds attribute info from the (single) input_stream_definition it holds.
-    // Returns (index_in_data_array, attribute_type)
+    // Looks up an attribute of the input stream by name.
+    // Returns (index in the data array, attribute type), or None if not found.
     pub fn find_attribute_info(&self, attribute_name: &str) -> Option<&(usize, ApiAttributeType)> {
-        // Use ApiAttributeType
         self.attribute_info.get(attribute_name)
     }
 
-    /// Offsets all stored attribute index positions by the given amount.
+    /// Adds `offset` to every stored attribute index.
     ///
-    /// This is useful when building composite events such as joins where
-    /// attributes from multiple streams are packed into a single event data
-    /// array.  By applying an offset to one stream's `MetaStreamEvent`
-    /// we can reuse the variable resolution logic over the combined array.
+    /// Used for joins and other combined events, where the attributes of several
+    /// streams sit in one data array. Shifting one stream's indexes lets the same
+    /// variable lookup work over the combined array.
     pub fn apply_attribute_offset(&mut self, offset: usize) {
         self.attribute_info = self
             .attribute_info
@@ -149,13 +142,8 @@ impl MetaStreamEvent {
         }
     }
 
-    // This method was in the prompt. It might be useful for constructing output events
-    // or for a VariableExpressionExecutor that needs to know the output structure if it's
-    // different from the input (e.g., after projections).
-    // For a simple VEE based on input, this specific list might not be directly used by VEE.execute(),
-    // but could be used during VEE construction to determine its return type and index.
+    // Returns (name, type) for each attribute of the input stream, in definition order.
     pub fn get_input_attribute_name_type_list(&self) -> Vec<(String, ApiAttributeType)> {
-        // Use ApiAttributeType
         self.input_stream_definition
             .abstract_definition
             .attribute_list
@@ -164,18 +152,15 @@ impl MetaStreamEvent {
             .collect()
     }
 
-    // TODO: Add other methods from Java MetaStreamEvent as needed for more complex parsing,
-    // e.g., addData, addOutputData, addInputDefinition, setOutputDefinition, etc.
-    // The Java version's addData method is particularly complex as it manages
-    // beforeWindowData, onAfterWindowData, and determines where an attribute is "first" seen.
+    // TODO: Port the rest of the Java MetaStreamEvent as needed, mainly addData. The Java
+    // addData is complex. It fills beforeWindowData and onAfterWindowData and decides
+    // where an attribute is first seen.
 }
 
-// Default implementation might not be very useful if input_stream_definition is mandatory.
-// However, if used in Option fields, Default could be:
+// Builds an empty MetaStreamEvent with a default stream definition. It is not usable
+// for real lookups until set up further.
 impl Default for MetaStreamEvent {
     fn default() -> Self {
-        // Creates an empty MetaStreamEvent, likely invalid for actual use without further setup.
-        // This requires ApiStreamDefinition to be Default.
         Self {
             input_stream_definition: Arc::new(ApiStreamDefinition::default()),
             attribute_info: HashMap::new(),

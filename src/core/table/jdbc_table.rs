@@ -133,6 +133,9 @@ impl CompiledCondition for JdbcJoinCompiledCondition {
     }
 }
 
+// Turns a condition into a SQL WHERE fragment. Constants become `?` and their values
+// go into `params` in order. Variables become bare column names. Any other
+// expression kind becomes an empty string, which leaves invalid SQL.
 fn expression_to_sql(expr: &Expression, params: &mut Vec<AttributeValue>) -> String {
     use crate::query_api::expression::condition::compare::Operator as CmpOp;
     use Expression::*;
@@ -173,6 +176,9 @@ fn expression_to_sql(expr: &Expression, params: &mut Vec<AttributeValue>) -> Str
     }
 }
 
+// Like expression_to_sql, for a join. A variable of `stream_id` that exists in
+// `stream_def` becomes `?` with a StreamAttr param, filled from the stream event at
+// query time. Other variables become bare column names.
 fn expression_to_sql_join(
     expr: &Expression,
     stream_id: &str,
@@ -619,7 +625,8 @@ impl Table for JdbcTable {
             return Ok(out);
         }
 
-        // Fallback to in-memory style evaluation
+        // No SQL join condition. Read every row and test each one in memory with the
+        // condition executor, or keep every row if there is no executor.
         let sql = format!("SELECT * FROM {}", self.table_name);
 
         let conn = self.conn.lock().map_err(|e| {

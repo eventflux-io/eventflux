@@ -28,8 +28,8 @@ use crate::core::table::InMemoryTable;
 #[derive(Debug)]
 pub struct AggregationRuntime {
     pub name: String,
-    pub executors: HashMap<TimeDuration, Arc<IncrementalExecutor>>, // root executor by duration
-    pub tables: HashMap<TimeDuration, Arc<InMemoryTable>>,          // aggregated data
+    pub executors: HashMap<TimeDuration, Arc<IncrementalExecutor>>, // root executor per duration
+    pub tables: HashMap<TimeDuration, Arc<InMemoryTable>>,          // aggregated rows per duration
 }
 
 impl AggregationRuntime {
@@ -42,7 +42,9 @@ impl AggregationRuntime {
     }
 
     pub fn process(&self, event: &StreamEvent) {
-        // For now, always use the smallest duration executor
+        // Sends the event to one executor only. HashMap order is arbitrary, so this is not
+        // always the smallest duration. Other durations get data only through that
+        // executor's `next` chain.
         if let Some(exec) = self.executors.values().next() {
             exec.execute(event);
         }
@@ -67,11 +69,11 @@ impl AggregationRuntime {
         }
     }
 
-    /// Query aggregated data optionally using `within` and `per` clauses.
-    /// Currently, these clauses are not fully supported and the implementation
-    /// simply returns the table rows for the requested `per` duration when
-    /// provided. If no `per` duration is specified, the first available
-    /// duration is used. The `within` clause is ignored.
+    /// Returns aggregated rows for a `within` and `per` query.
+    ///
+    /// Returns all table rows for the `per` duration. Without `per`, uses the
+    /// first table found, in arbitrary HashMap order. The `within` clause is
+    /// ignored. Returns an empty list when no matching table exists.
     pub fn query(
         &self,
         _within: Option<Within>,

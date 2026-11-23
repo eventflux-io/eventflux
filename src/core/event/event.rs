@@ -15,57 +15,52 @@
  * limitations under the License.
  */
 
-// src/core/event/event.rs
-// Corresponds to io.eventflux.core.event.Event
+// Port of the Java Event class.
 use super::complex_event::{ComplexEvent, ComplexEventType};
 use super::value::AttributeValue;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-// Global atomic counter for generating unique event IDs.
-// EventFlux Event.java does not have an explicit ID field. This is an addition for Rust if needed,
-// or can be removed if events are identified by other means (e.g. object identity in a Vec).
-// The prompt includes `id: u64`.
+// Global counter that gives each event built by the constructors below a unique id.
+// The Java Event has no id field. This one is a Rust addition.
 static NEXT_EVENT_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Represents a single data event in EventFlux with a timestamp and data payload.
+/// A single data event with a timestamp and a data payload.
+///
+/// `Default` gives id 0, timestamp 0, empty data and not expired. It does not take
+/// a fresh id from the global counter.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Event {
-    pub id: u64,                   // Unique ID, added as per prompt
-    pub timestamp: i64,            // Java default -1
+    pub id: u64,                   // unique per constructed event, not in the Java Event
+    pub timestamp: i64,            // set by the caller, the Java default is -1
     pub data: Vec<AttributeValue>, // Java Object[] data
-    pub is_expired: bool,          // Java default false
-                                   // Java Event also has 'expiryTime', which is not standard in the base Event but used in ComplexEvent/StreamEvent.
-                                   // For now, aligning with the basic Event.java fields + ID.
+    pub is_expired: bool,          // false unless set
+                                   // There is no expiry time field. Only the flag above
+                                   // marks an event as expired.
 }
 
 impl Event {
-    // Constructor matching Event(long timestamp, Object[] data)
-    // Data is passed directly.
+    // Builds an event with the given data. Port of Event(long timestamp, Object[] data).
     pub fn new_with_data(timestamp: i64, data: Vec<AttributeValue>) -> Self {
-        // Corrected: fn new_with_data
         Event {
-            id: NEXT_EVENT_ID.fetch_add(1, Ordering::Relaxed), // Relaxed ordering sufficient for unique ID
+            id: NEXT_EVENT_ID.fetch_add(1, Ordering::Relaxed), // only uniqueness matters here
             timestamp,
             data,
             is_expired: false,
         }
     }
 
-    // Constructor matching Event(int dataSize), initializes with nulls/defaults
+    // Builds an event with `data_len` Null values. Port of Event(int dataSize).
     pub fn new_with_size(timestamp: i64, data_len: usize) -> Self {
         Event {
             id: NEXT_EVENT_ID.fetch_add(1, Ordering::Relaxed),
             timestamp,
-            data: vec![AttributeValue::default(); data_len], // Fill with AttributeValue::Null
+            data: vec![AttributeValue::default(); data_len],
             is_expired: false,
         }
     }
 
-    // Corresponds to no-arg Event() which makes data = new Object[0]
-    // And Event(long timestamp, Object[] data) where data could be empty.
-    // Default::default() already provides an empty data Vec.
-    // This new() can be used for default timestamp (-1).
+    // Builds an event with no data. Port of the no argument Event().
     pub fn new_empty(timestamp: i64) -> Self {
         Event {
             id: NEXT_EVENT_ID.fetch_add(1, Ordering::Relaxed),
@@ -75,7 +70,7 @@ impl Event {
         }
     }
 
-    // --- Methods from Java Event.java ---
+    // --- Methods ported from the Java Event ---
     pub fn get_timestamp(&self) -> i64 {
         self.timestamp
     }
@@ -121,24 +116,18 @@ impl Event {
         self.is_expired = is_expired;
     }
 
-    // copy_from(Event event)
-    // This needs to handle id carefully. Typically copy methods don't create new IDs.
-    // For now, it copies data but keeps its own ID.
+    // Copies timestamp, expired flag and data from `other_event`. Keeps its own id.
     pub fn copy_from(&mut self, other_event: &Event) {
         self.timestamp = other_event.timestamp;
         self.is_expired = other_event.is_expired;
-        // Deep copy data if AttributeValue variants require it (String, Object already are).
-        // Vec clone will do the right thing for AttributeValue::String, etc.
-        // For Box<dyn Any> in Object, clone will copy the Box (pointer), not the data.
-        // This is usually fine unless true deep object cloning is needed.
+        // Cloning an AttributeValue::Object gives Object(None), so object payloads are lost.
         self.data = other_event.data.clone();
     }
 
-    /// Copy data from a [`ComplexEvent`] into this event.
+    /// Copies timestamp, expired status and output data from a [`ComplexEvent`].
     ///
-    /// The ID of `self` is preserved.  Output data from the complex event is
-    /// cloned into this event's `data` vector.  Expired status is determined by
-    /// the complex event type.
+    /// Keeps the id of `self`. The event counts as expired only when its type is
+    /// `Expired`. If the complex event has no output data, `data` is cleared.
     pub fn copy_from_complex(&mut self, complex_event: &dyn ComplexEvent) {
         self.timestamp = complex_event.get_timestamp();
         self.is_expired = complex_event.get_event_type() == ComplexEventType::Expired;

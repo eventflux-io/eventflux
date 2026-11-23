@@ -15,9 +15,8 @@
  * limitations under the License.
  */
 
-// src/core/trigger/mod.rs
-
-//! Basic trigger runtime implementation.
+//! Runtime for triggers, which emit events on start, on a fixed interval or on a
+//! cron schedule.
 
 pub mod trigger_runtime;
 

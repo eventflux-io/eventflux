@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/event/state/meta_state_event_attribute.rs
-// Corresponds to io.eventflux.core.event.state.MetaStateEventAttribute
+// Port of the Java MetaStateEventAttribute.
 use crate::query_api::definition::attribute::Attribute as QueryApiAttribute;
 
 #[derive(Debug, Clone, PartialEq)]

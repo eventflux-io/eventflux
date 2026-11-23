@@ -15,13 +15,11 @@
  * limitations under the License.
  */
 
-// src/core/window/window_runtime.rs
-
 use crate::core::query::processor::Processor;
 use crate::query_api::definition::WindowDefinition;
 use std::sync::{Arc, Mutex};
 
-/// Minimal runtime representation of a window.
+/// Minimal runtime for a named window. Holds its definition and window processor.
 #[derive(Debug)]
 pub struct WindowRuntime {
     pub definition: Arc<WindowDefinition>,
@@ -42,13 +40,17 @@ impl WindowRuntime {
         self.processor = Some(processor);
     }
 
-    /// Perform one-time initialization for the window processor if present.
+    /// Marks the window as initialized. Only the first call does anything.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the processor mutex is poisoned.
     pub fn initialize(&mut self) {
         if self.initialized {
             return;
         }
         if let Some(proc) = &self.processor {
-            // Placeholder for processor-specific initialization logic.
+            // Placeholder. Only takes the lock, no processor setup runs yet.
             let _guard = proc.lock().unwrap();
         }
         self.initialized = true;

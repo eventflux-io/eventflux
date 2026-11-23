@@ -15,30 +15,30 @@
  * limitations under the License.
  */
 
-// src/core/eventflux_app_runtime_builder.rs
 use crate::core::aggregation::AggregationRuntime;
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::ApplicationConfig;
-use crate::core::eventflux_app_runtime::EventFluxAppRuntime; // Actual EventFluxAppRuntime
+use crate::core::eventflux_app_runtime::EventFluxAppRuntime;
 use crate::core::partition::PartitionRuntime;
 use crate::core::query::query_runtime::QueryRuntime;
 use crate::core::stream::stream_junction::StreamJunction;
-// use crate::core::window::WindowRuntime; // TODO: Will be used when window runtime is implemented
+// WindowRuntime is used through its full path below, so this import stays off.
+// use crate::core::window::WindowRuntime;
 use crate::query_api::definition::StreamDefinition as ApiStreamDefinition;
-use crate::query_api::eventflux_app::EventFluxApp as ApiEventFluxApp; // For build() method arg // Added this import
+use crate::query_api::eventflux_app::EventFluxApp as ApiEventFluxApp;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-// Placeholders for runtime components until they are defined
+// Empty stand in for a table runtime. It holds nothing yet.
 #[derive(Debug, Clone, Default)]
 pub struct TableRuntimePlaceholder {}
 use crate::core::trigger::TriggerRuntime;
 
 #[derive(Debug)]
 pub struct EventFluxAppRuntimeBuilder {
-    pub eventflux_app_context: Arc<EventFluxAppContext>, // Set upon creation, not Option
-    pub application_config: Option<ApplicationConfig>, // Optional configuration for the application
+    pub eventflux_app_context: Arc<EventFluxAppContext>,
+    pub application_config: Option<ApplicationConfig>, // YAML or TOML config, if any
 
     pub stream_definition_map: HashMap<String, Arc<ApiStreamDefinition>>,
     pub table_definition_map: HashMap<String, Arc<crate::query_api::definition::TableDefinition>>,
@@ -62,7 +62,7 @@ impl EventFluxAppRuntimeBuilder {
         application_config: Option<ApplicationConfig>,
     ) -> Self {
         Self {
-            eventflux_app_context, // No longer Option
+            eventflux_app_context,
             application_config,
             stream_definition_map: HashMap::new(),
             table_definition_map: HashMap::new(),
@@ -78,7 +78,7 @@ impl EventFluxAppRuntimeBuilder {
         }
     }
 
-    // --- Methods to add API definitions ---
+    // --- Add API definitions, keyed by definition id ---
     pub fn add_stream_definition(&mut self, stream_def: Arc<ApiStreamDefinition>) {
         self.stream_definition_map
             .insert(stream_def.abstract_definition.id.clone(), stream_def);
@@ -106,9 +106,10 @@ impl EventFluxAppRuntimeBuilder {
         self.aggregation_definition_map
             .insert(agg_def.abstract_definition.id.clone(), agg_def);
     }
-    // FunctionDefinition and TriggerDefinition are handled differently (often registered in context or directly creating runtimes)
+    // FunctionDefinition and TriggerDefinition are not stored here. Functions are
+    // registered elsewhere and triggers are added as runtimes with add_trigger_runtime.
 
-    // --- Methods to add runtime components ---
+    // --- Add runtime parts ---
     pub fn add_stream_junction(&mut self, stream_id: String, junction: Arc<Mutex<StreamJunction>>) {
         self.stream_junction_map.insert(stream_id, junction);
     }
@@ -143,12 +144,14 @@ impl EventFluxAppRuntimeBuilder {
         self.trigger_runtimes.push(trigger_runtime);
     }
 
-    // build() method that consumes the builder and returns a EventFluxAppRuntime
+    // Consumes the builder and returns the runtime in the Created state.
+    // Uses the context's scheduler, or a new default one if the context has none. The
+    // new one is not set back on the context. Errors if a source DLQ reference is
+    // invalid, with all errors joined by "; ".
     pub fn build(
         self,
         api_eventflux_app: Arc<ApiEventFluxApp>,
     ) -> Result<EventFluxAppRuntime, String> {
-        // Create InputManager and populate it
         let input_manager = crate::core::stream::input::input_manager::InputManager::new(
             Arc::clone(&self.eventflux_app_context),
             self.stream_junction_map.clone(),
@@ -163,8 +166,8 @@ impl EventFluxAppRuntimeBuilder {
                 )))
             });
 
-        // Pre-resolve all element configurations (YAML base + SQL WITH overrides)
-        // This happens ONCE at construction time, before any attachment
+        // Resolve every element config (YAML base plus SQL WITH overrides). This runs
+        // ONCE, here at construction, before anything is attached.
         let resolved_configs = {
             use crate::core::config::ElementConfigResolver;
 
@@ -177,9 +180,9 @@ impl EventFluxAppRuntimeBuilder {
             )
         };
 
-        // Fail fast on a broken DLQ reference: a missing or misnamed DLQ
-        // stream would otherwise surface only at the first failed event,
-        // which is then dropped instead of dead-lettered (#207)
+        // Fail early on a broken DLQ reference. Otherwise a missing or misnamed DLQ
+        // stream would only show up at the first failed event, which would then be
+        // dropped instead of sent to the DLQ (#207).
         crate::core::validation::validate_source_dlq_configs(
             &resolved_configs,
             &api_eventflux_app.stream_definition_map,
@@ -194,8 +197,8 @@ impl EventFluxAppRuntimeBuilder {
 
         Ok(EventFluxAppRuntime {
             name: self.eventflux_app_context.name.clone(),
-            eventflux_app: api_eventflux_app, // The original parsed API definition
-            eventflux_app_context: self.eventflux_app_context, // The context created for this app instance
+            eventflux_app: api_eventflux_app,
+            eventflux_app_context: self.eventflux_app_context,
             state: Arc::new(std::sync::RwLock::new(
                 crate::core::eventflux_app_runtime::RuntimeState::Created,
             )),

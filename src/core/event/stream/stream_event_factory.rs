@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/event/stream/stream_event_factory.rs
-// Corresponds to io.eventflux.core.event.stream.StreamEventFactory
+// Port of the Java StreamEventFactory, with a pool of released events for reuse.
 use super::meta_stream_event::MetaStreamEvent;
 use super::stream_event::StreamEvent;
 use crate::core::event::complex_event::ComplexEventType;
@@ -54,6 +53,8 @@ impl StreamEventFactory {
         }
     }
 
+    // Returns a pooled event reset to timestamp 0, Current, Null data and no `next`, or a
+    // new event if the pool is empty. A pooled event keeps the array sizes it had.
     pub fn new_instance(&self) -> StreamEvent {
         if let Some(mut ev) = self.pool.lock().unwrap().pop() {
             ev.timestamp = 0;
@@ -81,6 +82,8 @@ impl StreamEventFactory {
         }
     }
 
+    // Returns an event to the pool. Sizes are not checked, so release only events of
+    // this factory's shape.
     pub fn release(&self, event: StreamEvent) {
         self.pool.lock().unwrap().push(event);
     }

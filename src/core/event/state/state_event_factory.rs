@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/event/state/state_event_factory.rs
-// Corresponds to io.eventflux.core.event.state.StateEventFactory
+// Port of the Java StateEventFactory. Each new instance gets a fresh id.
 use super::meta_state_event::MetaStateEvent;
 use super::state_event::StateEvent;
 

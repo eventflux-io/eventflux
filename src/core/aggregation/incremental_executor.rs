@@ -29,7 +29,7 @@ use crate::core::table::{InMemoryTable, Table};
 pub struct IncrementalExecutor {
     pub duration: TimeDuration,
     pub base_store: Arc<BaseIncrementalValueStore>,
-    pub next: Option<Arc<IncrementalExecutor>>, // simplified chain
+    pub next: Option<Arc<IncrementalExecutor>>, // next coarser duration, fed on each flush
     pub group_by_fn: Box<dyn Fn(&StreamEvent) -> String + Send + Sync>,
     pub bucket_start: Mutex<i64>,
     pub table: Arc<InMemoryTable>,
@@ -80,15 +80,15 @@ impl IncrementalExecutor {
             }
             if let Err(e) = self.table.insert(&values) {
                 log::error!("Failed to insert aggregation into table: {}", e);
-                // Best-effort persistence: downstream processing continues so the
-                // event pipeline is not blocked by a table write failure.
-                // TODO: Route to error handler / DLQ when error infrastructure is wired.
+                // Best effort write. Keep going so a table write failure does not
+                // block the event pipeline.
+                // TODO: Route to the error handler or DLQ once that is wired in here.
             }
             if let Some(ref next) = self.next {
                 next.execute(&ev);
             }
         }
-        // reset aggregators for next bucket
+        // Send a Reset event so each aggregator starts the next bucket from zero.
         use crate::core::event::complex_event::{ComplexEvent, ComplexEventType};
         for exec in &self.base_store.expression_executors {
             let mut r = self.event_factory.new_instance();
