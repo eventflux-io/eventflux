@@ -17,11 +17,10 @@
 
 // src/core/distributed/state_backend.rs
 
-//! State Backend Abstraction
+//! State backends.
 //!
-//! This module provides the state backend abstraction for distributed state management.
-//! It supports multiple backends (Redis, Ignite, Hazelcast, etc.) for storing and
-//! synchronizing state across nodes.
+//! Defines the trait for storing state shared between nodes, with an in memory
+//! backend for a single node and a Redis backend.
 
 use super::{DistributedError, DistributedResult};
 use async_trait::async_trait;
@@ -31,35 +30,34 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// State backend trait for distributed state management
+/// Key value store for state shared between nodes.
 #[async_trait]
 pub trait StateBackend: Send + Sync {
-    /// Initialize the state backend
+    /// Prepare the backend. Call before any other method.
     async fn initialize(&mut self) -> DistributedResult<()>;
 
-    /// Get state value
+    /// Returns the value for `key`, or `None` if it is not set.
     async fn get(&self, key: &str) -> DistributedResult<Option<Vec<u8>>>;
 
-    /// Set state value
     async fn set(&self, key: &str, value: Vec<u8>) -> DistributedResult<()>;
 
-    /// Set multiple state values atomically
+    /// Set several values at once. Either all are written or none are.
     async fn set_multi(&self, kvs: Vec<(String, Vec<u8>)>) -> DistributedResult<()>;
 
-    /// Delete state value
     async fn delete(&self, key: &str) -> DistributedResult<()>;
 
-    /// Create a checkpoint
+    /// Save the current state under `checkpoint_id`.
     async fn checkpoint(&self, checkpoint_id: &str) -> DistributedResult<()>;
 
-    /// Restore from checkpoint
+    /// Replace the current state with the state saved under `checkpoint_id`.
     async fn restore(&self, checkpoint_id: &str) -> DistributedResult<()>;
 
-    /// Shutdown the backend
     async fn shutdown(&mut self) -> DistributedResult<()>;
 }
 
-/// In-memory state backend (for single-node)
+/// In memory state backend for a single node.
+///
+/// `checkpoint` and `restore` do nothing. `shutdown` clears all state.
 pub struct InMemoryBackend {
     state: Arc<RwLock<std::collections::HashMap<String, Vec<u8>>>>,
 }
@@ -124,18 +122,19 @@ impl StateBackend for InMemoryBackend {
     }
 }
 
-/// Redis configuration for state backend
+/// Settings for [`RedisBackend`].
 #[derive(Debug, Clone)]
 pub struct RedisConfig {
-    /// Redis URL (e.g., "redis://localhost:6379")
+    /// Redis URL, such as `redis://localhost:6379`, the default.
     pub url: String,
-    /// Maximum number of connections in the pool
+    /// Most connections in the pool. Default 10.
     pub max_connections: usize,
-    /// Connection timeout in milliseconds
+    /// How long to wait for a free pool connection, in milliseconds. Default 5000.
     pub connection_timeout_ms: u64,
-    /// Key prefix for all EventFlux state keys
+    /// Prefix added to every state key. Default `eventflux:state:`.
     pub key_prefix: String,
-    /// TTL for state entries in seconds (None for no expiration)
+    /// How long entries live, in seconds. `None`, the default, means they never
+    /// expire.
     pub ttl_seconds: Option<u64>,
 }
 
@@ -151,11 +150,18 @@ impl Default for RedisConfig {
     }
 }
 
-/// Redis state backend for distributed state management
+/// Redis state backend.
+///
+/// State lives in Redis under `key_prefix`. Checkpoints are copies held in this
+/// process memory, not in Redis, so they are lost on shutdown or restart and are
+/// not seen by other nodes.
 #[allow(clippy::type_complexity)]
 pub struct RedisBackend {
+    /// `None` until [`initialize`](StateBackend::initialize) succeeds.
     pool: Option<Pool>,
     config: RedisConfig,
+    /// Saved key value pairs for each checkpoint id. Keys are stored without the
+    /// prefix.
     checkpoints: Arc<RwLock<HashMap<String, Vec<(String, Vec<u8>)>>>>,
 }
 
@@ -182,7 +188,8 @@ impl Default for RedisBackend {
 }
 
 impl RedisBackend {
-    /// Create a new Redis backend with default configuration
+    /// Create a backend with the default settings. Not connected until
+    /// [`initialize`](StateBackend::initialize) is called.
     pub fn new() -> Self {
         Self {
             pool: None,
@@ -191,7 +198,8 @@ impl RedisBackend {
         }
     }
 
-    /// Create a new Redis backend with custom configuration
+    /// Create a backend with the given settings. Not connected until
+    /// [`initialize`](StateBackend::initialize) is called.
     pub fn with_config(config: RedisConfig) -> Self {
         Self {
             pool: None,
@@ -200,12 +208,16 @@ impl RedisBackend {
         }
     }
 
-    /// Create the full Redis key with prefix
     fn make_key(&self, key: &str) -> String {
         format!("{}{}", self.config.key_prefix, key)
     }
 
-    /// Get a connection from the pool
+    /// Take a connection from the pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the backend is not initialized or no connection is
+    /// available in time.
     async fn get_connection(&self) -> DistributedResult<deadpool_redis::Connection> {
         let pool = self
             .pool
@@ -219,7 +231,15 @@ impl RedisBackend {
         })
     }
 
-    /// Execute Redis command with error handling
+    /// Run a Redis command on a pooled connection.
+    ///
+    /// `operation` gets the connection and returns a spawned task that runs the
+    /// command.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if no connection is available, the task panics or is
+    /// cancelled, or the command fails.
     async fn execute<F, R>(&self, operation: F) -> DistributedResult<R>
     where
         F: FnOnce(deadpool_redis::Connection) -> tokio::task::JoinHandle<RedisResult<R>>,
@@ -240,15 +260,19 @@ impl RedisBackend {
 
 #[async_trait]
 impl StateBackend for RedisBackend {
+    /// Build the connection pool and check it with a `PING`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the pool cannot be built, no connection can be made,
+    /// or the ping fails.
     async fn initialize(&mut self) -> DistributedResult<()> {
         let mut cfg = Config::from_url(&self.config.url);
 
-        // Initialize pool config if it doesn't exist
         if cfg.pool.is_none() {
             cfg.pool = Some(deadpool_redis::PoolConfig::default());
         }
 
-        // Configure pool settings
         if let Some(ref mut pool_config) = cfg.pool {
             pool_config.max_size = self.config.max_connections;
             pool_config.timeouts.wait = Some(std::time::Duration::from_millis(
@@ -262,12 +286,10 @@ impl StateBackend for RedisBackend {
                     message: format!("Failed to create Redis pool: {}", e),
                 })?;
 
-        // Test connection
         let conn = pool.get().await.map_err(|e| DistributedError::StateError {
             message: format!("Failed to connect to Redis: {}", e),
         })?;
 
-        // Test with a simple ping
         let mut conn = conn;
         redis::cmd("PING")
             .query_async::<String>(&mut conn)
@@ -312,12 +334,11 @@ impl StateBackend for RedisBackend {
 
         let mut conn = self.get_connection().await?;
 
-        // Build pipeline with MULTI/EXEC for atomic execution
+        // MULTI/EXEC makes the whole batch apply together.
         let mut pipe = redis::pipe();
         pipe.atomic();
 
-        // Add all SET operations to the pipeline
-        // Call .ignore() on each command so EXEC doesn't return an array of results
+        // .ignore() on each command keeps EXEC from returning an array of results.
         for (key, value) in kvs {
             let redis_key = self.make_key(&key);
             if let Some(ttl) = self.config.ttl_seconds {
@@ -327,7 +348,6 @@ impl StateBackend for RedisBackend {
             }
         }
 
-        // Execute pipeline atomically
         pipe.query_async::<()>(&mut conn)
             .await
             .map_err(|e| DistributedError::StateError {
@@ -342,17 +362,19 @@ impl StateBackend for RedisBackend {
             .await
     }
 
+    /// Copy every prefixed key and value from Redis into memory under
+    /// `checkpoint_id`. Replaces an earlier checkpoint with the same id.
+    ///
+    /// Uses `KEYS`, which blocks Redis while it scans every key. The read is not
+    /// atomic, so writes made during the copy may be partly included.
     async fn checkpoint(&self, checkpoint_id: &str) -> DistributedResult<()> {
-        // Get all keys with our prefix
         let pattern = format!("{}*", self.config.key_prefix);
 
         let keys: Vec<String> = self
             .execute(|mut conn| tokio::spawn(async move { conn.keys(&pattern).await }))
             .await?;
 
-        // Continue even if keys is empty - we still want to store an empty checkpoint
-
-        // Get all values for these keys (if any)
+        // An empty key list still stores an empty checkpoint.
         let values: Vec<Option<Vec<u8>>> = if keys.is_empty() {
             Vec::new()
         } else {
@@ -361,11 +383,11 @@ impl StateBackend for RedisBackend {
                 .await?
         };
 
-        // Store checkpoint data
+        // Keys that expired or were deleted between KEYS and MGET come back as None
+        // and are skipped.
         let mut checkpoint_data = Vec::new();
         for (key, value_opt) in keys.iter().zip(values.iter()) {
             if let Some(value) = value_opt {
-                // Remove prefix to get original key
                 let original_key = key
                     .strip_prefix(&self.config.key_prefix)
                     .unwrap_or(key)
@@ -374,13 +396,22 @@ impl StateBackend for RedisBackend {
             }
         }
 
-        // Store checkpoint
         let mut checkpoints = self.checkpoints.write().await;
         checkpoints.insert(checkpoint_id.to_string(), checkpoint_data);
 
         Ok(())
     }
 
+    /// Delete every prefixed key in Redis, then write back the saved pairs one by
+    /// one.
+    ///
+    /// Not atomic. A failure part way leaves Redis with only some of the saved
+    /// pairs. Restored keys get the configured TTL again.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the checkpoint id is unknown or a Redis command
+    /// fails.
     async fn restore(&self, checkpoint_id: &str) -> DistributedResult<()> {
         let checkpoints = self.checkpoints.read().await;
         let checkpoint_data =
@@ -390,7 +421,6 @@ impl StateBackend for RedisBackend {
                     message: format!("Checkpoint {} not found", checkpoint_id),
                 })?;
 
-        // Clear existing state
         let pattern = format!("{}*", self.config.key_prefix);
         let existing_keys: Vec<String> = self
             .execute(|mut conn| {
@@ -407,7 +437,6 @@ impl StateBackend for RedisBackend {
             .await?;
         }
 
-        // Restore checkpoint data
         for (key, value) in checkpoint_data {
             self.set(key, value.clone()).await?;
         }
@@ -415,13 +444,13 @@ impl StateBackend for RedisBackend {
         Ok(())
     }
 
+    /// Drop the pool and every saved checkpoint. Does nothing if never initialized.
     async fn shutdown(&mut self) -> DistributedResult<()> {
         if let Some(pool) = self.pool.take() {
-            // Clear checkpoints
             let mut checkpoints = self.checkpoints.write().await;
             checkpoints.clear();
 
-            // Close pool (pool handles connection cleanup automatically)
+            // Dropping the pool closes its connections.
             drop(pool);
         }
         Ok(())

@@ -17,13 +17,15 @@
 
 // src/core/persistence/incremental/mod.rs
 
-//! Incremental Checkpointing System
+//! Incremental checkpoints.
 //!
-//! This module implements enterprise-grade incremental checkpointing with Write-Ahead Logging (WAL),
-//! checkpoint merging, and distributed coordination. The design follows industry best practices
-//! from Apache Flink, Kafka, and other stream processing systems.
+//! Saves only what changed since the last checkpoint. Changes go to a write ahead
+//! log (WAL) first, are packed into incremental checkpoints, merged with a full
+//! base checkpoint, stored by a persistence backend, and read back by the
+//! recovery engine. The design borrows from Apache Flink and Kafka. Several
+//! parts are still stand ins, see each module.
 //!
-//! ## Architecture Overview
+//! ## Architecture overview
 //!
 //! ```text
 //! State Updates → WAL → Checkpoint Merger → Persistence Backend
@@ -33,13 +35,14 @@
 //!  StateHolder → Batch Flush → Delta Merge → Recovery Engine
 //! ```
 //!
-//! ## Key Components
+//! ## Key components
 //!
-//! - **WriteAheadLog**: Durable event log for state changes
-//! - **CheckpointMerger**: Combines incremental updates with base checkpoints
-//! - **PersistenceBackend**: Pluggable storage (File, Distributed, Cloud)
-//! - **RecoveryEngine**: Reconstructs state from incremental checkpoints
-//! - **DistributedCoordinator**: Cluster-wide checkpoint coordination
+//! - **WriteAheadLog**: Append only log of state changes on disk.
+//! - **CheckpointMerger**: Combines incremental changes with a base checkpoint.
+//! - **PersistenceBackend**: Where checkpoints are stored (file, distributed or
+//!   memory, with cloud not built yet).
+//! - **RecoveryEngine**: Rebuilds state from checkpoints.
+//! - **DistributedCoordinator**: Coordinates checkpoints across a cluster.
 
 pub mod checkpoint_merger;
 pub mod distributed_coordinator;
@@ -55,34 +58,34 @@ use crate::core::persistence::state_holder::{
     ChangeLog, CheckpointId, ComponentId, StateError, StateSnapshot,
 };
 
-/// Configuration for incremental checkpointing system
+/// Incremental checkpoint settings.
 #[derive(Debug, Clone)]
 pub struct IncrementalCheckpointConfig {
-    /// Minimum interval between checkpoints
+    /// Shortest time between checkpoints. Default 30 seconds.
     pub checkpoint_interval: Duration,
 
-    /// Maximum number of incremental checkpoints before full checkpoint
+    /// Incremental checkpoints allowed before a full one. Default 10.
     pub max_incremental_count: usize,
 
-    /// WAL segment size in bytes
+    /// WAL segment size in bytes. Default 64 MB.
     pub wal_segment_size: usize,
 
-    /// WAL retention period
+    /// How long WAL data is kept. Default 1 hour.
     pub wal_retention: Duration,
 
-    /// Batch size for state updates
+    /// State updates per batch. Default 1000.
     pub batch_size: usize,
 
-    /// Enable compression for incremental checkpoints
+    /// Default true.
     pub enable_compression: bool,
 
-    /// Background merger thread count
+    /// Background merger threads. Default 2.
     pub merger_threads: usize,
 
-    /// Persistence backend configuration
+    /// Default is local files under `./checkpoints` with synced writes.
     pub backend_config: PersistenceBackendConfig,
 
-    /// Distributed coordination settings
+    /// Cluster settings. `None`, the default, means a single node.
     pub distributed_config: Option<DistributedConfig>,
 }
 
@@ -91,7 +94,7 @@ impl Default for IncrementalCheckpointConfig {
         Self {
             checkpoint_interval: Duration::from_secs(30),
             max_incremental_count: 10,
-            wal_segment_size: 64 * 1024 * 1024,       // 64MB
+            wal_segment_size: 64 * 1024 * 1024,       // 64 MB
             wal_retention: Duration::from_secs(3600), // 1 hour
             batch_size: 1000,
             enable_compression: true,
@@ -102,23 +105,26 @@ impl Default for IncrementalCheckpointConfig {
     }
 }
 
-/// Configuration for persistence backends
+/// Where checkpoints are stored.
 #[derive(Debug, Clone)]
 pub enum PersistenceBackendConfig {
-    /// Local file system storage
+    /// Files on the local disk. The default, with `./checkpoints` and synced
+    /// writes.
     LocalFile {
         base_path: String,
         sync_writes: bool,
     },
 
-    /// Distributed storage (e.g., etcd, Consul)
+    /// A distributed store such as etcd or Consul. The backend for this is a
+    /// stand in that stores nothing.
     Distributed {
         endpoints: Vec<String>,
         prefix: String,
         replication_factor: usize,
     },
 
-    /// Cloud storage (S3, GCS, Azure)
+    /// Cloud storage such as S3, GCS or Azure. Not built yet, so creating this
+    /// backend fails.
     Cloud {
         provider: CloudProvider,
         bucket: String,
@@ -126,7 +132,7 @@ pub enum PersistenceBackendConfig {
         credentials: CloudCredentials,
     },
 
-    /// In-memory storage (for testing)
+    /// In memory, for tests.
     Memory,
 }
 
@@ -139,7 +145,7 @@ impl Default for PersistenceBackendConfig {
     }
 }
 
-/// Cloud storage providers
+/// Cloud storage providers.
 #[derive(Debug, Clone)]
 pub enum CloudProvider {
     AWS,
@@ -147,9 +153,10 @@ pub enum CloudProvider {
     Azure,
 }
 
-/// Cloud storage credentials
+/// Cloud storage credentials.
 #[derive(Debug, Clone)]
 pub enum CloudCredentials {
+    /// The provider's default credential lookup.
     Default,
     AccessKey {
         access_key: String,
@@ -160,161 +167,146 @@ pub enum CloudCredentials {
     },
 }
 
-/// Configuration for distributed coordination
+/// Cluster settings for checkpoint coordination.
 #[derive(Debug, Clone)]
 pub struct DistributedConfig {
-    /// Node identifier
     pub node_id: String,
 
-    /// Cluster endpoints
     pub cluster_endpoints: Vec<String>,
 
-    /// Leader election timeout
+    /// How long to wait before starting a leader election.
     pub election_timeout: Duration,
 
-    /// Heartbeat interval
     pub heartbeat_interval: Duration,
 
-    /// Maximum network partition tolerance
+    /// Longest network split to tolerate. Not read yet.
     pub partition_tolerance: Duration,
 }
 
-/// Incremental checkpoint metadata
+/// An incremental checkpoint, holding the changes made since its base
+/// checkpoint.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IncrementalCheckpoint {
-    /// Unique checkpoint identifier
     pub checkpoint_id: CheckpointId,
 
-    /// Base checkpoint this incremental is built upon
+    /// Checkpoint this one builds on.
     pub base_checkpoint_id: CheckpointId,
 
-    /// Sequence number in incremental chain
+    /// Position in the incremental chain.
     pub sequence_number: u64,
 
-    /// Timestamp when checkpoint was created (microseconds since UNIX epoch)
+    /// Creation time in microseconds since the Unix epoch.
     pub created_at: u64,
 
-    /// Components included in this checkpoint
+    /// Changes for each component.
     pub component_changes: HashMap<ComponentId, ChangeLog>,
 
-    /// Total size of checkpoint data
+    /// Size in bytes, after any compression.
     pub total_size: usize,
 
-    /// Compression ratio achieved
+    /// Compressed size over original size. 1.0 means no compression.
     pub compression_ratio: f64,
 
-    /// WAL offset range covered by this checkpoint
+    /// First and last WAL offset covered.
     pub wal_offset_range: (u64, u64),
 }
 
-/// Result of incremental checkpoint operation
+/// Result of creating an incremental checkpoint.
 #[derive(Debug)]
 pub struct CheckpointResult {
-    /// Checkpoint metadata
     pub checkpoint: IncrementalCheckpoint,
 
-    /// Duration taken to create checkpoint
+    /// Time taken to create it.
     pub duration: Duration,
 
-    /// Number of state operations included
+    /// State operations included.
     pub operation_count: usize,
 
-    /// Storage location identifier
+    /// Where the backend stored it.
     pub storage_location: String,
 }
 
-/// Incremental checkpointing system coordinator
+/// Ties the WAL, merger, backend, recovery engine and optional coordinator
+/// together. No methods are built on it yet.
 #[allow(dead_code)]
 pub struct IncrementalCheckpointSystem {
-    /// System configuration
     config: IncrementalCheckpointConfig,
 
-    /// Write-ahead log for state changes
     wal: Arc<dyn WriteAheadLog>,
 
-    /// Checkpoint merger for combining incrementals
     merger: Arc<dyn CheckpointMerger>,
 
-    /// Persistence backend for storing checkpoints
     backend: Arc<dyn PersistenceBackend>,
 
-    /// Recovery engine for restoring state
     recovery: Arc<dyn RecoveryEngine>,
 
-    /// Distributed coordinator (optional)
+    /// Set only in cluster mode.
     coordinator: Option<Arc<dyn DistributedCoordinator>>,
 
-    /// Current incremental checkpoint chain
+    /// Incremental checkpoints since the last full one.
     current_chain: Vec<IncrementalCheckpoint>,
 
-    /// Last full checkpoint ID
     last_full_checkpoint: Option<CheckpointId>,
 
-    /// System metrics
     metrics: IncrementalCheckpointMetrics,
 }
 
-/// Metrics for incremental checkpointing system
+/// Counters for incremental checkpoints.
 #[derive(Debug, Default)]
 pub struct IncrementalCheckpointMetrics {
-    /// Total incremental checkpoints created
     pub total_incrementals: u64,
 
-    /// Total full checkpoints created
     pub total_full_checkpoints: u64,
 
-    /// Average incremental checkpoint size
+    /// Bytes.
     pub avg_incremental_size: usize,
 
-    /// Average incremental checkpoint duration
     pub avg_incremental_duration: Duration,
 
-    /// Average compression ratio
     pub avg_compression_ratio: f64,
 
-    /// WAL throughput (operations/second)
+    /// WAL operations per second.
     pub wal_throughput: f64,
 
-    /// Recovery time statistics
     pub avg_recovery_time: Duration,
 
-    /// Failed checkpoint count
     pub failed_checkpoints: u64,
 }
 
-// Trait definitions for pluggable components
+// Traits for the swappable parts.
 
-/// Write-Ahead Log trait for durable state change logging
+/// Append only log of state changes.
 pub trait WriteAheadLog: Send + Sync {
-    /// Append a state change to the log
+    /// Append one entry and return its offset.
     fn append(&self, entry: LogEntry) -> Result<LogOffset, StateError>;
 
-    /// Append multiple entries atomically
+    /// Append several entries and return their offsets. Meant to be all or
+    /// nothing, though [`write_ahead_log::SegmentedWAL`] does not guarantee it.
     fn append_batch(&self, entries: Vec<LogEntry>) -> Result<Vec<LogOffset>, StateError>;
 
-    /// Read entries from a given offset
+    /// Read up to `limit` entries starting at `offset`.
     fn read_from(&self, offset: LogOffset, limit: usize) -> Result<Vec<LogEntry>, StateError>;
 
-    /// Get the current log tail offset
+    /// Returns the offset the next entry will get.
     fn tail_offset(&self) -> Result<LogOffset, StateError>;
 
-    /// Trim log up to the given offset (for cleanup)
+    /// Drop entries before `offset` to free space.
     fn trim_to(&self, offset: LogOffset) -> Result<(), StateError>;
 
-    /// Sync log to durable storage
+    /// Make written entries durable on disk.
     fn sync(&self) -> Result<(), StateError>;
 }
 
-/// Checkpoint merger for combining incremental updates
+/// Combines incremental checkpoints.
 pub trait CheckpointMerger: Send + Sync {
-    /// Merge incremental checkpoints into a single checkpoint
+    /// Apply a chain of incremental checkpoints to a base snapshot.
     fn merge_incrementals(
         &self,
         base: &StateSnapshot,
         incrementals: &[IncrementalCheckpoint],
     ) -> Result<StateSnapshot, StateError>;
 
-    /// Create a new incremental checkpoint from changes
+    /// Build an incremental checkpoint from per component changes.
     fn create_incremental(
         &self,
         base_checkpoint_id: CheckpointId,
@@ -322,57 +314,56 @@ pub trait CheckpointMerger: Send + Sync {
         wal_range: (u64, u64),
     ) -> Result<IncrementalCheckpoint, StateError>;
 
-    /// Optimize incremental chain by merging adjacent checkpoints
+    /// Shorten a chain by merging neighboring checkpoints.
     fn optimize_chain(
         &self,
         chain: &[IncrementalCheckpoint],
     ) -> Result<Vec<IncrementalCheckpoint>, StateError>;
 }
 
-/// Persistence backend for storing checkpoints
+/// Stores and loads checkpoints.
 pub trait PersistenceBackend: Send + Sync {
-    /// Store a full checkpoint
+    /// Store a full checkpoint and return where it was stored.
     fn store_full_checkpoint(
         &self,
         checkpoint_id: CheckpointId,
         snapshot: &StateSnapshot,
     ) -> Result<String, StateError>;
 
-    /// Store an incremental checkpoint
+    /// Store an incremental checkpoint and return where it was stored.
     fn store_incremental_checkpoint(
         &self,
         checkpoint: &IncrementalCheckpoint,
     ) -> Result<String, StateError>;
 
-    /// Load a full checkpoint
     fn load_full_checkpoint(
         &self,
         checkpoint_id: CheckpointId,
     ) -> Result<StateSnapshot, StateError>;
 
-    /// Load an incremental checkpoint
     fn load_incremental_checkpoint(
         &self,
         checkpoint_id: CheckpointId,
     ) -> Result<IncrementalCheckpoint, StateError>;
 
-    /// List available checkpoints
+    /// Returns the stored checkpoint ids.
     fn list_checkpoints(&self) -> Result<Vec<CheckpointId>, StateError>;
 
-    /// Delete old checkpoints (for cleanup)
+    /// Delete checkpoints older than `before` and return how many were deleted.
     fn cleanup_checkpoints(&self, before: Instant) -> Result<usize, StateError>;
 }
 
-/// Recovery engine for reconstructing state from checkpoints
+/// Rebuilds state from checkpoints.
 pub trait RecoveryEngine: Send + Sync {
-    /// Recover state from a full checkpoint
+    /// Returns each component's state from a full checkpoint.
     fn recover_from_full(
         &self,
         checkpoint_id: CheckpointId,
         components: &[ComponentId],
     ) -> Result<HashMap<ComponentId, StateSnapshot>, StateError>;
 
-    /// Recover state from incremental checkpoints
+    /// Returns each component's state after applying incremental checkpoints
+    /// from the base up to the target.
     fn recover_from_incrementals(
         &self,
         base_checkpoint_id: CheckpointId,
@@ -380,7 +371,7 @@ pub trait RecoveryEngine: Send + Sync {
         components: &[ComponentId],
     ) -> Result<HashMap<ComponentId, StateSnapshot>, StateError>;
 
-    /// Find the best recovery path for given timestamp
+    /// Returns the checkpoints to load to reach the state at `target_time`.
     fn find_recovery_path(
         &self,
         target_time: Instant,
@@ -388,12 +379,12 @@ pub trait RecoveryEngine: Send + Sync {
     ) -> Result<RecoveryPath, StateError>;
 }
 
-/// Distributed coordinator for cluster-wide checkpointing
+/// Coordinates checkpoints across a cluster.
 pub trait DistributedCoordinator: Send + Sync {
-    /// Initiate a distributed checkpoint
+    /// Start a checkpoint across the cluster.
     fn initiate_checkpoint(&self, checkpoint_id: CheckpointId) -> Result<(), StateError>;
 
-    /// Report checkpoint completion
+    /// Record whether a node finished the checkpoint.
     fn report_completion(
         &self,
         checkpoint_id: CheckpointId,
@@ -401,81 +392,83 @@ pub trait DistributedCoordinator: Send + Sync {
         success: bool,
     ) -> Result<(), StateError>;
 
-    /// Wait for all nodes to complete checkpoint
+    /// Wait until enough nodes finish the checkpoint. Returns false on timeout
+    /// or failure.
     fn wait_for_completion(
         &self,
         checkpoint_id: CheckpointId,
         timeout: Duration,
     ) -> Result<bool, StateError>;
 
-    /// Get cluster health status
     fn cluster_health(&self) -> Result<ClusterHealth, StateError>;
 }
 
-/// WAL log entry
+/// One WAL entry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogEntry {
-    /// Component that generated this entry
+    /// Component that made the change.
     pub component_id: ComponentId,
 
-    /// Sequence number within component
+    /// Sequence number within the component.
     pub sequence: u64,
 
-    /// Timestamp when entry was created
+    /// Set by the caller. Tests use microseconds since the Unix epoch.
     pub timestamp: u64,
 
-    /// The actual state change
+    /// The state change.
     pub change: ChangeLog,
 
-    /// Optional metadata
     pub metadata: HashMap<String, String>,
 }
 
-/// WAL offset type
+/// Position of an entry in the WAL, counted in entries.
 pub type LogOffset = u64;
 
-/// Recovery path information
+/// Checkpoints to load for a recovery.
 #[derive(Debug)]
 pub struct RecoveryPath {
-    /// Base full checkpoint to start from
+    /// Full checkpoint to start from.
     pub base_checkpoint: CheckpointId,
 
-    /// Incremental checkpoints to apply in order
+    /// Incremental checkpoints to apply, in order.
     pub incremental_chain: Vec<CheckpointId>,
 
-    /// Estimated recovery time
     pub estimated_duration: Duration,
 
-    /// Total data size to process
+    /// Bytes to process.
     pub total_size: usize,
 }
 
-/// Cluster health information
+/// Health of the cluster.
 #[derive(Debug)]
 pub struct ClusterHealth {
-    /// Total number of nodes
     pub total_nodes: usize,
 
-    /// Number of healthy nodes
     pub healthy_nodes: usize,
 
-    /// Current leader node
+    /// Current leader, if known.
     pub leader_node: Option<String>,
 
-    /// Network partition status
     pub partition_status: PartitionStatus,
 }
 
-/// Network partition status
+/// Whether the network has split the cluster into groups that cannot reach
+/// each other.
 #[derive(Debug)]
 pub enum PartitionStatus {
     Healthy,
-    MinorPartition { affected_nodes: Vec<String> },
-    MajorPartition { majority_nodes: Vec<String> },
+    MinorPartition {
+        affected_nodes: Vec<String>,
+    },
+    MajorPartition {
+        majority_nodes: Vec<String>,
+    },
+    /// Groups on both sides think they lead.
     SplitBrain,
 }
 
-// Error types specific to incremental checkpointing
+// Errors specific to incremental checkpoints. Not used yet. The traits above
+// return StateError instead.
 #[derive(thiserror::Error, Debug)]
 pub enum IncrementalCheckpointError {
     #[error("WAL operation failed: {message}")]

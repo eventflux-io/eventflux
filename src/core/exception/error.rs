@@ -17,10 +17,10 @@
 
 use thiserror::Error;
 
-/// Main error type for EventFlux operations
+/// Main error type for EventFlux.
 #[derive(Error, Debug)]
 pub enum EventFluxError {
-    /// Errors that occur during EventFlux app creation and parsing
+    /// Building or parsing an EventFlux app failed.
     #[error("EventFlux app creation error: {message}")]
     EventFluxAppCreation {
         message: String,
@@ -28,7 +28,7 @@ pub enum EventFluxError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// Runtime errors during query execution
+    /// A running EventFlux app hit an error.
     #[error("EventFlux app runtime error: {message}")]
     EventFluxAppRuntime {
         message: String,
@@ -36,58 +36,57 @@ pub enum EventFluxError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// Errors in query parsing and compilation
+    /// Parsing or compiling a query failed.
     #[error("Query creation error: {message}")]
     QueryCreation {
         message: String,
         query: Option<String>,
     },
 
-    /// Runtime errors in query execution
+    /// A running query hit an error.
     #[error("Query runtime error: {message}")]
     QueryRuntime {
         message: String,
         query_name: Option<String>,
     },
 
-    /// Errors in on-demand query creation
+    /// Building an on demand query failed.
     #[error("On-demand query creation error: {message}")]
     OnDemandQueryCreation { message: String },
 
-    /// Runtime errors in on-demand query execution
+    /// Running an on demand query failed.
     #[error("On-demand query runtime error: {message}")]
     OnDemandQueryRuntime { message: String },
 
-    /// Store query errors
     #[error("Store query error: {message}")]
     StoreQuery {
         message: String,
         store_name: Option<String>,
     },
 
-    /// Definition not found errors
+    /// A named definition was not found.
     #[error("{definition_type} definition '{name}' does not exist")]
     DefinitionNotExist {
         definition_type: String,
         name: String,
     },
 
-    /// Query not found errors
+    /// A named query was not found in the app.
     #[error("Query '{name}' does not exist in EventFlux app '{app_name}'")]
     QueryNotExist { name: String, app_name: String },
 
-    /// Attribute not found errors
+    /// A named attribute was not found.
     #[error("Attribute '{attribute}' does not exist in {context}")]
     NoSuchAttribute { attribute: String, context: String },
 
-    /// Extension not found errors
+    /// A named extension was not found.
     #[error("{extension_type} extension '{name}' not found")]
     ExtensionNotFound {
         extension_type: String,
         name: String,
     },
 
-    /// Connection unavailable errors
+    /// A connection to an outside system is down.
     #[error("Connection unavailable: {message}")]
     ConnectionUnavailable {
         message: String,
@@ -95,7 +94,6 @@ pub enum EventFluxError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// Database runtime errors
     #[error("Database runtime error: {message}")]
     DatabaseRuntime {
         message: String,
@@ -103,14 +101,14 @@ pub enum EventFluxError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// Table/Store errors
+    /// A table or store failed.
     #[error("Queryable record table error: {message}")]
     QueryableRecordTable {
         message: String,
         table_name: Option<String>,
     },
 
-    /// Persistence errors
+    /// The persistence store failed.
     #[error("Persistence store error: {message}")]
     PersistenceStore {
         message: String,
@@ -118,35 +116,34 @@ pub enum EventFluxError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// State persistence errors
+    /// Saving app state failed.
     #[error("Cannot persist EventFlux app state: {message}")]
     CannotPersistState {
         message: String,
         app_name: Option<String>,
     },
 
-    /// State restoration errors
+    /// Restoring app state failed.
     #[error("Cannot restore EventFlux app state: {message}")]
     CannotRestoreState {
         message: String,
         app_name: Option<String>,
     },
 
-    /// State clearing errors
+    /// Clearing app state failed.
     #[error("Cannot clear EventFlux app state: {message}")]
     CannotClearState {
         message: String,
         app_name: Option<String>,
     },
 
-    /// Operation not supported errors
     #[error("Operation not supported: {message}")]
     OperationNotSupported {
         message: String,
         operation: Option<String>,
     },
 
-    /// Data type errors
+    /// A value had the wrong data type.
     #[error("Type error: {message}")]
     TypeError {
         message: String,
@@ -154,7 +151,6 @@ pub enum EventFluxError {
         actual: Option<String>,
     },
 
-    /// Invalid parameter errors
     #[error("Invalid parameter: {message}")]
     InvalidParameter {
         message: String,
@@ -162,7 +158,7 @@ pub enum EventFluxError {
         expected: Option<String>,
     },
 
-    /// Mapping/Marshalling errors
+    /// Converting data to or from an outside format failed.
     #[error("Mapping failed: {message}")]
     MappingFailed {
         message: String,
@@ -170,21 +166,20 @@ pub enum EventFluxError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// Configuration errors
     #[error("Configuration error: {message}")]
     Configuration {
         message: String,
         config_key: Option<String>,
     },
 
-    /// Class loading errors (for extensions)
+    /// Loading an extension failed.
     #[error("Cannot load class/extension: {message}")]
     CannotLoadClass {
         message: String,
         class_name: Option<String>,
     },
 
-    /// Parser errors from SQL parser
+    /// The SQL parser rejected the input.
     #[error("Parse error: {message}")]
     ParseError {
         message: String,
@@ -192,45 +187,44 @@ pub enum EventFluxError {
         column: Option<usize>,
     },
 
-    /// IO errors
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Serialization errors
     #[error("Serialization error: {0}")]
     Serialization(#[from] crate::core::util::serialization::SerdeError),
 
-    /// Database errors from rusqlite
+    /// An error from rusqlite.
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
-    /// Send errors for channels
+    /// Sending on a channel or to a stream failed.
     #[error("Send error: {message}")]
     SendError { message: String },
 
-    /// Events rejected because the target stream junction is shutting down.
-    /// Carries the rejected-event count so fire-and-forget senders (query
-    /// output edges) can account the loss instead of swallowing it silently.
+    /// Events were rejected because the target stream junction is shutting down.
+    ///
+    /// Carries the count of rejected events so senders that do not wait for a
+    /// result (query output edges) can record the loss instead of hiding it.
     #[error("Stream junction is shutting down ({count} event(s) rejected)")]
     ShutdownRejected { count: usize },
 
-    /// Processor errors
     #[error("Processor error: {message}")]
     ProcessorError {
         message: String,
         processor: Option<String>,
     },
 
-    /// Generic other errors (to be phased out)
+    /// Catch all for plain message errors. Meant to be replaced by specific
+    /// variants over time.
     #[error("{0}")]
     Other(String),
 }
 
-/// Result type alias for EventFlux operations
+/// Result type for EventFlux operations.
 pub type EventFluxResult<T> = Result<T, EventFluxError>;
 
 impl EventFluxError {
-    /// Create a new EventFluxAppCreation error
+    /// Create an `EventFluxAppCreation` error with no source.
     pub fn app_creation(message: impl Into<String>) -> Self {
         EventFluxError::EventFluxAppCreation {
             message: message.into(),
@@ -238,7 +232,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a new EventFluxAppRuntime error
+    /// Create an `EventFluxAppRuntime` error with no source.
     pub fn app_runtime(message: impl Into<String>) -> Self {
         EventFluxError::EventFluxAppRuntime {
             message: message.into(),
@@ -246,7 +240,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a new TypeError
+    /// Create a `TypeError`.
     pub fn type_error(
         message: impl Into<String>,
         expected: impl Into<String>,
@@ -259,7 +253,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a new InvalidParameter error
+    /// Create an `InvalidParameter` error with no expected value.
     pub fn invalid_parameter(message: impl Into<String>, parameter: impl Into<String>) -> Self {
         EventFluxError::InvalidParameter {
             message: message.into(),
@@ -268,7 +262,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a new InvalidParameter error with expected value
+    /// Create an `InvalidParameter` error with the expected value.
     pub fn invalid_parameter_with_details(
         message: impl Into<String>,
         parameter: impl Into<String>,
@@ -281,7 +275,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a new Configuration error
+    /// Create a `Configuration` error with no config key.
     pub fn configuration(message: impl Into<String>) -> Self {
         EventFluxError::Configuration {
             message: message.into(),
@@ -289,7 +283,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a new Configuration error with config key
+    /// Create a `Configuration` error naming the config key.
     pub fn configuration_with_key(
         message: impl Into<String>,
         config_key: impl Into<String>,
@@ -300,7 +294,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a missing parameter error (uses InvalidParameter variant)
+    /// Create an `InvalidParameter` error saying a required parameter is missing.
     pub fn missing_parameter(parameter: impl Into<String>) -> Self {
         let param = parameter.into();
         EventFluxError::InvalidParameter {
@@ -310,7 +304,8 @@ impl EventFluxError {
         }
     }
 
-    /// Create an unsupported format error (uses Configuration variant)
+    /// Create a `Configuration` error, with config key `format`, saying the
+    /// extension does not support the format.
     pub fn unsupported_format(format: impl Into<String>, extension: impl Into<String>) -> Self {
         let fmt = format.into();
         let ext = extension.into();
@@ -320,7 +315,8 @@ impl EventFluxError {
         }
     }
 
-    /// Create a validation failed error (uses Configuration variant)
+    /// Create a `Configuration` error whose message starts with
+    /// `Validation failed: `.
     pub fn validation_failed(message: impl Into<String>) -> Self {
         EventFluxError::Configuration {
             message: format!("Validation failed: {}", message.into()),
@@ -328,7 +324,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a new ExtensionNotFound error
+    /// Create an `ExtensionNotFound` error.
     pub fn extension_not_found(extension_type: impl Into<String>, name: impl Into<String>) -> Self {
         EventFluxError::ExtensionNotFound {
             extension_type: extension_type.into(),
@@ -336,7 +332,7 @@ impl EventFluxError {
         }
     }
 
-    /// Create a new DefinitionNotExist error
+    /// Create a `DefinitionNotExist` error.
     pub fn definition_not_exist(
         definition_type: impl Into<String>,
         name: impl Into<String>,
@@ -347,7 +343,12 @@ impl EventFluxError {
         }
     }
 
-    /// Add source error context
+    /// Attach the underlying cause.
+    ///
+    /// Only variants with a `source` field keep it: `EventFluxAppCreation`,
+    /// `EventFluxAppRuntime`, `ConnectionUnavailable`, `DatabaseRuntime`,
+    /// `PersistenceStore` and `MappingFailed`. For any other variant the cause is
+    /// silently dropped.
     pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
         match &mut self {
             EventFluxError::EventFluxAppCreation { source: src, .. }
@@ -363,63 +364,61 @@ impl EventFluxError {
         self
     }
 
-    /// Determine if this error is retriable (transient)
+    /// Returns true if the error may go away on retry.
     ///
-    /// Retriable errors are those that may succeed on retry, typically due to
-    /// temporary resource unavailability, network issues, or transient system states.
+    /// These are usually caused by something temporary, such as a resource that
+    /// is busy, a network problem, or a passing system state.
     ///
     /// # Returns
-    /// - `true` - Error is retriable (temporary condition)
-    /// - `false` - Error is permanent (retry will not help)
+    /// - `true` - The condition may be temporary, so a retry may work.
+    /// - `false` - The error is permanent and a retry will not help.
     ///
     /// # Categories
     ///
-    /// ## Retriable (Transient)
-    /// - Connection issues (network, database)
-    /// - Temporary resource unavailability
-    /// - Transient runtime errors
-    /// - IO errors (many are transient)
-    /// - Send errors (channels may become available)
+    /// ## Can be retried
+    /// - Connection problems, with the network or a database.
+    /// - Query and on demand query runtime errors.
+    /// - Persistence store, store query and table errors.
+    /// - IO errors, since many are temporary.
+    /// - Send errors, since the receiver may come back.
+    /// - Processor errors.
     ///
-    /// ## Non-Retriable (Permanent)
-    /// - Configuration errors
-    /// - Validation errors
-    /// - Missing definitions/extensions
-    /// - Type mismatches
-    /// - Malformed input
+    /// ## Cannot be retried
+    /// - Configuration and validation errors.
+    /// - Missing definitions, queries, attributes or extensions.
+    /// - Type mismatches and bad input.
+    /// - App creation and app runtime errors.
+    /// - State save, restore and clear errors.
+    /// - Shutdown rejections and `Other`.
     pub fn is_retriable(&self) -> bool {
         match self {
-            // Transient network/connection errors
             EventFluxError::ConnectionUnavailable { .. } => true,
 
-            // Transient database errors
             EventFluxError::DatabaseRuntime { .. } => true,
-            EventFluxError::Sqlite(_) => true, // Many SQLite errors are transient (locks, etc.)
+            EventFluxError::Sqlite(_) => true, // many SQLite errors are temporary, such as locks
 
-            // Transient query runtime errors
             EventFluxError::QueryRuntime { .. } => true,
             EventFluxError::OnDemandQueryRuntime { .. } => true,
 
-            // Transient storage/persistence errors
             EventFluxError::PersistenceStore { .. } => true,
 
-            // IO errors (many are transient - network, file locks, etc.)
+            // Many IO errors are temporary, such as network problems or file locks.
             EventFluxError::Io(_) => true,
 
-            // Channel send errors (receiver may become available)
+            // The receiver may become available again.
             EventFluxError::SendError { .. } => true,
 
-            // Shutdown is terminal for this runtime run — retrying cannot succeed
+            // Shutdown is final for this run of the runtime, so a retry cannot work.
             EventFluxError::ShutdownRejected { .. } => false,
 
-            // Processor errors (may be transient depending on state)
+            // May be temporary, depending on processor state.
             EventFluxError::ProcessorError { .. } => true,
 
-            // Store query errors (may be transient locks)
+            // May be temporary locks.
             EventFluxError::StoreQuery { .. } => true,
             EventFluxError::QueryableRecordTable { .. } => true,
 
-            // All other errors are permanent (configuration, validation, etc.)
+            // Everything else is permanent, such as configuration or validation.
             EventFluxError::EventFluxAppCreation { .. } => false,
             EventFluxError::EventFluxAppRuntime { .. } => false,
             EventFluxError::QueryCreation { .. } => false,
@@ -431,7 +430,7 @@ impl EventFluxError {
             EventFluxError::OperationNotSupported { .. } => false,
             EventFluxError::TypeError { .. } => false,
             EventFluxError::InvalidParameter { .. } => false,
-            EventFluxError::MappingFailed { .. } => false, // Data format issues are permanent
+            EventFluxError::MappingFailed { .. } => false, // bad data format stays bad
             EventFluxError::Configuration { .. } => false,
             EventFluxError::CannotLoadClass { .. } => false,
             EventFluxError::ParseError { .. } => false,
@@ -439,11 +438,15 @@ impl EventFluxError {
             EventFluxError::CannotPersistState { .. } => false,
             EventFluxError::CannotRestoreState { .. } => false,
             EventFluxError::CannotClearState { .. } => false,
-            EventFluxError::Other(_) => false, // Conservative: unknown errors are not retriable
+            EventFluxError::Other(_) => false, // unknown errors are not retried, to be safe
         }
     }
 
-    /// Get error category for logging and metrics
+    /// Returns the category used for logging and metrics.
+    ///
+    /// Errors that can be retried are `Transient`. Of the rest, `Configuration`,
+    /// `InvalidParameter` and `TypeError` are `Configuration`, and all others are
+    /// `Permanent`.
     pub fn category(&self) -> ErrorCategory {
         if self.is_retriable() {
             ErrorCategory::Transient
@@ -458,32 +461,35 @@ impl EventFluxError {
     }
 }
 
-/// Error category for classification
+/// Broad kind of an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCategory {
-    /// Transient error that may succeed on retry
+    /// May work on retry.
     Transient,
-    /// Permanent error that will not succeed on retry
+    /// Will not work on retry.
     Permanent,
-    /// Configuration/validation error
+    /// A configuration or validation problem.
     Configuration,
 }
 
-/// Convert String errors to EventFluxError::Other (for backward compatibility)
+/// Wraps a `String` error as `EventFluxError::Other`, for code that still returns
+/// plain string errors.
 impl From<String> for EventFluxError {
     fn from(s: String) -> Self {
         EventFluxError::Other(s)
     }
 }
 
-/// Convert &str errors to EventFluxError::Other (for backward compatibility)
+/// Wraps a `&str` error as `EventFluxError::Other`, for code that still returns
+/// plain string errors.
 impl From<&str> for EventFluxError {
     fn from(s: &str) -> Self {
         EventFluxError::Other(s.to_string())
     }
 }
 
-/// Extension trait for converting Results with String errors to EventFluxError
+/// Turns a `Result` with a `String` error into an [`EventFluxResult`], wrapping
+/// the error as `EventFluxError::Other`.
 pub trait IntoEventFluxResult<T> {
     fn into_eventflux_result(self) -> EventFluxResult<T>;
 }

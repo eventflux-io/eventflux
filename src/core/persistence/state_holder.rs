@@ -17,26 +17,23 @@
 
 // src/core/persistence/state_holder.rs
 
-//! Enhanced State Management System
+//! State holder trait and snapshot types.
 //!
-//! This module implements an enterprise-grade state management system that surpasses
-//! Apache Flink's capabilities by leveraging Rust's unique advantages:
-//! - Zero-copy operations using Rust's ownership model
-//! - Lock-free checkpointing with crossbeam primitives  
-//! - Type-safe state evolution with compile-time guarantees
-//! - Predictable performance without GC pauses
+//! [`StateHolder`] is what every stateful component implements so its state can
+//! be saved, restored, migrated between schema versions and tracked as a log of
+//! changes. This module also holds the snapshot, change log and error types.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Unique identifier for a checkpoint
+/// Checkpoint id.
 pub type CheckpointId = u64;
 
-/// Unique identifier for a state component
+/// State component id.
 pub type ComponentId = String;
 
-/// Current version of state schema
+/// Version of a state schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SchemaVersion {
     pub major: u32,
@@ -53,9 +50,11 @@ impl SchemaVersion {
         }
     }
 
-    /// Check if this version is compatible with another
+    /// Returns true if this version can read state written by `other`.
+    ///
+    /// The major versions must match and this minor version must be the same or
+    /// higher. The patch version is ignored.
     pub fn is_compatible_with(&self, other: &SchemaVersion) -> bool {
-        // Major version must match, minor version can be higher (backward compatible)
         self.major == other.major && self.minor >= other.minor
     }
 }
@@ -66,7 +65,7 @@ impl std::fmt::Display for SchemaVersion {
     }
 }
 
-/// State size estimation for resource planning
+/// Estimated state size, for resource planning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSize {
     pub bytes: usize,
@@ -74,22 +73,22 @@ pub struct StateSize {
     pub estimated_growth_rate: f64, // bytes per second
 }
 
-/// State access patterns for optimization
+/// How a component's state is read, as a hint for where to keep it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AccessPattern {
-    /// Frequently accessed, keep in memory
+    /// Read often. Keep in memory.
     Hot,
-    /// Occasionally accessed, can be evicted
+    /// Read now and then. Can be evicted.
     Warm,
-    /// Rarely accessed, can be persisted to disk
+    /// Read rarely. Can be moved to disk.
     Cold,
-    /// Sequential access pattern
+    /// Read in order.
     Sequential,
-    /// Random access pattern
+    /// Read in no set order.
     Random,
 }
 
-/// Compression type for state snapshots
+/// Compression type for state snapshots.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CompressionType {
     None,
@@ -98,7 +97,8 @@ pub enum CompressionType {
     Zstd,
 }
 
-/// Serialization hints for optimization
+/// Hints a state holder may use when serializing. Holders are free to ignore
+/// them.
 #[derive(Debug, Clone, Default)]
 pub struct SerializationHints {
     pub prefer_compression: Option<CompressionType>,
@@ -106,6 +106,7 @@ pub struct SerializationHints {
     pub priority: SerializationPriority,
 }
 
+/// What to favor when serializing. Defaults to `Balanced`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum SerializationPriority {
     Speed,
@@ -114,18 +115,20 @@ pub enum SerializationPriority {
     Balanced,
 }
 
-/// State metadata for snapshots
+/// Metadata stored with a state snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateMetadata {
     pub component_id: ComponentId,
     pub component_type: String,
-    pub created_at: u64, // Unix timestamp
+    pub created_at: u64, // Unix time in seconds
     pub access_pattern: AccessPattern,
     pub size_estimation: StateSize,
     pub custom_metadata: HashMap<String, String>,
 }
 
 impl StateMetadata {
+    /// Create metadata stamped with the current time, a `Warm` access pattern
+    /// and a zero size estimate.
     pub fn new(component_id: ComponentId, component_type: String) -> Self {
         Self {
             component_id,
@@ -145,19 +148,23 @@ impl StateMetadata {
     }
 }
 
-/// State snapshot with comprehensive metadata
+/// Saved state of one component, with its schema version, checksum and metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSnapshot {
     pub version: SchemaVersion,
     pub checkpoint_id: CheckpointId,
     pub data: Vec<u8>,
     pub compression: CompressionType,
+    /// Checksum of `data` from [`calculate_checksum`](Self::calculate_checksum).
     pub checksum: u64,
     pub metadata: StateMetadata,
 }
 
 impl StateSnapshot {
-    /// Calculate checksum for data integrity
+    /// Returns a checksum of `data`, used to detect corruption.
+    ///
+    /// Uses the standard library `DefaultHasher`, whose output is not
+    /// guaranteed to stay the same across Rust releases.
     pub fn calculate_checksum(data: &[u8]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -167,13 +174,13 @@ impl StateSnapshot {
         hasher.finish()
     }
 
-    /// Verify data integrity
+    /// Returns true if `data` still matches `checksum`.
     pub fn verify_integrity(&self) -> bool {
         Self::calculate_checksum(&self.data) == self.checksum
     }
 }
 
-/// Types of state operations for incremental tracking
+/// One change to state, recorded for incremental checkpoints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StateOperation {
     Insert {
@@ -192,17 +199,19 @@ pub enum StateOperation {
     Clear,
 }
 
-/// Incremental change log for efficient checkpointing
+/// Changes made between two checkpoints, so only the changes need saving.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangeLog {
     pub from_checkpoint: CheckpointId,
     pub to_checkpoint: CheckpointId,
     pub operations: Vec<StateOperation>,
+    /// Total bytes of keys and values in `operations`.
     pub size_bytes: usize,
     pub compression: CompressionType,
 }
 
 impl ChangeLog {
+    /// Create an empty, uncompressed change log.
     pub fn new(from: CheckpointId, to: CheckpointId) -> Self {
         Self {
             from_checkpoint: from,
@@ -213,7 +222,7 @@ impl ChangeLog {
         }
     }
 
-    /// Add an operation to the change log
+    /// Add an operation and add its key and value bytes to `size_bytes`.
     pub fn add_operation(&mut self, operation: StateOperation) {
         let op_size = match &operation {
             StateOperation::Insert { key, value } => key.len() + value.len(),
@@ -231,38 +240,48 @@ impl ChangeLog {
     }
 }
 
-/// Enhanced StateHolder trait with versioning and incremental capabilities
+/// A component whose state can be saved, restored, migrated and tracked as
+/// changes.
 pub trait StateHolder: Send + Sync {
-    /// Current version of the state schema
+    /// Version of this component's state schema.
     fn schema_version(&self) -> SchemaVersion;
 
-    /// Serialize state with compression hints
+    /// Serialize the state. `hints` may guide compression and chunking.
     fn serialize_state(&self, hints: &SerializationHints) -> Result<StateSnapshot, StateError>;
 
-    /// Deserialize state with version compatibility checking
+    /// Restore the state from a snapshot. Implementations should check the
+    /// snapshot version is compatible.
     fn deserialize_state(&self, snapshot: &StateSnapshot) -> Result<(), StateError>;
 
-    /// Get incremental changes since last checkpoint
+    /// Returns the changes made since checkpoint `since`.
     fn get_changelog(&self, since: CheckpointId) -> Result<ChangeLog, StateError>;
 
-    /// Apply incremental changes
+    /// Apply a log of changes to the state.
     fn apply_changelog(&self, changes: &ChangeLog) -> Result<(), StateError>;
 
-    /// Estimate state size for resource planning
+    /// Estimate the state size, for resource planning.
     fn estimate_size(&self) -> StateSize;
 
-    /// State access patterns for optimization
+    /// How the state is read, as a hint for where to keep it.
     fn access_pattern(&self) -> AccessPattern;
 
-    /// Component metadata
     fn component_metadata(&self) -> StateMetadata;
 
-    /// Check if state can be migrated from given version
+    /// Returns true if state written with `version` can be loaded. By default
+    /// this follows [`SchemaVersion::is_compatible_with`].
     fn can_migrate_from(&self, version: &SchemaVersion) -> bool {
         self.schema_version().is_compatible_with(version)
     }
 
-    /// Perform state schema migration
+    /// Load state written with an older schema version.
+    ///
+    /// The default wraps `data` in an uncompressed snapshot tagged with
+    /// `from_version` and passes it to [`deserialize_state`](Self::deserialize_state).
+    ///
+    /// # Errors
+    ///
+    /// Returns `IncompatibleVersion` if [`can_migrate_from`](Self::can_migrate_from)
+    /// is false. Otherwise returns any error from `deserialize_state`.
     fn migrate_state(
         &mut self,
         from_version: &SchemaVersion,
@@ -275,7 +294,6 @@ pub trait StateHolder: Send + Sync {
             });
         }
 
-        // Default implementation: attempt direct deserialization
         let snapshot = StateSnapshot {
             version: *from_version,
             checkpoint_id: 0,
@@ -288,17 +306,17 @@ pub trait StateHolder: Send + Sync {
         self.deserialize_state(&snapshot)
     }
 
-    /// Reset all mutable state to initial (empty) values.
+    /// Reset all mutable state to its initial empty value.
     ///
-    /// Called during `clear_state()` to discard accumulated in-memory state
-    /// (window buffers, aggregator accumulators, etc.) so the runtime can
-    /// restart fresh.
+    /// Called during `clear_state()` to throw away state built up in memory,
+    /// such as window buffers and aggregator totals, so the runtime can start
+    /// fresh.
     fn reset_state(&self) {
-        // Default: no-op. Concrete state holders should override.
+        // Does nothing by default. State holders should override it.
     }
 }
 
-/// State management errors
+/// State management errors.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
     #[error("Serialization failed: {message}")]

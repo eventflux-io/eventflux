@@ -20,7 +20,9 @@ use std::sync::Mutex;
 
 use log::error;
 
-/// Trait for simple persistence stores that save full snapshots.
+/// Store that saves full snapshots, keyed by app id and revision.
+///
+/// Methods do not return errors. Stores log failures and `load` returns `None`.
 pub trait PersistenceStore: Send + Sync {
     fn save(&self, eventflux_app_id: &str, revision: &str, snapshot: &[u8]);
     fn load(&self, eventflux_app_id: &str, revision: &str) -> Option<Vec<u8>>;
@@ -28,7 +30,7 @@ pub trait PersistenceStore: Send + Sync {
     fn clear_all_revisions(&self, eventflux_app_id: &str);
 }
 
-/// Trait for incremental persistence stores.
+/// Store for incremental snapshots, keyed by revision only.
 pub trait IncrementalPersistenceStore: Send + Sync {
     fn save(&self, revision: &str, snapshot: &[u8]);
     fn load(&self, revision: &str) -> Option<Vec<u8>>;
@@ -36,10 +38,12 @@ pub trait IncrementalPersistenceStore: Send + Sync {
     fn clear_all_revisions(&self, eventflux_app_id: &str);
 }
 
-/// Very small in-memory implementation useful for tests.
+/// Tiny in memory store, for tests.
 #[derive(Default)]
 pub struct InMemoryPersistenceStore {
+    /// Snapshots by app id, then by revision.
     inner: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
+    /// Last saved revision for each app id.
     last_revision: Mutex<HashMap<String, String>>,
 }
 
@@ -84,7 +88,7 @@ impl PersistenceStore for InMemoryPersistenceStore {
 
 impl IncrementalPersistenceStore for InMemoryPersistenceStore {
     fn save(&self, revision: &str, snapshot: &[u8]) {
-        // For tests we treat incremental same as full with eventflux_app_id="default"
+        // Stored like a full snapshot under the app id "default".
         <Self as PersistenceStore>::save(self, "default", revision, snapshot);
     }
 
@@ -101,16 +105,24 @@ impl IncrementalPersistenceStore for InMemoryPersistenceStore {
     }
 }
 
-// Simple file-based persistence store storing each snapshot as a file
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Store that writes each snapshot to `<base>/<app id>/<revision>`.
+///
+/// The last revision is tracked only in memory, so `get_last_revision` returns
+/// `None` after a restart until something is saved again.
 pub struct FilePersistenceStore {
     base: PathBuf,
     last_revision: Mutex<HashMap<String, String>>,
 }
 
 impl FilePersistenceStore {
+    /// Create a store rooted at `path`, creating the folder if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the IO error if the folder cannot be created.
     pub fn new<P: Into<PathBuf>>(path: P) -> std::io::Result<Self> {
         let p = path.into();
         fs::create_dir_all(&p)?;
@@ -168,11 +180,21 @@ impl PersistenceStore for FilePersistenceStore {
 
 use rusqlite::{params, Connection};
 
+/// Store that keeps snapshots in a SQLite `snapshots` table.
+///
+/// The last revision is the most recently written row, so saving an old revision
+/// again makes it the last one.
 pub struct SqlitePersistenceStore {
     conn: Mutex<Connection>,
 }
 
 impl SqlitePersistenceStore {
+    /// Open the database at `path` and create the `snapshots` table if missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error if the database cannot be opened or the table
+    /// cannot be created.
     pub fn new<P: AsRef<Path>>(path: P) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute(
@@ -225,43 +247,56 @@ impl PersistenceStore for SqlitePersistenceStore {
     }
 }
 
-/// Redis-backed persistence store for distributed state management
+/// Store that keeps snapshots in Redis, so several nodes can share them.
+///
+/// Each snapshot and the last revision are written together in one atomic
+/// `set_multi`. The backend connects lazily on the first call that fails, then
+/// the call is tried once more. The backend also adds its own key prefix to the
+/// keys built here.
 pub struct RedisPersistenceStore {
     backend: Arc<tokio::sync::Mutex<crate::core::distributed::RedisBackend>>,
+    /// Own tokio runtime, created only when the store is built outside a tokio
+    /// runtime. When `None`, each call runs on a new thread with its own short
+    /// lived runtime.
     runtime: Option<Arc<tokio::runtime::Runtime>>,
 }
 
 impl RedisPersistenceStore {
-    /// Create a new Redis persistence store with default configuration
+    /// Create a store with the default Redis settings. Does not connect yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if a tokio runtime is needed and cannot be built.
     pub fn new() -> Result<Self, String> {
         let backend = crate::core::distributed::RedisBackend::new();
         Self::new_with_backend(backend)
     }
 
-    /// Create a new Redis persistence store with custom Redis configuration
+    /// Create a store with the given Redis settings. Does not connect yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if a tokio runtime is needed and cannot be built.
     pub fn new_with_config(config: crate::core::distributed::RedisConfig) -> Result<Self, String> {
         let backend = crate::core::distributed::RedisBackend::with_config(config);
         Self::new_with_backend(backend)
     }
 
     fn new_with_backend(backend: crate::core::distributed::RedisBackend) -> Result<Self, String> {
-        // Check if we're in an async runtime context
         let runtime = if tokio::runtime::Handle::try_current().is_ok() {
-            // We're in an async context, don't create a new runtime
+            // Inside a tokio runtime already, so do not create another one.
             None
         } else {
-            // Create a dedicated runtime for Redis operations
             Some(Arc::new(tokio::runtime::Runtime::new().map_err(|e| {
                 format!("Failed to create async runtime: {}", e)
             })?))
         };
 
-        // Initialize the backend - handle runtime context properly
         if runtime.is_some() {
-            // Use the dedicated runtime (we'll initialize later)
+            // Not initialized here. The backend connects on first use.
         } else {
-            // Skip initialization in async context - let it be lazy initialized
-            // This avoids the "runtime within runtime" issue for tests
+            // Not initialized here either. Connecting lazily avoids starting a
+            // runtime inside a runtime in tests.
         }
 
         Ok(Self {
@@ -270,21 +305,26 @@ impl RedisPersistenceStore {
         })
     }
 
-    /// Test Redis connectivity by initializing the backend and performing a PING
+    /// Check that Redis is reachable by initializing the backend, which sends a
+    /// `PING`.
     ///
-    /// Returns Ok(()) if Redis is available and responding, Err otherwise.
-    /// This is useful for test setup to skip tests when Redis is not available.
+    /// Useful in test setup to skip tests when Redis is not running.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if Redis cannot be reached, a runtime cannot be
+    /// built, or the worker thread panics.
     pub fn test_connection(&self) -> Result<(), String> {
         let backend = Arc::clone(&self.backend);
 
         if let Some(ref runtime) = self.runtime {
-            // Use dedicated runtime
             runtime.block_on(async move {
                 let mut backend = backend.lock().await;
                 backend.initialize().await.map_err(|e| e.to_string())
             })
         } else {
-            // We're in an async context, use spawn_blocking
+            // Inside a tokio runtime, so block_on here would panic. Run on a new
+            // thread with its own runtime instead.
             let handle = std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new()
                     .map_err(|e| format!("Failed to create runtime: {}", e))?;
@@ -297,12 +337,10 @@ impl RedisPersistenceStore {
         }
     }
 
-    /// Get the revision key for Redis
     fn revision_key(eventflux_app_id: &str, revision: &str) -> String {
         format!("eventflux:app:{}:revision:{}", eventflux_app_id, revision)
     }
 
-    /// Get the last revision key for Redis
     fn last_revision_key(eventflux_app_id: &str) -> String {
         format!("eventflux:app:{}:last_revision", eventflux_app_id)
     }
@@ -317,19 +355,19 @@ impl PersistenceStore for RedisPersistenceStore {
         let revision = revision.to_string();
 
         if let Some(ref runtime) = self.runtime {
-            // Use dedicated runtime
+            // Run on the store's own runtime.
             runtime.block_on(async move {
                 let mut backend = backend.lock().await;
 
-                // Prepare atomic multi-set operation
+                // Snapshot and last revision, written together in one atomic set.
                 let kvs = vec![
                     (revision_key.clone(), snapshot.clone()),
                     (last_rev_key.clone(), revision.into_bytes()),
                 ];
 
-                // Try atomic multi-set, initialize if needed
+                // A failure may mean the backend is not connected yet.
                 if backend.set_multi(kvs.clone()).await.is_err() {
-                    // Initialize and retry
+                    // Connect, then try once more.
                     if let Err(e) = backend.initialize().await {
                         error!("Failed to initialize Redis backend: {}", e);
                         return;
@@ -340,21 +378,21 @@ impl PersistenceStore for RedisPersistenceStore {
                 }
             });
         } else {
-            // We're in an async context, use spawn_blocking
+            // Inside a tokio runtime. Run on a new thread with its own runtime.
             let handle = std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async move {
                     let mut backend = backend.lock().await;
 
-                    // Prepare atomic multi-set operation
+                    // Snapshot and last revision, written together in one atomic set.
                     let kvs = vec![
                         (revision_key.clone(), snapshot.clone()),
                         (last_rev_key.clone(), revision.into_bytes()),
                     ];
 
-                    // Try atomic multi-set, initialize if needed
+                    // A failure may mean the backend is not connected yet.
                     if backend.set_multi(kvs.clone()).await.is_err() {
-                        // Initialize and retry
+                        // Connect, then try once more.
                         if let Err(e) = backend.initialize().await {
                             error!("Failed to initialize Redis backend: {}", e);
                             return;
@@ -374,15 +412,15 @@ impl PersistenceStore for RedisPersistenceStore {
         let revision_key = Self::revision_key(eventflux_app_id, revision);
 
         if let Some(ref runtime) = self.runtime {
-            // Use dedicated runtime
+            // Run on the store's own runtime.
             runtime.block_on(async move {
                 let mut backend = backend.lock().await;
 
-                // Try to get data, initialize if needed
+                // A failure may mean the backend is not connected yet.
                 match backend.get(&revision_key).await {
                     Ok(data) => data,
                     Err(_) => {
-                        // Initialize and retry
+                        // Connect, then try once more.
                         if let Err(e) = backend.initialize().await {
                             error!("Failed to initialize Redis backend: {}", e);
                             return None;
@@ -398,17 +436,17 @@ impl PersistenceStore for RedisPersistenceStore {
                 }
             })
         } else {
-            // We're in an async context, use spawn_blocking
+            // Inside a tokio runtime. Run on a new thread with its own runtime.
             let handle = std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async move {
                     let mut backend = backend.lock().await;
 
-                    // Try to get data, initialize if needed
+                    // A failure may mean the backend is not connected yet.
                     match backend.get(&revision_key).await {
                         Ok(data) => data,
                         Err(_) => {
-                            // Initialize and retry
+                            // Connect, then try once more.
                             if let Err(e) = backend.initialize().await {
                                 error!("Failed to initialize Redis backend: {}", e);
                                 return None;
@@ -433,16 +471,16 @@ impl PersistenceStore for RedisPersistenceStore {
         let last_rev_key = Self::last_revision_key(eventflux_app_id);
 
         if let Some(ref runtime) = self.runtime {
-            // Use dedicated runtime
+            // Run on the store's own runtime.
             runtime.block_on(async move {
                 let mut backend = backend.lock().await;
 
-                // Try to get data, initialize if needed
+                // A failure may mean the backend is not connected yet.
                 match backend.get(&last_rev_key).await {
                     Ok(Some(data)) => String::from_utf8(data).ok(),
                     Ok(None) => None,
                     Err(_) => {
-                        // Initialize and retry
+                        // Connect, then try once more.
                         if let Err(e) = backend.initialize().await {
                             error!("Failed to initialize Redis backend: {}", e);
                             return None;
@@ -459,18 +497,18 @@ impl PersistenceStore for RedisPersistenceStore {
                 }
             })
         } else {
-            // We're in an async context, use spawn_blocking
+            // Inside a tokio runtime. Run on a new thread with its own runtime.
             let handle = std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async move {
                     let mut backend = backend.lock().await;
 
-                    // Try to get data, initialize if needed
+                    // A failure may mean the backend is not connected yet.
                     match backend.get(&last_rev_key).await {
                         Ok(Some(data)) => String::from_utf8(data).ok(),
                         Ok(None) => None,
                         Err(_) => {
-                            // Initialize and retry
+                            // Connect, then try once more.
                             if let Err(e) = backend.initialize().await {
                                 error!("Failed to initialize Redis backend: {}", e);
                                 return None;
@@ -496,14 +534,14 @@ impl PersistenceStore for RedisPersistenceStore {
         let _app_pattern = format!("eventflux:app:{}:*", eventflux_app_id);
 
         if let Some(ref runtime) = self.runtime {
-            // Use dedicated runtime
+            // Run on the store's own runtime.
             runtime.block_on(async move {
                 let mut backend = backend.lock().await;
 
-                // Try to delete, initialize if needed
+                // A failure may mean the backend is not connected yet.
                 let last_rev_key = Self::last_revision_key(eventflux_app_id);
                 if backend.delete(&last_rev_key).await.is_err() {
-                    // Initialize and retry
+                    // Connect, then try once more.
                     if let Err(e) = backend.initialize().await {
                         error!("Failed to initialize Redis backend: {}", e);
                         return;
@@ -513,21 +551,22 @@ impl PersistenceStore for RedisPersistenceStore {
                     }
                 }
 
-                // TODO: Implement pattern-based deletion for all revisions
-                // This would require iterating through keys matching the pattern
+                // TODO: delete every revision key too. Only the last revision
+                // pointer is removed, so old snapshots stay in Redis. This needs
+                // a scan for keys matching the app pattern.
             });
         } else {
-            // We're in an async context, use spawn_blocking
-            let eventflux_app_id = eventflux_app_id.to_string(); // Convert to owned string
+            // Inside a tokio runtime. Run on a new thread with its own runtime.
+            let eventflux_app_id = eventflux_app_id.to_string(); // owned, to move into the thread
             let handle = std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async move {
                     let mut backend = backend.lock().await;
 
-                    // Try to delete, initialize if needed
+                    // A failure may mean the backend is not connected yet.
                     let last_rev_key = Self::last_revision_key(&eventflux_app_id);
                     if backend.delete(&last_rev_key).await.is_err() {
-                        // Initialize and retry
+                        // Connect, then try once more.
                         if let Err(e) = backend.initialize().await {
                             error!("Failed to initialize Redis backend: {}", e);
                             return;
@@ -537,8 +576,9 @@ impl PersistenceStore for RedisPersistenceStore {
                         }
                     }
 
-                    // TODO: Implement pattern-based deletion for all revisions
-                    // This would require iterating through keys matching the pattern
+                    // TODO: delete every revision key too. Only the last revision
+                    // pointer is removed, so old snapshots stay in Redis. This
+                    // needs a scan for keys matching the app pattern.
                 })
             });
             let _ = handle.join();

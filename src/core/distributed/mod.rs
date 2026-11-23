@@ -17,12 +17,11 @@
 
 // src/core/distributed/mod.rs
 
-//! Distributed Processing Framework
+//! Distributed processing.
 //!
-//! This module implements the distributed processing capabilities for EventFlux Rust,
-//! following the Single-Node First philosophy from the architecture design.
-//! The system provides zero-overhead single-node mode by default with progressive
-//! enhancement to distributed mode through configuration.
+//! Holds the settings, runtime, transport, state backend, coordinator and broker
+//! pieces for running EventFlux across nodes. Single node mode is the default and
+//! adds no distributed overhead. Distributed mode is turned on through settings.
 
 pub mod distributed_runtime;
 pub mod grpc;
@@ -37,28 +36,25 @@ pub mod message_broker;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-/// Configuration for distributed processing
+/// Settings for distributed processing.
+///
+/// The default is single node mode with no node, cluster or broker settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistributedConfig {
-    /// Runtime mode selection
     pub mode: RuntimeMode,
 
-    /// Node configuration (for distributed mode)
+    /// Node settings. Used in distributed mode.
     pub node: Option<NodeConfig>,
 
-    /// Cluster configuration (for distributed mode)
+    /// Cluster settings. Used in distributed mode.
     pub cluster: Option<ClusterConfig>,
 
-    /// Transport configuration
     pub transport: TransportConfig,
 
-    /// State backend configuration
     pub state_backend: StateBackendConfig,
 
-    /// Coordination configuration
     pub coordination: CoordinationConfig,
 
-    /// Message broker configuration
     pub message_broker: Option<MessageBrokerConfig>,
 }
 
@@ -76,16 +72,16 @@ impl Default for DistributedConfig {
     }
 }
 
-/// Runtime mode selection
+/// How the runtime runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuntimeMode {
-    /// Single-node mode (default, zero overhead)
+    /// One node, no distributed overhead. The default.
     SingleNode,
 
-    /// Distributed mode with cluster coordination
+    /// Many nodes working as a coordinated cluster.
     Distributed,
 
-    /// Hybrid mode (local processing with distributed state)
+    /// Local processing with state kept in a shared backend.
     Hybrid,
 }
 
@@ -95,38 +91,36 @@ impl Default for RuntimeMode {
     }
 }
 
-/// Node configuration for distributed mode
+/// Settings for one node in distributed mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
-    /// Unique node identifier
+    /// Unique node id.
     pub node_id: String,
 
-    /// Node endpoints for communication
+    /// Addresses other nodes use to reach this node.
     pub endpoints: Vec<String>,
 
-    /// Node capabilities
     pub capabilities: NodeCapabilities,
 
-    /// Resource limits
     pub resources: ResourceLimits,
 }
 
-/// Node capabilities declaration
+/// What a node can do. By default a node can do everything and speaks `tcp`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeCapabilities {
-    /// Can this node act as coordinator
+    /// Can act as coordinator.
     pub can_coordinate: bool,
 
-    /// Can this node process queries
+    /// Can run queries.
     pub can_process: bool,
 
-    /// Can this node store state
+    /// Can store state.
     pub can_store_state: bool,
 
-    /// Supported transport protocols
+    /// Transport protocols the node supports.
     pub transport_protocols: Vec<String>,
 
-    /// Custom capabilities (extensible)
+    /// Free form extra capabilities.
     pub custom: std::collections::HashMap<String, String>,
 }
 
@@ -142,55 +136,56 @@ impl Default for NodeCapabilities {
     }
 }
 
-/// Resource limits for a node
+/// Resource limits for a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceLimits {
-    /// Maximum memory usage in bytes
+    /// Most memory to use, in bytes. Default 8 GiB.
     pub max_memory: usize,
 
-    /// Maximum CPU cores
+    /// Most CPU cores to use. Default 8.
     pub max_cpu_cores: usize,
 
-    /// Maximum network bandwidth in bytes/sec
+    /// Most network bandwidth, in bytes per second. Default 1 GiB per second.
     pub max_network_bandwidth: usize,
 
-    /// Maximum storage capacity in bytes
+    /// Most storage, in bytes. Default 100 GiB.
     pub max_storage: usize,
 }
 
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            max_memory: 8 * 1024 * 1024 * 1024, // 8GB
+            max_memory: 8 * 1024 * 1024 * 1024, // 8 GiB
             max_cpu_cores: 8,
-            max_network_bandwidth: 1024 * 1024 * 1024, // 1Gbps
-            max_storage: 100 * 1024 * 1024 * 1024,     // 100GB
+            max_network_bandwidth: 1024 * 1024 * 1024, // 1 GiB/s
+            max_storage: 100 * 1024 * 1024 * 1024,     // 100 GiB
         }
     }
 }
 
-/// Cluster configuration
+/// Cluster settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterConfig {
-    /// Cluster name
+    /// Default `eventflux-cluster`.
     pub cluster_name: String,
 
-    /// Seed nodes for discovery
+    /// Known nodes to contact first when joining. Default empty.
     pub seed_nodes: Vec<String>,
 
-    /// Minimum nodes required for operation
+    /// Fewest nodes needed to operate. Default 1.
     pub min_nodes: usize,
 
-    /// Expected cluster size
+    /// Expected cluster size. Default 3.
     pub expected_size: usize,
 
-    /// Heartbeat interval
+    /// Default 1 second.
     pub heartbeat_interval: Duration,
 
-    /// Failure detection timeout
+    /// How long a node can stay silent before it counts as failed. Default 10
+    /// seconds.
     pub failure_timeout: Duration,
 
-    /// Partition handling strategy
+    /// What to do when the network splits the cluster. Default `RequireMajority`.
     pub partition_handling: PartitionHandling,
 }
 
@@ -208,19 +203,22 @@ impl Default for ClusterConfig {
     }
 }
 
-/// Partition handling strategy
+/// What to do when the network splits the cluster into groups that cannot reach
+/// each other.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PartitionHandling {
-    /// Allow minority partition to continue (AP mode)
+    /// Let the smaller group keep running. Favors staying up over consistency (AP
+    /// mode).
     AllowMinority,
 
-    /// Require majority for operations (CP mode)
+    /// Only a group with a majority of nodes may operate. Favors consistency over
+    /// staying up (CP mode).
     RequireMajority,
 
-    /// Custom quorum size
+    /// Only a group with at least `size` nodes may operate.
     CustomQuorum { size: usize },
 
-    /// Shut down on partition
+    /// Shut down when a split is detected.
     ShutdownOnPartition,
 }
 
@@ -230,22 +228,22 @@ impl Default for PartitionHandling {
     }
 }
 
-/// Transport layer configuration
+/// Transport settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransportConfig {
-    /// Transport implementation
+    /// Default `Tcp`.
     pub implementation: TransportImplementation,
 
-    /// Connection pool size
+    /// Connection pool size. Default 10.
     pub pool_size: usize,
 
-    /// Request timeout
+    /// Default 30 seconds.
     pub request_timeout: Duration,
 
-    /// Enable compression
+    /// Default true.
     pub compression: bool,
 
-    /// Enable encryption
+    /// Default false.
     pub encryption: bool,
 }
 
@@ -261,41 +259,41 @@ impl Default for TransportConfig {
     }
 }
 
-/// Transport implementation choices
+/// Transport choices.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransportImplementation {
-    /// TCP sockets (default)
+    /// TCP sockets. The default.
     Tcp,
 
-    /// gRPC
     Grpc,
 
-    /// RDMA (for high-performance networks)
+    /// RDMA, for fast networks that let nodes read each other's memory directly.
     Rdma,
 
-    /// InfiniBand
     InfiniBand,
 
-    /// Custom implementation
-    Custom { name: String },
+    /// A transport registered under `name`.
+    Custom {
+        name: String,
+    },
 }
 
-/// State backend configuration
+/// State backend settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateBackendConfig {
-    /// Backend implementation
+    /// Default `InMemory`.
     pub implementation: StateBackendImplementation,
 
-    /// Checkpoint interval
+    /// Default 60 seconds.
     pub checkpoint_interval: Duration,
 
-    /// State TTL
+    /// How long state is kept. `None`, the default, keeps it forever.
     pub state_ttl: Option<Duration>,
 
-    /// Enable incremental checkpoints
+    /// Save only what changed since the last checkpoint. Default true.
     pub incremental_checkpoints: bool,
 
-    /// Compression for state
+    /// Default `Lz4`.
     pub compression: CompressionType,
 }
 
@@ -311,29 +309,38 @@ impl Default for StateBackendConfig {
     }
 }
 
-/// State backend implementation choices
+/// State backend choices.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StateBackendImplementation {
-    /// In-memory state (single-node)
+    /// State kept in local memory. For a single node.
     InMemory,
 
-    /// Redis
-    Redis { endpoints: Vec<String> },
+    Redis {
+        endpoints: Vec<String>,
+    },
 
-    /// Apache Ignite
-    Ignite { endpoints: Vec<String> },
+    /// Apache Ignite.
+    Ignite {
+        endpoints: Vec<String>,
+    },
 
-    /// Hazelcast
-    Hazelcast { endpoints: Vec<String> },
+    Hazelcast {
+        endpoints: Vec<String>,
+    },
 
-    /// RocksDB (embedded)
-    RocksDB { path: String },
+    /// RocksDB, embedded in the process and stored at `path`.
+    RocksDB {
+        path: String,
+    },
 
-    /// Custom backend
-    Custom { name: String, config: String },
+    /// A backend registered under `name`, with its own settings string.
+    Custom {
+        name: String,
+        config: String,
+    },
 }
 
-/// Compression type for state
+/// Compression type for state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum CompressionType {
     None,
@@ -342,19 +349,19 @@ pub enum CompressionType {
     Zstd,
 }
 
-/// Coordination service configuration
+/// Coordination service settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoordinationConfig {
-    /// Coordination implementation
+    /// Default `Raft`.
     pub implementation: CoordinationImplementation,
 
-    /// Leader election timeout
+    /// How long to wait for a leader to be chosen. Default 5 seconds.
     pub election_timeout: Duration,
 
-    /// Session timeout
+    /// Default 30 seconds.
     pub session_timeout: Duration,
 
-    /// Consensus level
+    /// How many nodes must agree. Default `Majority`.
     pub consensus_level: ConsensusLevel,
 }
 
@@ -369,86 +376,97 @@ impl Default for CoordinationConfig {
     }
 }
 
-/// Coordination implementation choices
+/// Coordination service choices.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CoordinationImplementation {
-    /// Built-in Raft implementation
+    /// Built in Raft.
     Raft,
 
-    /// Etcd
-    Etcd { endpoints: Vec<String> },
+    Etcd {
+        endpoints: Vec<String>,
+    },
 
-    /// Zookeeper
-    Zookeeper { endpoints: Vec<String> },
+    Zookeeper {
+        endpoints: Vec<String>,
+    },
 
-    /// Consul
-    Consul { endpoints: Vec<String> },
+    Consul {
+        endpoints: Vec<String>,
+    },
 
-    /// Custom coordination
-    Custom { name: String },
+    /// A coordinator registered under `name`.
+    Custom {
+        name: String,
+    },
 }
 
-/// Consensus level for distributed operations
+/// How many nodes must agree before a distributed operation counts as done.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ConsensusLevel {
-    /// Single node acknowledgment
+    /// One node.
     One,
 
-    /// Majority of nodes
+    /// More than half of the nodes.
     Majority,
 
-    /// All nodes must acknowledge
+    /// Every node.
     All,
 
-    /// Custom quorum
+    /// At least `size` nodes.
     Quorum { size: usize },
 }
 
-/// Message broker configuration for event distribution
+/// Message broker settings for passing events between nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageBrokerConfig {
-    /// Broker implementation
     pub implementation: MessageBrokerImplementation,
 
-    /// Producer configuration
     pub producer: ProducerConfig,
 
-    /// Consumer configuration
     pub consumer: ConsumerConfig,
 }
 
-/// Message broker implementation choices
+/// Message broker choices.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MessageBrokerImplementation {
-    /// Apache Kafka
-    Kafka { brokers: Vec<String> },
+    /// Apache Kafka.
+    Kafka {
+        brokers: Vec<String>,
+    },
 
-    /// Apache Pulsar
-    Pulsar { service_url: String },
+    /// Apache Pulsar.
+    Pulsar {
+        service_url: String,
+    },
 
-    /// NATS
-    Nats { servers: Vec<String> },
+    Nats {
+        servers: Vec<String>,
+    },
 
-    /// RabbitMQ
-    RabbitMQ { endpoints: Vec<String> },
+    RabbitMQ {
+        endpoints: Vec<String>,
+    },
 
-    /// Custom broker
-    Custom { name: String },
+    /// A broker registered under `name`.
+    Custom {
+        name: String,
+    },
 }
 
-/// Producer configuration
+/// Producer settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProducerConfig {
-    /// Batch size for sending
+    /// Messages per send batch. Default 1000.
     pub batch_size: usize,
 
-    /// Linger time before sending
+    /// How long to wait for a batch to fill before sending, in milliseconds.
+    /// Default 10.
     pub linger_ms: u64,
 
-    /// Compression type
+    /// Default `Lz4`.
     pub compression: CompressionType,
 
-    /// Acknowledgment level
+    /// Default `Leader`.
     pub acks: AcknowledgmentLevel,
 }
 
@@ -463,19 +481,19 @@ impl Default for ProducerConfig {
     }
 }
 
-/// Consumer configuration
+/// Consumer settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsumerConfig {
-    /// Consumer group ID
+    /// Consumer group id. Default `eventflux-consumer`.
     pub group_id: String,
 
-    /// Auto-commit interval
+    /// How often read positions are committed automatically. Default 5 seconds.
     pub auto_commit_interval: Duration,
 
-    /// Max poll records
+    /// Most records returned by one poll. Default 500.
     pub max_poll_records: usize,
 
-    /// Session timeout
+    /// Default 30 seconds.
     pub session_timeout: Duration,
 }
 
@@ -490,57 +508,53 @@ impl Default for ConsumerConfig {
     }
 }
 
-/// Acknowledgment level for producers
+/// Which brokers must confirm a sent message.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum AcknowledgmentLevel {
-    /// No acknowledgment
+    /// No confirmation.
     None,
 
-    /// Leader acknowledgment only
+    /// Only the leader confirms.
     Leader,
 
-    /// All in-sync replicas
+    /// Every replica that is caught up confirms.
     All,
 }
 
-/// Distributed processing statistics
+/// Counters for distributed processing.
 #[derive(Debug, Default)]
 pub struct DistributedStats {
-    /// Total events processed across cluster
+    /// Events processed across the cluster.
     pub total_events: u64,
 
-    /// Events processed by this node
+    /// Events processed by this node.
     pub node_events: u64,
 
-    /// Number of active nodes
     pub active_nodes: usize,
 
-    /// Number of running queries
     pub running_queries: usize,
 
-    /// Network messages sent
+    /// Network messages sent.
     pub messages_sent: u64,
 
-    /// Network messages received
+    /// Network messages received.
     pub messages_received: u64,
 
-    /// State synchronization operations
+    /// State sync operations.
     pub state_syncs: u64,
 
-    /// Checkpoint operations
     pub checkpoints: u64,
 
-    /// Leader elections
     pub leader_elections: u64,
 
-    /// Network partitions detected
+    /// Network splits detected.
     pub partitions_detected: u64,
 }
 
-/// Result type for distributed operations
+/// Result type for distributed operations.
 pub type DistributedResult<T> = Result<T, DistributedError>;
 
-/// Error types for distributed processing
+/// Errors from distributed processing.
 #[derive(thiserror::Error, Debug)]
 pub enum DistributedError {
     #[error("Network error: {message}")]

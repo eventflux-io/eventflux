@@ -17,11 +17,13 @@
 
 // src/core/persistence/incremental/write_ahead_log.rs
 
-//! Write-Ahead Log Implementation
+//! Write ahead log (WAL).
 //!
-//! High-performance, durable Write-Ahead Log for state changes with segment-based storage,
-//! atomic batch operations, and efficient cleanup. Designed for enterprise-grade reliability
-//! with crash recovery and data integrity guarantees.
+//! An append only log of state changes, written before the changes are
+//! checkpointed so they can be replayed after a crash. The log is split into
+//! segment files named `wal-<id>.log` in one folder. Each entry is stored as a 4
+//! byte little endian length followed by the serialized entry, and carries a
+//! header and a checksum.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -34,49 +36,50 @@ use super::{LogEntry, LogOffset, WriteAheadLog};
 use crate::core::persistence::state_holder::StateError;
 use crate::core::util::to_bytes;
 
-/// High-performance segmented Write-Ahead Log
+/// Write ahead log split into segment files.
+///
+/// Offsets count entries, not bytes. The first entry is offset 0.
 pub struct SegmentedWAL {
-    /// Base directory for WAL segments
+    /// Folder holding the segment files.
     base_dir: PathBuf,
 
-    /// Maximum size per segment
+    /// Size in bytes at which the active segment is closed and a new one started.
+    /// Checked before each write, so a segment can grow past it by one entry.
     segment_size: usize,
 
-    /// Current active segment
+    /// Segment that new entries go to.
     active_segment: Arc<Mutex<WALSegment>>,
 
-    /// Completed segments
+    /// Closed segments, keyed by segment id.
     completed_segments: Arc<RwLock<HashMap<u64, WALSegment>>>,
 
-    /// Current global offset
+    /// Offset the next entry will get.
     global_offset: Arc<Mutex<LogOffset>>,
 
-    /// Segment sequence number
+    /// Id the next segment will get.
     segment_sequence: Arc<Mutex<u64>>,
 
-    /// Configuration
     config: WALConfig,
 
-    /// Performance metrics
     metrics: Arc<Mutex<WALMetrics>>,
 }
 
-/// Configuration for WAL
+/// WAL settings.
 #[derive(Debug, Clone)]
 pub struct WALConfig {
-    /// Enable fsync for durability
+    /// Call fsync on the active segment after each batch. Default true.
     pub enable_sync: bool,
 
-    /// Buffer size for writes
+    /// Write buffer size in bytes. Default 64 KB. Not applied yet.
     pub buffer_size: usize,
 
-    /// Maximum entries per batch
+    /// Most entries per batch. Default 1000. Not enforced yet.
     pub max_batch_size: usize,
 
-    /// Segment retention policy
+    /// Closed segments to keep when cleaning up. Default 10.
     pub retention_segments: usize,
 
-    /// Enable compression
+    /// Default false. Not applied yet.
     pub enable_compression: bool,
 }
 
@@ -84,7 +87,7 @@ impl Default for WALConfig {
     fn default() -> Self {
         Self {
             enable_sync: true,
-            buffer_size: 64 * 1024, // 64KB
+            buffer_size: 64 * 1024, // 64 KB
             max_batch_size: 1000,
             retention_segments: 10,
             enable_compression: false,
@@ -92,90 +95,85 @@ impl Default for WALConfig {
     }
 }
 
-/// Individual WAL segment
+/// One WAL segment file.
 pub struct WALSegment {
-    /// Segment identifier
     pub segment_id: u64,
 
-    /// File handle
+    /// Buffered writer. Writes may sit in the buffer until it is flushed.
     file: BufWriter<File>,
 
-    /// Current size in bytes
+    /// Size in bytes, including length prefixes.
     current_size: usize,
 
-    /// Number of entries in this segment
     entry_count: usize,
 
-    /// Start offset for this segment
+    /// Offset of the first entry in this segment.
     start_offset: LogOffset,
 
-    /// End offset for this segment
+    /// Offset after the last entry in this segment.
     end_offset: LogOffset,
 
-    /// Segment file path
     file_path: PathBuf,
 
-    /// Whether segment is read-only
+    /// When true, the segment rejects writes.
     is_sealed: bool,
 }
 
-/// WAL performance metrics
+/// WAL counters.
+///
+/// Only `total_entries`, `avg_batch_size`, `sync_count` and `last_sync` are
+/// updated. The rest stay at zero.
 #[derive(Debug, Default)]
 pub struct WALMetrics {
-    /// Total entries written
     pub total_entries: u64,
 
-    /// Total bytes written
     pub total_bytes: u64,
 
-    /// Average batch size
+    /// Average entries per batch.
     pub avg_batch_size: f64,
 
-    /// Write throughput (entries/sec)
+    /// Entries per second.
     pub write_throughput: f64,
 
-    /// Sync operations count
+    /// Calls to `sync`. Syncs done inside `append_batch` are not counted.
     pub sync_count: u64,
 
-    /// Active segments count
     pub active_segments: usize,
 
-    /// Last sync timestamp
+    /// Time of the last `sync` call, in seconds since the Unix epoch.
     pub last_sync: u64,
 }
 
-/// WAL entry format for serialization
+/// An entry as stored on disk.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct SerializedLogEntry {
-    /// Entry header
     pub header: EntryHeader,
 
-    /// Entry payload
+    /// The serialized `LogEntry`.
     pub payload: Vec<u8>,
 
-    /// Entry checksum
+    /// Checksum of `payload`.
     pub checksum: u32,
 }
 
-/// Entry header with metadata
+/// Header stored with each entry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EntryHeader {
-    /// Magic number for validation
+    /// Must equal `WAL_MAGIC`. Used to spot data that is not a WAL entry.
     pub magic: u32,
 
-    /// Entry version
+    /// Must equal `WAL_VERSION`.
     pub version: u8,
 
-    /// Payload length
+    /// Payload size in bytes.
     pub payload_length: u32,
 
-    /// Timestamp
+    /// Write time in microseconds since the Unix epoch.
     pub timestamp: u64,
 
-    /// Component ID hash
+    /// Hash of the component id.
     pub component_hash: u64,
 
-    /// Sequence number
     pub sequence: u64,
 }
 
@@ -183,7 +181,16 @@ const WAL_MAGIC: u32 = 0x57414C00; // "WAL\0"
 const WAL_VERSION: u8 = 1;
 
 impl SegmentedWAL {
-    /// Create a new segmented WAL
+    /// Create an empty WAL in `base_dir`, creating the folder if needed.
+    ///
+    /// Starts segment `wal-0000000000.log`. If that file already exists, it is
+    /// opened for append but its old entries are not counted. Use
+    /// [`recover`](Self::recover) to reopen an existing log.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the folder or the first segment file cannot
+    /// be created.
     pub fn new<P: AsRef<Path>>(
         base_dir: P,
         segment_size: usize,
@@ -191,12 +198,10 @@ impl SegmentedWAL {
     ) -> Result<Self, StateError> {
         let base_dir = base_dir.as_ref().to_path_buf();
 
-        // Create base directory if it doesn't exist
         std::fs::create_dir_all(&base_dir).map_err(|e| StateError::InvalidStateData {
             message: format!("Failed to create WAL directory: {e}"),
         })?;
 
-        // Initialize with first segment
         let segment_id = 0;
         let segment_path = base_dir.join(format!("wal-{segment_id:010}.log"));
 
@@ -214,7 +219,16 @@ impl SegmentedWAL {
         })
     }
 
-    /// Recover WAL from existing segments
+    /// Reopen a WAL from the segment files in `base_dir`.
+    ///
+    /// Segments are ordered by id. The last one becomes the active segment and
+    /// the others are closed segments. Offsets are rebuilt by counting entries.
+    /// Falls back to [`new`](Self::new) when the folder or the segments are
+    /// missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the folder or a segment file cannot be read.
     pub fn recover<P: AsRef<Path>>(
         base_dir: P,
         segment_size: usize,
@@ -226,7 +240,6 @@ impl SegmentedWAL {
             return Self::new(base_dir, segment_size, config);
         }
 
-        // Find existing segments
         let mut segments = Vec::new();
         for entry in std::fs::read_dir(&base_dir).map_err(|e| StateError::InvalidStateData {
             message: format!("Failed to read WAL directory: {e}"),
@@ -250,14 +263,12 @@ impl SegmentedWAL {
             }
         }
 
-        // Sort segments by ID
         segments.sort_by_key(|(id, _)| *id);
 
         if segments.is_empty() {
             return Self::new(base_dir, segment_size, config);
         }
 
-        // Recover segments
         let mut completed_segments = HashMap::new();
         let mut global_offset = 0;
         let mut next_segment_id = 0;
@@ -269,7 +280,6 @@ impl SegmentedWAL {
             next_segment_id = segment_id + 1;
         }
 
-        // Last segment becomes active
         let (last_segment_id, last_segment_path) = &segments[segments.len() - 1];
         let active_segment =
             WALSegment::recover(*last_segment_id, last_segment_path, global_offset)?;
@@ -294,19 +304,17 @@ impl SegmentedWAL {
         })
     }
 
-    /// Rotate to a new segment
+    /// Seal the active segment, move it to the closed segments, and start a new
+    /// one at the current offset.
     fn rotate_segment(&self) -> Result<(), StateError> {
         let mut active_segment = self.active_segment.lock().unwrap();
         let mut completed_segments = self.completed_segments.write().unwrap();
         let mut segment_sequence = self.segment_sequence.lock().unwrap();
 
-        // Seal current segment
         active_segment.seal()?;
 
-        // Move to completed segments
         let old_segment_id = active_segment.segment_id;
 
-        // Create new active segment
         let new_segment_id = *segment_sequence;
         *segment_sequence += 1;
 
@@ -320,7 +328,11 @@ impl SegmentedWAL {
         Ok(())
     }
 
-    /// Clean up old segments
+    /// Delete the oldest closed segments so that at most `retention_segments`
+    /// remain, and return how many files were deleted.
+    ///
+    /// Does not check whether the deleted entries were checkpointed. A file that
+    /// fails to delete is logged to stderr and dropped from the list anyway.
     pub fn cleanup_old_segments(&self) -> Result<usize, StateError> {
         let mut completed_segments = self.completed_segments.write().unwrap();
         let retention_count = self.config.retention_segments;
@@ -337,7 +349,6 @@ impl SegmentedWAL {
 
         for &segment_id in &segment_ids[..segments_to_remove] {
             if let Some(segment) = completed_segments.remove(&segment_id) {
-                // Delete segment file
                 if let Err(e) = std::fs::remove_file(&segment.file_path) {
                     eprintln!(
                         "Warning: Failed to delete segment file {:?}: {}",
@@ -359,6 +370,11 @@ impl WriteAheadLog for SegmentedWAL {
         Ok(results[0])
     }
 
+    /// Write entries in order and return their offsets.
+    ///
+    /// Not atomic. If an entry fails, the ones before it stay written. The locks
+    /// are released while rotating segments, so a concurrent batch can slip in
+    /// between entries.
     fn append_batch(&self, entries: Vec<LogEntry>) -> Result<Vec<LogOffset>, StateError> {
         if entries.is_empty() {
             return Ok(Vec::new());
@@ -370,8 +386,8 @@ impl WriteAheadLog for SegmentedWAL {
 
         let entries_len = entries.len();
         for entry in entries {
-            // Check if we need to rotate segment
             if active_segment.current_size >= self.segment_size {
+                // rotate_segment takes these locks itself.
                 drop(active_segment);
                 drop(global_offset);
                 self.rotate_segment()?;
@@ -379,10 +395,8 @@ impl WriteAheadLog for SegmentedWAL {
                 global_offset = self.global_offset.lock().unwrap();
             }
 
-            // Serialize entry
             let serialized = self.serialize_entry(&entry)?;
 
-            // Write to segment
             let offset = *global_offset;
             active_segment.write_entry(&serialized)?;
 
@@ -390,12 +404,11 @@ impl WriteAheadLog for SegmentedWAL {
             results.push(offset);
         }
 
-        // Sync if configured
         if self.config.enable_sync {
             active_segment.sync()?;
         }
 
-        // Update metrics
+        // Running average of entries per batch.
         {
             let mut metrics = self.metrics.lock().unwrap();
             metrics.total_entries += entries_len as u64;
@@ -408,11 +421,16 @@ impl WriteAheadLog for SegmentedWAL {
         Ok(results)
     }
 
+    /// Read up to `limit` entries starting at `offset`.
+    ///
+    /// Reads closed segments first, then the active segment. Closed segments
+    /// are visited in map order, not by offset, so a read that spans several
+    /// closed segments may stop early. Entries still in the write buffer are not
+    /// seen.
     fn read_from(&self, offset: LogOffset, limit: usize) -> Result<Vec<LogEntry>, StateError> {
         let mut results = Vec::new();
         let mut current_offset = offset;
 
-        // Read from completed segments first
         {
             let completed_segments = self.completed_segments.read().unwrap();
 
@@ -432,7 +450,6 @@ impl WriteAheadLog for SegmentedWAL {
             }
         }
 
-        // Read from active segment if needed
         if results.len() < limit {
             let active_segment = self.active_segment.lock().unwrap();
             if current_offset >= active_segment.start_offset {
@@ -452,6 +469,8 @@ impl WriteAheadLog for SegmentedWAL {
         Ok(*global_offset)
     }
 
+    /// Delete every closed segment whose entries all sit before `offset`. The
+    /// active segment is never trimmed. Delete failures are logged to stderr.
     fn trim_to(&self, offset: LogOffset) -> Result<(), StateError> {
         let mut completed_segments = self.completed_segments.write().unwrap();
         let mut segments_to_remove = Vec::new();
@@ -464,7 +483,6 @@ impl WriteAheadLog for SegmentedWAL {
 
         for segment_id in segments_to_remove {
             if let Some(segment) = completed_segments.remove(&segment_id) {
-                // Delete segment file
                 if let Err(e) = std::fs::remove_file(&segment.file_path) {
                     eprintln!("Warning: Failed to delete segment file during trim: {e}");
                 }
@@ -478,7 +496,6 @@ impl WriteAheadLog for SegmentedWAL {
         let active_segment = self.active_segment.lock().unwrap();
         active_segment.sync()?;
 
-        // Update metrics
         {
             let mut metrics = self.metrics.lock().unwrap();
             metrics.sync_count += 1;
@@ -493,7 +510,7 @@ impl WriteAheadLog for SegmentedWAL {
 }
 
 impl SegmentedWAL {
-    /// Serialize a log entry
+    /// Serialize an entry with its header and payload checksum.
     fn serialize_entry(&self, entry: &LogEntry) -> Result<Vec<u8>, StateError> {
         let payload = to_bytes(entry).map_err(|e| StateError::SerializationError {
             message: format!("Failed to serialize log entry: {e}"),
@@ -524,7 +541,14 @@ impl SegmentedWAL {
         })
     }
 
-    /// Deserialize a log entry
+    /// Deserialize an entry after checking its magic number, version and
+    /// checksum.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DeserializationError` if the bytes do not parse,
+    /// `InvalidStateData` for a wrong magic number or version, and
+    /// `ChecksumMismatch` if the payload is corrupt.
     fn deserialize_entry(&self, data: &[u8]) -> Result<LogEntry, StateError> {
         use crate::core::util::from_bytes;
 
@@ -533,7 +557,6 @@ impl SegmentedWAL {
                 message: format!("Failed to deserialize WAL entry: {e}"),
             })?;
 
-        // Validate header
         if serialized_entry.header.magic != WAL_MAGIC {
             return Err(StateError::InvalidStateData {
                 message: "Invalid WAL entry magic number".to_string(),
@@ -549,19 +572,20 @@ impl SegmentedWAL {
             });
         }
 
-        // Validate checksum
         let calculated_checksum = self.calculate_checksum(&serialized_entry.payload);
         if calculated_checksum != serialized_entry.checksum {
             return Err(StateError::ChecksumMismatch);
         }
 
-        // Deserialize payload
         from_bytes(&serialized_entry.payload).map_err(|e| StateError::DeserializationError {
             message: format!("Failed to deserialize log entry payload: {e}"),
         })
     }
 
-    /// Calculate checksum for data
+    /// Returns the low 32 bits of a `DefaultHasher` hash of `data`.
+    ///
+    /// `DefaultHasher` output is not guaranteed to stay the same across Rust
+    /// releases.
     fn calculate_checksum(&self, data: &[u8]) -> u32 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -571,7 +595,7 @@ impl SegmentedWAL {
         hasher.finish() as u32
     }
 
-    /// Hash component ID for indexing
+    /// Hash a component id for the entry header.
     fn hash_component_id(&self, component_id: &str) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -583,7 +607,8 @@ impl SegmentedWAL {
 }
 
 impl WALSegment {
-    /// Create a new WAL segment
+    /// Open or create a segment file for append. Starts counting from zero
+    /// entries even if the file already has some.
     fn new(segment_id: u64, file_path: &Path, start_offset: LogOffset) -> Result<Self, StateError> {
         let file = OpenOptions::new()
             .create(true)
@@ -606,7 +631,15 @@ impl WALSegment {
         })
     }
 
-    /// Recover an existing WAL segment
+    /// Open an existing segment file and count its entries.
+    ///
+    /// Counting stops at the first entry that is cut short or has a length of 0
+    /// or 1 MB or more. Entries after that point are not counted, but
+    /// `current_size` is still the full file size.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the file cannot be opened or its size read.
     fn recover(
         segment_id: u64,
         file_path: &Path,
@@ -626,20 +659,18 @@ impl WALSegment {
 
         let current_size = metadata.len() as usize;
 
-        // Count entries by reading through file
         let mut reader = BufReader::new(&file);
         let mut entry_count = 0;
         let mut read_size = 0;
 
         while read_size < current_size {
-            // Try to read entry size (simplified recovery)
             let mut size_buf = [0u8; 4];
             match reader.read_exact(&mut size_buf) {
                 Ok(_) => {
                     let entry_size = u32::from_le_bytes(size_buf) as usize;
                     if entry_size > 0 && entry_size < 1024 * 1024 {
-                        // Sanity check
-                        // Skip the entry data
+                        // A length outside this range means corrupt data.
+                        // Read past the entry body.
                         let mut entry_data = vec![0u8; entry_size];
                         if reader.read_exact(&mut entry_data).is_ok() {
                             entry_count += 1;
@@ -667,7 +698,14 @@ impl WALSegment {
         })
     }
 
-    /// Write an entry to the segment
+    /// Write one entry as a 4 byte little endian length and the data.
+    ///
+    /// The write goes to the buffer and may not reach the file until it is
+    /// flushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the segment is sealed or the write fails.
     fn write_entry(&mut self, data: &[u8]) -> Result<(), StateError> {
         if self.is_sealed {
             return Err(StateError::InvalidStateData {
@@ -675,7 +713,6 @@ impl WALSegment {
             });
         }
 
-        // Write entry size first
         let size = data.len() as u32;
         self.file
             .write_all(&size.to_le_bytes())
@@ -683,7 +720,6 @@ impl WALSegment {
                 message: format!("Failed to write entry size: {e}"),
             })?;
 
-        // Write entry data
         self.file
             .write_all(data)
             .map_err(|e| StateError::InvalidStateData {
@@ -697,18 +733,25 @@ impl WALSegment {
         Ok(())
     }
 
-    /// Read entries from a given offset
+    /// Read up to `limit` raw entries from the file, starting at `offset`.
+    ///
+    /// Opens the file fresh and scans from the start, so entries still in the
+    /// write buffer are not seen. Returns an empty list when `offset` is outside
+    /// this segment. Stops early at the end of the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the file cannot be opened, or an entry
+    /// length is 0 or over 10 MB.
     fn read_entries_from(
         &self,
         offset: LogOffset,
         limit: usize,
     ) -> Result<Vec<Vec<u8>>, StateError> {
-        // Return early if offset is outside this segment's range
         if offset < self.start_offset || offset >= self.end_offset {
             return Ok(Vec::new());
         }
 
-        // Open file for reading
         let file = File::open(&self.file_path).map_err(|e| StateError::InvalidStateData {
             message: format!("Failed to open segment file for reading: {e}"),
         })?;
@@ -716,57 +759,49 @@ impl WALSegment {
         let mut reader = BufReader::new(file);
         let mut results = Vec::new();
 
-        // Scan from the beginning to find our starting offset
+        // No index, so scan from the start of the file to reach `offset`.
         let mut current_offset = self.start_offset;
 
-        // Skip entries until we reach the target offset
         while current_offset < offset {
-            // Read entry size
             let mut size_buf = [0u8; 4];
             if reader.read_exact(&mut size_buf).is_err() {
-                break; // End of file or corrupt entry
+                break; // end of file or a cut short entry
             }
 
             let entry_size = u32::from_le_bytes(size_buf) as usize;
 
-            // Sanity check on entry size
             if entry_size == 0 || entry_size > 10 * 1024 * 1024 {
-                // 10MB max
+                // 10 MB max
                 return Err(StateError::InvalidStateData {
                     message: format!("Invalid entry size: {entry_size}"),
                 });
             }
 
-            // Skip the entry data
             let mut skip_buf = vec![0u8; entry_size];
             if reader.read_exact(&mut skip_buf).is_err() {
-                break; // End of file
+                break; // end of file
             }
 
             current_offset += 1;
         }
 
-        // Now read `limit` entries starting from `offset`
         while results.len() < limit && current_offset < self.end_offset {
-            // Read entry size
             let mut size_buf = [0u8; 4];
             if reader.read_exact(&mut size_buf).is_err() {
-                break; // End of file
+                break; // end of file
             }
 
             let entry_size = u32::from_le_bytes(size_buf) as usize;
 
-            // Sanity check
             if entry_size == 0 || entry_size > 10 * 1024 * 1024 {
                 return Err(StateError::InvalidStateData {
                     message: format!("Invalid entry size: {entry_size}"),
                 });
             }
 
-            // Read entry data
             let mut entry_data = vec![0u8; entry_size];
             if reader.read_exact(&mut entry_data).is_err() {
-                break; // End of file
+                break; // end of file
             }
 
             results.push(entry_data);
@@ -776,7 +811,8 @@ impl WALSegment {
         Ok(results)
     }
 
-    /// Seal the segment (make it read-only)
+    /// Flush the buffer and mark the segment so it rejects writes. Does not
+    /// fsync.
     fn seal(&mut self) -> Result<(), StateError> {
         self.file
             .flush()
@@ -788,7 +824,10 @@ impl WALSegment {
         Ok(())
     }
 
-    /// Sync segment to disk
+    /// fsync the segment file.
+    ///
+    /// Does not flush the write buffer first, so entries still in the buffer are
+    /// not made durable by this call.
     fn sync(&self) -> Result<(), StateError> {
         self.file
             .get_ref()
@@ -856,7 +895,6 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = WALConfig::default();
 
-        // Create WAL and add some entries
         {
             let wal = SegmentedWAL::new(temp_dir.path(), 1024 * 1024, config.clone()).unwrap();
 
@@ -869,7 +907,7 @@ mod tests {
             wal.sync().unwrap();
         }
 
-        // Recover WAL
+        // The WAL above was dropped, which flushed its buffer to the file.
         let recovered_wal = SegmentedWAL::recover(temp_dir.path(), 1024 * 1024, config).unwrap();
 
         assert_eq!(recovered_wal.tail_offset().unwrap(), 2);
@@ -880,16 +918,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = WALConfig::default();
 
-        // Small segment size to force rotation
+        // A 100 byte segment size forces rotation.
         let wal = SegmentedWAL::new(temp_dir.path(), 100, config).unwrap();
 
-        // Add entries to force segment rotation
         for i in 0..10 {
             let entry = create_test_entry("test_component", i);
             wal.append(entry).unwrap();
         }
 
-        // Should have rotated segments
         let completed_segments = wal.completed_segments.read().unwrap();
         assert!(!completed_segments.is_empty());
     }
@@ -904,16 +940,14 @@ mod tests {
 
         let wal = SegmentedWAL::new(temp_dir.path(), 50, config).unwrap();
 
-        // Force creation of multiple segments
+        // A 50 byte segment size makes many segments.
         for i in 0..20 {
             let entry = create_test_entry("test_component", i);
             wal.append(entry).unwrap();
         }
 
-        // Cleanup old segments
         let removed_count = wal.cleanup_old_segments().unwrap();
 
-        // Should have removed some segments
         assert!(removed_count > 0);
 
         let completed_segments = wal.completed_segments.read().unwrap();

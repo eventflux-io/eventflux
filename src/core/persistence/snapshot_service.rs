@@ -25,30 +25,36 @@ use crate::core::util::{from_bytes, to_bytes};
 
 use super::persistence_store::PersistenceStore;
 
-/// Report of a persistence operation
+/// Result of a persist call.
 #[derive(Debug, Clone)]
 pub struct PersistReport {
-    /// Revision ID that was created
+    /// Revision id that was saved.
     pub revision: String,
-    /// Number of components successfully persisted
+    /// Components saved.
     pub success_count: usize,
-    /// Number of components that failed to persist
+    /// Components that failed to save.
     pub failure_count: usize,
-    /// Component IDs that succeeded
+    /// Ids of the components saved.
     pub succeeded_components: Vec<String>,
-    /// Component IDs and error messages that failed
+    /// Id and error message of each component that failed.
     pub failed_components: Vec<(String, String)>,
 }
 
-/// Basic snapshot service keeping arbitrary state bytes.
+/// Takes and restores snapshots of an app's state.
+///
+/// A snapshot holds a raw state byte buffer plus the state of every registered
+/// state holder.
 #[derive(Default)]
 pub struct SnapshotService {
     state: Mutex<Vec<u8>>, // serialized runtime state
+    /// Where snapshots are saved. Persist and restore fail without one.
     pub persistence_store: Option<Arc<dyn PersistenceStore>>,
     pub eventflux_app_id: String,
+    /// State holders by component id.
     state_holders: Mutex<HashMap<String, Arc<Mutex<dyn StateHolder>>>>,
 }
 
+/// What is saved for one revision.
 #[derive(Serialize, Deserialize, Default)]
 struct SnapshotData {
     main: Vec<u8>,
@@ -73,12 +79,13 @@ impl SnapshotService {
         }
     }
 
-    /// Replace the current internal state.
+    /// Replace the raw state buffer.
     pub fn set_state(&self, data: Vec<u8>) {
         *self.state.lock().unwrap() = data;
     }
 
-    /// Register a state holder to be included in snapshots.
+    /// Register a state holder to include in snapshots. Replaces any holder
+    /// already registered under `id`.
     pub fn register_state_holder(&self, id: String, holder: Arc<Mutex<dyn StateHolder>>) {
         log::info!("SnapshotService: Registering state holder: {}", id);
         self.state_holders.lock().unwrap().insert(id, holder);
@@ -88,29 +95,28 @@ impl SnapshotService {
         );
     }
 
-    /// Retrieve a copy of the internal state.
+    /// Returns a copy of the raw state buffer.
     pub fn snapshot(&self) -> Vec<u8> {
         self.state.lock().unwrap().clone()
     }
 
-    /// Persist the current state via the configured store.
+    /// Save the raw state and every registered state holder to the store.
     ///
-    /// Attempts to serialize and persist all registered state holders. Errors are
-    /// collected and reported rather than causing immediate failure, allowing
-    /// callers to handle partial failures appropriately.
+    /// The revision id is the current time in milliseconds. A holder that fails
+    /// to serialize is logged and left out, and the others are still saved.
     ///
     /// # Returns
     ///
-    /// * `Ok(PersistReport)` - Persistence completed (possibly with some failures)
-    ///   - Contains revision ID, success/failure counts, and component details
-    ///   - Caller should check `failure_count` to detect partial failures
-    /// * `Err(String)` - Critical failure (no persistence store, serialization error)
+    /// `Ok(PersistReport)` only when every holder was saved. `failure_count` is
+    /// then always 0.
     ///
-    /// # Error Handling
+    /// # Errors
     ///
-    /// Individual component serialization failures are logged and accumulated in the
-    /// report. The operation continues to attempt persisting remaining components.
-    /// Only critical failures (e.g., no persistence store) cause immediate error return.
+    /// Returns an error message if the snapshot cannot be serialized, there is no
+    /// persistence store, or any holder failed. A partial save counts as a
+    /// failure, but the revision with the holders that did succeed has already
+    /// been written to the store by then. The message names that revision and the
+    /// failed components.
     pub fn persist(&self) -> Result<PersistReport, String> {
         let mut holders = HashMap::new();
         let mut succeeded_components = Vec::new();
@@ -154,8 +160,8 @@ impl SnapshotService {
             failed_components,
         };
 
-        // Return error on partial or complete failure
-        // Persistence is a critical operation - partial success IS a failure
+        // Persistence is critical, so any failed component makes the whole call
+        // fail, even though the partial revision is already saved.
         if report.failure_count > 0 {
             let failed_ids: Vec<&str> = report
                 .failed_components
@@ -173,7 +179,8 @@ impl SnapshotService {
         Ok(report)
     }
 
-    /// Reset all registered state holders to their initial (empty) values.
+    /// Reset every registered state holder to its initial empty state, and clear
+    /// the raw state buffer.
     pub fn clear_state_holders(&self) {
         let holders: Vec<_> = self
             .state_holders
@@ -189,7 +196,16 @@ impl SnapshotService {
         *self.state.lock().unwrap() = Vec::new();
     }
 
-    /// Load the given revision from the store and set as current state.
+    /// Load a revision from the store and restore the raw state and each state
+    /// holder from it.
+    ///
+    /// A holder that fails to restore, or a saved component with no registered
+    /// holder, is only logged. The call still returns `Ok`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if there is no persistence store, the revision is
+    /// not found, or the saved data cannot be deserialized.
     pub fn restore_revision(&self, revision: &str) -> Result<(), String> {
         let store = self
             .persistence_store
@@ -201,7 +217,8 @@ impl SnapshotService {
             for (id, snapshot) in snap.holders {
                 log::info!("Restoring state for component: {}", id);
                 if let Some(holder) = self.state_holders.lock().unwrap().get(&id) {
-                    // Use the full snapshot with all metadata (compression, checksum, version, etc.)
+                    // Pass the whole snapshot so the holder sees its metadata, such
+                    // as compression, checksum and version.
                     match holder.lock().unwrap().deserialize_state(&snapshot) {
                         Ok(_) => {
                             log::info!("Successfully restored state for: {}", id);

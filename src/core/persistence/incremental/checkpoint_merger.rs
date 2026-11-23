@@ -17,11 +17,15 @@
 
 // src/core/persistence/incremental/checkpoint_merger.rs
 
-//! Checkpoint Merger Implementation
+//! Checkpoint merger.
 //!
-//! Advanced checkpoint merging system that combines incremental state changes with base checkpoints
-//! to create optimized checkpoint chains. Implements delta compression, conflict resolution,
-//! and smart merge strategies for enterprise-grade performance.
+//! Combines incremental checkpoints with a base snapshot, builds new incremental
+//! checkpoints, and shortens long checkpoint chains.
+//!
+//! Much of this is still a stand in. The merge appends new values to the raw
+//! snapshot bytes instead of rebuilding the state, compression only tags the
+//! snapshot, deduplication only reports a made up saving, and conflict detection
+//! never finds a conflict.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -34,40 +38,38 @@ use crate::core::persistence::state_holder::{
 };
 use crate::core::util::to_bytes;
 
-/// Advanced checkpoint merger with optimization strategies
+/// Checkpoint merger with chain shortening.
 pub struct AdvancedCheckpointMerger {
-    /// Merge strategy configuration
     config: MergerConfig,
 
-    /// Compression utilities
     compressor: Arc<CompressionEngine>,
 
-    /// Merge statistics
     stats: Arc<Mutex<MergeStatistics>>,
 }
 
-/// Configuration for checkpoint merger
+/// Checkpoint merger settings.
 #[derive(Debug, Clone)]
 pub struct MergerConfig {
-    /// Maximum incremental chain length before forced merge
+    /// Longest incremental chain before it is shortened. Default 10.
     pub max_chain_length: usize,
 
-    /// Enable delta compression
+    /// Compress merged snapshots. Default true.
     pub enable_delta_compression: bool,
 
-    /// Compression threshold (minimum size for compression)
+    /// Size in bytes above which compression is applied, and below which a
+    /// checkpoint counts as small. Default 1 KB.
     pub compression_threshold: usize,
 
-    /// Merge strategy
+    /// Default `Optimal`. Not read by the merger yet.
     pub merge_strategy: MergeStrategy,
 
-    /// Enable deduplication
+    /// Default true.
     pub enable_deduplication: bool,
 
-    /// Conflict resolution strategy
+    /// Default `LastWriteWins`.
     pub conflict_resolution: ConflictResolution,
 
-    /// Parallel merge thread count
+    /// Default 2. Not read by the merger yet.
     pub parallel_threads: usize,
 }
 
@@ -76,7 +78,7 @@ impl Default for MergerConfig {
         Self {
             max_chain_length: 10,
             enable_delta_compression: true,
-            compression_threshold: 1024, // 1KB
+            compression_threshold: 1024, // 1 KB
             merge_strategy: MergeStrategy::Optimal,
             enable_deduplication: true,
             conflict_resolution: ConflictResolution::LastWriteWins,
@@ -85,129 +87,117 @@ impl Default for MergerConfig {
     }
 }
 
-/// Merge strategy options
+/// How to merge. Not read by the merger yet.
 #[derive(Debug, Clone)]
 pub enum MergeStrategy {
-    /// Simple sequential merge
+    /// One operation after another.
     Sequential,
 
-    /// Optimal merge with compression
+    /// Merge with compression.
     Optimal,
 
-    /// Parallel merge for large datasets
+    /// Merge on several threads, for large data.
     Parallel,
 
-    /// Custom strategy with parameters
     Custom {
         batch_size: usize,
         enable_streaming: bool,
     },
 }
 
-/// Conflict resolution strategies
+/// Which write wins when two changes hit the same key.
 #[derive(Debug, Clone)]
 pub enum ConflictResolution {
-    /// Last write wins (default)
+    /// The later write wins. The default.
     LastWriteWins,
 
-    /// First write wins
+    /// The earlier write wins.
     FirstWriteWins,
 
-    /// Merge with timestamp priority
+    /// The write with the newer timestamp wins. Acts like `LastWriteWins` for
+    /// now.
     TimestampPriority,
 
-    /// Custom resolution function
+    /// A custom rule. Acts like `LastWriteWins` for now.
     Custom,
 }
 
-/// Compression engine for state data
+/// Compresses snapshots. Only tags them for now, see `compress_snapshot`.
 #[allow(dead_code)]
 pub struct CompressionEngine {
-    /// Compression type
     compression_type: CompressionType,
 
-    /// Compression level
+    /// Not used yet.
     compression_level: u8,
 }
 
-/// Merge operation statistics
+/// Merge counters.
+///
+/// `avg_compression_ratio` is never updated, and `deduplication_savings` adds
+/// up made up numbers.
 #[derive(Debug, Default)]
 pub struct MergeStatistics {
-    /// Total merges performed
     pub total_merges: u64,
 
-    /// Average merge duration
+    /// Kept in whole milliseconds.
     pub avg_merge_duration: Duration,
 
-    /// Total data processed (bytes)
+    /// Bytes of base snapshot data merged.
     pub total_data_processed: u64,
 
-    /// Average compression ratio
     pub avg_compression_ratio: f64,
 
-    /// Conflicts resolved
     pub conflicts_resolved: u64,
 
-    /// Deduplication savings (bytes)
+    /// Bytes saved by deduplication.
     pub deduplication_savings: u64,
 }
 
-/// Intermediate merge result
+/// Intermediate merge result. Not used yet.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct MergeResult {
-    /// Merged component state
     component_states: HashMap<ComponentId, MergedComponentState>,
 
-    /// Merge metadata
     metadata: MergeMetadata,
 
-    /// Total size after merge
+    /// Size after the merge, in bytes.
     total_size: usize,
 
-    /// Compression ratio achieved
     compression_ratio: f64,
 }
 
-/// Merged state for a single component
+/// Merged state of one component. Not used yet.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct MergedComponentState {
-    /// Final state snapshot
     snapshot: StateSnapshot,
 
-    /// Applied operations count
     operations_applied: usize,
 
-    /// Conflicts encountered
     conflicts_resolved: usize,
 
-    /// Schema version evolution
+    /// Schema versions seen across the merged checkpoints.
     schema_versions: Vec<SchemaVersion>,
 }
 
-/// Metadata about the merge operation
+/// Details of one merge. Not used yet.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct MergeMetadata {
-    /// Merge start time
     start_time: Instant,
 
-    /// Merge end time
     end_time: Instant,
 
-    /// Components involved
     components_merged: usize,
 
-    /// Total operations processed
     total_operations: usize,
 
-    /// Strategy used
     strategy_used: MergeStrategy,
 }
 
 impl AdvancedCheckpointMerger {
-    /// Create a new checkpoint merger
+    /// Create a merger. Uses LZ4 when `enable_delta_compression` is set.
     pub fn new(config: MergerConfig) -> Self {
         let compression_type = if config.enable_delta_compression {
             CompressionType::LZ4
@@ -222,13 +212,17 @@ impl AdvancedCheckpointMerger {
         }
     }
 
-    /// Validate incremental chain consistency
+    /// Check that each checkpoint builds on the one before it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if a checkpoint's base is not the previous
+    /// checkpoint, or its sequence number is not the previous one plus 1.
     fn validate_chain(&self, incrementals: &[IncrementalCheckpoint]) -> Result<(), StateError> {
         if incrementals.is_empty() {
             return Ok(());
         }
 
-        // Check chain continuity
         for window in incrementals.windows(2) {
             let current = &window[0];
             let next = &window[1];
@@ -256,7 +250,8 @@ impl AdvancedCheckpointMerger {
         Ok(())
     }
 
-    /// Optimize chain by identifying merge opportunities
+    /// Sum sizes and per component counts across the chain, and list merge
+    /// opportunities.
     fn analyze_chain(&self, incrementals: &[IncrementalCheckpoint]) -> ChainAnalysis {
         let mut total_size = 0;
         let mut component_frequencies = HashMap::new();
@@ -283,14 +278,16 @@ impl AdvancedCheckpointMerger {
         }
     }
 
-    /// Identify opportunities for optimization
+    /// List places where merging could save space.
+    ///
+    /// Flags neighbors that touch the same components, and checkpoints smaller
+    /// than `compression_threshold`. The savings figures are rough guesses.
     fn identify_merge_opportunities(
         &self,
         incrementals: &[IncrementalCheckpoint],
     ) -> Vec<MergeOpportunity> {
         let mut opportunities = Vec::new();
 
-        // Look for adjacent checkpoints with overlapping components
         for window in incrementals.windows(2) {
             let current = &window[0];
             let next = &window[1];
@@ -312,7 +309,6 @@ impl AdvancedCheckpointMerger {
             }
         }
 
-        // Look for small checkpoints that could be merged
         for checkpoint in incrementals {
             if checkpoint.total_size < self.config.compression_threshold {
                 opportunities.push(MergeOpportunity {
@@ -327,19 +323,21 @@ impl AdvancedCheckpointMerger {
         opportunities
     }
 
-    /// Apply state operations in the correct order
+    /// Apply operations to a copy of the base snapshot and return it with a new
+    /// checksum.
+    ///
+    /// A stand in, not a real state rebuild. Operations run grouped as deletes
+    /// and clears, then inserts, then updates. Inserts and updates append the new
+    /// value to the raw bytes. Deletes change nothing. A clear empties the data
+    /// unless the resolution is `FirstWriteWins`.
     fn apply_operations(
         &self,
         base_snapshot: &StateSnapshot,
         operations: &[StateOperation],
         resolution: &ConflictResolution,
     ) -> Result<StateSnapshot, StateError> {
-        // For this implementation, we'll create a new snapshot with merged data
-        // In practice, this would involve complex state reconstruction
-
         let mut conflicts_count = 0;
 
-        // Group operations by type for efficient processing
         let mut insertions = Vec::new();
         let mut updates = Vec::new();
         let mut deletions = Vec::new();
@@ -350,64 +348,59 @@ impl AdvancedCheckpointMerger {
                 StateOperation::Update { .. } => updates.push(operation),
                 StateOperation::Delete { .. } => deletions.push(operation),
                 StateOperation::Clear => {
-                    // Clear operations should be handled separately, as they affect the entire state
-                    // For now, we'll treat them as deletion operations
+                    // A clear affects the whole state and should get its own
+                    // handling. For now it runs with the deletes.
                     deletions.push(operation);
                 }
             }
         }
 
-        // Apply operations in order: deletions, insertions, updates
-        // This ensures consistency and handles conflicts appropriately
-
+        // Order is deletes, then inserts, then updates. This loses the original
+        // order between operation kinds.
         let mut new_data = base_snapshot.data.clone();
 
-        // For demonstration, we'll just combine the data
-        // Real implementation would properly merge state based on operation semantics
+        // Stand in merge that appends values to the raw bytes. A real merge would
+        // rebuild the state from the operation meanings.
         for operation_group in [&deletions, &insertions, &updates] {
             for operation in operation_group {
                 match operation {
                     StateOperation::Insert { key, value } => {
-                        // Handle potential conflicts
                         if self.detect_conflict(&new_data, key) {
                             conflicts_count += 1;
                             self.resolve_conflict(&mut new_data, key, value, resolution)?;
                         } else {
-                            // Simple insertion (in practice, this would be more sophisticated)
                             new_data.extend_from_slice(value);
                         }
                     }
                     StateOperation::Update { key, new_value, .. } => {
-                        // Handle update conflicts
                         if self.detect_conflict(&new_data, key) {
                             conflicts_count += 1;
                             self.resolve_conflict(&mut new_data, key, new_value, resolution)?;
                         } else {
-                            // Simple update
                             new_data.extend_from_slice(new_value);
                         }
                     }
                     StateOperation::Delete { key, .. } => {
-                        // Handle deletion (simplified)
+                        // Deletes do not change the data yet.
                         if self.detect_conflict(&new_data, key) {
                             conflicts_count += 1;
-                            // For deletions, we might choose to ignore or apply based on strategy
+                            // Could ignore or apply the delete based on the
+                            // resolution.
                         }
                     }
                     StateOperation::Clear => {
-                        // Clear operation removes all state data
+                        // A clear on non empty data counts as a conflict.
                         if !new_data.is_empty() {
                             conflicts_count += 1;
-                            // Apply clear operation based on conflict resolution
                             match resolution {
                                 ConflictResolution::LastWriteWins => {
                                     new_data.clear();
                                 }
                                 ConflictResolution::FirstWriteWins => {
-                                    // Keep existing data, ignore clear
+                                    // Keep the existing data and skip the clear.
                                 }
                                 _ => {
-                                    // Default to clearing for other strategies
+                                    // Every other resolution clears.
                                     new_data.clear();
                                 }
                             }
@@ -417,12 +410,10 @@ impl AdvancedCheckpointMerger {
             }
         }
 
-        // Create new snapshot
         let mut merged_snapshot = base_snapshot.clone();
         merged_snapshot.data = new_data;
         merged_snapshot.checksum = StateSnapshot::calculate_checksum(&merged_snapshot.data);
 
-        // Update statistics
         {
             let mut stats = self.stats.lock().unwrap();
             stats.conflicts_resolved += conflicts_count;
@@ -431,14 +422,14 @@ impl AdvancedCheckpointMerger {
         Ok(merged_snapshot)
     }
 
-    /// Detect if there's a conflict for a given key
+    /// Returns whether a write to `key` conflicts. Always false for now. A real
+    /// check would look for overlapping key ranges or concurrent changes.
     fn detect_conflict(&self, _data: &[u8], _key: &[u8]) -> bool {
-        // Simplified conflict detection
-        // In practice, this would check for overlapping key ranges or concurrent modifications
         false
     }
 
-    /// Resolve conflicts based on strategy
+    /// Apply the conflict resolution for one write. Every resolution except
+    /// `FirstWriteWins` appends the value. `FirstWriteWins` keeps the data as is.
     fn resolve_conflict(
         &self,
         data: &mut Vec<u8>,
@@ -448,19 +439,17 @@ impl AdvancedCheckpointMerger {
     ) -> Result<(), StateError> {
         match resolution {
             ConflictResolution::LastWriteWins => {
-                // Replace with new value
                 data.extend_from_slice(value);
             }
             ConflictResolution::FirstWriteWins => {
-                // Keep existing value (do nothing)
+                // Keep the existing value.
             }
             ConflictResolution::TimestampPriority => {
-                // Compare timestamps and choose winner
-                // For now, default to last write wins
+                // Should compare timestamps. Acts like last write wins for now.
                 data.extend_from_slice(value);
             }
             ConflictResolution::Custom => {
-                // Apply custom resolution logic
+                // No custom rule hook yet. Acts like last write wins.
                 data.extend_from_slice(value);
             }
         }
@@ -468,19 +457,21 @@ impl AdvancedCheckpointMerger {
         Ok(())
     }
 
-    /// Perform deduplication on state data
+    /// Returns the data and the bytes saved by deduplication.
+    ///
+    /// A stand in. The data comes back unchanged, and when deduplication is on
+    /// the saving is reported as 10 percent of the size without removing
+    /// anything. A real version would use rolling hashes or content defined
+    /// chunks.
     fn deduplicate_data(&self, data: &[u8]) -> (Vec<u8>, usize) {
         if !self.config.enable_deduplication {
             return (data.to_vec(), 0);
         }
 
-        // Simplified deduplication - in practice would use sophisticated algorithms
-        // like rolling hash, content-defined chunking, etc.
         let original_size = data.len();
 
-        // For demonstration, assume we can deduplicate 10-20% on average
-        let deduplicated = data.to_vec(); // In practice, this would be the deduplicated data
-        let savings = original_size / 10; // Simulated 10% savings
+        let deduplicated = data.to_vec();
+        let savings = original_size / 10; // made up 10 percent saving
 
         (deduplicated, savings)
     }
@@ -494,14 +485,15 @@ impl CheckpointMerger for AdvancedCheckpointMerger {
     ) -> Result<StateSnapshot, StateError> {
         let start_time = Instant::now();
 
-        // Validate incremental chain
         self.validate_chain(incrementals)?;
 
         if incrementals.is_empty() {
             return Ok(base.clone());
         }
 
-        // Collect all operations in chronological order
+        // Operations in chain order. Within one checkpoint, components come in
+        // map order, which is not fixed. The component id is dropped, so every
+        // component's operations apply to the one base snapshot.
         let mut all_operations = Vec::new();
         for checkpoint in incrementals {
             for (component_id, changes) in &checkpoint.component_changes {
@@ -511,28 +503,25 @@ impl CheckpointMerger for AdvancedCheckpointMerger {
             }
         }
 
-        // Sort operations by timestamp/sequence if needed
+        // Not sorted by time. Operations carry no timestamp yet.
         // all_operations.sort_by_key(|(_, op)| op.timestamp());
 
-        // Apply operations to base snapshot
         let operations: Vec<_> = all_operations.iter().map(|(_, op)| op.clone()).collect();
         let merged_snapshot =
             self.apply_operations(base, &operations, &self.config.conflict_resolution)?;
 
-        // Apply compression if enabled
         let final_snapshot = if self.config.enable_delta_compression {
             self.compressor.compress_snapshot(merged_snapshot)?
         } else {
             merged_snapshot
         };
 
-        // Apply deduplication
         let (deduplicated_data, savings) = self.deduplicate_data(&final_snapshot.data);
         let mut deduped_snapshot = final_snapshot;
         deduped_snapshot.data = deduplicated_data;
         deduped_snapshot.checksum = StateSnapshot::calculate_checksum(&deduped_snapshot.data);
 
-        // Update statistics
+        // Running average of merge time, in whole milliseconds.
         {
             let mut stats = self.stats.lock().unwrap();
             stats.total_merges += 1;
@@ -556,7 +545,7 @@ impl CheckpointMerger for AdvancedCheckpointMerger {
     ) -> Result<IncrementalCheckpoint, StateError> {
         let _start_time = Instant::now();
 
-        // Calculate total size
+        // Serialized size of all change logs, in bytes.
         let mut total_size = 0;
         for changelog in changes.values() {
             total_size += to_bytes(changelog)
@@ -566,11 +555,12 @@ impl CheckpointMerger for AdvancedCheckpointMerger {
                 .len();
         }
 
-        // Apply compression if beneficial
+        // Nothing is compressed. Above the threshold the size is simply assumed
+        // to shrink by 30 percent.
         let compression_ratio = if self.config.enable_delta_compression
             && total_size > self.config.compression_threshold
         {
-            0.7 // Assume 30% compression on average
+            0.7 // assumed, not measured
         } else {
             1.0
         };
@@ -578,9 +568,9 @@ impl CheckpointMerger for AdvancedCheckpointMerger {
         let compressed_size = (total_size as f64 * compression_ratio) as usize;
 
         Ok(IncrementalCheckpoint {
-            checkpoint_id: base_checkpoint_id + 1, // Simplified ID generation
+            checkpoint_id: base_checkpoint_id + 1, // not unique across chains yet
             base_checkpoint_id,
-            sequence_number: 1, // Would be properly managed in real implementation
+            sequence_number: 1, // always 1, not tracked across the chain yet
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -602,23 +592,22 @@ impl CheckpointMerger for AdvancedCheckpointMerger {
 
         let analysis = self.analyze_chain(chain);
 
-        // If chain is too long, merge some checkpoints
         if chain.len() > self.config.max_chain_length {
             return self.compress_chain(chain);
         }
 
-        // If there are good merge opportunities, apply them
+        // Currently returns the chain unchanged.
         if !analysis.merge_opportunities.is_empty() {
             return self.apply_merge_opportunities(chain, &analysis.merge_opportunities);
         }
 
-        // Return chain as-is if no optimization needed
         Ok(chain.to_vec())
     }
 }
 
 impl AdvancedCheckpointMerger {
-    /// Compress chain by merging adjacent checkpoints
+    /// Shorten the chain by merging each run of 3 checkpoints into one. Any 1
+    /// or 2 left over at the end stay as they are.
     fn compress_chain(
         &self,
         chain: &[IncrementalCheckpoint],
@@ -629,7 +618,6 @@ impl AdvancedCheckpointMerger {
         for checkpoint in chain {
             current_group.push(checkpoint.clone());
 
-            // Merge every N checkpoints
             if current_group.len() >= 3 {
                 let merged = self.merge_checkpoint_group(&current_group)?;
                 compressed.push(merged);
@@ -637,13 +625,21 @@ impl AdvancedCheckpointMerger {
             }
         }
 
-        // Add remaining checkpoints
         compressed.extend(current_group);
 
         Ok(compressed)
     }
 
-    /// Merge a group of checkpoints into one
+    /// Merge a group of checkpoints into one.
+    ///
+    /// The result takes the last checkpoint id, the first base, sequence number
+    /// and creation time, and the full WAL range. Change logs per component are
+    /// joined in order, but their from and to checkpoint ids are set to 0. The
+    /// compression ratio is a fixed 0.8.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the group is empty.
     fn merge_checkpoint_group(
         &self,
         group: &[IncrementalCheckpoint],
@@ -658,7 +654,6 @@ impl AdvancedCheckpointMerger {
             return Ok(group[0].clone());
         }
 
-        // Merge all changes from the group
         let mut merged_changes = HashMap::new();
         let mut total_size = 0;
 
@@ -668,7 +663,6 @@ impl AdvancedCheckpointMerger {
                     .entry(component_id.clone())
                     .or_insert_with(|| ChangeLog::new(0, 0));
 
-                // Merge operations
                 for operation in &changes.operations {
                     entry.add_operation(operation.clone());
                 }
@@ -686,19 +680,19 @@ impl AdvancedCheckpointMerger {
             created_at: first.created_at,
             component_changes: merged_changes,
             total_size,
-            compression_ratio: 0.8, // Assume some compression from merging
+            compression_ratio: 0.8, // assumed, not measured
             wal_offset_range: (first.wal_offset_range.0, last.wal_offset_range.1),
         })
     }
 
-    /// Apply identified merge opportunities
+    /// Apply merge opportunities. Does nothing yet and returns the chain
+    /// unchanged.
     fn apply_merge_opportunities(
         &self,
         chain: &[IncrementalCheckpoint],
         _opportunities: &[MergeOpportunity],
     ) -> Result<Vec<IncrementalCheckpoint>, StateError> {
-        // Simplified implementation - in practice would apply specific optimizations
-        // based on the type of opportunities identified
+        // TODO: apply a change for each kind of opportunity found.
         Ok(chain.to_vec())
     }
 }
@@ -711,12 +705,13 @@ impl CompressionEngine {
         }
     }
 
+    /// Mark the snapshot with the compression type and print a message. The data
+    /// is not compressed yet.
     fn compress_snapshot(&self, mut snapshot: StateSnapshot) -> Result<StateSnapshot, StateError> {
         match self.compression_type {
             CompressionType::None => Ok(snapshot),
             CompressionType::LZ4 => {
-                // In practice, would use actual LZ4 compression
-                // For now, simulate compression by assuming 30% reduction
+                // TODO: real LZ4 compression. Only the tag is set for now.
                 println!("LZ4 compression simulated");
                 snapshot.compression = CompressionType::LZ4;
                 Ok(snapshot)
@@ -735,28 +730,32 @@ impl CompressionEngine {
     }
 }
 
-/// Analysis of checkpoint chain
+/// Summary of a checkpoint chain.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct ChainAnalysis {
     total_checkpoints: usize,
     total_size: usize,
+    /// Checkpoints touching each component.
     component_frequencies: HashMap<ComponentId, usize>,
+    /// Operations for each component.
     operation_counts: HashMap<ComponentId, usize>,
     merge_opportunities: Vec<MergeOpportunity>,
 }
 
-/// Identified merge opportunity
+/// A place where merging could save space.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct MergeOpportunity {
+    /// First and last checkpoint id. The same id twice for a single checkpoint.
     checkpoint_range: (CheckpointId, CheckpointId),
     overlapping_components: usize,
+    /// Rough guess in bytes.
     potential_savings: usize,
     merge_type: MergeOpportunityType,
 }
 
-/// Type of merge opportunity
+/// Kind of merge opportunity. Only the first two are detected.
 #[derive(Debug)]
 #[allow(dead_code)]
 enum MergeOpportunityType {
@@ -847,7 +846,7 @@ mod tests {
 
         let result = merger.merge_incrementals(&base, &[incremental]).unwrap();
 
-        // Should have merged the incremental changes
+        // The stand in merge appends values, so the data cannot shrink.
         assert!(result.data.len() >= base.data.len());
     }
 
@@ -883,12 +882,11 @@ mod tests {
             wal_offset_range: (10, 20),
         };
 
-        // Valid chain
         assert!(merger
             .validate_chain(&[incremental1.clone(), incremental2.clone()])
             .is_ok());
 
-        // Invalid chain (broken link)
+        // Break the link. The second checkpoint no longer builds on the first.
         let mut broken_incremental2 = incremental2;
         broken_incremental2.base_checkpoint_id = 99;
 

@@ -17,37 +17,40 @@
 
 // src/core/distributed/coordinator.rs
 
-//! Distributed Coordinator Abstraction
+//! Cluster coordination.
 //!
-//! This module provides the coordination service abstraction for distributed
-//! processing. It handles leader election, consensus, and cluster membership.
+//! Defines the trait for leader election, agreement between nodes, and cluster
+//! membership.
 
 use super::DistributedResult;
 use async_trait::async_trait;
 
-/// Distributed coordinator trait
+/// Coordinates nodes in a cluster.
 #[async_trait]
 pub trait DistributedCoordinator: Send + Sync {
-    /// Join the cluster
+    /// Join the cluster.
     async fn join_cluster(&self) -> DistributedResult<()>;
 
-    /// Leave the cluster
+    /// Leave the cluster.
     async fn leave_cluster(&self) -> DistributedResult<()>;
 
-    /// Get current leader
+    /// Returns the current leader id, or `None` if there is no leader.
     async fn get_leader(&self) -> DistributedResult<Option<String>>;
 
-    /// Check if this node is leader
+    /// Returns true if this node is the leader.
     async fn is_leader(&self) -> bool;
 
-    /// Get cluster members
+    /// Returns the ids of the cluster members.
     async fn get_members(&self) -> DistributedResult<Vec<String>>;
 
-    /// Initiate distributed checkpoint
+    /// Starts a checkpoint across the cluster.
     async fn initiate_checkpoint(&self, checkpoint_id: &str) -> DistributedResult<()>;
 }
 
-/// Raft-based coordinator (placeholder)
+/// Placeholder Raft coordinator.
+///
+/// Does no real work. It always reports `"leader-node"` as leader, says this node is
+/// not the leader, and returns no members.
 pub struct RaftCoordinator;
 
 #[async_trait]

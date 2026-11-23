@@ -17,11 +17,10 @@
 
 // src/core/distributed/processing_engine.rs
 
-//! Processing Engine Abstraction
+//! Processing engine.
 //!
-//! This module provides the abstraction layer for the processing engine that
-//! handles both single-node and distributed execution of queries. The engine
-//! maintains consistent semantics across modes while optimizing for each.
+//! One front for running queries in single node, distributed or hybrid mode. The
+//! mode picks the engine behind it. Each engine has the same methods.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -33,20 +32,18 @@ use crate::core::event::Event;
 use crate::core::query::query_runtime::QueryRuntime;
 use crate::core::stream::stream_junction::StreamJunction;
 
-/// Processing engine that abstracts single-node and distributed execution
+/// Runs events and queries through the engine for the current mode, and keeps
+/// counters.
 pub struct ProcessingEngine {
-    /// Runtime mode
     mode: RuntimeMode,
 
-    /// Engine implementation
     implementation: Arc<dyn ProcessingEngineImpl>,
 
-    /// Engine statistics
     stats: Arc<RwLock<EngineStatistics>>,
 }
 
 impl ProcessingEngine {
-    /// Create a new processing engine for the given mode
+    /// Create the engine for the given mode.
     pub fn new(mode: RuntimeMode) -> DistributedResult<Self> {
         let implementation: Arc<dyn ProcessingEngineImpl> = match mode {
             RuntimeMode::SingleNode => Arc::new(SingleNodeEngine::new()?),
@@ -61,18 +58,19 @@ impl ProcessingEngine {
         })
     }
 
-    /// Get the runtime mode
     pub fn mode(&self) -> RuntimeMode {
         self.mode
     }
 
-    /// Process an event through the engine
+    /// Process one event.
+    ///
+    /// The event and its time are counted even when processing fails. Returns the
+    /// engine result.
     pub async fn process_event(&self, stream_id: &str, event: Event) -> DistributedResult<()> {
         let start = std::time::Instant::now();
 
         let result = self.implementation.process_event(stream_id, event).await;
 
-        // Update statistics
         let mut stats = self.stats.write().await;
         stats.events_processed += 1;
         stats.total_processing_time += start.elapsed();
@@ -80,7 +78,10 @@ impl ProcessingEngine {
         result
     }
 
-    /// Process a batch of events
+    /// Process a batch of events.
+    ///
+    /// The whole batch is counted even when processing fails part way. Returns the
+    /// engine result.
     pub async fn process_batch(
         &self,
         stream_id: &str,
@@ -91,7 +92,6 @@ impl ProcessingEngine {
 
         let result = self.implementation.process_batch(stream_id, events).await;
 
-        // Update statistics
         let mut stats = self.stats.write().await;
         stats.events_processed += count as u64;
         stats.batches_processed += 1;
@@ -100,7 +100,6 @@ impl ProcessingEngine {
         result
     }
 
-    /// Register a query with the engine
     pub async fn register_query(
         &self,
         query_id: &str,
@@ -109,132 +108,122 @@ impl ProcessingEngine {
         self.implementation.register_query(query_id, query).await
     }
 
-    /// Unregister a query from the engine
     pub async fn unregister_query(&self, query_id: &str) -> DistributedResult<()> {
         self.implementation.unregister_query(query_id).await
     }
 
-    /// Get engine statistics
+    /// Returns a copy of the counters.
     pub async fn statistics(&self) -> EngineStatistics {
         self.stats.read().await.clone()
     }
 
-    /// Perform engine optimization
+    /// Ask the engine to optimize. The engines only report fixed results for now.
     pub async fn optimize(&self) -> DistributedResult<OptimizationResult> {
         self.implementation.optimize().await
     }
 
-    /// Get query distribution info (for distributed mode)
+    /// Returns which node runs which query.
     pub async fn query_distribution(&self) -> DistributedResult<QueryDistribution> {
         self.implementation.query_distribution().await
     }
 }
 
-/// Trait for processing engine implementations
+/// One engine behind [`ProcessingEngine`].
 #[async_trait]
 pub trait ProcessingEngineImpl: Send + Sync {
-    /// Process a single event
     async fn process_event(&self, stream_id: &str, event: Event) -> DistributedResult<()>;
 
-    /// Process a batch of events
     async fn process_batch(&self, stream_id: &str, events: Vec<Event>) -> DistributedResult<()>;
 
-    /// Register a query
     async fn register_query(
         &self,
         query_id: &str,
         query: Arc<QueryRuntime>,
     ) -> DistributedResult<()>;
 
-    /// Unregister a query
     async fn unregister_query(&self, query_id: &str) -> DistributedResult<()>;
 
-    /// Perform optimization
     async fn optimize(&self) -> DistributedResult<OptimizationResult>;
 
-    /// Get query distribution
+    /// Returns which node runs which query.
     async fn query_distribution(&self) -> DistributedResult<QueryDistribution>;
 }
 
-/// Engine statistics
+/// Engine counters.
+///
+/// Only `events_processed`, `batches_processed` and `total_processing_time` are
+/// updated. The other fields stay at zero.
 #[derive(Debug, Clone, Default)]
 pub struct EngineStatistics {
-    /// Total events processed
     pub events_processed: u64,
 
-    /// Total batches processed
     pub batches_processed: u64,
 
-    /// Total processing time
     pub total_processing_time: std::time::Duration,
 
-    /// Current throughput (events/sec)
+    /// Events per second.
     pub current_throughput: f64,
 
-    /// Peak throughput
+    /// Events per second.
     pub peak_throughput: f64,
 
-    /// Active queries
     pub active_queries: usize,
 
-    /// Queue depth
     pub queue_depth: usize,
 }
 
-/// Result of optimization operation
+/// Result of an optimize call.
 #[derive(Debug)]
 pub struct OptimizationResult {
-    /// Optimizations performed
+    /// Optimizations applied.
     pub optimizations: Vec<OptimizationType>,
 
-    /// Performance improvement estimate
+    /// Estimated speed gain as a fraction, such as 0.1 for 10 percent.
     pub improvement_estimate: f64,
 
-    /// Queries affected
     pub affected_queries: Vec<String>,
 }
 
-/// Types of optimizations
+/// Kinds of optimization.
 #[derive(Debug, Clone)]
 pub enum OptimizationType {
-    /// Query reordering
     QueryReordering,
 
-    /// Predicate pushdown
+    /// Apply filters as early as possible.
     PredicatePushdown,
 
-    /// Join reordering
     JoinReordering,
 
-    /// Partition pruning
+    /// Skip partitions that cannot match.
     PartitionPruning,
 
-    /// Index creation
     IndexCreation,
 
-    /// Memory allocation
+    /// Better memory use.
     MemoryOptimization,
 }
 
-/// Query distribution information
+/// Which node runs which query.
 #[derive(Debug)]
 pub struct QueryDistribution {
-    /// Node to queries mapping
+    /// Query ids for each node id.
     pub node_queries: HashMap<String, Vec<String>>,
 
-    /// Query to node mapping
+    /// Node id for each query id.
     pub query_nodes: HashMap<String, String>,
 
-    /// Load distribution score (0-1, 1 being perfectly balanced)
+    /// How evenly load is spread, from 0 to 1. 1 means perfectly even.
     pub balance_score: f64,
 }
 
-/// Single-node processing engine
+/// Engine for single node mode.
+///
+/// Nothing fills `streams` yet, so `process_event` fails with stream not found
+/// for every stream.
 struct SingleNodeEngine {
-    /// Query registry
     queries: Arc<RwLock<HashMap<String, Arc<QueryRuntime>>>>,
 
-    /// Stream junctions
+    /// Stream junctions, keyed by stream id.
     streams: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<StreamJunction>>>>>,
 }
 
@@ -250,7 +239,6 @@ impl SingleNodeEngine {
 #[async_trait]
 impl ProcessingEngineImpl for SingleNodeEngine {
     async fn process_event(&self, stream_id: &str, event: Event) -> DistributedResult<()> {
-        // In single-node mode, directly send to stream junction
         let streams = self.streams.read().await;
 
         if let Some(junction) = streams.get(stream_id) {
@@ -269,7 +257,7 @@ impl ProcessingEngineImpl for SingleNodeEngine {
     }
 
     async fn process_batch(&self, stream_id: &str, events: Vec<Event>) -> DistributedResult<()> {
-        // Process each event
+        // Stops at the first failed event. Events before it stay sent.
         for event in events {
             self.process_event(stream_id, event).await?;
         }
@@ -293,7 +281,7 @@ impl ProcessingEngineImpl for SingleNodeEngine {
     }
 
     async fn optimize(&self) -> DistributedResult<OptimizationResult> {
-        // Single-node optimization is simpler
+        // Fixed result. Nothing is optimized yet.
         Ok(OptimizationResult {
             optimizations: vec![OptimizationType::MemoryOptimization],
             improvement_estimate: 0.1,
@@ -316,20 +304,20 @@ impl ProcessingEngineImpl for SingleNodeEngine {
         Ok(QueryDistribution {
             node_queries,
             query_nodes,
-            balance_score: 1.0, // Perfect balance in single-node
+            balance_score: 1.0, // one node is always perfectly balanced
         })
     }
 }
 
-/// Distributed processing engine
+/// Engine for distributed mode.
+///
+/// Picks a target node for each event but does not forward events yet.
 struct DistributedEngine {
-    /// Query registry
     queries: Arc<RwLock<HashMap<String, Arc<QueryRuntime>>>>,
 
-    /// Node assignments for queries
+    /// Assigned node id for each query id.
     query_assignments: Arc<RwLock<HashMap<String, String>>>,
 
-    /// Load balancer
     load_balancer: Arc<LoadBalancer>,
 }
 
@@ -346,12 +334,11 @@ impl DistributedEngine {
 #[async_trait]
 impl ProcessingEngineImpl for DistributedEngine {
     async fn process_event(&self, stream_id: &str, _event: Event) -> DistributedResult<()> {
-        // In distributed mode, route event to appropriate node
         let target_node = self.load_balancer.select_node(stream_id).await?;
 
-        // FIXME: Event is selected for routing but not forwarded to the target node.
-        // Must send `_event` to `target_node` via the transport layer once the
-        // distributed message protocol is implemented.
+        // FIXME: the target node is picked but the event is dropped. Send `_event`
+        // to `target_node` through the transport layer once the distributed message
+        // protocol exists.
         log::warn!(
             "Distributed routing not yet implemented: event for stream '{}' \
              selected node '{}' but was not forwarded",
@@ -363,9 +350,9 @@ impl ProcessingEngineImpl for DistributedEngine {
     }
 
     async fn process_batch(&self, stream_id: &str, events: Vec<Event>) -> DistributedResult<()> {
-        // Batch routing to target node
         let target_node = self.load_balancer.select_node(stream_id).await?;
 
+        // Like process_event, the batch is only logged and then dropped.
         println!(
             "Routing {} events for stream {} to node {}",
             events.len(),
@@ -381,7 +368,7 @@ impl ProcessingEngineImpl for DistributedEngine {
         query_id: &str,
         query: Arc<QueryRuntime>,
     ) -> DistributedResult<()> {
-        // Assign query to a node
+        // Fails with ClusterNotReady when the balancer knows no nodes.
         let assigned_node = self.load_balancer.assign_query(query_id).await?;
 
         let mut queries = self.queries.write().await;
@@ -406,7 +393,7 @@ impl ProcessingEngineImpl for DistributedEngine {
     }
 
     async fn optimize(&self) -> DistributedResult<OptimizationResult> {
-        // Distributed optimization includes rebalancing
+        // Rebalance, then report a fixed list of optimizations.
         let rebalanced = self.load_balancer.rebalance().await?;
 
         Ok(OptimizationResult {
@@ -442,13 +429,12 @@ impl ProcessingEngineImpl for DistributedEngine {
     }
 }
 
-/// Hybrid processing engine
+/// Engine for hybrid mode. Every call goes to a local single node engine.
 #[allow(dead_code)]
 struct HybridEngine {
-    /// Local engine for processing
     local_engine: SingleNodeEngine,
 
-    /// Distributed state manager
+    /// Shared state, keyed by name. Not used yet.
     distributed_state: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
@@ -464,7 +450,7 @@ impl HybridEngine {
 #[async_trait]
 impl ProcessingEngineImpl for HybridEngine {
     async fn process_event(&self, stream_id: &str, event: Event) -> DistributedResult<()> {
-        // Process locally but sync state
+        // Processed locally only. State is not synced yet.
         self.local_engine.process_event(stream_id, event).await
     }
 
@@ -493,12 +479,15 @@ impl ProcessingEngineImpl for HybridEngine {
     }
 }
 
-/// Load balancer for distributed processing
+/// Picks nodes for streams and queries.
+///
+/// Nothing fills `node_loads` or `stream_nodes` yet, so every pick fails with
+/// `ClusterNotReady`.
 struct LoadBalancer {
-    /// Node loads
+    /// Load for each node id.
     node_loads: Arc<RwLock<HashMap<String, f64>>>,
 
-    /// Stream to node mapping
+    /// Fixed node id for each stream id.
     stream_nodes: Arc<RwLock<HashMap<String, String>>>,
 }
 
@@ -510,13 +499,15 @@ impl LoadBalancer {
         }
     }
 
+    /// Returns the node fixed for the stream, or else the least loaded node.
+    ///
+    /// Panics if a load is NaN.
     async fn select_node(&self, stream_id: &str) -> DistributedResult<String> {
         let nodes = self.stream_nodes.read().await;
 
         if let Some(node) = nodes.get(stream_id) {
             Ok(node.clone())
         } else {
-            // Select least loaded node
             let loads = self.node_loads.read().await;
             loads
                 .iter()
@@ -528,8 +519,10 @@ impl LoadBalancer {
         }
     }
 
+    /// Returns the least loaded node. Does not add load for the query.
+    ///
+    /// Panics if a load is NaN.
     async fn assign_query(&self, _query_id: &str) -> DistributedResult<String> {
-        // Assign to least loaded node
         let loads = self.node_loads.read().await;
         loads
             .iter()
@@ -540,18 +533,19 @@ impl LoadBalancer {
             })
     }
 
+    /// Does nothing yet. Load is not tracked per query.
     async fn release_query(&self, _query_id: &str) -> DistributedResult<()> {
-        // Update load information
         Ok(())
     }
 
+    /// Does nothing yet. Always returns no moved queries.
     async fn rebalance(&self) -> DistributedResult<Vec<String>> {
-        // Perform load rebalancing
         Ok(vec![])
     }
 
+    /// Returns `1 / (1 + variance)` of the node loads, or 1.0 when there are no
+    /// nodes.
     async fn balance_score(&self) -> f64 {
-        // Calculate balance score
         let loads = self.node_loads.read().await;
         if loads.is_empty() {
             return 1.0;
@@ -564,7 +558,6 @@ impl LoadBalancer {
             .sum::<f64>()
             / loads.len() as f64;
 
-        // Convert variance to score (0-1)
         1.0 / (1.0 + variance)
     }
 }
@@ -579,12 +572,12 @@ mod tests {
 
         assert_eq!(engine.mode(), RuntimeMode::SingleNode);
 
-        // Test event processing (will fail without stream setup)
+        // Fails because no stream is set up.
         let event = Event::new_with_data(-1, vec![]);
         let result = engine.process_event("test_stream", event).await;
         assert!(result.is_err());
 
-        // Test statistics - we track the attempt even if it fails
+        // The failed attempt is still counted.
         let stats = engine.statistics().await;
         assert_eq!(stats.events_processed, 1);
     }
@@ -595,7 +588,6 @@ mod tests {
 
         assert_eq!(engine.mode(), RuntimeMode::Distributed);
 
-        // Test query distribution
         let distribution = engine.query_distribution().await.unwrap();
         assert!(distribution.node_queries.is_empty());
         assert_eq!(distribution.balance_score, 1.0);

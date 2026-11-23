@@ -15,10 +15,11 @@
  * limitations under the License.
  */
 
-//! Dead-Letter Queue (DLQ) configuration and event handling.
+//! Dead letter queue (DLQ) settings and events.
 //!
-//! This module provides DLQ configuration with fallback strategies for scenarios
-//! where the DLQ stream itself is unavailable or delivery fails.
+//! A DLQ is a stream that collects failed events. This module holds its settings,
+//! the fallback used when the DLQ send itself fails, and the builder for DLQ
+//! events.
 
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,13 +31,14 @@ use crate::query_api::definition::attribute::Type as AttributeType;
 
 use super::retry::RetryConfig;
 
-/// Stream property naming the DLQ stream that receives a source's failed
-/// events.
+/// Stream property that names the DLQ stream for a source's failed events.
 pub const DLQ_STREAM_KEY: &str = "error.dlq.stream";
 
-/// The DLQ event schema, in order. [`create_dlq_event`] emits its values in
-/// exactly this order, and events are positional, so a DLQ stream must
-/// declare exactly these attributes in this order.
+/// The DLQ event schema, in order.
+///
+/// [`create_dlq_event`] writes its values in exactly this order. Events are
+/// positional, so a DLQ stream must declare exactly these attributes in this
+/// order.
 pub const DLQ_FIELDS: &[(&str, AttributeType)] = &[
     ("originalEvent", AttributeType::STRING),
     ("errorMessage", AttributeType::STRING),
@@ -46,34 +48,33 @@ pub const DLQ_FIELDS: &[(&str, AttributeType)] = &[
     ("streamName", AttributeType::STRING),
 ];
 
-/// Fallback strategy when DLQ stream is unavailable or delivery fails
+/// What to do when an event cannot be sent to the DLQ.
 ///
-/// Determines what action to take when the DLQ itself cannot receive failed events.
+/// Applies when the DLQ stream is missing or the send fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DlqFallbackStrategy {
-    /// Log detailed error and discard event (default)
+    /// Log the details and discard the event. The default.
     ///
-    /// The failed event is dropped after logging comprehensive error details.
-    /// This is the safest option that prevents cascading failures.
+    /// Logs both errors and the event. The safest choice, since one failure
+    /// cannot set off others.
     Log,
 
-    /// Terminate application immediately
+    /// Stop the source.
     ///
-    /// The application crashes if DLQ delivery fails.
-    /// Use when losing failed events is unacceptable.
+    /// Use when losing a failed event is not acceptable.
     Fail,
 
-    /// Retry DLQ delivery with backoff
+    /// Retry the DLQ send with backoff.
     ///
-    /// Attempts to deliver to DLQ with exponential backoff.
-    /// Eventually falls back to logging after max retries.
+    /// Uses the `fallback_retry` settings, which default to exponential backoff.
+    /// Logs and discards the event when the retries run out.
     Retry,
 }
 
 impl std::str::FromStr for DlqFallbackStrategy {
     type Err = String;
 
-    /// Parse fallback strategy from string (case-insensitive)
+    /// Parse `log`, `fail` or `retry`, ignoring case.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "log" => Ok(DlqFallbackStrategy::Log),
@@ -88,7 +89,7 @@ impl std::str::FromStr for DlqFallbackStrategy {
 }
 
 impl DlqFallbackStrategy {
-    /// Convert fallback strategy to string representation
+    /// Returns the lowercase name, such as `"log"`.
     #[inline]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -100,30 +101,33 @@ impl DlqFallbackStrategy {
 }
 
 impl Default for DlqFallbackStrategy {
-    /// Default fallback strategy is Log
+    /// Returns `Log`.
     #[inline]
     fn default() -> Self {
         DlqFallbackStrategy::Log
     }
 }
 
-/// Dead-Letter Queue configuration
-///
-/// Specifies the DLQ stream name and fallback behavior when DLQ is unavailable.
+/// Dead letter queue settings.
 #[derive(Debug, Clone)]
 pub struct DlqConfig {
-    /// Name of the DLQ stream to send failed events
+    /// Name of the stream that takes failed events.
     pub stream: String,
 
-    /// Fallback strategy when DLQ delivery fails
+    /// What to do when the DLQ send fails.
     pub fallback_strategy: DlqFallbackStrategy,
 
-    /// Retry configuration for DLQ fallback (only if fallback_strategy is Retry)
+    /// Retry settings for the DLQ send. Set when `fallback_strategy` is `Retry`.
     pub fallback_retry: Option<RetryConfig>,
 }
 
 impl DlqConfig {
-    /// Create a new DLQ configuration
+    /// Build DLQ settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if `stream` is empty, or `fallback_strategy` is
+    /// `Retry` without `fallback_retry`.
     pub fn new(
         stream: String,
         fallback_strategy: DlqFallbackStrategy,
@@ -133,7 +137,6 @@ impl DlqConfig {
             return Err("DLQ stream name cannot be empty".to_string());
         }
 
-        // Validate that fallback_retry is provided if strategy is Retry
         if fallback_strategy == DlqFallbackStrategy::Retry && fallback_retry.is_none() {
             return Err(
                 "DLQ fallback strategy 'retry' requires fallback_retry configuration".to_string(),
@@ -147,12 +150,17 @@ impl DlqConfig {
         })
     }
 
-    /// Parse DLQ configuration from FlatConfig
+    /// Parse DLQ settings from `error.dlq.*` properties.
     ///
-    /// Extracts DLQ settings from configuration:
-    /// - error.dlq.stream (required)
-    /// - error.dlq.fallback-strategy (default: log)
-    /// - error.dlq.fallback-retry.* (if fallback-strategy is retry)
+    /// - `error.dlq.stream` is required.
+    /// - `error.dlq.fallback-strategy` defaults to `log`.
+    /// - `error.dlq.fallback-retry.*` is read when the fallback is `retry`. It takes
+    ///   the same keys as `error.retry.*`. With none set, the retry defaults apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the stream is missing or empty, or any value
+    /// fails to parse.
     pub fn from_flat_config(config: &FlatConfig) -> Result<Self, String> {
         let stream = config
             .get(DLQ_STREAM_KEY)
@@ -167,12 +175,12 @@ impl DlqConfig {
             .get("error.dlq.fallback-strategy")
             .map(|s| DlqFallbackStrategy::from_str(s))
             .transpose()?
-            .unwrap_or(DlqFallbackStrategy::Log); // Default: log
+            .unwrap_or(DlqFallbackStrategy::Log);
 
         let fallback_retry = if matches!(fallback_strategy, DlqFallbackStrategy::Retry) {
-            // Parse fallback retry config with "dlq.fallback-retry" prefix
-            // We need to transform keys like "error.dlq.fallback-retry.max-attempts"
-            // into "error.retry.max-attempts" for RetryConfig::from_flat_config
+            // Rename keys such as "error.dlq.fallback-retry.max-attempts" to
+            // "error.retry.max-attempts" so RetryConfig::from_flat_config can read
+            // them.
             let mut fallback_retry_config = FlatConfig::new();
 
             for (key, value) in config.properties() {
@@ -185,7 +193,6 @@ impl DlqConfig {
                 }
             }
 
-            // Use defaults if no fallback retry config specified
             if fallback_retry_config.is_empty() {
                 Some(RetryConfig::default())
             } else {
@@ -199,24 +206,24 @@ impl DlqConfig {
     }
 }
 
-/// Create DLQ event from failed event and error
+/// Build a DLQ event for a failed event.
 ///
-/// Constructs a standardized DLQ event with exact schema match:
-/// - originalEvent STRING (serialized original event as JSON)
-/// - errorMessage STRING (human-readable error description)
-/// - errorType STRING (EventFluxError variant name)
-/// - timestamp BIGINT (milliseconds since epoch)
-/// - attemptCount INT (number of retry attempts)
-/// - streamName STRING (source stream name)
+/// Values follow [`DLQ_FIELDS`]:
+/// - originalEvent STRING. The original event serialized as JSON. If that fails, a
+///   JSON object with an `error` field, and a warning on stderr.
+/// - errorMessage STRING. The error's display text.
+/// - errorType STRING. The `EventFluxError` variant name.
+/// - timestamp BIGINT. The current time in milliseconds since the Unix epoch.
+/// - attemptCount INT. `attempt_count`.
+/// - streamName STRING. `stream_name`.
+///
+/// The event's own timestamp is the same current time.
 ///
 /// # Arguments
-/// * `original_event` - The event that failed processing
-/// * `error` - The error that caused the failure
-/// * `attempt_count` - Number of retry attempts made
-/// * `stream_name` - Name of the source stream
-///
-/// # Returns
-/// A new Event with DLQ schema
+/// * `original_event` - The event that failed.
+/// * `error` - The error that caused the failure.
+/// * `attempt_count` - Attempts made, counting the first one.
+/// * `stream_name` - Name of the source stream.
 pub fn create_dlq_event(
     original_event: &Event,
     error: &EventFluxError,
@@ -228,7 +235,6 @@ pub fn create_dlq_event(
         .unwrap()
         .as_millis() as i64;
 
-    // Serialize original event to JSON
     let original_event_json = match serde_json::to_string(original_event) {
         Ok(json) => json,
         Err(e) => {
@@ -237,7 +243,7 @@ pub fn create_dlq_event(
         }
     };
 
-    // Get error type (variant name only, not full Debug)
+    // Variant name only, not the full Debug output.
     let error_type = match error {
         EventFluxError::EventFluxAppCreation { .. } => "EventFluxAppCreation",
         EventFluxError::EventFluxAppRuntime { .. } => "EventFluxAppRuntime",
@@ -274,9 +280,9 @@ pub fn create_dlq_event(
     }
     .to_string();
 
-    // Values in DLQ_FIELDS order
+    // Values in DLQ_FIELDS order.
     Event::new_with_data(
-        error_timestamp, // Event arrival timestamp
+        error_timestamp, // event timestamp
         vec![
             AttributeValue::String(original_event_json), // originalEvent
             AttributeValue::String(error.to_string()),   // errorMessage
@@ -446,7 +452,7 @@ mod tests {
             "retry",
             PropertySource::SqlWith,
         );
-        // No fallback-retry.* properties, should use defaults
+        // No fallback-retry.* properties, so the retry defaults apply.
 
         let dlq_config = DlqConfig::from_flat_config(&config).unwrap();
         assert!(dlq_config.fallback_retry.is_some());
@@ -477,7 +483,6 @@ mod tests {
 
         let dlq_event = create_dlq_event(&original_event, &error, 3, "Orders");
 
-        // Verify DLQ event structure
         assert_eq!(dlq_event.data.len(), 6);
 
         // originalEvent (serialized JSON)
@@ -515,7 +520,6 @@ mod tests {
     fn test_create_dlq_event_with_different_errors() {
         let original_event = Event::new_with_data(123, vec![AttributeValue::Int(42)]);
 
-        // Test with ConnectionUnavailable error
         let error = EventFluxError::ConnectionUnavailable {
             message: "Database connection lost".to_string(),
             source: None,
@@ -543,8 +547,8 @@ mod tests {
 
     #[test]
     fn test_create_dlq_event_values_follow_dlq_fields_order() {
-        // DLQ streams are validated against DLQ_FIELDS positionally, so the
-        // emitted values must line up with it type for type
+        // DLQ streams are checked against DLQ_FIELDS by position, so the values
+        // written must match it type for type.
         let dlq_event = create_dlq_event(
             &Event::new_with_data(1, vec![AttributeValue::Int(1)]),
             &EventFluxError::Other("e".to_string()),

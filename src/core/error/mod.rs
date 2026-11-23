@@ -15,23 +15,24 @@
  * limitations under the License.
  */
 
-//! # Error Handling & Dead-Letter Queue (DLQ) System
+//! # Error handling and dead letter queue (DLQ)
 //!
-//! This module provides comprehensive error handling for EventFlux with multiple strategies,
-//! retry mechanisms with configurable backoff, and dead-letter queue support.
+//! Decides what happens to an event that fails. Supports four strategies, retries
+//! with configurable backoff, and a dead letter queue, which is a stream that
+//! collects failed events for later inspection.
 //!
-//! ## Error Strategies
+//! ## Error strategies
 //!
-//! Four primary error handling strategies are supported:
+//! 1. **Drop**, the default. Log the error and discard the event.
+//! 2. **Retry**. Retry with exponential, linear or fixed backoff. When retries run
+//!    out, or the error cannot be retried, the event goes to the DLQ if
+//!    `error.dlq.stream` is set and is dropped otherwise.
+//! 3. **DLQ**. Send the failed event to the DLQ stream.
+//! 4. **Fail**. Stop the source on the first error.
 //!
-//! 1. **Drop** (default): Log error and discard the failed event
-//! 2. **Retry**: Retry with exponential/linear/fixed backoff
-//! 3. **DLQ**: Send failed events to a dead-letter queue stream
-//! 4. **Fail**: Terminate application immediately on error
+//! ## Configuration example
 //!
-//! ## Configuration Example
-//!
-//! ### Retry Strategy
+//! ### Retry strategy
 //! ```toml
 //! [application]
 //! error.strategy = "retry"
@@ -41,7 +42,7 @@
 //! error.retry.max-delay = "30s"
 //! ```
 //!
-//! ### DLQ Strategy
+//! ### DLQ strategy
 //! ```toml
 //! [application]
 //! error.strategy = "dlq"
@@ -49,7 +50,9 @@
 //! error.dlq.fallback-strategy = "log"
 //! ```
 //!
-//! ### DLQ with Fallback Retry
+//! ### DLQ with fallback retry
+//!
+//! The fallback applies when the DLQ send itself fails.
 //! ```toml
 //! [application]
 //! error.strategy = "dlq"
@@ -59,7 +62,7 @@
 //! error.dlq.fallback-retry.initial-delay = "200ms"
 //! ```
 //!
-//! ## Usage Example
+//! ## Usage example
 //!
 //! ```rust,ignore
 //! use eventflux::core::error::*;
@@ -90,15 +93,17 @@
 //! }
 //! ```
 //!
-//! ## DLQ Event Schema
+//! ## DLQ event schema
 //!
-//! Failed events sent to DLQ streams follow this exact schema:
-//! - `originalEvent` STRING - Serialized original event as JSON
-//! - `errorMessage` STRING - Human-readable error description
-//! - `errorType` STRING - EventFluxError variant name
-//! - `timestamp` BIGINT - Milliseconds since epoch
-//! - `attemptCount` INT - Number of retry attempts made
-//! - `streamName` STRING - Source stream name
+//! Events are positional, so a DLQ stream must declare exactly these attributes in
+//! this order (see [`DLQ_FIELDS`]):
+//! - `originalEvent` STRING. The original event serialized as JSON.
+//! - `errorMessage` STRING. Readable error text.
+//! - `errorType` STRING. The `EventFluxError` variant name.
+//! - `timestamp` BIGINT. When the error was recorded, in milliseconds since the
+//!   Unix epoch.
+//! - `attemptCount` INT. Attempts made, counting the first one.
+//! - `streamName` STRING. Source stream name.
 
 pub mod config;
 pub mod dlq;
@@ -107,7 +112,7 @@ pub mod retry;
 pub mod source_support;
 pub mod strategy;
 
-// Re-export main types for convenience
+// The main types, exported from here.
 pub use config::{ErrorConfig, FailConfig, LogLevel};
 pub use dlq::{create_dlq_event, DlqConfig, DlqFallbackStrategy, DLQ_FIELDS, DLQ_STREAM_KEY};
 pub use handler::{ErrorAction, ErrorHandler};

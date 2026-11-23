@@ -15,17 +15,17 @@
  * limitations under the License.
  */
 
-//! # Source Error Handling Support
+//! # Error handling helpers for sources
 //!
-//! This module provides helper utilities for Source implementations to integrate
-//! error handling with minimal boilerplate.
+//! Lets a source add error handling with little extra code.
 //!
 //! ## Overview
 //!
-//! The `SourceErrorContext` encapsulates error handling state and provides
-//! convenient methods for sources to handle errors in their event loops.
+//! [`SourceErrorContext`] holds the error handling state and gives sources simple
+//! methods to call from their event loops. [`deliver_with_error_handling`] runs
+//! the whole retry loop for one payload.
 //!
-//! ## Usage Example
+//! ## Usage example
 //!
 //! ```rust,ignore
 //! pub struct MySource {
@@ -64,15 +64,16 @@ use crate::core::error::ErrorConfig;
 use crate::core::event::Event;
 use crate::core::exception::EventFluxError;
 
-/// Optional configuration keys consumed by
-/// [`SourceErrorContext::from_properties`] (via `ErrorConfig`). Source
-/// factories append these to their `optional_parameters()` list, so the
-/// error-handling surface is defined in exactly one place.
+/// Optional property keys read by [`SourceErrorContext::from_properties`]
+/// through `ErrorConfig`.
 ///
-/// Delays are duration strings (`100ms`, `30s`); `error.retry.backoff` is a
-/// strategy name (`exponential`/`linear`/`fixed`). The DLQ fallback retry
-/// family (`error.dlq.fallback-retry.*`) is a prefix, represented here by
-/// its strategy key.
+/// Source factories add these to their `optional_parameters()` list, so the
+/// error handling keys are listed in exactly one place.
+///
+/// Delays are duration strings such as `100ms` or `30s`. `error.retry.backoff` is
+/// `exponential`, `linear` or `fixed`. The DLQ fallback retry keys
+/// (`error.dlq.fallback-retry.*`) share a prefix and are not listed one by one.
+/// `error.dlq.fallback-strategy` stands in for them.
 pub const SOURCE_ERROR_PARAMETERS: &[&str] = &[
     "error.strategy",
     "error.log-level",
@@ -89,27 +90,23 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// Source error handling context
-///
-/// Encapsulates error handling state and provides convenient methods
-/// for sources to integrate error handling.
+/// Error handling state for one source.
 pub struct SourceErrorContext {
-    /// The error handler
     handler: ErrorHandler,
-    /// The owning worker's running flag, bound at `start()`. Retry backoff
-    /// sleeps are sliced against it so `stop()` interrupts them instead of
-    /// waiting out user-configured delays (#141); unbound contexts sleep
-    /// uninterruptibly (factory-time / test use).
+    /// The owning worker's running flag, bound at `start()`. Retry waits are
+    /// split into short sleeps that check it, so `stop()` cuts them short instead
+    /// of waiting out a user configured delay (#141). An unbound context sleeps
+    /// without checking, which is fine at factory time and in tests.
     running: Option<Arc<AtomicBool>>,
 }
 
 impl SourceErrorContext {
-    /// Create a new source error context
+    /// Create a source error context.
     ///
     /// # Arguments
-    /// * `error_config` - Error handling configuration
-    /// * `dlq_junction` - Optional DLQ stream junction
-    /// * `stream_name` - Name of the source stream
+    /// * `error_config` - Error handling settings.
+    /// * `dlq_junction` - Input handler of the DLQ stream, if any.
+    /// * `stream_name` - Name of the source stream.
     pub fn new(
         error_config: ErrorConfig,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
@@ -121,11 +118,12 @@ impl SourceErrorContext {
         }
     }
 
-    /// A fresh context with the same configuration, DLQ wiring, and stream
-    /// name, but zeroed runtime state (error counters, cancellation
-    /// binding). Sources call this per `start()` instead of `take()`ing the
-    /// stored context, so the configured strategy survives stop→start
-    /// cycles (#142) and clones.
+    /// Returns a new context with the same settings, DLQ input handler and
+    /// stream name, but with the error count at zero and no running flag bound.
+    ///
+    /// Sources call this on each `start()` instead of taking the stored context
+    /// with `take()`. That way the configured strategy survives a stop and start
+    /// (#142) and clones.
     pub fn fresh(&self) -> Self {
         Self::new(
             self.handler.config().clone(),
@@ -134,24 +132,31 @@ impl SourceErrorContext {
         )
     }
 
-    /// Bind the owning worker's running flag (call at the top of the worker
-    /// closure). Once bound, retry backoff aborts promptly when the flag
-    /// clears, and the delivery loop stops re-invoking the callback.
+    /// Bind the owning worker's running flag. Call at the top of the worker
+    /// closure.
+    ///
+    /// Once bound, retry waits end quickly when the flag turns false, and the
+    /// delivery loop stops calling the callback again.
     pub fn bind_cancellation(&mut self, running: Arc<AtomicBool>) {
         self.running = Some(running);
     }
 
-    /// Whether the bound worker has been told to stop
+    /// Returns true if the bound worker was told to stop. Always false when no
+    /// flag is bound.
     pub fn is_cancelled(&self) -> bool {
         is_stopping(&self.running)
     }
 
-    /// Create from FlatConfig (convenience method)
+    /// Build a context from `error.*` properties in a `FlatConfig`.
     ///
     /// # Arguments
-    /// * `config` - Flat configuration with error.* properties
-    /// * `dlq_junction` - Optional DLQ stream junction
-    /// * `stream_name` - Name of the source stream
+    /// * `config` - Settings holding the `error.*` properties.
+    /// * `dlq_junction` - Input handler of the DLQ stream, if any.
+    /// * `stream_name` - Name of the source stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the settings fail to parse.
     pub fn from_config(
         config: &FlatConfig,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
@@ -161,12 +166,17 @@ impl SourceErrorContext {
         Ok(Self::new(error_config, dlq_junction, stream_name))
     }
 
-    /// Build from a raw `WITH`-clause properties map (convenience method).
+    /// Build a context from the raw `WITH` clause properties.
     ///
-    /// Returns `Ok(None)` when no `error.*` properties are configured —
-    /// exactly the optional-context shape every source stores. Collapses the
-    /// ErrorConfigBuilder/FlatConfig boilerplate previously copy-pasted into
-    /// each connector's `from_properties`.
+    /// Returns `Ok(None)` when `error.strategy` is not set, even if other
+    /// `error.*` keys are. That matches the optional context every source
+    /// stores. Only keys starting with `error.` are read. Saves each connector
+    /// from repeating the ErrorConfigBuilder and FlatConfig setup in its own
+    /// `from_properties`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the settings fail to parse.
     pub fn from_properties(
         properties: &std::collections::HashMap<String, String>,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
@@ -187,46 +197,47 @@ impl SourceErrorContext {
         Self::from_config(&flat_config, dlq_junction, stream_name.to_string()).map(Some)
     }
 
-    /// Handle an error and return whether to continue processing
+    /// Handle an error and return whether to keep processing.
     ///
-    /// This method applies the error handling strategy and performs any
-    /// necessary actions (retry delays, DLQ sending, etc.).
+    /// Applies the strategy and does the work it needs, such as waiting before a
+    /// retry or sending to the DLQ.
     ///
     /// # Arguments
-    /// * `event` - The event that failed (if available)
-    /// * `error` - The error that occurred
+    /// * `event` - The event that failed, if there is one.
+    /// * `error` - The error that happened.
     ///
     /// # Returns
-    /// * `true` - Continue processing (error was handled, drop/retry/dlq)
-    /// * `false` - Stop processing (fail strategy or unrecoverable error)
+    /// * `true` - Keep processing. The event was retried, dropped or sent to the
+    ///   DLQ.
+    /// * `false` - Stop processing. The action was `Fail` or `Cancelled`.
     pub fn handle_error(&mut self, event: Option<&Event>, error: &EventFluxError) -> bool {
         let action = self.handle_error_with_action(event, error);
         !matches!(action, ErrorAction::Fail | ErrorAction::Cancelled)
     }
 
-    /// Handle an error and return the action taken
+    /// Handle an error and return the action taken.
     ///
-    /// This method is similar to `handle_error` but returns the `ErrorAction`
-    /// so callers can make decisions based on the specific action (e.g., whether
-    /// to requeue a message in a message broker).
+    /// Like `handle_error`, but returns the `ErrorAction` so callers can act on
+    /// it, for example to decide whether a broker should requeue a message.
     ///
     /// # Arguments
-    /// * `event` - The event that failed (if available)
-    /// * `error` - The error that occurred
+    /// * `event` - The event that failed, if there is one.
+    /// * `error` - The error that happened.
     ///
     /// # Returns
-    /// The `ErrorAction` that was taken:
-    /// - `Retry { delay }` - Internal retry with delay (delay already applied)
-    /// - `Drop` - Event was dropped
-    /// - `SendToDlq` - Event was sent to DLQ
-    /// - `Fail` - Source should stop processing
+    /// - `Retry { delay }` - Retry now. The delay has already been waited.
+    /// - `Drop` - The event was dropped.
+    /// - `SendToDlq` - The event was sent to the DLQ.
+    /// - `Fail` - The source should stop.
+    /// - `Cancelled` - A stop was requested during a wait. The source should stop
+    ///   and leave the record for delivery again.
     pub fn handle_error_with_action(
         &mut self,
         event: Option<&Event>,
         error: &EventFluxError,
     ) -> ErrorAction {
-        // DLQ fallback retries wait inside the handler; source retries come
-        // back as `Retry` and wait here. Both waits honour `stop()`.
+        // DLQ fallback retries wait inside the handler. Source retries come back
+        // as `Retry` and wait here. Both waits respect `stop()`.
         let running = &self.running;
         let action = self
             .handler
@@ -240,9 +251,9 @@ impl SourceErrorContext {
                     "[{}] Stop requested during retry backoff — aborting retries",
                     self.handler.stream_name()
                 );
-                // NOT Fail: Fail is a poison-message verdict (RabbitMQ
-                // rejects without requeue). Cancellation must leave the
-                // record for redelivery.
+                // Not Fail. Fail marks the record as bad (RabbitMQ rejects it
+                // without requeue). A cancel must leave the record to be
+                // delivered again.
                 return ErrorAction::Cancelled;
             }
         }
@@ -250,60 +261,59 @@ impl SourceErrorContext {
         action
     }
 
-    /// Reset error counters (call after successful event processing)
+    /// Reset the error count. Call after an event succeeds.
     #[inline]
     pub fn reset_errors(&mut self) {
         self.handler.reset_consecutive_errors();
     }
 
-    /// Get consecutive error count
+    /// Returns the failures in a row for the current event.
     #[inline]
     pub fn error_count(&self) -> usize {
         self.handler.consecutive_error_count()
     }
 
-    /// Get the underlying error handler (for advanced use cases)
     #[inline]
     pub fn handler(&self) -> &ErrorHandler {
         &self.handler
     }
 
-    /// Get mutable reference to error handler (for advanced use cases)
     #[inline]
     pub fn handler_mut(&mut self) -> &mut ErrorHandler {
         &mut self.handler
     }
 
-    /// Set the DLQ junction for error routing
+    /// Set the DLQ input handler after the context is built.
     ///
-    /// This method allows setting the DLQ junction after context creation,
-    /// which is needed when the factory creates a source before the DLQ
-    /// junction is available (the runtime wires it on attachment).
+    /// Needed because a factory builds the source before the DLQ stream is
+    /// available. The runtime wires it in when the source is attached. Also sets
+    /// the stream name written into DLQ events.
     ///
     /// # Arguments
-    /// * `stream_name` - Name of the stream whose failures are dead-lettered
-    /// * `junction` - The InputHandler for the DLQ stream
+    /// * `stream_name` - Name of the stream whose failed events go to the DLQ.
+    /// * `junction` - The input handler of the DLQ stream.
     #[inline]
     pub fn set_dlq_junction(&mut self, stream_name: &str, junction: Arc<Mutex<InputHandler>>) {
         self.handler.set_dlq_junction(stream_name, junction);
     }
 }
 
-/// Whether the worker owning `running` has been told to stop (an unbound
-/// context never is)
+/// Returns true if the worker that owns `running` was told to stop. An unbound
+/// context never is.
 fn is_stopping(running: &Option<Arc<AtomicBool>>) -> bool {
     running.as_ref().is_some_and(|r| !r.load(Ordering::SeqCst))
 }
 
-/// Sleep for `delay`, returning `false` as soon as the worker is told to
-/// stop. Blocking sleep is intentional (sources are synchronous), but it is
-/// sliced against the running flag: a user-configured delay must never hold
-/// `stop()` past the worker grace period.
+/// Sleep for `delay`. Returns `false` as soon as the worker is told to stop, and
+/// `true` if the full delay passed.
 ///
-/// The flag is checked before every slice, including when `delay` is zero
-/// and after the last slice, so a stopping worker never proceeds to another
-/// attempt (and a disposed record is not acknowledged) just because no
-/// sleep happened.
+/// The sleep blocks on purpose, since sources are synchronous. It is split into
+/// slices of at most 50 ms that check the running flag, so a user configured
+/// delay never holds `stop()` past the worker grace period.
+///
+/// The flag is checked before every slice, also when `delay` is zero and after
+/// the last slice. So a stopping worker never moves on to another attempt, and a
+/// disposed record is never acknowledged, just because no sleep happened.
 fn sleep_unless_cancelled(running: &Option<Arc<AtomicBool>>, delay: Duration) -> bool {
     const SLICE: Duration = Duration::from_millis(50);
     let mut remaining = delay;
@@ -328,16 +338,16 @@ impl std::fmt::Debug for SourceErrorContext {
     }
 }
 
-/// Builder for creating ErrorConfig from configuration properties
+/// Builds an `ErrorConfig` from raw properties.
 ///
-/// This provides a convenient way for factories to extract error configuration
-/// during source/sink creation.
+/// Lets factories read error settings while building a source or sink.
 pub struct ErrorConfigBuilder {
+    /// Only the `error.*` properties.
     config: FlatConfig,
 }
 
 impl ErrorConfigBuilder {
-    /// Create a new builder from properties
+    /// Create a builder that keeps only the keys starting with `error.`.
     pub fn from_properties(properties: &std::collections::HashMap<String, String>) -> Self {
         use crate::core::config::PropertySource;
 
@@ -351,12 +361,17 @@ impl ErrorConfigBuilder {
         Self { config }
     }
 
-    /// Check if error handling is configured
+    /// Returns true if `error.strategy` is set. Other `error.*` keys alone do not
+    /// count.
     pub fn is_configured(&self) -> bool {
         self.config.contains("error.strategy")
     }
 
-    /// Build ErrorConfig (returns None if not configured)
+    /// Build the settings, or return `Ok(None)` if `error.strategy` is not set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the settings fail to parse.
     pub fn build(&self) -> Result<Option<ErrorConfig>, String> {
         if !self.is_configured() {
             return Ok(None);
@@ -366,32 +381,39 @@ impl ErrorConfigBuilder {
         Ok(Some(error_config))
     }
 
-    /// Build ErrorConfig with default if not configured
+    /// Build the settings, or the default settings if `error.strategy` is not set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the settings fail to parse.
     pub fn build_or_default(&self) -> Result<ErrorConfig, String> {
         Ok(self.build()?.unwrap_or_default())
     }
 }
 
-/// Outcome of delivering one payload through the error-handling strategy
+/// Result of delivering one payload through the error strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryVerdict {
-    /// The pipeline accepted the payload
+    /// The pipeline accepted the payload.
     Delivered,
-    /// The error strategy disposed of it (drop or DLQ) — the record counts
-    /// as consumed and may be acknowledged/committed
+    /// The error strategy dropped it or sent it to the DLQ. The record counts as
+    /// consumed and can be acknowledged or committed.
     Disposed,
-    /// Unrecoverable (fail strategy) — stop the source; do NOT acknowledge
-    /// or commit, so the record is redelivered after restart
+    /// The fail strategy fired, or a stop was requested. Stop the source. Do not
+    /// acknowledge or commit, so the record is delivered again after a restart.
     Fail,
 }
 
 /// Deliver one payload to the pipeline, applying the source's error strategy.
 ///
-/// Encapsulates the retry state machine every source needs: retry until
-/// success or a non-retry action, build a DLQ fallback event from the raw
-/// bytes, reset the error counter on success. Transport-specific
-/// acknowledgement stays with the caller, keyed off the verdict:
-/// `Delivered`/`Disposed` → ack/commit, `Fail` → don't ack, stop the source.
+/// Runs the retry loop every source needs. It retries until success or an action
+/// other than retry, builds the DLQ event from the raw bytes, and resets the
+/// error count on success. With no error context, a failure is logged and the
+/// payload is dropped.
+///
+/// Acknowledging the record stays with the caller and depends on the verdict.
+/// `Delivered` or `Disposed` means acknowledge or commit. `Fail` means do not
+/// acknowledge and stop the source.
 pub fn deliver_with_error_handling(
     callback: &dyn crate::core::stream::input::source::SourceCallback,
     payload: &[u8],
@@ -399,8 +421,8 @@ pub fn deliver_with_error_handling(
     source_tag: &str,
 ) -> DeliveryVerdict {
     loop {
-        // A stopping worker must not deliver again — the record stays
-        // unacknowledged and is redelivered after restart
+        // A stopping worker must not deliver again. The record stays
+        // unacknowledged and is delivered again after a restart.
         if error_ctx.as_ref().is_some_and(|ctx| ctx.is_cancelled()) {
             return DeliveryVerdict::Fail;
         }
@@ -413,8 +435,8 @@ pub fn deliver_with_error_handling(
             }
             Err(e) => {
                 let action = if let Some(ctx) = error_ctx {
-                    // Fallback event from raw bytes for DLQ support — only
-                    // built when a strategy exists to consume it
+                    // Wrap the raw bytes in an event so the DLQ can carry it.
+                    // Built only when there is a strategy to use it.
                     let fallback_event = Event::new_with_data(
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -431,12 +453,12 @@ pub fn deliver_with_error_handling(
                 };
 
                 match action {
-                    // Delay already applied by handle_error_with_action
+                    // handle_error_with_action has already waited the delay.
                     ErrorAction::Retry { .. } => continue,
                     ErrorAction::Drop | ErrorAction::SendToDlq => return DeliveryVerdict::Disposed,
-                    // Both stop the source without acknowledging; connectors
-                    // with a distinct poison-message path (RabbitMQ) branch
-                    // on the action before it reaches a verdict
+                    // Both stop the source without acknowledging. Connectors
+                    // with a separate path for bad records (RabbitMQ) check the
+                    // action themselves before it becomes a verdict.
                     ErrorAction::Fail | ErrorAction::Cancelled => return DeliveryVerdict::Fail,
                 }
             }
@@ -471,12 +493,12 @@ mod tests {
 
     #[test]
     fn test_source_error_context_handle_drop() {
-        let error_config = ErrorConfig::default(); // Default is Drop
+        let error_config = ErrorConfig::default(); // Drop
         let mut ctx = SourceErrorContext::new(error_config, None, "TestStream".to_string());
 
         let error = EventFluxError::Other("Test error".to_string());
 
-        // Should continue processing (drop)
+        // Drop keeps processing.
         assert!(ctx.handle_error(Some(&create_test_event()), &error));
     }
 
@@ -497,7 +519,7 @@ mod tests {
 
         let error = EventFluxError::Other("Fatal error".to_string());
 
-        // Should stop processing (fail)
+        // Fail stops processing.
         assert!(!ctx.handle_error(Some(&create_test_event()), &error));
     }
 
@@ -528,11 +550,9 @@ mod tests {
             source: None,
         };
 
-        // Trigger error
         ctx.handle_error(Some(&create_test_event()), &error);
         assert_eq!(ctx.error_count(), 1);
 
-        // Reset
         ctx.reset_errors();
         assert_eq!(ctx.error_count(), 0);
     }
@@ -577,8 +597,8 @@ mod tests {
 
     #[test]
     fn test_retry_backoff_aborts_promptly_on_stop() {
-        // Regression (#141): a user-configured delay must not hold stop()
-        // past the worker grace period
+        // Regression test for #141. A user configured delay must not hold stop()
+        // past the worker grace period.
         let mut ctx = retry_ctx(std::time::Duration::from_secs(30));
         let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         ctx.bind_cancellation(Arc::clone(&running));
@@ -625,9 +645,9 @@ mod tests {
 
     #[test]
     fn test_zero_delay_dlq_retry_cancels_on_stop() {
-        // A stopping worker whose DLQ send keeps failing must get Cancelled
-        // (record redelivered), not Drop (record acknowledged), even when the
-        // DLQ fallback retry delay is 0ms
+        // A stopping worker whose DLQ send keeps failing must get Cancelled, so
+        // the record is delivered again, not Drop, which acknowledges it. This
+        // holds even when the DLQ fallback retry delay is 0ms.
         let zero = std::time::Duration::ZERO;
         let dlq = crate::core::error::DlqConfig {
             stream: "ErrorStream".to_string(),
@@ -647,7 +667,7 @@ mod tests {
             None,
         )
         .unwrap();
-        // No DLQ junction wired: every DLQ send fails
+        // No DLQ input handler is set, so every DLQ send fails.
         let mut ctx = SourceErrorContext::new(config, None, "TestStream".to_string());
         ctx.bind_cancellation(Arc::new(std::sync::atomic::AtomicBool::new(false)));
 
