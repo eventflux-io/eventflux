@@ -15,16 +15,22 @@
  * limitations under the License.
  */
 
-//! Type Mapping - SQL Types to AttributeType Conversion
-//!
-//! Maps SQL data types to EventFlux's AttributeType system.
+//! Type mapping between SQL column types and EventFlux AttributeType.
 
 use crate::query_api::definition::attribute::Type as AttributeType;
 use sqlparser::ast::{DataType, ExactNumberInfo};
 
 use super::error::TypeError;
 
-/// Convert SQL DataType to AttributeType
+/// Map a SQL column type to an AttributeType.
+///
+/// DECIMAL and NUMERIC become DOUBLE, so precision is limited to f64. TIMESTAMP, DATETIME,
+/// DATE and TIME become LONG. LONG is accepted as a custom type name.
+///
+/// # Errors
+///
+/// Returns `TypeError::UnsupportedType` for ARRAY, STRUCT, JSON, binary types and any
+/// other type not listed.
 pub fn sql_type_to_attribute_type(sql_type: &DataType) -> Result<AttributeType, TypeError> {
     match sql_type {
         // String types
@@ -49,14 +55,13 @@ pub fn sql_type_to_attribute_type(sql_type: &DataType) -> Result<AttributeType, 
         // Boolean types
         DataType::Boolean | DataType::Bool => Ok(AttributeType::BOOL),
 
-        // Decimal types (precision loss warning)
+        // Decimal types. Mapped to DOUBLE, so precision is limited to f64.
         DataType::Decimal(_) | DataType::Numeric(_) => {
-            // TODO: Add proper logging when log crate is configured
-            // Map NUMERIC to DOUBLE (precision limited to f64)
+            // TODO: Log a precision loss warning here. Nothing is logged today.
             Ok(AttributeType::DOUBLE)
         }
 
-        // Timestamp types (map to LONG as Unix millis)
+        // Date and time types. Mapped to LONG, meant to hold Unix time in milliseconds.
         DataType::Timestamp(_, _) | DataType::Datetime(_) => Ok(AttributeType::LONG),
         DataType::Date => Ok(AttributeType::LONG),
         DataType::Time(_, _) => Ok(AttributeType::LONG),
@@ -75,7 +80,7 @@ pub fn sql_type_to_attribute_type(sql_type: &DataType) -> Result<AttributeType, 
             TypeError::UnsupportedType("Binary types not supported".to_string()),
         ),
 
-        // Handle custom types (like LONG which is not standard SQL)
+        // Custom type names. Only LONG, which is not standard SQL, is accepted.
         DataType::Custom(name, _) => {
             let type_name = name.to_string().to_uppercase();
             match type_name.as_str() {
@@ -84,12 +89,14 @@ pub fn sql_type_to_attribute_type(sql_type: &DataType) -> Result<AttributeType, 
             }
         }
 
-        // Catch-all for other types
         other => Err(TypeError::UnsupportedType(format!("{:?}", other))),
     }
 }
 
-/// Convert AttributeType back to SQL DataType (for reverse mapping if needed)
+/// Map an AttributeType back to a SQL column type.
+///
+/// Not an exact inverse of `sql_type_to_attribute_type`. OBJECT maps to JSON, which the
+/// forward mapping rejects.
 pub fn attribute_type_to_sql_type(attr_type: &AttributeType) -> DataType {
     match attr_type {
         AttributeType::STRING => DataType::Varchar(None),
@@ -98,7 +105,7 @@ pub fn attribute_type_to_sql_type(attr_type: &AttributeType) -> DataType {
         AttributeType::FLOAT => DataType::Float(ExactNumberInfo::None),
         AttributeType::DOUBLE => DataType::Double(ExactNumberInfo::None),
         AttributeType::BOOL => DataType::Boolean,
-        AttributeType::OBJECT => DataType::JSON, // Best approximation
+        AttributeType::OBJECT => DataType::JSON, // closest match, there is no exact one
     }
 }
 

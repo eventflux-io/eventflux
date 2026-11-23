@@ -15,20 +15,20 @@
  * limitations under the License.
  */
 
-//! WITH Clause Extraction and Validation
+//! WITH clause reading and checks.
 //!
-//! This module provides functions to extract and validate SQL WITH clause options
-//! for CREATE STREAM statements, converting them into FlatConfig for configuration management.
+//! Reads the WITH (...) options of CREATE STREAM and CREATE TABLE statements into a
+//! FlatConfig and checks them.
 
 use sqlparser::ast::{CreateTableOptions, Expr, SqlOption};
 
 use super::error::ConverterError;
 use crate::core::config::stream_config::{FlatConfig, PropertySource};
 
-/// Extract WITH clause options into FlatConfig
+/// Read the WITH (...) options into a FlatConfig.
 ///
-/// Parses SqlOptions from CREATE STREAM WITH(...) clause and stores them
-/// with PropertySource::SqlWith priority.
+/// Each option is stored with `PropertySource::SqlWith`. A bare identifier option is
+/// stored as a key with an empty value. No WITH clause gives an empty config.
 ///
 /// # Example
 ///
@@ -48,8 +48,11 @@ use crate::core::config::stream_config::{FlatConfig, PropertySource};
 ///
 /// # Returns
 ///
-/// * `Ok(FlatConfig)` - Successfully extracted configuration
-/// * `Err(ConverterError)` - If WITH clause contains invalid options
+/// * `Ok(FlatConfig)` - The options read
+/// * `Err(ConverterError)` - `UnsupportedFeature` for options other than key and value
+///   pairs or bare identifiers, or for an options form other than WITH (...).
+///   `InvalidExpression` for a value that is not a number, string, boolean, NULL or
+///   identifier.
 pub fn extract_with_options(
     table_options: &CreateTableOptions,
 ) -> Result<FlatConfig, ConverterError> {
@@ -65,8 +68,7 @@ pub fn extract_with_options(
                         config.set(key_str, value_str, PropertySource::SqlWith);
                     }
                     SqlOption::Ident(ident) => {
-                        // Boolean flags like "HEAP" or standalone identifiers
-                        // Treat as key with empty value
+                        // A bare flag such as HEAP. Stored as a key with an empty value.
                         config.set(ident.value.clone(), "", PropertySource::SqlWith);
                     }
                     _ => {
@@ -78,7 +80,7 @@ pub fn extract_with_options(
             }
         }
         CreateTableOptions::None => {
-            // No WITH clause - return empty config
+            // No WITH clause. Return the empty config.
         }
         _ => {
             return Err(ConverterError::UnsupportedFeature(
@@ -90,9 +92,11 @@ pub fn extract_with_options(
     Ok(config)
 }
 
-/// Extract SQL expression value as string
+/// Turn a WITH option value into a string.
 ///
-/// Converts various SQL expression types to string representation for configuration storage.
+/// Numbers keep their text, quoted strings lose their quotes, booleans become "true" or
+/// "false", NULL becomes "null" and an identifier gives its name. Anything else is an
+/// `InvalidExpression` error.
 fn extract_value_as_string(expr: &Expr) -> Result<String, ConverterError> {
     match expr {
         Expr::Value(value_with_span) => match &value_with_span.value {
@@ -114,45 +118,39 @@ fn extract_value_as_string(expr: &Expr) -> Result<String, ConverterError> {
     }
 }
 
-/// Validate WITH clause configuration
-///
-/// Performs parse-time validation of stream configuration properties.
+/// Check a WITH clause config when the SQL is parsed.
 ///
 /// # Validation Rules
 ///
-/// - **Type validation**: If type is specified, must be 'source', 'sink', or 'internal'
-/// - **Source/Sink streams**: Must have both 'extension' and 'format'
-/// - **Internal streams**: Must NOT have 'extension' or 'format'
-/// - **Pure internal streams** (no type): Must NOT have 'extension' or 'format'
+/// - **No type but an extension**: This is a table. Nothing is checked here. The table
+///   factory checks it at runtime.
+/// - **Type**: If given, it must be 'source', 'sink' or 'internal'
+/// - **Source and sink streams**: Must have 'extension'. 'format' is optional because some
+///   connectors, such as timer, use their own internal format.
+/// - **Internal streams**: Must not have 'extension' or 'format'
+/// - **Plain internal streams** (no type, no extension): Must not have 'format'
 ///
 /// # Arguments
 ///
-/// * `config` - The FlatConfig extracted from WITH clause
+/// * `config` - The FlatConfig read from the WITH clause
 ///
 /// # Returns
 ///
-/// * `Ok(())` - Configuration is valid
-/// * `Err(ConverterError)` - Configuration violates validation rules
+/// * `Ok(())` - The config passes every rule
+/// * `Err(ConverterError)` - `InvalidExpression` naming the broken rule
 pub fn validate_with_clause(config: &FlatConfig) -> Result<(), ConverterError> {
-    // Check if this is a table configuration (has 'extension' but no 'type')
-    // Tables use 'extension' directly (e.g., 'cache', 'jdbc')
-    // Streams use 'type' (e.g., 'source', 'sink', 'internal')
+    // Tables set 'extension' (such as 'cache' or 'jdbc') and no 'type'. Streams set 'type'.
     if config.get("type").is_none() && config.get("extension").is_some() {
-        // This is a TABLE with extension - skip stream validation
-        // Tables are validated at runtime by the table factory
         return Ok(());
     }
 
-    // Stream validation
     if let Some(stream_type_str) = config.get("type") {
         match stream_type_str.as_str() {
             "source" | "sink" => {
-                // External streams require extension
-                // Format is optional - some sources/sinks (like timer) use internal binary format
+                // 'format' is optional. Some connectors, such as timer, need none.
                 require_property(config, "extension")?;
             }
             "internal" => {
-                // Internal streams must NOT have extension or format
                 if config.get("extension").is_some() {
                     return Err(ConverterError::InvalidExpression(
                         "Stream with type='internal' cannot specify 'extension'".to_string(),
@@ -172,8 +170,8 @@ pub fn validate_with_clause(config: &FlatConfig) -> Result<(), ConverterError> {
             }
         }
     } else {
-        // No type and no extension = pure internal stream (async properties, etc.)
-        // Pure internal streams cannot have extension or format
+        // No type and no extension. A plain internal stream that may still set other
+        // options, such as async settings. The extension case returned above.
         if config.get("format").is_some() {
             return Err(ConverterError::InvalidExpression(
                 "Pure internal streams (no type) cannot specify 'format'".to_string(),
@@ -184,9 +182,7 @@ pub fn validate_with_clause(config: &FlatConfig) -> Result<(), ConverterError> {
     Ok(())
 }
 
-/// Check if a required property exists in configuration
-///
-/// Helper function for validation that returns a descriptive error if property is missing.
+/// Return an `InvalidExpression` error naming `key` when the config lacks it.
 fn require_property(config: &FlatConfig, key: &str) -> Result<(), ConverterError> {
     if !config.contains(key) {
         return Err(ConverterError::InvalidExpression(format!(
@@ -324,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_validate_with_clause_source_without_format() {
-        // Format is optional - some sources use internal binary format
+        // 'format' is optional. Some sources, such as timer, need none.
         let mut config = FlatConfig::new();
         config.set("type", "source", PropertySource::SqlWith);
         config.set("extension", "timer", PropertySource::SqlWith);
@@ -380,7 +376,7 @@ mod tests {
     #[test]
     fn test_validate_with_clause_table_with_extension() {
         let mut config = FlatConfig::new();
-        // No type + extension = TABLE (e.g., cache, jdbc)
+        // No type but an extension means a table, such as cache or jdbc
         config.set("extension", "cache", PropertySource::SqlWith);
 
         let result = validate_with_clause(&config);
@@ -390,7 +386,7 @@ mod tests {
     #[test]
     fn test_validate_with_clause_pure_internal_with_format() {
         let mut config = FlatConfig::new();
-        // No type specified (pure internal)
+        // No type and no extension means a plain internal stream
         config.set("format", "json", PropertySource::SqlWith);
 
         let result = validate_with_clause(&config);

@@ -24,11 +24,10 @@ pub enum PartitionTypeVariant {
     Range(RangePartitionType),
 }
 
-// In Java, PartitionType is an interface.
-// This struct wraps the variant and implements common traits/functionality.
+/// How one stream in a partition is split. Wraps a value or range variant.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PartitionType {
-    // Common EventFluxElement context for the PartitionType itself
+    // Position in the query text of the partition type itself.
     pub query_context_start_index: Option<(i32, i32)>,
     pub query_context_end_index: Option<(i32, i32)>,
 
@@ -36,26 +35,27 @@ pub struct PartitionType {
 }
 
 impl PartitionType {
-    // Constructors for value and range types
+    /// Wrap a value partition. The query positions start unset and are not copied from
+    /// the variant.
     pub fn new_value(value_type: ValuePartitionType) -> Self {
-        // Context for PartitionType itself might be distinct from the inner variant's context,
-        // or it could be derived/copied. For now, initializing as None.
         PartitionType {
-            query_context_start_index: None, // Or copy from value_type if appropriate
-            query_context_end_index: None,   // Or copy from value_type if appropriate
+            query_context_start_index: None,
+            query_context_end_index: None,
             variant: PartitionTypeVariant::Value(value_type),
         }
     }
 
+    /// Wrap a range partition. The query positions start unset and are not copied from
+    /// the variant.
     pub fn new_range(range_type: RangePartitionType) -> Self {
         PartitionType {
-            query_context_start_index: None, // Or copy from range_type
-            query_context_end_index: None,   // Or copy from range_type
+            query_context_start_index: None,
+            query_context_end_index: None,
             variant: PartitionTypeVariant::Range(range_type),
         }
     }
 
-    // getStreamId() from Java's PartitionType interface
+    /// Id of the stream this partition type applies to.
     pub fn get_stream_id(&self) -> &str {
         match &self.variant {
             PartitionTypeVariant::Value(v) => &v.stream_id,
@@ -63,6 +63,3 @@ impl PartitionType {
         }
     }
 }
-
-// The impl EventFluxElement for PartitionType block has been removed.
-// PartitionType now directly holds its EventFluxElement-like fields.

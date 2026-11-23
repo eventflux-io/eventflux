@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-//! Indexed variable access for pattern event collections: e[0].attr, e[last].attr
+//! Indexed access into pattern event lists, as in e[0].attr and e[last].attr.
 //!
-//! This module provides support for accessing specific events within an event collection
-//! matched by count quantifiers in pattern queries.
+//! A count step in a pattern, such as `e1=FailedLogin{3,5}`, can match many events. These
+//! types pick one event from that list.
 //!
 //! # Examples
 //!
@@ -34,19 +34,20 @@
 
 use crate::query_api::eventflux_element::EventFluxElement;
 
-/// Index specification for array access in pattern event collections
+/// Which event to pick from a pattern event list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventIndex {
-    /// Numeric index (0-based): e[0] (first), e[1] (second), e[2] (third), ...
+    /// Zero based position. e[0] is the first event, e[1] the second, and so on.
     Numeric(usize),
 
-    /// Special "last" keyword: e[last] (dynamically resolves to last event)
+    /// The `last` keyword, as in e[last]. Picks the last event at the time of reading.
     Last,
 }
 
 impl EventIndex {
-    /// Resolve index to concrete value given collection size
-    /// Returns None if index is out of bounds
+    /// Turn this into a position in a list of `collection_size` events.
+    ///
+    /// Returns `None` when the list is empty or a numeric index is past the end.
     pub fn resolve(&self, collection_size: usize) -> Option<usize> {
         if collection_size == 0 {
             return None;
@@ -57,7 +58,7 @@ impl EventIndex {
                 if *idx < collection_size {
                     Some(*idx)
                 } else {
-                    None // Out of bounds
+                    None
                 }
             }
             EventIndex::Last => Some(collection_size - 1),
@@ -65,13 +66,12 @@ impl EventIndex {
     }
 }
 
-/// Represents indexed access to events in a pattern collection: e[0].attr, e[last].attr
+/// An attribute read from one event of a pattern event list, as in e[0].attr or e[last].attr.
 ///
-/// Used for accessing specific events from event collections matched by count quantifiers.
-/// For example, in a pattern like `e1=FailedLogin{3,5}`, you can access:
-/// - `e1[0].userId` - first failed login's userId
-/// - `e1[last].timestamp` - last failed login's timestamp
-/// - `e1[2].ipAddress` - third failed login's IP address
+/// For a pattern like `e1=FailedLogin{3,5}` you can read:
+/// - `e1[0].userId`, the userId of the first failed login
+/// - `e1[last].timestamp`, the timestamp of the last failed login
+/// - `e1[2].ipAddress`, the IP address of the third failed login
 ///
 /// # Grammar Mapping
 ///
@@ -84,26 +84,26 @@ impl EventIndex {
 pub struct IndexedVariable {
     pub eventflux_element: EventFluxElement,
 
-    /// Stream ID (e.g., "e1", "e2") if specified
+    /// Pattern alias such as "e1" or "e2", if given.
     pub stream_id: Option<String>,
 
-    /// Stream position in StateEvent.stream_events[] array (e1=0, e2=1, e3=2, ...)
-    /// This is required for runtime evaluation to know which event collection to access
+    /// Position of the stream in StateEvent.stream_events, so e1 is 0, e2 is 1 and so on.
+    /// The runtime needs it to know which event list to read.
     pub stream_index: Option<i32>,
 
-    /// Index into the event collection at the stream position
+    /// Which event to pick from that list.
     pub index: EventIndex,
 
-    /// Attribute name to access from the indexed event
+    /// Attribute to read from the picked event.
     pub attribute_name: String,
 }
 
 impl IndexedVariable {
-    /// Create new indexed variable with numeric index
+    /// Build an indexed variable with a numeric index. The stream starts unset.
     ///
     /// # Arguments
-    /// * `attribute_name` - Attribute to access (e.g., "userId", "timestamp")
-    /// * `index` - Zero-based index into event collection (e.g., 0 for first, 1 for second)
+    /// * `attribute_name` - Attribute to read, such as "userId" or "timestamp"
+    /// * `index` - Zero based position in the event list, so 0 is the first event
     ///
     /// # Example
     ///
@@ -121,10 +121,10 @@ impl IndexedVariable {
         }
     }
 
-    /// Create new indexed variable with "last" keyword
+    /// Build an indexed variable that reads the last event. The stream starts unset.
     ///
     /// # Arguments
-    /// * `attribute_name` - Attribute to access from last event
+    /// * `attribute_name` - Attribute to read from the last event
     ///
     /// # Example
     ///
@@ -142,11 +142,11 @@ impl IndexedVariable {
         }
     }
 
-    /// Builder: Set stream ID and position index
+    /// Set the stream alias and its position, replacing any set before.
     ///
     /// # Arguments
-    /// * `stream_id` - Stream identifier (e.g., "e1", "e2")
-    /// * `stream_index` - Position in StateEvent (e1=0, e2=1, ...)
+    /// * `stream_id` - Pattern alias such as "e1" or "e2"
+    /// * `stream_index` - Position in the StateEvent, so e1 is 0, e2 is 1 and so on
     ///
     /// # Example
     ///
@@ -160,8 +160,6 @@ impl IndexedVariable {
         self.stream_index = Some(stream_index);
         self
     }
-
-    // Getter methods
 
     pub fn get_stream_id(&self) -> Option<&String> {
         self.stream_id.as_ref()

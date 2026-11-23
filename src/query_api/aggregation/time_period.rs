@@ -16,9 +16,8 @@
  */
 
 use crate::query_api::eventflux_element::EventFluxElement;
-// Expression is not directly part of TimePeriod fields, but Duration might be associated with values if not just enum.
-// However, Java's TimePeriod.Duration is just an enum.
 
+/// Time unit used by incremental aggregation, from seconds up to years.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum Duration {
     #[default]
@@ -31,6 +30,10 @@ pub enum Duration {
 }
 
 impl Duration {
+    /// Length of one unit in milliseconds.
+    ///
+    /// Months are a fixed 30 days and years a fixed 365 days, so this does not follow the
+    /// calendar.
     pub fn to_millis(self) -> u64 {
         match self {
             Duration::Seconds => 1000,
@@ -42,6 +45,7 @@ impl Duration {
         }
     }
 
+    /// The next larger unit, or `None` for `Years`.
     pub fn next(self) -> Option<Duration> {
         match self {
             Duration::Seconds => Some(Duration::Minutes),
@@ -69,7 +73,7 @@ pub struct TimePeriod {
 }
 
 impl TimePeriod {
-    // Private constructor as in Java, use factory methods.
+    // Private. Build through range() or interval().
     fn new(operator: Operator, durations: Vec<Duration>) -> Self {
         Self {
             eventflux_element: EventFluxElement::default(),
@@ -78,15 +82,14 @@ impl TimePeriod {
         }
     }
 
-    // Corresponds to TimePeriod.range(Duration begging, Duration end)
+    /// A period covering every unit from `start` to `end`. Stores just the two ends.
     pub fn range(start: Duration, end: Duration) -> Self {
         Self::new(Operator::Range, vec![start, end])
     }
 
-    // Corresponds to TimePeriod.interval(Duration... durations)
+    /// A period made of the listed units.
     pub fn interval(durations: Vec<Duration>) -> Self {
-        // Java uses varargs, which implies at least one.
-        // An empty Vec<Duration> for interval might be valid or not depending on EventFlux logic.
+        // An empty list is not rejected here.
         Self::new(Operator::Interval, durations)
     }
 }

@@ -16,9 +16,9 @@
  */
 
 use crate::query_api::eventflux_element::EventFluxElement;
-// Annotation is not used here as Java OnDemandQuery doesn't have annotations field.
+// Not needed. OnDemandQuery has no annotations.
 // use crate::query_api::annotation::Annotation;
-use super::{OutputEventType, OutputStream}; // Use parent module's re-exports
+use super::{OutputEventType, OutputStream};
 use crate::query_api::execution::query::input::InputStore;
 use crate::query_api::execution::query::output::output_stream::{
     DeleteStreamAction, OutputStreamAction, UpdateOrInsertStreamAction, UpdateStreamAction,
@@ -27,8 +27,8 @@ use crate::query_api::execution::query::output::stream::UpdateSet;
 use crate::query_api::execution::query::selection::Selector;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)] // Added Eq, Hash, Copy
-#[derive(Default)]
+/// What an on demand query does. Defaults to `Select`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum OnDemandQueryType {
     Insert,
     Delete,
@@ -39,34 +39,35 @@ pub enum OnDemandQueryType {
     Find,
 }
 
-#[derive(Clone, Debug, PartialEq)] // Default will be custom via new()
+/// A one off query run against a table, window or aggregation, outside the event flow.
+#[derive(Clone, Debug, PartialEq)]
 pub struct OnDemandQuery {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
     pub input_store: Option<InputStore>,
     pub selector: Selector,
     pub output_stream: OutputStream,
+    /// `None` until set with `set_type`.
     pub on_demand_query_type: Option<OnDemandQueryType>,
-    // No annotations field in Java OnDemandQuery
 }
 
 impl OnDemandQuery {
+    /// An empty query with a default selector, a return stream as output and no type.
     pub fn new() -> Self {
         OnDemandQuery {
             eventflux_element: EventFluxElement::default(),
             input_store: None,
             selector: Selector::new(),
             output_stream: OutputStream::default_return_stream(),
-            on_demand_query_type: None, // Or Some(OnDemandQueryType::default())
+            on_demand_query_type: None,
         }
     }
 
-    // Static factory from Java
+    /// Same as `new`. Starts a builder chain.
     pub fn query() -> Self {
         Self::new()
     }
 
-    // Builder methods
     pub fn from(mut self, input_store: InputStore) -> Self {
         self.input_store = Some(input_store);
         self
@@ -77,6 +78,7 @@ impl OnDemandQuery {
         self
     }
 
+    /// Set the output. An output with no event type gets `CurrentEvents`.
     pub fn out_stream(mut self, output_stream: OutputStream) -> Self {
         self.output_stream = output_stream;
         if self.output_stream.get_output_event_type().is_none() {
@@ -91,6 +93,9 @@ impl OnDemandQuery {
         self
     }
 
+    // The *_by methods below replace the output with a table action that emits
+    // CurrentEvents. Aliases stay None because this is the code API, not SQL.
+
     pub fn delete_by(
         mut self,
         output_table_id: String,
@@ -99,7 +104,7 @@ impl OnDemandQuery {
         let action = DeleteStreamAction {
             target_id: output_table_id,
             on_delete_expression: on_deleting_expression,
-            target_alias: None, // Programmatic API, no SQL alias
+            target_alias: None,
             source_alias: None,
         };
         self.output_stream = OutputStream::new(
@@ -187,8 +192,4 @@ impl Default for OnDemandQuery {
     }
 }
 
-// EventFluxElement is composed. Access via self.eventflux_element.
-// No direct impl of EventFluxElement trait needed on OnDemandQuery itself if using composition and public field.
-// However, Java's OnDemandQuery *is* a EventFluxElement. So, if we want to pass OnDemandQuery
-// where a dyn EventFluxElement is expected, it should implement the trait (by delegating).
-// For now, assuming direct access to composed `eventflux_element` is sufficient, or this will be added later.
+// Read the query positions through the public eventflux_element field.

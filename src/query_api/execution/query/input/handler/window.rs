@@ -15,26 +15,23 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.handler.Window
-// Implements StreamHandler and Extension in Java.
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A window applied to an input stream, such as `length(10)`. Exported as `WindowHandler`
+/// from the handler module.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Window {
-    // Aliased as WindowHandler in handler/mod.rs
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Extension fields
     pub namespace: Option<String>,
-    pub name: String, // 'function' in Java, but 'name' for window type is clear
+    /// Window type name, such as `length` or `time`.
+    pub name: String,
 
-    // Window specific fields
     pub parameters: Vec<Expression>,
 }
 
 impl Window {
-    // Constructor requires name. Namespace and parameters can be defaulted.
     pub fn new(name: String, namespace: Option<String>, parameters: Vec<Expression>) -> Self {
         Window {
             eventflux_element: EventFluxElement::default(),
@@ -44,12 +41,12 @@ impl Window {
         }
     }
 
-    // Corresponds to getParameters()
     pub fn get_parameters(&self) -> &[Expression] {
         &self.parameters
     }
 
-    // Helper for StreamHandlerTrait's get_parameters_as_option_vec
+    // Used by StreamHandlerTrait::get_parameters_as_option_vec. Gives None when there are
+    // no parameters.
     pub(super) fn get_parameters_ref_internal(&self) -> Option<Vec<&Expression>> {
         if self.parameters.is_empty() {
             None
@@ -59,7 +56,7 @@ impl Window {
     }
 }
 
-// Extension trait (conceptual)
+// Possible Extension trait shared with StreamFunction. Not used.
 // pub trait Extension {
 //     fn get_namespace(&self) -> Option<&str>;
 //     fn get_name(&self) -> &str;

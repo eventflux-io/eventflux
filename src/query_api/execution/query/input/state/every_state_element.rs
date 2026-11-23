@@ -15,19 +15,18 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.state.EveryStateElement
 use super::state_element::StateElement;
-use crate::query_api::eventflux_element::EventFluxElement; // Recursive definition
-                                                           // Expression is not used here as per Java structure. 'within' is on StateInputStream.
+use crate::query_api::eventflux_element::EventFluxElement;
 
-#[derive(Clone, Debug, PartialEq)] // Default is not straightforward
+/// An EVERY pattern step. Restarts matching of the inner element after each match.
+///
+/// Has no `Default` because the inner element is required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct EveryStateElement {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // EveryStateElement fields
     pub state_element: Box<StateElement>,
-    // The 'within' clause is associated with the whole pattern in StateInputStream,
-    // not with individual 'every' elements in the Java API.
+    // No WITHIN here. It applies to the whole pattern and lives on StateInputStream.
 }
 
 impl EveryStateElement {
@@ -38,5 +37,3 @@ impl EveryStateElement {
         }
     }
 }
-
-// No Default derive due to required Box<StateElement>.

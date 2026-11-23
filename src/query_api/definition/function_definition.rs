@@ -15,25 +15,26 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.definition.FunctionDefinition
 use crate::query_api::annotation::Annotation;
 use crate::query_api::definition::attribute::Type as AttributeType;
 use crate::query_api::eventflux_element::EventFluxElement;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A user defined function written in a script language.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct FunctionDefinition {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // FunctionDefinition fields
     pub id: String,
+    /// Script language the body is written in.
     pub language: String,
+    /// Function source code.
     pub body: String,
-    pub return_type: AttributeType, // Default for AttributeType::OBJECT
+    /// Defaults to `AttributeType::OBJECT`.
+    pub return_type: AttributeType,
     pub annotations: Vec<Annotation>,
 }
 
 impl FunctionDefinition {
-    // Constructor requiring all essential fields.
     pub fn new(id: String, language: String, body: String, return_type: AttributeType) -> Self {
         FunctionDefinition {
             eventflux_element: EventFluxElement::default(),
@@ -45,22 +46,16 @@ impl FunctionDefinition {
         }
     }
 
-    // Builder-style methods from Java
-    // These are now associated functions that construct a new FunctionDefinition
-    // or modify an existing one if they take `mut self`.
-    // The Java API implies these are builder steps on a new object.
-
-    // Static factories for builder pattern start
+    /// Start a builder chain with only the id set. Language and body start empty and the
+    /// return type starts as `OBJECT`.
     pub fn id(id: String) -> Self {
-        // Starts the build with an ID
         FunctionDefinition {
             id,
             annotations: Vec::new(),
-            ..Default::default() // Sets eventflux_element, language, body, return_type to default
+            ..Default::default()
         }
     }
 
-    // Methods to modify fields (fluent interface)
     pub fn language(mut self, language: String) -> Self {
         self.language = language;
         self
@@ -71,7 +66,7 @@ impl FunctionDefinition {
         self
     }
 
-    // Renamed from `type` in Java
+    // Not named `type` because that is a Rust keyword.
     pub fn return_type(mut self, return_type: AttributeType) -> Self {
         self.return_type = return_type;
         self
@@ -83,9 +78,7 @@ impl FunctionDefinition {
     }
 }
 
-// Removed: impl From<EventFluxElement> for FunctionDefinition
-
-// For direct field access via Deref, if desired:
+// Possible Deref impls, if callers ever need direct access to the EventFluxElement fields.
 // impl std::ops::Deref for FunctionDefinition {
 //     type Target = EventFluxElement;
 //     fn deref(&self) -> &Self::Target { &self.eventflux_element }

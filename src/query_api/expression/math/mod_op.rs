@@ -15,14 +15,13 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.math.Mod
 use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::expression::Expression; // Main Expression enum
+use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq)] // Removed Default
+/// Remainder, `left_value % right_value`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ModOp {
-    // Renamed from Mod to ModOp
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
     pub left_value: Box<Expression>,
     pub right_value: Box<Expression>,

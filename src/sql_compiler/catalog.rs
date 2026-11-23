@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-//! SQL Catalog - Schema Management System
+//! SQL catalog.
 //!
-//! Provides schema management for SQL queries, tracking stream and table definitions.
+//! Keeps the stream, table and trigger definitions that SQL queries are checked against.
 
 use crate::query_api::definition::abstract_definition::AbstractDefinition;
 use crate::query_api::definition::attribute::{Attribute, Type as AttributeType};
@@ -32,31 +32,30 @@ use std::sync::Arc;
 use super::error::{ApplicationError, CatalogError};
 use super::type_inference::TypeInferenceEngine;
 
-/// A relation that can appear in SQL queries (either a stream or a table)
+/// A stream or a table, as named in a SQL query.
 ///
-/// In EventFlux SQL, both streams and tables can appear in FROM and JOIN clauses.
-/// This enum provides a unified type for schema lookups and validation.
+/// Gives one type for schema lookups and checks, whichever kind the name refers to.
 ///
 /// # Semantics
 ///
-/// - **Stream**: Temporal data source with time-ordered events
-/// - **Table**: Stateful lookup table (cache or database-backed)
+/// - **Stream**: A source of events in time order
+/// - **Table**: A stored lookup table, in memory or backed by a database
 ///
 /// # Query API vs Runtime
 ///
-/// The Query API layer uses `SingleInputStream` to reference both streams and tables
-/// by name (late binding). The runtime layer determines the actual type by checking
-/// `EventFluxApp.table_definition_map` and creates the appropriate processor:
+/// The Query API names streams and tables the same way, through `SingleInputStream`.
+/// The runtime works out which one it is by checking `EventFluxApp.table_definition_map`,
+/// and picks the processor:
 ///
-/// - Stream-Stream JOIN → `JoinProcessor` (temporal windowed join)
-/// - Stream-Table JOIN → `TableJoinProcessor` (enrichment lookup)
+/// - Stream to stream JOIN → `JoinProcessor` (join over windows)
+/// - Stream to table JOIN → `TableJoinProcessor` (lookup to enrich each event)
 ///
-/// This separation allows:
-/// - Schema-independent query serialization
-/// - Runtime optimization based on data statistics
-/// - Flexible execution strategies
+/// So the query structures do not need to know the schema.
 ///
 /// # Examples
+///
+/// The last query below is rejected. The converter returns `DirectTableQuery` because
+/// a table must be used through a JOIN.
 ///
 /// ```sql
 /// -- Stream-Stream JOIN (temporal)
@@ -70,18 +69,13 @@ use super::type_inference::TypeInferenceEngine;
 /// ```
 #[derive(Debug, Clone)]
 pub enum Relation {
-    /// A stream definition (temporal event source)
     Stream(Arc<StreamDefinition>),
 
-    /// A table definition (stateful lookup table)
     Table(Arc<TableDefinition>),
 }
 
 impl Relation {
-    /// Get the abstract definition (schema) from this relation
-    ///
-    /// Returns the schema information (attributes, types) regardless of whether
-    /// this is a stream or table. Both share the `AbstractDefinition` base type.
+    /// The schema (attribute names and types), for a stream or a table alike.
     pub fn abstract_definition(&self) -> &AbstractDefinition {
         match self {
             Relation::Stream(stream) => &stream.abstract_definition,
@@ -89,35 +83,34 @@ impl Relation {
         }
     }
 
-    /// Check if this relation is a stream
     pub fn is_stream(&self) -> bool {
         matches!(self, Relation::Stream(_))
     }
 
-    /// Check if this relation is a table
     pub fn is_table(&self) -> bool {
         matches!(self, Relation::Table(_))
     }
 }
 
-/// Information extracted from CREATE STREAM statement
+/// The name and columns of a CREATE STREAM statement.
 #[derive(Debug, Clone)]
 pub struct CreateStreamInfo {
     pub name: String,
     pub columns: Vec<ColumnDef>,
 }
 
-/// SQL Catalog manages stream, table, and trigger schemas
+/// Holds the stream, table and trigger definitions known to a SQL application, plus
+/// stream aliases.
 #[derive(Debug, Clone)]
 pub struct SqlCatalog {
     streams: HashMap<String, Arc<StreamDefinition>>,
     tables: HashMap<String, Arc<TableDefinition>>,
     triggers: HashMap<String, Arc<TriggerDefinition>>,
+    /// Alias to real stream name.
     aliases: HashMap<String, String>,
 }
 
 impl SqlCatalog {
-    /// Create a new empty catalog
     pub fn new() -> Self {
         SqlCatalog {
             streams: HashMap::new(),
@@ -127,35 +120,37 @@ impl SqlCatalog {
         }
     }
 
-    /// Register a trigger definition
+    /// Register a trigger, replacing any trigger with the same name.
     ///
-    /// Triggers are also registered as streams so they can be queried in FROM clauses.
-    /// Trigger streams have no schema (they emit empty events) but can be joined or
-    /// used to generate derived events using functions like now().
+    /// Also registers a stream of the same name so queries can read it in FROM. That
+    /// stream has no attributes in the catalog, even though the runtime gives trigger
+    /// events a `triggered_time` LONG. Queries can still join it or build values with
+    /// functions like now(). It also silently replaces any stream with that name, with no
+    /// duplicate check.
     pub fn register_trigger(&mut self, trigger: TriggerDefinition) {
         let trigger_name = trigger.id.clone();
 
-        // Register the trigger itself
         self.triggers
             .insert(trigger_name.clone(), Arc::new(trigger));
 
-        // Also register as a stream so queries can SELECT FROM trigger_name
-        // The stream has no attributes (trigger events are empty)
         let stream_def = StreamDefinition::new(trigger_name.clone());
         self.streams.insert(trigger_name, Arc::new(stream_def));
     }
 
-    /// Get a trigger definition by name
     pub fn get_trigger(&self, name: &str) -> Option<Arc<TriggerDefinition>> {
         self.triggers.get(name).map(Arc::clone)
     }
 
-    /// Get all trigger names
+    /// All trigger names, in no set order.
     pub fn get_trigger_names(&self) -> Vec<String> {
         self.triggers.keys().cloned().collect()
     }
 
-    /// Register a stream definition
+    /// Register a stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CatalogError::DuplicateStream` if a stream with that name exists.
     pub fn register_stream(
         &mut self,
         name: String,
@@ -168,24 +163,26 @@ impl SqlCatalog {
         Ok(())
     }
 
-    /// Register a table definition
+    /// Register a table. Unlike streams, a table with the same name is silently replaced.
     pub fn register_table(&mut self, name: String, definition: TableDefinition) {
         self.tables.insert(name, Arc::new(definition));
     }
 
-    /// Register an alias for a stream
+    /// Map an alias to a stream name, replacing any earlier mapping for that alias.
     pub fn register_alias(&mut self, alias: String, stream_name: String) {
         self.aliases.insert(alias, stream_name);
     }
 
-    /// Get a stream definition by name (or alias)
+    /// Look up a stream by its name, or else by an alias.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CatalogError::UnknownStream` if neither matches.
     pub fn get_stream(&self, name: &str) -> Result<Arc<StreamDefinition>, CatalogError> {
-        // Try direct lookup
         if let Some(def) = self.streams.get(name) {
             return Ok(Arc::clone(def));
         }
 
-        // Try alias lookup
         if let Some(actual_name) = self.aliases.get(name) {
             if let Some(def) = self.streams.get(actual_name) {
                 return Ok(Arc::clone(def));
@@ -195,15 +192,16 @@ impl SqlCatalog {
         Err(CatalogError::UnknownStream(name.to_string()))
     }
 
-    /// Get a table definition by name
+    /// Look up a table by name. Aliases are not checked.
     pub fn get_table(&self, name: &str) -> Option<Arc<TableDefinition>> {
         self.tables.get(name).map(Arc::clone)
     }
 
-    /// Get a relation (stream or table) by name for use in FROM/JOIN clauses
+    /// Look up a stream or table by name, for FROM and JOIN clauses.
     ///
-    /// This is the unified lookup method for any relation that can appear in SQL queries.
-    /// Use this instead of `get_stream()` or `get_table()` when you need to handle both.
+    /// Use this instead of `get_stream()` or `get_table()` when either kind is fine.
+    /// Streams are checked first, including aliases, so a stream wins over a table with
+    /// the same name.
     ///
     /// # Arguments
     ///
@@ -230,12 +228,10 @@ impl SqlCatalog {
     /// let schema = relation.abstract_definition();
     /// ```
     pub fn get_relation(&self, name: &str) -> Result<Relation, CatalogError> {
-        // Try stream first (more common case)
         if let Ok(stream) = self.get_stream(name) {
             return Ok(Relation::Stream(stream));
         }
 
-        // Try table
         if let Some(table) = self.get_table(name) {
             return Ok(Relation::Table(table));
         }
@@ -243,28 +239,23 @@ impl SqlCatalog {
         Err(CatalogError::UnknownRelation(name.to_string()))
     }
 
-    /// Check if a relation (stream or table) exists
-    ///
-    /// Fast existence check without retrieving the full definition.
-    /// Useful for validation without needing the schema information.
+    /// Whether a stream (by name or alias) or a table with this name exists.
     pub fn has_relation(&self, name: &str) -> bool {
         self.get_stream(name).is_ok() || self.get_table(name).is_some()
     }
 
-    /// Check if a column exists in a relation (stream or table)
-    ///
-    /// Uses unified relation lookup to check both streams and tables.
-    /// Commonly used for validating column references in WHERE/ON clauses.
+    /// Whether a stream or table has a column with this name. Used to check column
+    /// references in WHERE and ON clauses.
     ///
     /// # Arguments
     ///
     /// * `relation_name` - The name of the stream or table
-    /// * `column_name` - The name of the column/attribute to check
+    /// * `column_name` - The name of the column to check
     ///
     /// # Returns
     ///
     /// * `true` if the column exists in the relation
-    /// * `false` if the relation doesn't exist or doesn't have that column
+    /// * `false` if the relation does not exist or has no such column
     pub fn has_column(&self, relation_name: &str, column_name: &str) -> bool {
         self.get_relation(relation_name)
             .map(|relation| {
@@ -277,7 +268,12 @@ impl SqlCatalog {
             .unwrap_or(false)
     }
 
-    /// Get column type from a relation (stream or table)
+    /// The type of a column in a stream or table.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CatalogError::UnknownRelation` if there is no such stream or table, or
+    /// `CatalogError::UnknownColumn` if it has no such column.
     pub fn get_column_type(
         &self,
         relation_name: &str,
@@ -296,18 +292,22 @@ impl SqlCatalog {
             })
     }
 
-    /// Get all columns from a relation (stream or table)
+    /// A copy of every column of a stream or table, in schema order.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CatalogError::UnknownRelation` if there is no such stream or table.
     pub fn get_all_columns(&self, relation_name: &str) -> Result<Vec<Attribute>, CatalogError> {
         let relation = self.get_relation(relation_name)?;
         Ok(relation.abstract_definition().get_attribute_list().to_vec())
     }
 
-    /// Get all stream names
+    /// All stream names, including trigger streams, in no set order.
     pub fn get_stream_names(&self) -> Vec<String> {
         self.streams.keys().cloned().collect()
     }
 
-    /// Check if catalog is empty
+    /// Whether there are no streams, tables or triggers. Aliases are not counted.
     pub fn is_empty(&self) -> bool {
         self.streams.is_empty() && self.tables.is_empty() && self.triggers.is_empty()
     }
@@ -319,7 +319,7 @@ impl Default for SqlCatalog {
     }
 }
 
-/// Represents a complete SQL application with catalog and execution elements
+/// A parsed SQL application. Its catalog plus its queries and partitions in order.
 #[derive(Debug, Clone)]
 pub struct SqlApplication {
     pub catalog: SqlCatalog,
@@ -327,7 +327,6 @@ pub struct SqlApplication {
 }
 
 impl SqlApplication {
-    /// Create a new SQL application
     pub fn new(catalog: SqlCatalog, execution_elements: Vec<ExecutionElement>) -> Self {
         SqlApplication {
             catalog,
@@ -335,24 +334,21 @@ impl SqlApplication {
         }
     }
 
-    /// Get the catalog
     pub fn get_catalog(&self) -> &SqlCatalog {
         &self.catalog
     }
 
-    /// Get the execution elements
     pub fn get_execution_elements(&self) -> &[ExecutionElement] {
         &self.execution_elements
     }
 
-    /// Check if application is empty
+    /// Whether there are no queries or partitions. Definitions are not counted.
     pub fn is_empty(&self) -> bool {
         self.execution_elements.is_empty()
     }
 
-    /// Extract pattern aliases from a Query's StateInputStream
-    ///
-    /// Returns a vector of (alias, stream_id) pairs for pattern queries.
+    /// The (alias, stream_id) pairs of a pattern query, such as ("e1", "Stream1") for
+    /// `e1=Stream1`. Empty for any other kind of query.
     fn extract_pattern_aliases_from_query(
         query: &crate::query_api::execution::query::Query,
     ) -> Vec<(String, String)> {
@@ -367,7 +363,8 @@ impl SqlApplication {
         aliases
     }
 
-    /// Recursively collect (alias, stream_id) pairs from a StateElement
+    /// Walk a pattern tree and append the (alias, stream_id) pair of every stream that has
+    /// an alias.
     fn collect_pattern_aliases_from_state_element(
         element: &crate::query_api::execution::query::input::state::StateElement,
         aliases: &mut Vec<(String, String)>,
@@ -416,10 +413,10 @@ impl SqlApplication {
         }
     }
 
-    /// Extract JOIN aliases from a Query's JoinInputStream
+    /// The (alias, stream_id) pairs of a JOIN query. Empty for any other kind of query.
     ///
-    /// Returns a vector of (alias, stream_id) pairs for JOIN queries.
-    /// For example: `FROM Stream1 AS a JOIN Stream2 AS b` returns [("a", "Stream1"), ("b", "Stream2")]
+    /// For example `FROM Stream1 AS a JOIN Stream2 AS b` gives
+    /// [("a", "Stream1"), ("b", "Stream2")].
     fn extract_join_aliases_from_query(
         query: &crate::query_api::execution::query::Query,
     ) -> Vec<(String, String)> {
@@ -428,12 +425,10 @@ impl SqlApplication {
         let mut aliases = Vec::new();
 
         if let Some(InputStream::Join(join)) = query.get_input_stream() {
-            // Extract left stream alias
             if let Some(ref_id) = join.left_input_stream.get_stream_reference_id_str() {
                 let stream_id = join.left_input_stream.get_stream_id_str().to_string();
                 aliases.push((ref_id.to_string(), stream_id));
             }
-            // Extract right stream alias
             if let Some(ref_id) = join.right_input_stream.get_stream_reference_id_str() {
                 let stream_id = join.right_input_stream.get_stream_id_str().to_string();
                 aliases.push((ref_id.to_string(), stream_id));
@@ -443,31 +438,37 @@ impl SqlApplication {
         aliases
     }
 
-    /// Process output streams using type inference (called before moving catalog)
+    /// Add a stream definition to `app` for each query output that has none yet.
+    ///
+    /// Attribute types come from type inference on the SELECT list. An attribute with no
+    /// AS name takes the variable name, or "output" for any other expression. A query with
+    /// no target writes to "OutputStream". Must run before the catalog is moved into `app`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if type inference fails for an output attribute.
     fn process_output_streams(&mut self, app: &mut EventFluxApp) -> Result<(), ApplicationError> {
-        // First, extract and register all pattern aliases from queries
-        // This allows type inference to resolve aliased column references like e1.price
-        // Also extract JOIN aliases for queries like "FROM Stream1 AS a JOIN Stream2 AS b"
+        // Register every pattern and JOIN alias first, so type inference can resolve
+        // references like e1.price. Aliases go into one shared map, so the same alias in
+        // two queries ends up pointing at the stream from the later query.
         for elem in &self.execution_elements {
             if let ExecutionElement::Query(query) = elem {
-                // Extract pattern aliases (e.g., PATTERN (e1=Stream1 -> e2=Stream2))
+                // Pattern aliases, as in PATTERN (e1=Stream1 -> e2=Stream2)
                 let aliases = Self::extract_pattern_aliases_from_query(query);
                 for (alias, stream_id) in aliases {
                     self.catalog.register_alias(alias, stream_id);
                 }
-                // Extract JOIN aliases (e.g., FROM Stream1 AS a JOIN Stream2 AS b)
+                // JOIN aliases, as in FROM Stream1 AS a JOIN Stream2 AS b
                 let join_aliases = Self::extract_join_aliases_from_query(query);
                 for (alias, stream_id) in join_aliases {
                     self.catalog.register_alias(alias, stream_id);
                 }
             } else if let ExecutionElement::Partition(partition) = elem {
                 for query in &partition.query_list {
-                    // Extract pattern aliases
                     let aliases = Self::extract_pattern_aliases_from_query(query);
                     for (alias, stream_id) in aliases {
                         self.catalog.register_alias(alias, stream_id);
                     }
-                    // Extract JOIN aliases
                     let join_aliases = Self::extract_join_aliases_from_query(query);
                     for (alias, stream_id) in join_aliases {
                         self.catalog.register_alias(alias, stream_id);
@@ -487,7 +488,8 @@ impl SqlApplication {
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "OutputStream".to_string());
 
-                    // Don't create StreamDefinition for tables
+                    // Meant to skip table targets. The tables are only copied into `app`
+                    // after this runs, so the map is still empty here.
                     if !app.table_definition_map.contains_key(&target_stream_name) {
                         app.stream_definition_map
                             .entry(target_stream_name.clone())
@@ -496,7 +498,6 @@ impl SqlApplication {
                                 let mut output_stream =
                                     StreamDefinition::new(target_stream_name.clone());
 
-                                // Infer types for all output attributes
                                 let context = type_engine.build_context_from_query(query);
                                 for output_attr in selector.get_selection_list() {
                                     let attr_name =
@@ -571,15 +572,21 @@ impl SqlApplication {
         Ok(())
     }
 
-    /// Convert to EventFluxApp for runtime creation
+    /// Build the EventFluxApp the runtime is created from.
+    ///
+    /// Inferred output streams are added first. Declared streams are copied in after, so a
+    /// declared stream replaces an inferred one with the same name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if type inference fails for an output attribute. See
+    /// `process_output_streams`.
     pub fn to_eventflux_app(mut self, app_name: String) -> Result<EventFluxApp, ApplicationError> {
         let mut app = EventFluxApp::new(app_name);
 
-        // Process output streams BEFORE moving catalog data
-        // This allows us to use type_engine with catalog reference
+        // Must run while the catalog is still here, because type inference reads it.
         self.process_output_streams(&mut app)?;
 
-        // Move catalog data into app
         for (stream_name, stream_def) in self.catalog.streams {
             app.stream_definition_map.insert(stream_name, stream_def);
         }
@@ -588,12 +595,10 @@ impl SqlApplication {
             app.table_definition_map.insert(table_name, table_def);
         }
 
-        // Move triggers into app
         for (trigger_name, trigger_def) in self.catalog.triggers {
             app.trigger_definition_map.insert(trigger_name, trigger_def);
         }
 
-        // Add all execution elements
         for elem in self.execution_elements {
             app.add_execution_element(elem);
         }

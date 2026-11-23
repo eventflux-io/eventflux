@@ -15,15 +15,14 @@
  * limitations under the License.
  */
 
-pub mod output_stream; // Defines the main OutputStream enum (wrapping actions) and OutputEventType
+pub mod output_stream; // OutputStream, its action types and OutputEventType
 pub mod ratelimit;
-pub mod stream; // Added this module for specific stream actions like SetAttribute
+pub mod stream; // SetAttribute and UpdateSet for UPDATE SET clauses
 
 pub use self::output_stream::{OutputEventType, OutputStream};
-// SetAttributePlaceholder was removed from output_stream.rs. SetAttribute is now re-exported below.
 
 pub use self::ratelimit::{
     EventsOutputRate, OutputRate, OutputRateBehavior, OutputRateVariant, SnapshotOutputRate,
     TimeOutputRate,
 };
-pub use self::stream::{SetAttribute, UpdateSet}; // Re-exporting SetAttribute and UpdateSet
+pub use self::stream::{SetAttribute, UpdateSet};

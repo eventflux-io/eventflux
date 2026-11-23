@@ -15,15 +15,14 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.stream.JoinInputStream
 use super::input_stream::InputStreamTrait;
 use super::single_input_stream::SingleInputStream;
 use crate::query_api::aggregation::Within;
 use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::expression::Expression; // Using the actual Within struct
+use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)] // Added Eq, Hash, Copy
-#[derive(Default)]
+/// Kind of join. Defaults to `Join`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum Type {
     #[default]
     Join,
@@ -33,8 +32,8 @@ pub enum Type {
     FullOuterJoin,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)] // Added Eq, Hash, Copy
-#[derive(Default)]
+/// Which side's arriving events start a join. Defaults to `All`, meaning both sides.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum EventTrigger {
     Left,
     Right,
@@ -42,18 +41,21 @@ pub enum EventTrigger {
     All,
 }
 
-#[derive(Clone, Debug, PartialEq)] // Default will be custom
-#[derive(Default)]
+/// A join of two single streams.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct JoinInputStream {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
     pub left_input_stream: Box<SingleInputStream>,
     pub join_type: Type,
     pub right_input_stream: Box<SingleInputStream>,
+    /// The ON condition, or `None` for no condition.
     pub on_compare: Option<Expression>,
 
     pub trigger: EventTrigger,
-    pub within: Option<Within>, // Using the actual Within struct
+    /// Time range, used when one side is an aggregation.
+    pub within: Option<Within>,
+    /// Time unit to read at, used when one side is an aggregation.
     pub per: Option<Expression>,
 }
 
@@ -64,7 +66,7 @@ impl JoinInputStream {
         right_input_stream: SingleInputStream,
         on_compare: Option<Expression>,
         trigger: EventTrigger,
-        within: Option<Within>, // Using the actual Within struct
+        within: Option<Within>,
         per: Option<Expression>,
     ) -> Self {
         JoinInputStream {
@@ -80,6 +82,7 @@ impl JoinInputStream {
     }
 }
 
+// Left side ids come first, then right side ids.
 impl InputStreamTrait for JoinInputStream {
     fn get_all_stream_ids(&self) -> Vec<String> {
         let mut ids = self.left_input_stream.get_all_stream_ids();

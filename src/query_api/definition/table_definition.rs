@@ -15,33 +15,30 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.definition.TableDefinition
 use crate::query_api::annotation::Annotation;
 use crate::query_api::definition::abstract_definition::AbstractDefinition;
-use crate::query_api::definition::attribute::{Attribute, Type as AttributeType}; // Assuming Annotation is defined
+use crate::query_api::definition::attribute::{Attribute, Type as AttributeType};
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A table with a unique id, a list of attributes and optional SQL WITH properties.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TableDefinition {
-    // Composition for inheritance from AbstractDefinition
     pub abstract_definition: AbstractDefinition,
 
-    /// Configuration properties from SQL WITH clause
+    /// Properties from the SQL WITH clause, collected during parsing.
     ///
-    /// Stores the FlatConfig extracted during SQL parsing. These properties have
-    /// the highest priority in the 4-layer configuration merge:
+    /// These win over every other config source when the runtime merges them.
     ///
     /// Priority (highest to lowest):
     /// 1. SQL WITH (this field)
-    /// 2. TOML table-specific
-    /// 3. TOML application-wide
-    /// 4. Rust defaults
+    /// 2. CLI `--set` overrides, already applied to the YAML config
+    /// 3. YAML config file
+    /// 4. Code defaults
     ///
-    /// None if no WITH clause was specified in SQL.
+    /// `None` when the SQL has no WITH clause.
     pub with_config: Option<crate::core::config::stream_config::FlatConfig>,
 }
 
 impl TableDefinition {
-    // Constructor that takes an id, as per Java's `TableDefinition.id(id)`
     pub fn new(id: String) -> Self {
         TableDefinition {
             abstract_definition: AbstractDefinition::new(id),
@@ -49,14 +46,15 @@ impl TableDefinition {
         }
     }
 
-    // Static factory method `id` from Java
+    /// Same as `new`. Starts a builder chain.
     pub fn id(table_id: String) -> Self {
         Self::new(table_id)
     }
 
-    // Builder-style methods, specific to TableDefinition
+    /// Add an attribute.
+    ///
+    /// A duplicate name is still added. It only prints a warning to stderr.
     pub fn attribute(mut self, attribute_name: String, attribute_type: AttributeType) -> Self {
-        // Check for duplicate attribute names and warn
         if self
             .abstract_definition
             .attribute_list
@@ -80,14 +78,14 @@ impl TableDefinition {
         self
     }
 
-    /// Set SQL WITH configuration
+    /// Set the SQL WITH clause properties, replacing any set before.
     pub fn with_config(mut self, config: crate::core::config::stream_config::FlatConfig) -> Self {
         self.with_config = Some(config);
         self
     }
 }
 
-// Provide access to AbstractDefinition fields and EventFluxElement fields
+// Access to the shared definition fields and the query positions.
 impl AsRef<AbstractDefinition> for TableDefinition {
     fn as_ref(&self) -> &AbstractDefinition {
         &self.abstract_definition
@@ -100,7 +98,7 @@ impl AsMut<AbstractDefinition> for TableDefinition {
     }
 }
 
-// Through AbstractDefinition, can access EventFluxElement
+// The EventFluxElement lives inside AbstractDefinition.
 use crate::query_api::eventflux_element::EventFluxElement;
 impl AsRef<EventFluxElement> for TableDefinition {
     fn as_ref(&self) -> &EventFluxElement {

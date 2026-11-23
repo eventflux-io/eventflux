@@ -15,16 +15,17 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.Variable
 use crate::query_api::eventflux_element::EventFluxElement;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A reference to an attribute, optionally qualified by a stream or a function.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Variable {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Variable specific fields
+    /// Stream id or alias that qualifies the attribute, as in `s.price`.
     pub stream_id: Option<String>,
     pub is_inner_stream: bool,
+    /// Position of the event when the stream matched more than once in a pattern.
     pub stream_index: Option<i32>,
     pub function_id: Option<String>,
     pub function_index: Option<i32>,
@@ -32,7 +33,7 @@ pub struct Variable {
 }
 
 impl Variable {
-    // Constructor requires attribute_name, others are optional or defaulted.
+    /// An unqualified attribute. All other fields start unset.
     pub fn new(attribute_name: String) -> Self {
         Variable {
             eventflux_element: EventFluxElement::default(),
@@ -45,7 +46,8 @@ impl Variable {
         }
     }
 
-    // Builder methods from Java
+    // The of_stream builders below set or clear is_inner_stream. Those without an index
+    // leave any earlier stream_index in place.
     pub fn of_stream(mut self, stream_id: String) -> Self {
         self.stream_id = Some(stream_id);
         self.is_inner_stream = false;
@@ -83,7 +85,6 @@ impl Variable {
         self
     }
 
-    // Getter methods
     pub fn get_attribute_name(&self) -> &String {
         &self.attribute_name
     }
@@ -109,10 +110,10 @@ impl Variable {
     }
 }
 
-// Constants like `Variable.LAST` (-2) can be defined here if needed.
+/// Index value that means the last event. Same value as `constants::LAST_INDEX`.
 pub const LAST_INDEX: i32 = -2;
 
-// Deref if needed:
+// Possible Deref impls, if callers ever need direct access to the EventFluxElement fields.
 // impl std::ops::Deref for Variable {
 //     type Target = EventFluxElement;
 //     fn deref(&self) -> &Self::Target { &self.eventflux_element }

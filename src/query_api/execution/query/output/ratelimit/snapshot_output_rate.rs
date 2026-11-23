@@ -15,15 +15,15 @@
  * limitations under the License.
  */
 
-// Corresponds to parts of io.eventflux.query.api.execution.query.output.ratelimit.SnapshotOutputRate
-
-// This struct holds the specific data for snapshot-based rate limiting.
-// EventFluxElement context is in the main OutputRate struct.
-// Snapshot implies a specific behavior (usually OutputRateBehavior::All for the snapshot period).
-
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// Snapshot output rate, as in `OUTPUT SNAPSHOT EVERY 1 sec`. Emits the full current
+/// state once per period.
+///
+/// Takes no All, First or Last behaviour. The query positions live on the wrapping
+/// OutputRate.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct SnapshotOutputRate {
-    pub time_value_millis: i64, // Defaults to 0
+    /// Period in milliseconds. Defaults to 0.
+    pub time_value_millis: i64,
 }
 
 impl SnapshotOutputRate {

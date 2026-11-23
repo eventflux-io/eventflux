@@ -15,14 +15,14 @@
  * limitations under the License.
  */
 
-// Corresponds to parts of io.eventflux.query.api.execution.query.output.ratelimit.TimeOutputRate
-
-// This struct holds the specific data for time-based rate limiting.
-// EventFluxElement context and OutputRateBehavior are in the main OutputRate struct.
-
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// Output rate limit by time, as in `OUTPUT EVERY 1 sec`.
+///
+/// The query positions and the All, First or Last behaviour live on the wrapping
+/// OutputRate and OutputRateVariant.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TimeOutputRate {
-    pub time_value_millis: i64, // Defaults to 0
+    /// Period in milliseconds. Defaults to 0.
+    pub time_value_millis: i64,
 }
 
 impl TimeOutputRate {

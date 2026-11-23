@@ -18,20 +18,21 @@
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq)] // Default is tricky due to required fields
-#[derive(Default)]
+/// Time range used when reading from an aggregation. Holds either one pattern expression
+/// or a start and end pair. The default value has all three unset.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Within {
     pub eventflux_element: EventFluxElement,
-    // In Java, timeRange can hold one (pattern) or two (start, end) expressions.
-    // We can model this as an enum or distinct fields.
-    // Using distinct fields for clarity, matching the two factory methods.
-    pub pattern_expression: Option<Box<Expression>>, // For within(Expression pattern)
-    pub start_expression: Option<Box<Expression>>,   // For within(Expression start, Expression end)
-    pub end_expression: Option<Box<Expression>>,     // For within(Expression start, Expression end)
+    /// Set by `new_with_pattern`.
+    pub pattern_expression: Option<Box<Expression>>,
+    /// Set by `new_with_range`, together with `end_expression`.
+    pub start_expression: Option<Box<Expression>>,
+    /// Set by `new_with_range`, together with `start_expression`.
+    pub end_expression: Option<Box<Expression>>,
 }
 
 impl Within {
-    // Corresponds to Java's within(Expression pattern)
+    /// Range given by a single pattern expression.
     pub fn new_with_pattern(pattern: Expression) -> Self {
         Self {
             eventflux_element: EventFluxElement::default(),
@@ -41,7 +42,7 @@ impl Within {
         }
     }
 
-    // Corresponds to Java's within(Expression start, Expression end)
+    /// Range given by a start and an end expression.
     pub fn new_with_range(start: Expression, end: Expression) -> Self {
         Self {
             eventflux_element: EventFluxElement::default(),
@@ -51,8 +52,8 @@ impl Within {
         }
     }
 
-    // Getter that matches Java's getTimeRange() -> List<Expression>
-    // It might be more idiomatic in Rust to provide specific getters for pattern/start/end.
+    /// All set expressions in order pattern, start, end. Gives one item for a pattern
+    /// range, two for a start and end range, and none for the default value.
     pub fn get_time_range_expressions(&self) -> Vec<&Expression> {
         let mut range = Vec::new();
         if let Some(p) = &self.pattern_expression {
@@ -67,6 +68,3 @@ impl Within {
         range
     }
 }
-
-// Default might not be very useful as either pattern or start/end is required.
-// However, if needed for Default derive on other structs that contain Option<Within>:

@@ -19,23 +19,21 @@ pub mod execution_element;
 pub mod partition;
 pub mod query;
 
-// Re-export top-level executable units
-pub use self::execution_element::{ExecutionElement, ExecutionElementTrait}; // Assuming ExecutionElementTrait exists
+// Top level runnable units.
+pub use self::execution_element::{ExecutionElement, ExecutionElementTrait};
 pub use self::query::Query;
-// If OnDemandQuery can be a top-level execution element (it's usually part of a StoreQuery or used directly by API)
+// OnDemandQuery is not an execution element. It runs on its own against a store.
 // pub use self::query::OnDemandQuery;
 pub use self::partition::Partition;
 
-// Re-export common partition types for convenience
+// Common partition types.
 pub use self::partition::{
     PartitionType, PartitionTypeVariant, RangePartitionProperty, RangePartitionType,
     ValuePartitionType,
 };
 
-// Re-export key sub-modules or types from query if they are frequently accessed via `execution::`
+// Shorter paths such as `execution::input::InputStream`, `execution::output::OutputStream`
+// and `execution::selection::Selector`.
 pub use self::query::input;
 pub use self::query::output;
 pub use self::query::selection;
-// For example, to allow `execution::input::InputStream`
-// or `execution::output::OutputStream`
-// or `execution::selection::Selector`

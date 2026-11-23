@@ -15,17 +15,19 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.state.NextStateElement
 use super::state_element::StateElement;
-use crate::query_api::eventflux_element::EventFluxElement; // Recursive definition
+use crate::query_api::eventflux_element::EventFluxElement;
 
-#[derive(Clone, Debug, PartialEq)] // Default is not straightforward due to required Box<StateElement>
+/// Two pattern steps in order, as in `A -> B`. `next_state_element` must follow
+/// `state_element`.
+///
+/// Has no `Default` because StateElement has no default value.
+#[derive(Clone, Debug, PartialEq)]
 pub struct NextStateElement {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // NextStateElement fields
     pub state_element: Box<StateElement>,
-    pub next_state_element: Box<StateElement>, // Kept as required, not Option
+    pub next_state_element: Box<StateElement>,
 }
 
 impl NextStateElement {
@@ -37,6 +39,3 @@ impl NextStateElement {
         }
     }
 }
-
-// No Default derive or custom impl for now, as it requires a default StateElement.
-// Similar to LogicalStateElement.

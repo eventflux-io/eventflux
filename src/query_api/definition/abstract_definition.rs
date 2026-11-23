@@ -15,21 +15,19 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.definition.AbstractDefinition
 use crate::query_api::annotation::Annotation;
 use crate::query_api::definition::attribute::Attribute;
-use crate::query_api::eventflux_element::EventFluxElement; // Assuming Annotation is defined as per previous steps
+use crate::query_api::eventflux_element::EventFluxElement;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// Fields shared by every definition. An id, an ordered attribute list and annotations.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct AbstractDefinition {
-    pub eventflux_element: EventFluxElement, // Renamed from 'element' and uses default initialization
+    pub eventflux_element: EventFluxElement,
 
-    // AbstractDefinition fields
     pub id: String,
+    /// Attributes in schema order.
     pub attribute_list: Vec<Attribute>,
-    // attribute_name_array is derived from attribute_list in Java,
-    // so we might not need it as a separate field in Rust if we can compute it on demand.
-    // has_definition_changed is a helper for attribute_name_array, may not be needed.
+    // Attribute names are not cached. attribute_name_list() builds them on each call.
     pub annotations: Vec<Annotation>,
 }
 
@@ -43,7 +41,6 @@ impl AbstractDefinition {
         }
     }
 
-    // Getter methods
     pub fn get_id(&self) -> &String {
         &self.id
     }
@@ -52,8 +49,7 @@ impl AbstractDefinition {
         &self.attribute_list
     }
 
-    /// Attribute names in schema order (derived on demand, mirroring Java's
-    /// `attribute_name_array`)
+    /// Attribute names in schema order. Builds a new list on every call.
     pub fn attribute_name_list(&self) -> Vec<String> {
         self.attribute_list
             .iter()
@@ -61,7 +57,8 @@ impl AbstractDefinition {
             .collect()
     }
 
-    // TODO: Builder methods from Java for attribute and annotation
+    // TODO: Add builder methods for attributes and annotations here. The concrete
+    // definitions such as StreamDefinition and TableDefinition have their own for now.
     // pub fn attribute(mut self, attribute_name: String, attribute_type: crate::query_api::definition::attribute::Type) -> Self {
     //     // TODO: checkAttribute logic
     //     self.attribute_list.push(Attribute::new(attribute_name, attribute_type));
@@ -73,8 +70,7 @@ impl AbstractDefinition {
     // }
 }
 
-// AsRef and AsMut implementations are good if direct delegation is preferred over field access.
-// If eventflux_element is public, direct access `my_def.eventflux_element` is also possible.
+// The field is public too, so `my_def.eventflux_element` works as well.
 impl AsRef<EventFluxElement> for AbstractDefinition {
     fn as_ref(&self) -> &EventFluxElement {
         &self.eventflux_element

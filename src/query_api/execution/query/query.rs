@@ -15,44 +15,46 @@
  * limitations under the License.
  */
 
-use super::{OutputEventType, OutputRate, OutputStream}; // Use parent module's re-exports
+use super::{OutputEventType, OutputRate, OutputStream};
 use crate::query_api::annotation::Annotation;
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::execution::execution_element::ExecutionElementTrait;
 use crate::query_api::execution::query::input::InputStream;
 use crate::query_api::execution::query::selection::Selector;
 
-/// Defines a EventFlux query with input, selection, output, etc.
-#[derive(Clone, Debug, PartialEq)] // Default will be custom or via new()
+/// An EventFlux query. Input, selection, output, an optional output rate and annotations.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Query {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
     pub input_stream: Option<InputStream>,
     pub selector: Selector,
     pub output_stream: OutputStream,
+    /// `None` means no output rate limit.
     pub output_rate: Option<OutputRate>,
     pub annotations: Vec<Annotation>,
 }
 
 impl Query {
+    /// An empty query with no input, an empty selector and a return stream that emits
+    /// `CurrentEvents`.
     pub fn new() -> Self {
         Query {
-            eventflux_element: EventFluxElement::default(), // Initialize composed element
+            eventflux_element: EventFluxElement::default(),
             input_stream: None,
-            selector: Selector::new(), // Java default
-            output_stream: OutputStream::default_return_stream(), // Java default
+            selector: Selector::new(),
+            output_stream: OutputStream::default_return_stream(),
             output_rate: None,
             annotations: Vec::new(),
         }
     }
 
-    // Static factory method from Java
+    /// Same as `new`. Starts a builder chain.
     #[allow(clippy::self_named_constructors)]
     pub fn query() -> Self {
         Self::new()
     }
 
-    // Builder methods
     pub fn from(mut self, input_stream: InputStream) -> Self {
         self.input_stream = Some(input_stream);
         self
@@ -75,6 +77,8 @@ impl Query {
         self
     }
 
+    // Fill in the output event type only when it is unset. AllEvents for a snapshot rate,
+    // else CurrentEvents. An event type that is already set is never changed.
     fn update_output_event_type(&mut self) {
         if self.output_stream.get_output_event_type().is_none() {
             let is_snapshot_rate = self.output_rate.as_ref().is_some_and(|r| r.is_snapshot());
@@ -93,12 +97,10 @@ impl Query {
         self
     }
 
-    // Getter for annotations, needed by ExecutionElementTrait impl
     pub fn get_annotations(&self) -> &Vec<Annotation> {
         &self.annotations
     }
 
-    // Other Getters
     pub fn get_input_stream(&self) -> Option<&InputStream> {
         self.input_stream.as_ref()
     }
@@ -122,10 +124,9 @@ impl Default for Query {
     }
 }
 
-// EventFluxElement is composed, access via `self.eventflux_element.query_context_start_index` etc.
-// Or implement Deref/DerefMut if desired for direct access.
+// Read the query positions through `self.eventflux_element`, as in
+// `self.eventflux_element.query_context_start_index`.
 
-// Implement ExecutionElementTrait for Query
 impl ExecutionElementTrait for Query {
     fn get_annotations(&self) -> &Vec<Annotation> {
         &self.annotations
@@ -146,11 +147,11 @@ mod tests {
     fn test_query_new() {
         let q = Query::new();
         assert!(q.get_input_stream().is_none());
-        assert_eq!(q.get_selector(), &Selector::new()); // Assumes Selector derives PartialEq and has a new
+        assert_eq!(q.get_selector(), &Selector::new());
         assert_eq!(
             q.get_output_stream(),
             &OutputStream::default_return_stream()
-        ); // Assumes OutputStream has PartialEq and a default
+        );
         assert!(q.get_output_rate().is_none());
         assert!(q.get_annotations().is_empty());
         assert_eq!(q.eventflux_element.query_context_start_index, None);
@@ -165,7 +166,7 @@ mod tests {
             None,
             Vec::new(),
         ));
-        let selector = Selector::new(); // Empty selector
+        let selector = Selector::new();
         let output_stream = OutputStream::default_return_stream();
         let output_rate =
             OutputRate::per_events(Constant::int(10), OutputRateBehavior::All).unwrap();
@@ -181,9 +182,8 @@ mod tests {
         assert_eq!(q.get_input_stream().unwrap(), &input_stream);
         assert_eq!(q.get_selector(), &selector);
 
-        // out_stream might modify output_stream's event type, so compare relevant fields
-        // or ensure the clone for comparison is made *after* potential modification if it matters.
-        // For this test, we check the target_id set and that event type logic is hit.
+        // out_stream() may fill in the event type, so check the target id instead of
+        // comparing the whole output stream.
         assert_eq!(q.get_output_stream().get_target_id(), None);
         assert_eq!(q.get_output_rate().unwrap(), &output_rate);
         assert_eq!(q.get_annotations().len(), 1);
@@ -194,29 +194,25 @@ mod tests {
     fn test_query_update_output_event_type() {
         let mut q = Query::query();
 
-        // Default output event type should be CurrentEvents
-        q.update_output_event_type(); // Called internally by out_stream and output, but can be called directly
+        // A new query starts with CurrentEvents. out_stream() and output() call this
+        // themselves. Here it is called directly.
+        q.update_output_event_type();
         assert_eq!(
             q.output_stream.get_output_event_type(),
             Some(OutputEventType::CurrentEvents)
         );
 
-        // If output rate is snapshot, it should be AllEvents
+        // The type is only filled in when unset. default_return_stream() already set
+        // CurrentEvents, so a snapshot rate does not change it to AllEvents.
         let snapshot_rate = OutputRate::per_snapshot(Constant::long(1000)).unwrap();
-        q = q.output(snapshot_rate); // This will call update_output_event_type
-                                     // In the current implementation `update_output_event_type` only changes
-                                     // the type if it was previously `None`. Since `OutputStream::default_return_stream`
-                                     // sets it to `CurrentEvents`, applying a snapshot rate does not modify it.
+        q = q.output(snapshot_rate);
         assert_eq!(
             q.output_stream.get_output_event_type(),
             Some(OutputEventType::CurrentEvents)
         );
 
-        // If output rate is not snapshot, and type was already set, it should not change
-        // (unless explicitly set to None first and then a non-snapshot rate is applied)
-        // Let's reset the query to test this part
+        // A type that is already set stays as it is when a non snapshot rate is added.
         let mut q2 = Query::query();
-        // Manually set an output event type
         q2.output_stream
             .set_output_event_type(OutputEventType::ExpiredEvents);
         assert_eq!(
@@ -224,19 +220,17 @@ mod tests {
             Some(OutputEventType::ExpiredEvents)
         );
 
-        // Add a non-snapshot output rate
         let events_rate =
             OutputRate::per_events(Constant::int(5), OutputRateBehavior::All).unwrap();
         q2 = q2.output(events_rate);
-        // The event type should remain ExpiredEvents because it was already set
         assert_eq!(
             q2.output_stream.get_output_event_type(),
             Some(OutputEventType::ExpiredEvents)
         );
 
-        // If output_event_type is None and a non-snapshot rate is applied, it should become CurrentEvents
+        // An unset type becomes CurrentEvents when a non snapshot rate is added.
         let mut q3 = Query::query();
-        q3.output_stream.output_event_type = None; // Explicitly set to None
+        q3.output_stream.output_event_type = None;
         let time_rate =
             OutputRate::per_time_period(Constant::long(100), OutputRateBehavior::All).unwrap();
         q3 = q3.output(time_rate);

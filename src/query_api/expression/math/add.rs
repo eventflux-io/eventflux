@@ -15,17 +15,15 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.math.Add
 use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::expression::Expression; // Main Expression enum
+use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq)] // Removed Default
+/// Addition, `left_value + right_value`. Has no `Default` because both operands are
+/// required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Add {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Add specific fields
-    // Default for Box<Expression> would be Box::new(Expression::default_variant_if_any)
-    // However, these are logically required for Add.
     pub left_value: Box<Expression>,
     pub right_value: Box<Expression>,
 }
@@ -40,7 +38,7 @@ impl Add {
     }
 }
 
-// Deref if needed:
+// Possible Deref impls, if callers ever need direct access to the EventFluxElement fields.
 // impl std::ops::Deref for Add {
 //     type Target = EventFluxElement;
 //     fn deref(&self) -> &Self::Target { &self.eventflux_element }

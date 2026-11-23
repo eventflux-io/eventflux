@@ -15,12 +15,10 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.definition.Attribute
 use crate::query_api::eventflux_element::EventFluxElement;
 
-/// Defines the data type of an attribute.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] // Added Copy for easier usage
-#[derive(Default)]
+/// Data type of an attribute. Defaults to `OBJECT`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Type {
     STRING,
     INT,
@@ -32,12 +30,11 @@ pub enum Type {
     OBJECT,
 }
 
-/// Represents an attribute with a name and a type.
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A named, typed field of a stream, table or other definition.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Attribute {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Attribute fields
     pub name: String,
     pub attribute_type: Type,
 }
@@ -51,21 +48,16 @@ impl Attribute {
         }
     }
 
-    // Getter methods
     pub fn get_name(&self) -> &String {
         &self.name
     }
 
     pub fn get_type(&self) -> &Type {
-        // Changed to return &Type to avoid clone if Type is not Copy
         &self.attribute_type
     }
 }
 
-// The From<EventFluxElement> for Attribute impl is removed as it's less relevant
-// when Attribute composes EventFluxElement directly. Construction is via new().
-
-// If direct access to EventFluxElement fields from Attribute is desired:
+// Possible Deref impls, if callers ever need direct access to the EventFluxElement fields.
 // impl std::ops::Deref for Attribute {
 //     type Target = EventFluxElement;
 //     fn deref(&self) -> &Self::Target { &self.eventflux_element }
@@ -76,14 +68,14 @@ impl Attribute {
 
 #[cfg(test)]
 mod tests {
-    use super::*; // Imports Attribute and Type enum
+    use super::*;
 
     #[test]
     fn test_attribute_creation() {
         let attr = Attribute::new("timestamp".to_string(), Type::LONG);
         assert_eq!(attr.get_name(), "timestamp");
-        assert_eq!(attr.get_type(), &Type::LONG); // Compare with borrowed Type
-                                                  // Check eventflux_element defaults
+        assert_eq!(attr.get_type(), &Type::LONG);
+        // The query positions start unset.
         assert_eq!(attr.eventflux_element.query_context_start_index, None);
         assert_eq!(attr.eventflux_element.query_context_end_index, None);
     }

@@ -17,8 +17,9 @@
 
 use super::stream::UpdateSet;
 use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::expression::Expression; // Using UpdateSet
+use crate::query_api::expression::Expression;
 
+/// Which events a query emits. Defaults to `CurrentEvents`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum OutputEventType {
     ExpiredEvents,
@@ -29,52 +30,65 @@ pub enum OutputEventType {
     ExpiredRawEvents,
 }
 
-// Action Structs: These do not compose EventFluxElement directly.
-// The outer OutputStream struct holds the context.
+// The action structs hold no EventFluxElement. The OutputStream that wraps them holds the
+// query positions.
+
+/// INSERT INTO a stream. The default has an empty target id.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct InsertIntoStreamAction {
-    pub target_id: String, // Default::default() for String is empty
+    pub target_id: String,
     pub is_inner_stream: bool,
     pub is_fault_stream: bool,
 }
 
+/// Return the results to the caller instead of sending them to a stream.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ReturnStreamAction {
     // No fields
 }
 
-#[derive(Clone, Debug, PartialEq)] // Default removed (due to Expression)
+/// Delete matching rows from a table. Has no `Default` because the condition is required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct DeleteStreamAction {
     pub target_id: String,
     pub on_delete_expression: Expression,
-    /// Optional alias for the target table (e.g., "s" in "DELETE FROM stockTable AS s")
+    /// Alias for the target table, such as "s" in "DELETE FROM stockTable AS s".
     pub target_alias: Option<String>,
-    /// Optional alias for the source stream (e.g., "d" in "USING deleteStream AS d")
+    /// Alias for the source stream, such as "d" in "USING deleteStream AS d".
     pub source_alias: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)] // Default removed (due to Expression, SetAttribute)
+/// Update matching rows in a table. Has no `Default` because the condition is required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct UpdateStreamAction {
     pub target_id: String,
-    pub on_update_expression: Expression, // This is the 'ON' condition for the update
-    pub update_set_clause: Option<UpdateSet>, // This holds the SET assignments
-    /// Optional alias for the target table (e.g., "s" in "UPDATE stockTable AS s")
+    /// The ON condition that picks the rows to update.
+    pub on_update_expression: Expression,
+    /// The SET assignments.
+    pub update_set_clause: Option<UpdateSet>,
+    /// Alias for the target table, such as "s" in "UPDATE stockTable AS s".
     pub target_alias: Option<String>,
-    /// Optional alias for the source stream (e.g., "u" in "FROM updateStream AS u")
+    /// Alias for the source stream, such as "u" in "FROM updateStream AS u".
     pub source_alias: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)] // Default removed (due to Expression, SetAttribute)
+/// Update matching rows in a table, or insert when none match. Has no `Default` because
+/// the condition is required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct UpdateOrInsertStreamAction {
     pub target_id: String,
-    pub on_update_expression: Expression, // This is the 'ON' condition
-    pub update_set_clause: Option<UpdateSet>, // This holds the SET assignments
-    /// Optional alias for the target table (e.g., "s" in "UPSERT INTO stockTable AS s")
+    /// The ON condition that picks the rows to update.
+    pub on_update_expression: Expression,
+    /// The SET assignments.
+    pub update_set_clause: Option<UpdateSet>,
+    /// Alias for the target table. The SQL compiler always leaves it `None` because
+    /// UPSERT INTO has no table alias syntax.
     pub target_alias: Option<String>,
-    /// Optional alias for the source stream (from SELECT ... FROM stream AS alias)
+    /// Alias for the source stream, from SELECT ... FROM stream AS alias.
     pub source_alias: Option<String>,
 }
 
+/// Where a query sends its results. Defaults to `Return`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutputStreamAction {
     InsertInto(InsertIntoStreamAction),
@@ -90,24 +104,28 @@ impl Default for OutputStreamAction {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// The output part of a query. An action plus the event type to emit.
+///
+/// The derived default has a Return action and no event type.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct OutputStream {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
     pub action: OutputStreamAction,
     pub output_event_type: Option<OutputEventType>,
 }
 
 impl OutputStream {
+    /// A `None` event type becomes `CurrentEvents`, so the result always has one set.
     pub fn new(action: OutputStreamAction, initial_event_type: Option<OutputEventType>) -> Self {
         OutputStream {
             eventflux_element: EventFluxElement::default(),
             action,
-            // Defaulting to CurrentEvents if None, as per Java logic in Query/OnDemandQuery
             output_event_type: initial_event_type.or(Some(OutputEventType::default())),
         }
     }
 
+    /// A Return action that emits `CurrentEvents`.
     pub fn default_return_stream() -> Self {
         Self {
             eventflux_element: EventFluxElement::default(),
@@ -116,6 +134,7 @@ impl OutputStream {
         }
     }
 
+    /// The target stream or table id, or `None` for a Return action.
     pub fn get_target_id(&self) -> Option<&str> {
         match &self.action {
             OutputStreamAction::InsertInto(a) => Some(&a.target_id),
@@ -141,8 +160,4 @@ impl OutputStream {
     }
 }
 
-// EventFluxElement is composed. Access via self.eventflux_element.
-// If OutputStream needed to be passed as `dyn EventFluxElement`:
-// impl EventFluxElement for OutputStream { ... delegate to self.eventflux_element ... }
-// However, the main Query/OnDemandQuery structs compose EventFluxElement themselves,
-// and OutputStream is a field. So direct composition and access is likely intended.
+// Read the query positions through the public eventflux_element field.

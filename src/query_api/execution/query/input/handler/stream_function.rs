@@ -15,25 +15,22 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.handler.StreamFunction
-// Implements StreamHandler and Extension in Java.
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A stream function applied to an input stream. It can change, add or drop events.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct StreamFunction {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Extension fields
     pub namespace: Option<String>,
-    pub name: String, // 'function' in Java, but 'name' is more generic for Extension trait
+    /// Function name.
+    pub name: String,
 
-    // StreamFunction specific fields
     pub parameters: Vec<Expression>,
 }
 
 impl StreamFunction {
-    // Constructor requires name. Namespace and parameters can be defaulted.
     pub fn new(name: String, namespace: Option<String>, parameters: Vec<Expression>) -> Self {
         StreamFunction {
             eventflux_element: EventFluxElement::default(),
@@ -43,12 +40,12 @@ impl StreamFunction {
         }
     }
 
-    // Corresponds to getParameters()
     pub fn get_parameters(&self) -> &[Expression] {
         &self.parameters
     }
 
-    // Helper for StreamHandlerTrait's get_parameters_as_option_vec
+    // Used by StreamHandlerTrait::get_parameters_as_option_vec. Gives None when there are
+    // no parameters.
     pub(super) fn get_parameters_ref_internal(&self) -> Option<Vec<&Expression>> {
         if self.parameters.is_empty() {
             None
@@ -58,7 +55,7 @@ impl StreamFunction {
     }
 }
 
-// Extension trait (conceptual)
+// Possible Extension trait shared with Window. Not used.
 // pub trait Extension {
 //     fn get_namespace(&self) -> Option<&str>;
 //     fn get_name(&self) -> &str;

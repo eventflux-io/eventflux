@@ -15,18 +15,19 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.condition.In
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq)] // Removed Default
+/// An IN test against a table or window, as in `symbol IN StockTable`.
+///
+/// Named InOp because `in` is a Rust keyword.
+#[derive(Clone, Debug, PartialEq)]
 pub struct InOp {
-    // Renamed from In to InOp
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // In specific fields
     pub expression: Box<Expression>,
-    pub source_id: String, // Table or Window name
+    /// Name of the table or window to look in.
+    pub source_id: String,
 }
 
 impl InOp {

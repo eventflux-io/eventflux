@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-//! SQL to Query Converter
+//! SQL to Query converter.
 //!
-//! Converts SQL statements to EventFlux query_api::Query structures.
+//! Turns parsed SQL statements into EventFlux query_api::Query and Partition structures.
 
 use sqlparser::ast::{
     AccessExpr, BinaryOperator, Expr as SqlExpr, JoinConstraint, JoinOperator, OutputRateLimit,
@@ -60,13 +60,22 @@ use super::expansion::SelectExpander;
 use super::pattern_validation::PatternValidator;
 use super::type_inference::TypeInferenceEngine;
 
-/// SQL to Query Converter
+/// Converts parsed SQL into Query API structures. Holds no data.
 pub struct SqlConverter;
 
 impl SqlConverter {
-    /// Convert SQL string to Query (legacy API - parses then converts)
+    /// Parse a SQL string and convert its first statement, which must be a SELECT or an
+    /// INSERT INTO ... SELECT. Any later statements are ignored.
+    ///
+    /// The older entry point. Prefer `convert_query_ast` when you already have the AST.
+    /// Does not run CREATE STREAM normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConverterError` for a parse failure, no statements, an unsupported
+    /// statement or any conversion error.
     pub fn convert(sql: &str, catalog: &SqlCatalog) -> Result<Query, ConverterError> {
-        // Parse SQL directly (WINDOW clause now handled natively by parser)
+        // The parser handles the WINDOW clause itself.
         let statements = Parser::parse_sql(&GenericDialect, sql)
             .map_err(|e| ConverterError::ConversionFailed(format!("SQL parse error: {}", e)))?;
 
@@ -76,7 +85,6 @@ impl SqlConverter {
             ));
         }
 
-        // Convert SELECT or INSERT INTO statement to Query
         match &statements[0] {
             Statement::Query(query) => Self::convert_query_ast(query, catalog, None),
             Statement::Insert(insert) => {
@@ -103,10 +111,11 @@ impl SqlConverter {
         }
     }
 
-    /// Convert parsed Query AST directly to Query (no re-parsing!)
+    /// Convert a parsed SELECT AST into a Query.
     ///
-    /// This is the preferred method when you already have a parsed AST.
-    /// It avoids the overhead of serializing and re-parsing the AST.
+    /// Prefer this when you already have the AST. It avoids turning the AST back into text
+    /// and parsing it again. `output_stream_name` is the INSERT INTO target. `None` means
+    /// "OutputStream".
     pub fn convert_query_ast(
         query: &sqlparser::ast::Query,
         catalog: &SqlCatalog,
@@ -115,63 +124,66 @@ impl SqlConverter {
         Self::convert_query_internal(query, catalog, output_stream_name)
     }
 
-    /// Convert a mutation query (UPDATE or DELETE from stream)
+    /// Build the query behind a stream triggered UPDATE or DELETE.
     ///
-    /// Creates a simple passthrough query from the source stream with the given output action.
-    /// The source stream events trigger the mutation operation on the target table.
+    /// The query selects every column of the source stream and sends each event to
+    /// `output_action`, which applies the change to the target table.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConverterError::SchemaNotFound` if the source stream or table is unknown.
     pub fn convert_mutation_query(
         source_stream_name: &str,
         catalog: &SqlCatalog,
         output_action: OutputStreamAction,
     ) -> Result<Query, ConverterError> {
-        // Validate source stream exists
         catalog
             .get_relation(source_stream_name)
             .map_err(|_| ConverterError::SchemaNotFound(source_stream_name.to_string()))?;
 
-        // Create input stream from source
         let single_stream = SingleInputStream::new_basic(
             source_stream_name.to_string(),
             false, // is_inner_stream
             false, // is_fault_stream
-            None,  // stream_handler_id
+            None,  // stream_ref_id (no alias)
             Vec::new(),
         );
 
-        // Get all attributes from source stream for SELECT *
+        // Same as SELECT * on the source. The unwrap is safe, the lookup passed above.
         let relation = catalog.get_relation(source_stream_name).unwrap();
         let attributes = relation.abstract_definition().get_attribute_list();
 
-        // Build selector with all attributes from source stream
         let mut selector = crate::query_api::execution::query::selection::Selector::new();
         for attr in attributes {
             selector = selector.select_variable(Variable::new(attr.get_name().clone()));
         }
 
-        // Create output stream with the mutation action
         let output_stream = OutputStream::new(output_action, None);
 
-        // Build Query
         Ok(Query::query()
             .from(InputStream::Single(single_stream))
             .select(selector)
             .out_stream(output_stream))
     }
 
-    /// Convert an UPSERT query (SELECT ... FROM stream with UpdateOrInsert output)
+    /// Build the query behind an UPSERT. Converts the SELECT as usual, then swaps its
+    /// output for the upsert action.
     ///
-    /// Converts a full SELECT query and replaces its output action with the upsert action.
-    /// Note: UPSERT currently only supports simple stream sources (no JOINs or WINDOWs)
-    /// because the runtime processor requires StreamEvent input.
+    /// UPSERT only reads one plain stream, with no JOIN and no WINDOW, because
+    /// UpsertTableProcessor needs StreamEvent input.
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnsupportedFeature` for more than one source, a JOIN or a WINDOW.
+    /// Returns `SchemaMismatch` when there is no SET clause, no wildcard, and the SELECT
+    /// column count differs from the table's. Also returns any error from converting the
+    /// SELECT.
     pub fn convert_upsert_query(
         source_query: &sqlparser::ast::Query,
         catalog: &SqlCatalog,
         output_action: OutputStreamAction,
     ) -> Result<Query, ConverterError> {
-        // Validate: UPSERT only supports simple stream sources (no JOINs or WINDOWs)
-        // because UpsertTableProcessor requires StreamEvent input
         if let SetExpr::Select(select) = source_query.body.as_ref() {
-            // Check for JOINs (multiple FROM tables or explicit JOIN clauses)
             if select.from.len() > 1 {
                 return Err(ConverterError::UnsupportedFeature(
                     "UPSERT with multiple source streams not supported".to_string(),
@@ -183,7 +195,6 @@ impl SqlConverter {
                         "UPSERT with JOIN source not supported".to_string(),
                     ));
                 }
-                // Check for streaming WINDOW on the table factor
                 if let TableFactor::Table {
                     window: Some(_), ..
                 } = &from.relation
@@ -194,18 +205,17 @@ impl SqlConverter {
                 }
             }
 
-            // Schema validation: Check SELECT column count matches target table
-            // This is only validated when there's no SET clause (full row replacement mode)
+            // Without a SET clause the whole row is replaced, so the SELECT must give
+            // exactly one value per table column. With SET only the listed columns change.
             if let OutputStreamAction::UpdateOrInsert(ref upsert_action) = output_action {
-                // Only validate when no SET clause - with SET, specific columns are updated
                 if upsert_action.update_set_clause.is_none() {
                     let target_table = &upsert_action.target_id;
                     if let Ok(relation) = catalog.get_relation(target_table) {
                         let table_col_count = relation.abstract_definition().attribute_list.len();
                         let select_col_count = select.projection.len();
 
-                        // Count only non-wildcard columns for accurate comparison
-                        // Wildcards (SELECT *) are expanded later, so we can't validate them here
+                        // Wildcards are only expanded later, so the count is not checked
+                        // when the SELECT has one. An unknown table is not checked either.
                         let has_wildcard = select.projection.iter().any(|p| {
                             matches!(
                                 p,
@@ -227,17 +237,24 @@ impl SqlConverter {
             }
         }
 
-        // First convert the source SELECT query normally
         let mut query = Self::convert_query_internal(source_query, catalog, None)?;
 
-        // Replace the output action with the upsert action
         let output_stream = OutputStream::new(output_action, None);
         query = query.out_stream(output_stream);
 
         Ok(query)
     }
 
-    /// Convert PARTITION statement to Partition execution element
+    /// Convert a PARTITION statement into a Partition.
+    ///
+    /// Each key becomes a value partition on that stream's attribute. The body may only
+    /// hold SELECT and INSERT INTO statements.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SchemaNotFound` for an unknown stream, `InvalidExpression` for an unknown
+    /// attribute, `UnsupportedFeature` for any other body statement, and any error from
+    /// converting the body queries.
     pub fn convert_partition(
         partition_keys: &[PartitionKey],
         body: &[Statement],
@@ -245,17 +262,14 @@ impl SqlConverter {
     ) -> Result<Partition, ConverterError> {
         let mut partition = Partition::new();
 
-        // Validate and convert partition keys
         for key in partition_keys {
             let stream_name = key.stream_name.to_string();
             let attribute_name = key.attribute.value.clone();
 
-            // Validate relation (stream or table) exists
             catalog
                 .get_relation(&stream_name)
                 .map_err(|_| ConverterError::SchemaNotFound(stream_name.clone()))?;
 
-            // Validate attribute exists in the relation
             if !catalog.has_column(&stream_name, &attribute_name) {
                 return Err(ConverterError::InvalidExpression(format!(
                     "Attribute '{}' not found in relation '{}'",
@@ -263,12 +277,10 @@ impl SqlConverter {
                 )));
             }
 
-            // Create partition expression
             let partition_expr = Expression::Variable(Variable::new(attribute_name.clone()));
             partition = partition.with_value_partition(stream_name, partition_expr);
         }
 
-        // Convert body statements to queries
         for stmt in body {
             match stmt {
                 Statement::Query(query) => {
@@ -306,13 +318,13 @@ impl SqlConverter {
         Ok(partition)
     }
 
-    /// Internal method to convert sqlparser Query AST to EventFlux Query
+    /// Convert a sqlparser Query AST into a Query. Only a plain SELECT body is supported.
     fn convert_query_internal(
         sql_query: &sqlparser::ast::Query,
         catalog: &SqlCatalog,
         output_stream_name: Option<String>,
     ) -> Result<Query, ConverterError> {
-        // Extract limit and offset from limit_clause
+        // The MySQL form LIMIT offset, limit is rejected.
         let (limit, offset) = match &sql_query.limit_clause {
             Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. }) => {
                 (limit.as_ref(), offset.as_ref())
@@ -325,7 +337,6 @@ impl SqlConverter {
             None => (None, None),
         };
 
-        // Convert OUTPUT rate limiting clause if present
         let output_rate = sql_query
             .output_rate_limit
             .as_ref()
@@ -348,11 +359,18 @@ impl SqlConverter {
         }
     }
 
-    /// Convert sqlparser's OutputRateLimit to query_api's OutputRate
+    /// Convert the OUTPUT clause into an OutputRate.
+    ///
+    /// EVENTS gives an event count rate. Time units give a time rate in milliseconds, or a
+    /// snapshot rate for SNAPSHOT mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a value of 0, SNAPSHOT with EVENTS, an event count above
+    /// `i32::MAX`, or a time that overflows when turned into milliseconds or i64.
     fn convert_output_rate_limit(
         rate_limit: &OutputRateLimit,
     ) -> Result<OutputRate, ConverterError> {
-        // Validate rate limit value is positive
         if rate_limit.value == 0 {
             return Err(ConverterError::ConversionFailed(
                 "Rate limit value must be greater than 0".to_string(),
@@ -361,8 +379,8 @@ impl SqlConverter {
 
         let variant = match rate_limit.unit {
             OutputRateLimitUnit::Events => {
-                // SNAPSHOT mode is not valid with EVENTS - parser should catch this,
-                // but add defensive check for safety
+                // The parser should already reject SNAPSHOT with EVENTS. Checked again
+                // here to be safe.
                 if matches!(rate_limit.mode, OutputRateLimitMode::Snapshot) {
                     return Err(ConverterError::UnsupportedFeature(
                         "SNAPSHOT mode is not supported with EVENTS - use time units instead"
@@ -370,7 +388,6 @@ impl SqlConverter {
                     ));
                 }
 
-                // Convert mode to behavior for event-based rate limiting
                 let behavior = match rate_limit.mode {
                     OutputRateLimitMode::All => OutputRateBehavior::All,
                     OutputRateLimitMode::First => OutputRateBehavior::First,
@@ -378,9 +395,8 @@ impl SqlConverter {
                     OutputRateLimitMode::Snapshot => unreachable!("Handled above"),
                 };
 
-                // Event-based rate limiting - validate value fits in i32.
-                // Note: The API uses i32 for historical reasons; runtime converts to usize.
-                // Future improvement: change API type to usize for more idiomatic Rust.
+                // The count must fit in i32. The API uses i32 for historical reasons and
+                // the runtime turns it into usize. Moving the API to usize would be cleaner.
                 let event_count: i32 = rate_limit.value.try_into().map_err(|_| {
                     ConverterError::ConversionFailed(format!(
                         "Event count {} exceeds maximum value {}",
@@ -394,16 +410,15 @@ impl SqlConverter {
             | OutputRateLimitUnit::Seconds
             | OutputRateLimitUnit::Minutes
             | OutputRateLimitUnit::Hours => {
-                // Convert to milliseconds - may fail on overflow
+                // Fails if the value overflows when turned into milliseconds.
                 let millis_u64 = rate_limit.unit.to_millis(rate_limit.value).ok_or_else(|| {
                     ConverterError::ConversionFailed(
                         "Time value overflowed during conversion to milliseconds".to_string(),
                     )
                 })?;
 
-                // Safely convert to i64 to prevent overflow.
-                // Note: The API uses i64 for historical reasons; u64 would be more idiomatic
-                // for time durations. Future improvement: change API type to u64.
+                // Must also fit in i64. The API uses i64 for historical reasons. u64 would
+                // suit a duration better and is a possible later change.
                 let millis: i64 = millis_u64.try_into().map_err(|_| {
                     ConverterError::ConversionFailed(format!(
                         "Time value {} milliseconds exceeds maximum value {}",
@@ -412,7 +427,6 @@ impl SqlConverter {
                     ))
                 })?;
 
-                // Convert mode to appropriate variant
                 match rate_limit.mode {
                     OutputRateLimitMode::Snapshot => {
                         OutputRateVariant::Snapshot(SnapshotOutputRate::new(millis))
@@ -446,19 +460,19 @@ impl SqlConverter {
         output_stream_name: Option<String>,
         output_rate: Option<OutputRate>,
     ) -> Result<Query, ConverterError> {
-        // Check if this is a JOIN query
         let has_join = !select.from.is_empty() && !select.from[0].joins.is_empty();
 
-        // Track pattern aliases for catalog augmentation
+        // Pattern aliases such as e1, added to a copy of the catalog further down.
         let mut pattern_aliases: Vec<(String, String)> = Vec::new();
 
+        // The selector stream name is empty for JOIN and pattern queries.
         let (input_stream, stream_name_for_selector) = if has_join {
-            // Handle JOIN
+            // The WHERE clause is passed in but not used for a JOIN.
             let join_input =
                 Self::convert_join_from_clause(&select.from, &select.selection, catalog)?;
             (join_input, String::new())
         } else {
-            // Handle single relation in FROM
+            // One relation in FROM. Only the first FROM item is used.
             let first = select.from.first().ok_or_else(|| {
                 ConverterError::ConversionFailed("No FROM clause found".to_string())
             })?;
@@ -474,33 +488,31 @@ impl SqlConverter {
                             ConverterError::ConversionFailed("No table name in FROM".to_string())
                         })?;
 
-                    // Validate relation (stream or table) exists
                     let relation = catalog
                         .get_relation(&stream_name)
                         .map_err(|_| ConverterError::SchemaNotFound(stream_name.clone()))?;
 
-                    // Validation 1.7: Tables cannot be queried directly without JOIN
-                    // Tables are lookup structures that must be joined with a stream
+                    // A table is a lookup structure. It can only be read through a JOIN
+                    // with a stream.
                     if relation.is_table() {
                         return Err(ConverterError::DirectTableQuery(stream_name));
                     }
 
-                    // Create InputStream (works for both streams and tables - runtime will differentiate)
                     let mut single_stream = SingleInputStream::new_basic(
                         stream_name.clone(),
                         false,      // is_inner_stream
                         false,      // is_fault_stream
-                        None,       // stream_handler_id
-                        Vec::new(), // pre_window_handlers
+                        None,       // stream_ref_id (no alias)
+                        Vec::new(), // stream handlers
                     );
 
-                    // Add WINDOW if present from AST
+                    // The window handler goes first, so it sits before the WHERE filter.
                     if let Some(window_ast) = window.as_ref() {
                         single_stream =
                             Self::add_window_from_ast(single_stream, window_ast, catalog)?;
                     }
 
-                    // Add WHERE filter (BEFORE aggregation)
+                    // WHERE runs before aggregation, as a filter on the input stream.
                     if let Some(where_expr) = &select.selection {
                         let filter_expr = Self::convert_expression(where_expr, catalog)?;
                         single_stream = single_stream.filter(filter_expr);
@@ -514,10 +526,9 @@ impl SqlConverter {
                     within,
                     ..
                 } => {
-                    // Extract pattern aliases for catalog augmentation
                     pattern_aliases = Self::extract_pattern_aliases(pattern);
 
-                    // Convert pattern/sequence to StateInputStream
+                    // A WHERE clause is not applied to a pattern query.
                     let state_input_stream =
                         Self::convert_pattern_input(mode, pattern, within, catalog)?;
                     (state_input_stream, String::new())
@@ -530,7 +541,8 @@ impl SqlConverter {
             }
         };
 
-        // For pattern queries, create a catalog with pattern aliases registered
+        // For a pattern query, expand the SELECT against a copy of the catalog that knows
+        // the pattern aliases. Other queries use the catalog as is.
         let effective_catalog: std::borrow::Cow<'_, SqlCatalog> = if !pattern_aliases.is_empty() {
             let mut catalog_with_aliases = catalog.clone();
             for (alias, stream_name) in &pattern_aliases {
@@ -549,7 +561,7 @@ impl SqlConverter {
         )
         .map_err(|e| ConverterError::ConversionFailed(e.to_string()))?;
 
-        // Add GROUP BY if present
+        // GROUP BY takes plain column names only.
         if let sqlparser::ast::GroupByExpr::Expressions(group_exprs, modifiers) = &select.group_by {
             if !modifiers.is_empty() {
                 return Err(ConverterError::UnsupportedFeature(
@@ -568,15 +580,14 @@ impl SqlConverter {
             }
         }
 
-        // Add HAVING (AFTER aggregation)
+        // HAVING runs after aggregation. It uses the plain catalog, without pattern aliases.
         if let Some(having) = &select.having {
             let having_expr = Self::convert_expression(having, catalog)?;
             selector = selector.having(having_expr);
         }
 
-        // Add ORDER BY
+        // ORDER BY takes plain column names only.
         if let Some(order_by) = order_by {
-            // Extract expressions from OrderBy
             let order_exprs = match &order_by.kind {
                 sqlparser::ast::OrderByKind::Expressions(exprs) => exprs,
                 sqlparser::ast::OrderByKind::All(_) => {
@@ -587,7 +598,6 @@ impl SqlConverter {
             };
 
             for order_expr in order_exprs {
-                // Extract variable from order_expr.expr
                 let variable = match &order_expr.expr {
                     SqlExpr::Identifier(ident) => Variable::new(ident.value.clone()),
                     SqlExpr::CompoundIdentifier(idents) => {
@@ -606,7 +616,6 @@ impl SqlConverter {
                     }
                 };
 
-                // Determine order (ASC/DESC)
                 let order = if let Some(asc) = order_expr.options.asc {
                     if asc {
                         crate::query_api::execution::query::selection::order_by_attribute::Order::Asc
@@ -614,7 +623,7 @@ impl SqlConverter {
                         crate::query_api::execution::query::selection::order_by_attribute::Order::Desc
                     }
                 } else {
-                    // Default to ASC if not specified
+                    // ASC when no direction is given
                     crate::query_api::execution::query::selection::order_by_attribute::Order::Asc
                 };
 
@@ -622,7 +631,6 @@ impl SqlConverter {
             }
         }
 
-        // Add LIMIT
         if let Some(limit_expr) = limit {
             let limit_const = Self::convert_to_constant(limit_expr)?;
             selector = selector
@@ -630,7 +638,6 @@ impl SqlConverter {
                 .map_err(|e| ConverterError::ConversionFailed(format!("LIMIT error: {}", e)))?;
         }
 
-        // Add OFFSET
         if let Some(offset_obj) = offset {
             let offset_const = Self::convert_to_constant(&offset_obj.value)?;
             selector = selector
@@ -638,7 +645,7 @@ impl SqlConverter {
                 .map_err(|e| ConverterError::ConversionFailed(format!("OFFSET error: {}", e)))?;
         }
 
-        // Create output stream (use provided name or default to "OutputStream")
+        // INSERT INTO the given target, or "OutputStream" when there is none.
         let target_stream_name = output_stream_name.unwrap_or_else(|| "OutputStream".to_string());
         let output_action = InsertIntoStreamAction {
             target_id: target_stream_name,
@@ -647,18 +654,16 @@ impl SqlConverter {
         };
         let output_stream = OutputStream::new(OutputStreamAction::InsertInto(output_action), None);
 
-        // Build Query
         let mut query = Query::query()
             .from(input_stream)
             .select(selector)
             .out_stream(output_stream);
 
-        // Add OUTPUT rate limiting if present
         if let Some(rate) = output_rate {
             query = query.output(rate);
         }
 
-        // Validate query for type correctness (no allocation, uses catalog reference)
+        // Check WHERE and HAVING types. parse_sql_application runs this check again.
         let type_engine = TypeInferenceEngine::new(catalog);
         type_engine.validate_query(&query).map_err(|e| {
             ConverterError::ConversionFailed(format!("Type validation failed: {}", e))
@@ -667,7 +672,9 @@ impl SqlConverter {
         Ok(query)
     }
 
-    /// Extract stream name from FROM clause
+    /// The stream name of the first FROM item. Unused.
+    ///
+    /// A pattern gives a made up name such as "Pattern_pattern", built from the mode.
     #[allow(dead_code)]
     fn extract_from_stream(
         from: &[sqlparser::ast::TableWithJoins],
@@ -688,8 +695,8 @@ impl SqlConverter {
                     ConverterError::ConversionFailed("No table name in FROM".to_string())
                 }),
             TableFactor::Pattern { mode, .. } => {
-                // Return the alias or generated name; actual conversion happens in select parsing
-                // We return a synthesized name to satisfy callers that expect a string.
+                // A made up name for callers that need some string. The real pattern
+                // conversion happens in convert_select.
                 let name = format!("{:?}_pattern", mode);
                 Ok(name)
             }
@@ -714,10 +721,18 @@ impl SqlConverter {
         }
     }
 
-    /// Convert JOIN from clause to JoinInputStream
+    /// Convert a FROM clause with a JOIN into a JoinInputStream.
+    ///
+    /// Only the first JOIN is read. Any further JOINs are silently ignored. Plain JOIN
+    /// becomes an inner join. The trigger is always `All`, with no WITHIN or PER.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown stream or table, a pattern on either side, a join
+    /// kind other than inner or outer, or USING and NATURAL joins.
     fn convert_join_from_clause(
         from: &[sqlparser::ast::TableWithJoins],
-        _where_clause: &Option<SqlExpr>, // Reserved for future filter optimization
+        _where_clause: &Option<SqlExpr>, // not used yet, kept for a later filter change
         catalog: &SqlCatalog,
     ) -> Result<InputStream, ConverterError> {
         use crate::query_api::execution::query::input::stream::join_input_stream::{
@@ -730,7 +745,7 @@ impl SqlConverter {
             ));
         }
 
-        // Extract left stream
+        // Holds the whole left SingleInputStream, not just its name.
         let left_stream_name = match &from[0].relation {
             TableFactor::Table { name, alias, .. } => {
                 let stream_name = name
@@ -742,7 +757,6 @@ impl SqlConverter {
                         ConverterError::ConversionFailed("No left table name".to_string())
                     })?;
 
-                // Validate relation (stream or table) exists for JOIN
                 let _ = catalog
                     .get_relation(&stream_name)
                     .map_err(|_| ConverterError::SchemaNotFound(stream_name.clone()))?;
@@ -755,7 +769,6 @@ impl SqlConverter {
                     Vec::new(),
                 );
 
-                // Add alias if present
                 if let Some(table_alias) = alias {
                     left_stream = left_stream.as_ref(table_alias.name.value.clone());
                 }
@@ -774,10 +787,10 @@ impl SqlConverter {
             }
         };
 
-        // Get first JOIN (only support single JOIN currently)
+        // Only one JOIN is supported. Later ones are ignored.
         let join = &from[0].joins[0];
 
-        // Extract right stream
+        // Holds the whole right SingleInputStream, not just its name.
         let right_stream_name = match &join.relation {
             TableFactor::Table { name, alias, .. } => {
                 let stream_name = name
@@ -789,7 +802,6 @@ impl SqlConverter {
                         ConverterError::ConversionFailed("No right table name".to_string())
                     })?;
 
-                // Validate relation (stream or table) exists for JOIN
                 let _ = catalog
                     .get_relation(&stream_name)
                     .map_err(|_| ConverterError::SchemaNotFound(stream_name.clone()))?;
@@ -802,7 +814,6 @@ impl SqlConverter {
                     Vec::new(),
                 );
 
-                // Add alias if present
                 if let Some(table_alias) = alias {
                     right_stream = right_stream.as_ref(table_alias.name.value.clone());
                 }
@@ -821,8 +832,8 @@ impl SqlConverter {
             }
         };
 
-        // Register join aliases in catalog for ON condition expression parsing
-        // This allows expressions like "a.symbol = b.company" where a and b are aliases
+        // Add the join aliases to a copy of the catalog so the ON condition can use them,
+        // as in "a.symbol = b.company".
         let effective_catalog: std::borrow::Cow<'_, SqlCatalog> = {
             let left_alias = left_stream_name.get_stream_reference_id_str();
             let right_alias = right_stream_name.get_stream_reference_id_str();
@@ -843,16 +854,12 @@ impl SqlConverter {
             }
         };
 
-        // Extract join type and ON condition together
-        // Note: In SQL, plain JOIN and INNER JOIN are identical (ANSI standard),
-        // so we normalize them to InnerJoin for consistency
+        // In standard SQL plain JOIN means INNER JOIN, so both map to InnerJoin.
         let (join_type, on_condition) = match &join.join_operator {
-            // INNER JOIN variants (normalize plain JOIN to INNER JOIN)
             JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
                 let cond = Self::extract_on_condition(constraint, &effective_catalog)?;
                 (JoinType::InnerJoin, cond)
             }
-            // OUTER JOIN variants
             JoinOperator::LeftOuter(constraint) => {
                 let cond = Self::extract_on_condition(constraint, &effective_catalog)?;
                 (JoinType::LeftOuterJoin, cond)
@@ -873,22 +880,24 @@ impl SqlConverter {
             }
         };
 
-        // Create JoinInputStream
         let join_stream = JoinInputStream::new(
             left_stream_name,
             join_type,
             right_stream_name,
             on_condition,
-            EventTrigger::All, // Default trigger
-            None,              // No WITHIN clause currently
-            None,              // No PER clause currently
+            EventTrigger::All, // events from both sides trigger the join
+            None,              // WITHIN is not supported in SQL joins yet
+            None,              // PER is not supported in SQL joins yet
         );
 
         Ok(InputStream::Join(Box::new(join_stream)))
     }
 
-    /// Extract ON condition from JoinConstraint
-    /// Currently only supports ON clause; USING and NATURAL joins are not yet implemented
+    /// Convert the join constraint. ON gives its condition and no constraint gives `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnsupportedFeature` for USING and NATURAL, which are not supported yet.
     fn extract_on_condition(
         constraint: &JoinConstraint,
         catalog: &SqlCatalog,
@@ -905,8 +914,15 @@ impl SqlConverter {
         }
     }
 
-    /// Add window to SingleInputStream
-    /// Add window from native AST StreamingWindowSpec
+    /// Add the window from the parsed WINDOW clause to the stream as a window handler.
+    ///
+    /// TUMBLING maps to the timeBatch window. Every parameter is converted as an
+    /// expression, except the EXPRESSION window, which takes its condition as a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnsupportedFeature` for SLIDING windows, which are not built yet, and any
+    /// error from converting a parameter.
     fn add_window_from_ast(
         stream: SingleInputStream,
         window: &sqlparser::ast::StreamingWindowSpec,
@@ -916,7 +932,7 @@ impl SqlConverter {
 
         match window {
             StreamingWindowSpec::Tumbling { duration } => {
-                // Tumbling windows are non-overlapping time-based batches
+                // Tumbling means time batches that do not overlap, the same as timeBatch.
                 let duration_expr = Self::convert_expression(duration, catalog)?;
                 Ok(stream.window(
                     None,
@@ -925,8 +941,8 @@ impl SqlConverter {
                 ))
             }
             StreamingWindowSpec::Sliding { size, slide } => {
-                // Sliding/hopping windows not yet implemented
-                // TODO: Implement sliding window processor (requires size + slide parameters)
+                // TODO: Build a sliding (hopping) window processor that takes a size and a
+                // slide. The parameters are still converted so bad ones report first.
                 let _size_expr = Self::convert_expression(size, catalog)?;
                 let _slide_expr = Self::convert_expression(slide, catalog)?;
                 Err(ConverterError::UnsupportedFeature(
@@ -982,7 +998,7 @@ impl SqlConverter {
                 ))
             }
             StreamingWindowSpec::Sort { parameters } => {
-                // Convert all parameters (size, attr1, 'asc', attr2, 'desc', ...)
+                // Parameters in order, as in (size, attr1, 'asc', attr2, 'desc', ...)
                 let mut converted_params = Vec::new();
                 for param in parameters {
                     converted_params.push(Self::convert_expression(param, catalog)?);
@@ -1002,7 +1018,7 @@ impl SqlConverter {
                 Ok(stream.window(None, "delay".to_string(), vec![duration_expr]))
             }
             StreamingWindowSpec::Expression { condition } => {
-                // Expression window takes a string condition
+                // The condition is passed as a string constant, not parsed here.
                 let condition_expr = Expression::value_string(condition.clone());
                 Ok(stream.window(None, "expression".to_string(), vec![condition_expr]))
             }
@@ -1023,7 +1039,18 @@ impl SqlConverter {
         }
     }
 
-    /// Convert SQL expression to EventFlux Expression
+    /// Convert a SQL expression into an EventFlux Expression.
+    ///
+    /// Columns are not checked against the catalog here. Some SQL forms are rewritten.
+    /// IN becomes a chain of = joined by OR, BETWEEN becomes >= AND <=, IS NOT NULL
+    /// becomes NOT IS NULL, unary minus becomes 0 - x, and LIKE, FLOOR, CEIL, SUBSTRING
+    /// and TRIM become function calls. Number literals with a dot become DOUBLE, others
+    /// LONG.
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnsupportedFeature` or `InvalidExpression` for any form not listed in the
+    /// match, including the NULL literal and identifiers with more than two parts.
     pub fn convert_expression(
         expr: &SqlExpr,
         catalog: &SqlCatalog,
@@ -1032,12 +1059,11 @@ impl SqlConverter {
             SqlExpr::Identifier(ident) => Ok(Expression::variable(ident.value.clone())),
 
             SqlExpr::CompoundIdentifier(parts) => {
-                // Handle qualified identifiers like stream.column or alias.column
+                // stream.column or alias.column
                 if parts.len() == 2 {
-                    let stream_ref = parts[0].value.clone(); // Stream name or alias (e.g., "t", "n")
-                    let column_name = parts[1].value.clone(); // Column name (e.g., "symbol")
+                    let stream_ref = parts[0].value.clone(); // stream name or alias, such as "t"
+                    let column_name = parts[1].value.clone(); // column name, such as "symbol"
 
-                    // Create variable with stream qualifier for JOIN queries
                     let var_with_stream = Variable::new(column_name).of_stream(stream_ref);
                     Ok(Expression::Variable(var_with_stream))
                 } else {
@@ -1048,7 +1074,8 @@ impl SqlConverter {
             }
 
             SqlExpr::CompoundFieldAccess { root, access_chain } => {
-                // Handle indexed access for pattern event collections: e1[0].price, e1[last].symbol
+                // Indexed access into a pattern event list, as in e1[0].price or
+                // e1[last].symbol
                 Self::convert_compound_field_access(root, access_chain, catalog)
             }
 
@@ -1076,7 +1103,7 @@ impl SqlConverter {
             },
 
             SqlExpr::Function(func) => {
-                // Convert SQL function calls to EventFlux function calls
+                // Turn a SQL function call into an EventFlux function call
                 Self::convert_function(func, catalog)
             }
 
@@ -1140,11 +1167,11 @@ impl SqlConverter {
 
                 match op {
                     UnaryOperator::Not => Ok(Expression::not(inner_expr)),
-                    // Convert -x to 0 - x
+                    // -x becomes 0 - x
                     UnaryOperator::Minus => {
                         Ok(Expression::subtract(Expression::value_long(0), inner_expr))
                     }
-                    // Convert +x to just x (unary plus is a no-op)
+                    // +x is just x
                     UnaryOperator::Plus => Ok(inner_expr),
                     _ => Err(ConverterError::UnsupportedFeature(format!(
                         "Unary operator {:?}",
@@ -1154,7 +1181,7 @@ impl SqlConverter {
             }
 
             SqlExpr::Interval(interval) => {
-                // Convert INTERVAL '5' SECOND to milliseconds
+                // INTERVAL '5' SECOND becomes a number of milliseconds
                 Self::convert_interval_to_millis(interval)
             }
 
@@ -1165,21 +1192,19 @@ impl SqlConverter {
                 conditions,
                 else_result,
             } => {
-                // Validate at least one WHEN clause
                 if conditions.is_empty() {
                     return Err(ConverterError::InvalidExpression(
                         "CASE expression must have at least one WHEN clause".to_string(),
                     ));
                 }
 
-                // Convert operand (for Simple CASE)
+                // Only a simple CASE has an operand.
                 let operand_expr = if let Some(ref op) = operand {
                     Some(Self::convert_expression(op, catalog)?)
                 } else {
                     None
                 };
 
-                // Convert WHEN clauses (conditions is Vec<CaseWhen>)
                 let when_clauses: Result<Vec<_>, _> = conditions
                     .iter()
                     .map(|case_when| {
@@ -1194,7 +1219,7 @@ impl SqlConverter {
                     .collect();
                 let when_clauses = when_clauses?;
 
-                // Convert ELSE expression (if None, inject NULL)
+                // A missing ELSE becomes ELSE NULL.
                 let else_expr = if let Some(ref else_expr_sql) = else_result {
                     Self::convert_expression(else_expr_sql, catalog)?
                 } else {
@@ -1210,7 +1235,7 @@ impl SqlConverter {
                 format: _,
                 kind: _,
             } => {
-                // Convert CAST(expr AS type) to EventFlux Cast expression
+                // The target type goes through the same mapping as column types.
                 let inner_expr = Self::convert_expression(expr, catalog)?;
                 let target_type =
                     crate::sql_compiler::type_mapping::sql_type_to_attribute_type(data_type)
@@ -1219,23 +1244,21 @@ impl SqlConverter {
             }
 
             SqlExpr::Nested(inner_expr) => {
-                // Parenthesized expression - simply unwrap and convert the inner expression
+                // Parentheses only group. Convert what is inside.
                 Self::convert_expression(inner_expr, catalog)
             }
 
-            // Handle FLOOR(x) and CEIL(x) expressions
+            // FLOOR(x) and CEIL(x). The forms that round to a date or time field are not
+            // supported.
             SqlExpr::Floor { expr, field } => {
                 let inner_expr = Self::convert_expression(expr, catalog)?;
                 match field {
                     sqlparser::ast::CeilFloorKind::DateTimeField(
                         sqlparser::ast::DateTimeField::NoDateTime,
-                    ) => {
-                        // Numeric floor function
-                        Ok(Expression::function_no_ns(
-                            "floor".to_string(),
-                            vec![inner_expr],
-                        ))
-                    }
+                    ) => Ok(Expression::function_no_ns(
+                        "floor".to_string(),
+                        vec![inner_expr],
+                    )),
                     _ => Err(ConverterError::UnsupportedFeature(
                         "FLOOR TO datetime field not yet supported".to_string(),
                     )),
@@ -1247,20 +1270,17 @@ impl SqlConverter {
                 match field {
                     sqlparser::ast::CeilFloorKind::DateTimeField(
                         sqlparser::ast::DateTimeField::NoDateTime,
-                    ) => {
-                        // Numeric ceil function
-                        Ok(Expression::function_no_ns(
-                            "ceil".to_string(),
-                            vec![inner_expr],
-                        ))
-                    }
+                    ) => Ok(Expression::function_no_ns(
+                        "ceil".to_string(),
+                        vec![inner_expr],
+                    )),
                     _ => Err(ConverterError::UnsupportedFeature(
                         "CEIL TO datetime field not yet supported".to_string(),
                     )),
                 }
             }
 
-            // Handle IS NULL and IS NOT NULL expressions
+            // IS NOT NULL becomes NOT (IS NULL).
             SqlExpr::IsNull(expr) => {
                 let inner_expr = Self::convert_expression(expr, catalog)?;
                 Ok(Expression::is_null(inner_expr))
@@ -1271,21 +1291,19 @@ impl SqlConverter {
                 Ok(Expression::not(Expression::is_null(inner_expr)))
             }
 
-            // Handle IN and NOT IN expressions
-            // Convert x IN (a, b, c) to x = a OR x = b OR x = c
+            // x IN (a, b, c) becomes x = a OR x = b OR x = c. NOT IN wraps that in NOT.
             SqlExpr::InList {
                 expr,
                 list,
                 negated,
             } => {
                 if list.is_empty() {
-                    // Empty list: IN () is always false, NOT IN () is always true
+                    // IN () is always false and NOT IN () is always true.
                     return Ok(Expression::value_bool(*negated));
                 }
 
                 let value_expr = Self::convert_expression(expr, catalog)?;
 
-                // Build OR chain of equality comparisons
                 let mut result: Option<Expression> = None;
                 for item in list {
                     let item_expr = Self::convert_expression(item, catalog)?;
@@ -1298,7 +1316,7 @@ impl SqlConverter {
                     });
                 }
 
-                let in_expr = result.unwrap(); // Safe because we checked list is not empty
+                let in_expr = result.unwrap(); // safe, the list is not empty
 
                 if *negated {
                     Ok(Expression::not(in_expr))
@@ -1307,7 +1325,6 @@ impl SqlConverter {
                 }
             }
 
-            // Handle BETWEEN expressions
             SqlExpr::Between {
                 expr,
                 negated,
@@ -1335,8 +1352,8 @@ impl SqlConverter {
                 }
             }
 
-            // Handle LIKE expressions
-            // Convert LIKE to a str:matches function call
+            // LIKE becomes a call to the built in like function. Any ESCAPE character is
+            // ignored.
             SqlExpr::Like {
                 negated,
                 expr,
@@ -1346,7 +1363,6 @@ impl SqlConverter {
             } => {
                 let value_expr = Self::convert_expression(expr, catalog)?;
                 let pattern_expr = Self::convert_expression(pattern, catalog)?;
-                // Use str:matches function for LIKE pattern matching
                 let like_expr =
                     Expression::function_no_ns("like".to_string(), vec![value_expr, pattern_expr]);
                 if *negated {
@@ -1356,7 +1372,6 @@ impl SqlConverter {
                 }
             }
 
-            // Handle SUBSTRING expressions
             SqlExpr::Substring {
                 expr,
                 substring_from,
@@ -1367,10 +1382,10 @@ impl SqlConverter {
                 let str_expr = Self::convert_expression(expr, catalog)?;
                 let mut args = vec![str_expr];
 
-                // SQL uses 1-based indexing, convert to 0-based for internal use
+                // SQL counts from 1 but the substring function counts from 0, so subtract
+                // 1 from the start.
                 if let Some(from_expr) = substring_from {
                     let from_expr_converted = Self::convert_expression(from_expr, catalog)?;
-                    // Subtract 1 from the start position: SQL's 1 becomes internal 0
                     let zero_based_start =
                         Expression::subtract(from_expr_converted, Expression::value_int(1));
                     args.push(zero_based_start);
@@ -1382,7 +1397,8 @@ impl SqlConverter {
                 Ok(Expression::function_no_ns("substring".to_string(), args))
             }
 
-            // Handle TRIM expressions
+            // TRIM becomes trim(x). BOTH, LEADING, TRAILING and custom trim characters are
+            // ignored.
             SqlExpr::Trim {
                 expr,
                 trim_where: _,
@@ -1403,15 +1419,23 @@ impl SqlConverter {
         }
     }
 
-    /// Convert SQL INTERVAL to milliseconds as a Long expression
+    /// Convert a SQL INTERVAL into a LONG constant in milliseconds.
+    ///
+    /// The value must be a whole number, given bare or as a quoted string. No unit means
+    /// milliseconds. The multiplication is not checked for overflow.
     ///
     /// # Approximations
     ///
-    /// Note that YEAR and MONTH intervals use fixed approximations:
-    /// - 1 YEAR = 365 days (does not account for leap years)
-    /// - 1 MONTH = 30 days (months vary from 28-31 days)
+    /// YEAR and MONTH use fixed lengths:
+    /// - 1 YEAR = 365 days, ignoring leap years
+    /// - 1 MONTH = 30 days, though real months run 28 to 31 days
     ///
-    /// For precise time-based window operations, prefer SECOND, MINUTE, HOUR, or DAY units.
+    /// For exact time windows, use SECOND, MINUTE, HOUR or DAY.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a value that is not a whole number, a value that is not a
+    /// plain literal, or a unit other than YEAR, MONTH, DAY, HOUR, MINUTE or SECOND.
     ///
     /// # Example
     ///
@@ -1422,7 +1446,6 @@ impl SqlConverter {
     fn convert_interval_to_millis(
         interval: &sqlparser::ast::Interval,
     ) -> Result<Expression, ConverterError> {
-        // Extract the numeric value
         let value = match interval.value.as_ref() {
             SqlExpr::Value(value_with_span) => match &value_with_span.value {
                 sqlparser::ast::Value::Number(n, _) => n.parse::<i64>().map_err(|_| {
@@ -1444,14 +1467,13 @@ impl SqlConverter {
             }
         };
 
-        // Convert based on time unit
         let millis = match &interval.leading_field {
             Some(sqlparser::ast::DateTimeField::Year) => {
-                // Approximation: 365 days (ignores leap years)
+                // Fixed 365 days, no leap years
                 value * 365 * 24 * 60 * 60 * 1000
             }
             Some(sqlparser::ast::DateTimeField::Month) => {
-                // Approximation: 30 days (months vary 28-31 days)
+                // Fixed 30 days
                 value * 30 * 24 * 60 * 60 * 1000
             }
             Some(sqlparser::ast::DateTimeField::Day) => value * 24 * 60 * 60 * 1000,
@@ -1459,7 +1481,7 @@ impl SqlConverter {
             Some(sqlparser::ast::DateTimeField::Minute) => value * 60 * 1000,
             Some(sqlparser::ast::DateTimeField::Second) => value * 1000,
             None => {
-                // Default to milliseconds if no unit specified
+                // No unit means milliseconds
                 value
             }
             _ => {
@@ -1473,23 +1495,36 @@ impl SqlConverter {
         Ok(Expression::value_long(millis))
     }
 
-    /// Convert SQL function to EventFlux function call
+    /// Convert a SQL function call into an EventFlux function call.
+    ///
+    /// Names are matched in lower case and mapped to EventFlux names, such as pow to
+    /// power and ifnull to default. SUBSTR and SUBSTRING with a start argument get 1
+    /// taken off the start, because SQL counts from 1 and the function counts from 0.
+    /// COUNT(*) becomes count() with no arguments.
+    ///
+    /// A call written with no argument list, such as CURRENT_TIMESTAMP, skips the name
+    /// mapping. It becomes a call to the lower case name as is.
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnsupportedFeature` for a name not in the mapping, a subquery argument, or
+    /// a named or qualified wildcard argument.
     fn convert_function(
         func: &sqlparser::ast::Function,
         catalog: &SqlCatalog,
     ) -> Result<Expression, ConverterError> {
-        // Get function name and strip backticks if present (for namespace-prefixed functions like `math:sin`)
+        // Strip backticks, as in `math:sin`. A namespaced name like that is still not in
+        // the mapping below, so it is rejected.
         let raw_name = func.name.to_string();
         let func_name = raw_name
             .trim_start_matches('`')
             .trim_end_matches('`')
             .to_lowercase();
 
-        // Extract function argument list
         let arg_list = match &func.args {
             sqlparser::ast::FunctionArguments::List(list) => list,
             sqlparser::ast::FunctionArguments::None => {
-                // Functions like CURRENT_TIMESTAMP with no args
+                // Written with no parentheses, such as CURRENT_TIMESTAMP
                 return Ok(Expression::function(None, func_name, Vec::new()));
             }
             sqlparser::ast::FunctionArguments::Subquery(_) => {
@@ -1499,7 +1534,6 @@ impl SqlConverter {
             }
         };
 
-        // Convert function arguments
         let mut args = Vec::new();
         for arg in &arg_list.args {
             match arg {
@@ -1509,8 +1543,8 @@ impl SqlConverter {
                     args.push(Self::convert_expression(expr, catalog)?);
                 }
                 sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::Wildcard) => {
-                    // Handle COUNT(*) - no arguments needed
-                    // EventFlux count() takes no arguments
+                    // A * argument, as in COUNT(*), is dropped. EventFlux count() takes no
+                    // arguments.
                 }
                 _ => {
                     return Err(ConverterError::UnsupportedFeature(
@@ -1520,7 +1554,7 @@ impl SqlConverter {
             }
         }
 
-        // Map SQL function names to EventFlux function names
+        // SQL name to EventFlux name. Anything not listed is rejected.
         let eventflux_func_name = match func_name.as_str() {
             // Aggregations
             "count" => "count",
@@ -1574,15 +1608,15 @@ impl SqlConverter {
             "reverse" => "reverse",
             "repeat" => "repeat",
             "position" => "position",
-            "locate" => "position", // MySQL compatibility
-            "instr" => "position",  // MySQL/Oracle compatibility
+            "locate" => "position", // MySQL name
+            "instr" => "position",  // MySQL and Oracle name
             "ascii" => "ascii",
             "chr" => "chr",
-            "char" => "chr", // MySQL compatibility
-            // Note: substr/substring as function calls need 1-based to 0-based conversion
-            // This is handled specially below before the match
+            "char" => "chr", // MySQL name
+            // SQL counts the start from 1 and the substring function counts from 0. With a
+            // start argument, return early with 1 taken off it. With no start argument,
+            // fall through to a plain substring call.
             "substr" | "substring" => {
-                // Apply 1-based to 0-based indexing conversion for start position
                 if args.len() >= 2 {
                     let str_arg = args.remove(0);
                     let start_arg = args.remove(0);
@@ -1602,7 +1636,7 @@ impl SqlConverter {
             // Utility functions
             "coalesce" => "coalesce",
             "default" => "default",
-            "ifnull" => "default", // IFNULL maps to default (2 args only)
+            "ifnull" => "default", // IFNULL takes 2 arguments, like default
             "nullif" => "nullif",
             "uuid" => "uuid",
             "eventtimestamp" => "eventTimestamp",
@@ -1621,14 +1655,17 @@ impl SqlConverter {
         ))
     }
 
-    /// Convert SQL expression to Constant (for LIMIT/OFFSET)
+    /// Turn a LIMIT or OFFSET value into a LONG constant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the value is a number literal that fits in i64.
     fn convert_to_constant(
         expr: &SqlExpr,
     ) -> Result<crate::query_api::expression::constant::Constant, ConverterError> {
         match expr {
             SqlExpr::Value(value_with_span) => {
                 if let sqlparser::ast::Value::Number(n, _) = &value_with_span.value {
-                    // Try to parse as i64 for LIMIT/OFFSET
                     let num = n.parse::<i64>().map_err(|_| {
                         ConverterError::ConversionFailed(format!(
                             "Invalid number for LIMIT/OFFSET: {}",
@@ -1652,16 +1689,21 @@ impl SqlConverter {
     // Array Access Conversion Methods
     // ============================================================================
 
-    /// Convert CompoundFieldAccess for pattern event collection access: e1[0].price, e1[last].symbol
+    /// Convert indexed access into a pattern event list, as in e1[0].price or
+    /// e1[last].symbol, into an IndexedVariable.
     ///
-    /// This handles indexed access to events in pattern event collections, where count
-    /// quantifiers like A{3,5} produce multiple events that can be accessed by index.
+    /// A count step such as A{3,5} can match many events, and this picks one by index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the root is a plain alias and the access is exactly one
+    /// `[n]` or `[last]` followed by one `.attribute`.
     fn convert_compound_field_access(
         root: &SqlExpr,
         access_chain: &[AccessExpr],
         _catalog: &SqlCatalog,
     ) -> Result<Expression, ConverterError> {
-        // Extract stream alias from root (e.g., "e1" from e1[0].price)
+        // The root is the pattern alias, such as "e1" in e1[0].price.
         let stream_id = match root {
             SqlExpr::Identifier(ident) => ident.value.clone(),
             _ => {
@@ -1671,7 +1713,7 @@ impl SqlConverter {
             }
         };
 
-        // Validate access chain: must be [index].attribute format
+        // Exactly [index] then .attribute.
         if access_chain.len() != 2 {
             return Err(ConverterError::UnsupportedFeature(format!(
                 "Expected [index].attribute format, got {} access elements",
@@ -1679,7 +1721,6 @@ impl SqlConverter {
             )));
         }
 
-        // Extract index from first element (Subscript)
         let event_index = match &access_chain[0] {
             AccessExpr::Subscript(Subscript::Index { index }) => Self::extract_event_index(index)?,
             _ => {
@@ -1689,7 +1730,6 @@ impl SqlConverter {
             }
         };
 
-        // Extract attribute name from second element (Dot)
         let attribute_name = match &access_chain[1] {
             AccessExpr::Dot(SqlExpr::Identifier(ident)) => ident.value.clone(),
             _ => {
@@ -1699,7 +1739,8 @@ impl SqlConverter {
             }
         };
 
-        // Create IndexedVariable with stream id (position resolved during expression parsing)
+        // The stream position is a -1 placeholder. The runtime expression parser looks up
+        // the real position from the stream id.
         let indexed_var = match event_index {
             EventIndex::Numeric(idx) => IndexedVariable::new_with_index(attribute_name, idx)
                 .of_stream_with_index(stream_id, -1),
@@ -1711,10 +1752,11 @@ impl SqlConverter {
         Ok(Expression::IndexedVariable(Box::new(indexed_var)))
     }
 
-    /// Extract EventIndex from a subscript expression
+    /// Read the index inside the brackets. A whole number gives a numeric index and
+    /// `last`, in any letter case, gives `EventIndex::Last`. Anything else is an error.
     fn extract_event_index(index_expr: &SqlExpr) -> Result<EventIndex, ConverterError> {
         match index_expr {
-            // Numeric index: e[0], e[1], e[2]
+            // e[0], e[1], e[2]
             SqlExpr::Value(value_with_span) => {
                 if let sqlparser::ast::Value::Number(n, _) = &value_with_span.value {
                     let idx: usize = n.parse().map_err(|_| {
@@ -1727,7 +1769,7 @@ impl SqlConverter {
                     ))
                 }
             }
-            // 'last' keyword: e[last]
+            // e[last]
             SqlExpr::Identifier(ident) if ident.value.to_lowercase() == "last" => {
                 Ok(EventIndex::Last)
             }
@@ -1741,17 +1783,17 @@ impl SqlConverter {
     // Pattern Alias Extraction
     // ============================================================================
 
-    /// Extract all pattern aliases from a PatternExpression
+    /// Every (alias, stream_name) pair in a pattern, left to right.
     ///
-    /// Returns a Vec of (alias, stream_name) pairs.
-    /// For example, `e1=A -> e2=B` returns `[("e1", "A"), ("e2", "B")]`
+    /// For example `e1=A -> e2=B` gives `[("e1", "A"), ("e2", "B")]`. Absent steps have no
+    /// alias and add nothing.
     pub fn extract_pattern_aliases(pattern: &PatternExpression) -> Vec<(String, String)> {
         let mut aliases = Vec::new();
         Self::collect_pattern_aliases(pattern, &mut aliases);
         aliases
     }
 
-    /// Recursively collect pattern aliases from a PatternExpression
+    /// Walk the pattern and append each (alias, stream_name) pair.
     fn collect_pattern_aliases(pattern: &PatternExpression, aliases: &mut Vec<(String, String)>) {
         match pattern {
             PatternExpression::Stream {
@@ -1785,7 +1827,7 @@ impl SqlConverter {
                 Self::collect_pattern_aliases(pattern, aliases);
             }
             PatternExpression::Absent { .. } => {
-                // Absent patterns don't have aliases (only stream_name)
+                // An absent step has a stream name but no alias.
             }
         }
     }
@@ -1794,20 +1836,22 @@ impl SqlConverter {
     // Pattern Conversion Methods
     // ============================================================================
 
-    /// Convert a pattern TableFactor to InputStream
+    /// Convert FROM PATTERN (...) or FROM SEQUENCE (...) into a StateInputStream.
     ///
-    /// This handles FROM PATTERN (...) and FROM SEQUENCE (...) clauses,
-    /// converting the pattern expression AST to Query API StateElements.
+    /// The pattern is checked against the grammar rules first, such as the EVERY limits
+    /// and count bounds.
     ///
-    /// Validation is performed before conversion to ensure the pattern
-    /// adheres to grammar rules (EVERY restrictions, count bounds, etc.)
+    /// # Errors
+    ///
+    /// Returns `ConversionFailed` listing every broken pattern rule. Returns
+    /// `UnsupportedFeature` for WITHIN n EVENTS or a WITHIN time that is not a constant.
+    /// Also returns any error from converting the pattern steps.
     pub fn convert_pattern_input(
         mode: &PatternMode,
         pattern: &PatternExpression,
         within: &Option<WithinConstraint>,
         catalog: &SqlCatalog,
     ) -> Result<InputStream, ConverterError> {
-        // Validate pattern before conversion
         PatternValidator::validate(mode, pattern).map_err(|errors| {
             let error_messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
             ConverterError::ConversionFailed(format!(
@@ -1816,15 +1860,12 @@ impl SqlConverter {
             ))
         })?;
 
-        // Convert pattern expression to StateElement
         let state_element = Self::convert_pattern_expression(pattern, catalog)?;
 
-        // Convert WITHIN constraint to ExpressionConstant
         let within_time = match within {
             Some(WithinConstraint::Time(expr)) => {
-                // Convert time expression (e.g., INTERVAL '10' SECOND) to milliseconds
+                // Such as INTERVAL '10' SECOND, which becomes a millisecond constant.
                 let time_expr = Self::convert_expression(expr, catalog)?;
-                // Extract the constant value from the expression
                 match time_expr {
                     Expression::Constant(c) => Some(c),
                     _ => {
@@ -1842,7 +1883,6 @@ impl SqlConverter {
             None => None,
         };
 
-        // Create StateInputStream based on mode
         let state_input_stream = match mode {
             PatternMode::Pattern => StateInputStream::pattern_stream(state_element, within_time),
             PatternMode::Sequence => StateInputStream::sequence_stream(state_element, within_time),
@@ -1851,7 +1891,17 @@ impl SqlConverter {
         Ok(InputStream::State(Box::new(state_input_stream)))
     }
 
-    /// Convert PatternExpression AST to StateElement
+    /// Convert a pattern AST node into a StateElement.
+    ///
+    /// `A -> B` becomes Next, AND and OR become Logical, a count becomes Count, NOT A FOR t
+    /// becomes AbsentStream and parentheses are dropped. A stream that is not in the
+    /// catalog is not rejected here.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TableInPattern` for a table, `UnsupportedFeature` for a count on anything
+    /// but a single stream, a count above `i32::MAX`, or an absent duration that is not a
+    /// constant. Also returns any error from converting a filter or duration.
     fn convert_pattern_expression(
         expr: &PatternExpression,
         catalog: &SqlCatalog,
@@ -1862,7 +1912,6 @@ impl SqlConverter {
                 stream_name,
                 filter,
             } => {
-                // Get the stream name as string
                 let stream_id = stream_name
                     .0
                     .last()
@@ -1874,35 +1923,30 @@ impl SqlConverter {
                         )
                     })?;
 
-                // Validation 1.9: Tables cannot be used in patterns/sequences
-                // Only streams can be used as event sources in patterns
+                // Only streams can feed a pattern or sequence. Tables are rejected.
                 if let Ok(relation) = catalog.get_relation(&stream_id) {
                     if relation.is_table() {
                         return Err(ConverterError::TableInPattern(stream_id));
                     }
                 }
 
-                // Create SingleInputStream with optional alias
                 let mut single_stream = SingleInputStream::new_basic(
                     stream_id.clone(),
                     false, // is_inner
                     false, // is_fault
-                    None,  // stream_ref_id (will set via as_ref if alias present)
+                    None,  // stream_ref_id, set below with as_ref when there is an alias
                     Vec::new(),
                 );
 
-                // Add stream reference (alias) if present
                 if let Some(alias_ident) = alias {
                     single_stream = single_stream.as_ref(alias_ident.value.clone());
                 }
 
-                // Add filter if present
                 if let Some(filter_expr) = filter {
                     let converted_filter = Self::convert_expression(filter_expr, catalog)?;
                     single_stream = single_stream.filter(converted_filter);
                 }
 
-                // Create StreamStateElement
                 let stream_state = StreamStateElement::new(single_stream);
                 Ok(StateElement::Stream(stream_state))
             }
@@ -1912,10 +1956,9 @@ impl SqlConverter {
                 min_count,
                 max_count,
             } => {
-                // First, convert the inner pattern to get the StreamStateElement
+                // A count can only wrap a single stream step.
                 let inner = Self::convert_pattern_expression(pattern, catalog)?;
 
-                // Count quantifier requires a StreamStateElement, not arbitrary StateElement
                 let stream_state = match inner {
                     StateElement::Stream(s) => s,
                     _ => {
@@ -1925,7 +1968,7 @@ impl SqlConverter {
                     }
                 };
 
-                // Guard against counts that exceed i32 range to avoid overflow
+                // CountStateElement stores i32, so larger counts are rejected.
                 let min_i32 = i32::try_from(*min_count).map_err(|_| {
                     ConverterError::UnsupportedFeature(format!(
                         "Count quantifier lower bound {} exceeds supported range",
@@ -1947,11 +1990,10 @@ impl SqlConverter {
             }
 
             PatternExpression::Sequence { first, second } => {
-                // Convert both sides of the sequence
+                // The -> operator
                 let first_state = Self::convert_pattern_expression(first, catalog)?;
                 let second_state = Self::convert_pattern_expression(second, catalog)?;
 
-                // Create NextStateElement (-> operator)
                 Ok(StateElement::Next(Box::new(NextStateElement::new(
                     first_state,
                     second_state,
@@ -1959,11 +2001,11 @@ impl SqlConverter {
             }
 
             PatternExpression::Logical { left, op, right } => {
-                // Convert both sides
+                // LogicalStateElement::new panics unless both sides are stream or absent
+                // steps.
                 let left_state = Self::convert_pattern_expression(left, catalog)?;
                 let right_state = Self::convert_pattern_expression(right, catalog)?;
 
-                // Map logical operator
                 let logical_type = match op {
                     PatternLogicalOp::And => LogicalStateElementType::And,
                     PatternLogicalOp::Or => LogicalStateElementType::Or,
@@ -1977,7 +2019,6 @@ impl SqlConverter {
             }
 
             PatternExpression::Every { pattern } => {
-                // Convert the inner pattern
                 let inner_state = Self::convert_pattern_expression(pattern, catalog)?;
 
                 Ok(StateElement::Every(Box::new(EveryStateElement::new(
@@ -1989,7 +2030,7 @@ impl SqlConverter {
                 stream_name,
                 duration,
             } => {
-                // Get the stream name
+                // Unlike a stream step, an absent step is not checked for being a table.
                 let stream_id = stream_name
                     .0
                     .last()
@@ -2001,7 +2042,6 @@ impl SqlConverter {
                         )
                     })?;
 
-                // Create SingleInputStream for the absent stream
                 let single_stream = SingleInputStream::new_basic(
                     stream_id,
                     false, // is_inner
@@ -2010,7 +2050,7 @@ impl SqlConverter {
                     Vec::new(),
                 );
 
-                // Convert duration expression to constant
+                // The FOR duration must turn into a constant, such as an INTERVAL.
                 let duration_expr = Self::convert_expression(duration, catalog)?;
                 let duration_const = match duration_expr {
                     Expression::Constant(c) => Some(c),
@@ -2021,7 +2061,6 @@ impl SqlConverter {
                     }
                 };
 
-                // Create AbsentStreamStateElement
                 Ok(StateElement::AbsentStream(AbsentStreamStateElement::new(
                     single_stream,
                     duration_const,
@@ -2029,7 +2068,7 @@ impl SqlConverter {
             }
 
             PatternExpression::Grouped { pattern } => {
-                // Grouped patterns just recurse into the inner pattern
+                // Parentheses only group. Convert what is inside.
                 Self::convert_pattern_expression(pattern, catalog)
             }
         }
@@ -2099,7 +2138,7 @@ mod tests {
     #[test]
     fn test_where_clause_non_boolean_variable() {
         let catalog = setup_catalog();
-        // WHERE price - returns DOUBLE, not BOOL
+        // WHERE price gives a DOUBLE, not a BOOL
         let sql = "SELECT symbol, price FROM StockStream WHERE price";
         let result = SqlConverter::convert(sql, &catalog);
 
@@ -2120,7 +2159,7 @@ mod tests {
     #[test]
     fn test_where_clause_arithmetic_expression() {
         let catalog = setup_catalog();
-        // WHERE price * 2 - returns DOUBLE, not BOOL
+        // WHERE price * 2 gives a DOUBLE, not a BOOL
         let sql = "SELECT symbol, price FROM StockStream WHERE price * 2";
         let result = SqlConverter::convert(sql, &catalog);
 
@@ -2141,7 +2180,7 @@ mod tests {
     #[test]
     fn test_where_clause_valid_boolean() {
         let catalog = setup_catalog();
-        // WHERE price > 100 - valid BOOL expression
+        // WHERE price > 100 gives a BOOL, so it is valid
         let sql = "SELECT symbol, price FROM StockStream WHERE price > 100";
         let result = SqlConverter::convert(sql, &catalog);
 
@@ -2155,7 +2194,7 @@ mod tests {
     #[test]
     fn test_having_clause_non_boolean() {
         let catalog = setup_catalog();
-        // HAVING SUM(volume) - returns LONG, not BOOL
+        // HAVING SUM(volume) gives a LONG, not a BOOL
         let sql = "SELECT symbol, SUM(volume) as total FROM StockStream GROUP BY symbol HAVING SUM(volume)";
         let result = SqlConverter::convert(sql, &catalog);
 
@@ -2176,7 +2215,7 @@ mod tests {
     #[test]
     fn test_having_clause_valid_boolean() {
         let catalog = setup_catalog();
-        // HAVING SUM(volume) > 1000 - valid BOOL expression
+        // HAVING SUM(volume) > 1000 gives a BOOL, so it is valid
         let sql = "SELECT symbol, SUM(volume) as total FROM StockStream GROUP BY symbol HAVING SUM(volume) > 1000";
         let result = SqlConverter::convert(sql, &catalog);
 
@@ -2190,7 +2229,7 @@ mod tests {
     #[test]
     fn test_where_with_function_non_boolean() {
         let catalog = setup_catalog();
-        // WHERE ROUND(price, 2) - returns DOUBLE, not BOOL
+        // WHERE ROUND(price, 2) gives a DOUBLE, not a BOOL
         let sql = "SELECT symbol, price FROM StockStream WHERE ROUND(price, 2)";
         let result = SqlConverter::convert(sql, &catalog);
 
@@ -2213,7 +2252,7 @@ mod tests {
 
         let catalog = setup_catalog();
 
-        // Test basic stream pattern: e1=StockStream
+        // A single stream step, e1=StockStream
         let pattern = PatternExpression::Stream {
             alias: Some(Ident::new("e1")),
             stream_name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("StockStream"))]),
@@ -2238,7 +2277,7 @@ mod tests {
 
         let catalog = setup_catalog();
 
-        // Test sequence: A -> B
+        // A sequence, A -> B
         let stream_a = PatternExpression::Stream {
             alias: Some(Ident::new("e1")),
             stream_name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("StockStream"))]),
@@ -2280,7 +2319,7 @@ mod tests {
 
         let catalog = setup_catalog();
 
-        // Test count: A{3,5}
+        // A count, A{3,5}
         let stream_a = PatternExpression::Stream {
             alias: Some(Ident::new("e1")),
             stream_name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("StockStream"))]),
@@ -2311,7 +2350,7 @@ mod tests {
 
         let catalog = setup_catalog();
 
-        // Test logical AND: A AND B
+        // A logical AND, A AND B
         let stream_a = PatternExpression::Stream {
             alias: Some(Ident::new("e1")),
             stream_name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("StockStream"))]),
@@ -2346,7 +2385,7 @@ mod tests {
 
         let catalog = setup_catalog();
 
-        // Test EVERY: EVERY(A -> B)
+        // EVERY(A -> B)
         let stream_a = PatternExpression::Stream {
             alias: Some(Ident::new("e1")),
             stream_name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("StockStream"))]),
@@ -2445,7 +2484,7 @@ mod tests {
             filter: None,
         };
 
-        // Create Interval expression using Value::Number which doesn't need span
+        // INTERVAL '10' SECOND
         let within = WithinConstraint::Time(Box::new(SqlExpr::Interval(Interval {
             value: Box::new(SqlExpr::Value(
                 Value::SingleQuotedString("10".to_string()).into(),
@@ -2477,7 +2516,7 @@ mod tests {
 
         let catalog = setup_catalog();
 
-        // Test WITHIN event count constraint - currently not supported
+        // WITHIN n EVENTS, which is not supported yet
         let stream_a = PatternExpression::Stream {
             alias: Some(Ident::new("e1")),
             stream_name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("StockStream"))]),
@@ -2493,7 +2532,7 @@ mod tests {
             &catalog,
         );
 
-        // WITHIN EVENTS is not yet supported - should return error
+        // Must fail with an unsupported feature error
         assert!(result.is_err(), "WITHIN EVENTS should be unsupported");
         let err = result.unwrap_err().to_string();
         assert!(

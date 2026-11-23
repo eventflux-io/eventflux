@@ -17,14 +17,17 @@
 
 use crate::query_api::expression::Expression;
 
+/// Splits one stream into partitions by the value of an expression.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValuePartitionType {
-    // This 'element' field was in the prompt, but Java ValuePartitionType implements EventFluxElement directly.
+    // Position in the query text. Held directly instead of through EventFluxElement.
     pub query_context_start_index: Option<(i32, i32)>,
     pub query_context_end_index: Option<(i32, i32)>,
 
-    pub stream_id: String, // The ID of the stream that is being partitioned
-    pub expression: Expression, // The expression evaluated to get the partition key for an event
+    /// Id of the stream being partitioned.
+    pub stream_id: String,
+    /// Evaluated on each event to get its partition key.
+    pub expression: Expression,
 }
 
 impl ValuePartitionType {
@@ -37,5 +40,3 @@ impl ValuePartitionType {
         }
     }
 }
-
-// impl EventFluxElement for ValuePartitionType removed

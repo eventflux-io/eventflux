@@ -15,41 +15,36 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.state.AbsentStreamStateElement
 use super::stream_state_element::StreamStateElement;
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::execution::query::input::stream::SingleInputStream;
-use crate::query_api::expression::constant::Constant as ExpressionConstant; // For direct composition if not delegating // Changed
+use crate::query_api::expression::constant::Constant as ExpressionConstant;
 
-#[derive(Clone, Debug, PartialEq)] // Default is not straightforward
+/// A pattern step that matches when an event does not arrive, as in `NOT A FOR 5 sec`.
+///
+/// Has no `Default` because the inner stream element is required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct AbsentStreamStateElement {
-    // In Java, AbsentStreamStateElement extends StreamStateElement.
-    // So, it should compose StreamStateElement, which in turn composes EventFluxElement.
-    // The prompt suggests direct composition of eventflux_element, but that would lose
-    // the basic_single_input_stream from StreamStateElement if not careful.
-    // Sticking to composing StreamStateElement.
+    /// The stream that must stay silent. Also holds this element's query positions.
     pub stream_state_element: StreamStateElement,
 
-    // AbsentStreamStateElement specific fields
+    /// How long the stream must stay silent, or `None` when no time is given.
     pub waiting_time: Option<ExpressionConstant>,
 }
 
 impl AbsentStreamStateElement {
-    // Constructor takes SingleInputStream to create the inner StreamStateElement,
-    // and the waiting_time.
+    /// Build from the input stream. Wraps it in a new StreamStateElement.
     pub fn new(
         single_input_stream: SingleInputStream,
         waiting_time: Option<ExpressionConstant>,
     ) -> Self {
-        // Changed parameter type
         AbsentStreamStateElement {
-            stream_state_element: StreamStateElement::new(single_input_stream), // Pass SingleInputStream
+            stream_state_element: StreamStateElement::new(single_input_stream),
             waiting_time,
         }
     }
 
-    // Constructor that takes a pre-constructed StreamStateElement, as per prompt's general direction.
-    // This is more flexible if StreamStateElement is already formed.
+    /// Build from a StreamStateElement you already have.
     pub fn new_with_stream_state(
         stream_state_element: StreamStateElement,
         waiting_time: Option<ExpressionConstant>,
@@ -61,12 +56,11 @@ impl AbsentStreamStateElement {
     }
 
     pub fn get_single_input_stream(&self) -> &SingleInputStream {
-        // Changed method name and return type
         self.stream_state_element.get_single_input_stream()
     }
 
-    // Expose eventflux_element for direct access if needed by StateElement enum dispatch.
-    // This provides access to the EventFluxElement composed within the inner StreamStateElement.
+    /// The query positions, stored on the inner StreamStateElement. Used by the
+    /// StateElement enum.
     pub fn eventflux_element(&self) -> &EventFluxElement {
         &self.stream_state_element.eventflux_element
     }
@@ -75,13 +69,10 @@ impl AbsentStreamStateElement {
     }
 }
 
-// No Default derive due to required StreamStateElement.
-
-// No direct EventFluxElement impl for AbsentStreamStateElement.
-// The StateElement enum will access the eventflux_element from the composed stream_state_element.
-// If AbsentStreamStateElement needed to be passed as `dyn EventFluxElement`, it would need:
+// EventFluxElement is a struct, not a trait, so there is nothing to implement here.
+// If it ever became a trait, the impl would pass each call on to the inner element, as
+// below.
 // impl EventFluxElement for AbsentStreamStateElement {
 //     fn query_context_start_index(&self) -> Option<(i32,i32)> { self.stream_state_element.eventflux_element.query_context_start_index }
 //     // ... and so on for other EventFluxElement methods, delegating to self.stream_state_element.eventflux_element
 // }
-// This is effectively what StateElement enum's EventFluxElement impl will do via the eventflux_element() helper.

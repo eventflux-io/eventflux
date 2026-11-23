@@ -20,9 +20,10 @@ use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 use crate::query_api::expression::Variable;
 
+/// The assignments of an UPDATE SET clause, in order.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct UpdateSet {
-    pub eventflux_element: EventFluxElement, // UpdateSet in Java is a EventFluxElement
+    pub eventflux_element: EventFluxElement,
     pub set_attributes: Vec<SetAttribute>,
 }
 
@@ -34,15 +35,13 @@ impl UpdateSet {
         }
     }
 
-    // Corresponds to Java's `set(Variable tableVariable, Expression assignmentExpression)`
+    /// Append the assignment `table_column = value_to_set`.
     pub fn add_set_attribute(mut self, table_column: Variable, value_to_set: Expression) -> Self {
         self.set_attributes
             .push(SetAttribute::new(table_column, value_to_set));
         self
     }
 
-    // The prompt suggested `on_set_condition: Option<Expression>`.
-    // In Java, `UpdateSet` does not hold this condition. The condition is part of
-    // `UpdateStream` or `UpdateOrInsertStream` (passed as `onUpdateExpression`).
-    // So, this field is omitted here.
+    // No ON condition here. It lives on UpdateStreamAction and UpdateOrInsertStreamAction
+    // as on_update_expression.
 }

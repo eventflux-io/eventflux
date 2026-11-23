@@ -15,16 +15,12 @@
  * limitations under the License.
  */
 
-// This file is for defining error types specific to the eventflux_query_api Rust representation,
-// if any are needed for structural validation or construction that isn't covered by panics
-// or standard Result types from method calls.
+// Home for errors raised while building query API objects. It defines none today.
+//
+// Most errors come from checking the EventFlux app text while it is parsed, not from
+// building or using these objects after parsing. Those live in the sql_compiler errors.
 
-// Most exceptions from io.eventflux.query.api.exception are related to the validation
-// of a EventFlux Application string during its parsing by the EventFlux compiler,
-// rather than errors that would arise from building or using the query API objects directly
-// in Rust once they are parsed.
-
-// For example, if building an Expression requires a specific type of Constant:
+// A possible shape, for when building an Expression can fail on a bad Constant type:
 // #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 // pub enum QueryApiConstructionError {
 //     InvalidArgument(String),
@@ -42,7 +38,5 @@
 
 // impl std::error::Error for QueryApiConstructionError {}
 
-// For now, keeping it empty. Specific errors can be added as needed when implementing
-// methods that might fail validation for the object model itself.
-// Panics are used in some factory methods for direct translation of Java exceptions,
-// but idiomatic Rust would use Result<T, QueryApiConstructionError>.
+// Add errors here when a method needs to reject a bad object. Some factory methods panic
+// instead today. Returning Result<T, QueryApiConstructionError> would be the better fit.

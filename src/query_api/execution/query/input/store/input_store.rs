@@ -15,42 +15,42 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.store.InputStore (interface)
 use crate::query_api::eventflux_element::EventFluxElement;
 
-// Import specific store types that will be variants of the InputStore enum
-use super::store::Store;
-// ConditionInputStore and AggregationInputStore are not yet refactored in this pass.
-// Assuming they will be. For now, their direct usage might be problematic if their structure changed.
 use super::aggregation_input_store::AggregationInputStore;
 use super::condition_input_store::ConditionInputStore;
+use super::store::Store;
 
-// Trait for common InputStore behavior
+/// Methods shared by all store inputs.
 pub trait InputStoreTrait {
-    // Removed EventFluxElement supertrait
+    /// Id of the table, window or aggregation being read.
     fn get_store_id(&self) -> &str;
+    /// The alias given to the store, if any.
     fn get_store_reference_id(&self) -> Option<&str>;
 }
 
+/// The store read by an on demand query. A plain store, a store with an ON condition, or
+/// an aggregation read with WITHIN and PER.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputStore {
     Store(Store),
-    Condition(Box<ConditionInputStore>), // Box if these can be large or recursive
+    // Boxed because these variants are larger than Store.
+    Condition(Box<ConditionInputStore>),
     Aggregation(Box<AggregationInputStore>),
 }
 
 impl InputStore {
-    // Static factory methods from Java's InputStore interface for creating Store instances
-    // These return Store, which can then be wrapped into InputStore::Store if needed.
+    /// Build a plain Store. It is not wrapped in `InputStore::Store`.
     pub fn store(store_id: String) -> Store {
-        Store::new_with_id(store_id) // Assuming Store::new_with_id exists
+        Store::new_with_id(store_id)
     }
 
+    /// Build a plain Store with an alias. It is not wrapped in `InputStore::Store`.
     pub fn store_with_ref(store_reference_id: String, store_id: String) -> Store {
-        Store::new_with_ref(store_reference_id, store_id) // Assuming Store::new_with_ref exists
+        Store::new_with_ref(store_reference_id, store_id)
     }
 
-    // Helper to access the composed eventflux_element from variants
+    // The EventFluxElement of whichever variant this is. Unused for now.
     #[allow(dead_code)]
     fn eventflux_element_ref(&self) -> &EventFluxElement {
         match self {
@@ -69,15 +69,12 @@ impl InputStore {
     }
 }
 
-// `impl EventFluxElement for InputStore` removed.
-
-// Implement InputStoreTrait for the enum
 impl InputStoreTrait for InputStore {
     fn get_store_id(&self) -> &str {
         match self {
-            InputStore::Store(s) => s.get_store_id(), // Assumes Store impls InputStoreTrait
-            InputStore::Condition(c) => c.get_store_id(), // Assumes ConditionInputStore impls InputStoreTrait
-            InputStore::Aggregation(a) => a.get_store_id(), // Assumes AggregationInputStore impls InputStoreTrait
+            InputStore::Store(s) => s.get_store_id(),
+            InputStore::Condition(c) => c.get_store_id(),
+            InputStore::Aggregation(a) => a.get_store_id(),
         }
     }
 
@@ -89,11 +86,3 @@ impl InputStoreTrait for InputStore {
         }
     }
 }
-
-// Note: The structs Store, ConditionInputStore, AggregationInputStore
-// must be refactored to:
-// 1. Compose `eventflux_element: EventFluxElement`.
-// 2. Implement `InputStoreTrait`.
-// ConditionInputStore and AggregationInputStore were not part of this subtask's explicit file list to create/refactor,
-// but they are used by this enum. They were created in subtask 0005. Their review is pending.
-// Boxing Condition and Aggregation variants as they compose other types and might be larger.

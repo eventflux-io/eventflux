@@ -15,14 +15,14 @@
  * limitations under the License.
  */
 
-use super::on_demand_query::{OnDemandQuery, OnDemandQueryType}; // Import Rust OnDemandQuery
+use super::on_demand_query::{OnDemandQuery, OnDemandQueryType};
 use super::OutputStream;
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::execution::query::input::InputStore;
 use crate::query_api::execution::query::selection::Selector;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)] // Added Eq, Hash, Copy
-#[derive(Default)]
+/// What a store query does. Same variants as OnDemandQueryType. Defaults to `Select`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum StoreQueryType {
     Insert,
     Delete,
@@ -33,32 +33,30 @@ pub enum StoreQueryType {
     Find,
 }
 
-// Removed: impl From<java_sys::StoreQueryType> for StoreQueryType { ... }
-// Removed: mod java_sys { ... }
-
-#[derive(Clone, Debug, PartialEq)] // Default will be custom via new()
+/// A thin wrapper over OnDemandQuery. Every builder and getter passes through to the
+/// inner query.
+#[derive(Clone, Debug, PartialEq)]
 pub struct StoreQuery {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    /// A copy of the inner query's positions, taken in `new`. Not kept in sync after that,
+    /// except that `set_type` copies it back into the inner query.
+    pub eventflux_element: EventFluxElement,
     pub on_demand_query: OnDemandQuery,
 }
 
 impl StoreQuery {
     pub fn new(on_demand_query: OnDemandQuery) -> Self {
-        // The eventflux_element for StoreQuery should ideally be distinct or mirror
-        // the one from on_demand_query. Java's StoreQuery delegates getQueryContextStartIndex/EndIndex
-        // to its onDemandQuery instance.
         StoreQuery {
-            eventflux_element: on_demand_query.eventflux_element.clone(), // Clone context from inner query
+            eventflux_element: on_demand_query.eventflux_element.clone(),
             on_demand_query,
         }
     }
 
-    // Static factory `query()`
+    /// Wrap a default OnDemandQuery. Starts a builder chain.
     pub fn query() -> Self {
-        Self::new(OnDemandQuery::default()) // Create with a default OnDemandQuery
+        Self::new(OnDemandQuery::default())
     }
 
-    // getType and setType methods from Java's StoreQuery
+    /// The inner query's type, mapped to StoreQueryType. `None` if no type was set.
     pub fn get_type(&self) -> Option<StoreQueryType> {
         self.on_demand_query
             .on_demand_query_type
@@ -73,6 +71,8 @@ impl StoreQuery {
             })
     }
 
+    /// Set the inner query's type. Also overwrites the inner query's positions with this
+    /// wrapper's copy.
     pub fn set_type(mut self, store_query_type: StoreQueryType) -> Self {
         let odq_type = match store_query_type {
             StoreQueryType::Insert => OnDemandQueryType::Insert,
@@ -82,10 +82,9 @@ impl StoreQuery {
             StoreQueryType::UpdateOrInsert => OnDemandQueryType::UpdateOrInsert,
             StoreQueryType::Find => OnDemandQueryType::Find,
         };
-        // Propagate eventflux_element if it's being managed independently
         let current_eventflux_element = self.eventflux_element.clone();
         self.on_demand_query = self.on_demand_query.set_type(odq_type);
-        self.on_demand_query.eventflux_element = current_eventflux_element; // Ensure inner query shares context
+        self.on_demand_query.eventflux_element = current_eventflux_element;
         self
     }
 
@@ -131,8 +130,9 @@ impl Default for StoreQuery {
     }
 }
 
-// Delegate EventFluxElement methods to the composed eventflux_element field.
-// Or, if it should always mirror on_demand_query's element:
+// StoreQuery keeps its own copy of the query positions, set from on_demand_query in new().
+// It can drift from the inner query's copy. If the two should always match, an accessor
+// like this could read the inner query's element instead:
 // impl EventFluxElementAccess for StoreQuery {
 //     fn eventflux_element(&self) -> &EventFluxElement {
 //         &self.on_demand_query.eventflux_element
@@ -141,5 +141,3 @@ impl Default for StoreQuery {
 //         &mut self.on_demand_query.eventflux_element
 //     }
 // }
-// For now, StoreQuery has its own eventflux_element field, initialized from on_demand_query.
-// This means it can have its own distinct context if needed, though usually it would match.

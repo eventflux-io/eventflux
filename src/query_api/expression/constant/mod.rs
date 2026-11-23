@@ -17,8 +17,7 @@
 
 use crate::query_api::eventflux_element::EventFluxElement;
 
-// Individual constant files (bool_constant.rs, etc.) are not needed with this unified approach.
-// Removing their module declarations.
+// One Constant type covers every value kind, so there are no per type constant modules.
 // pub mod bool_constant;
 // pub mod double_constant;
 // pub mod float_constant;
@@ -27,56 +26,51 @@ use crate::query_api::eventflux_element::EventFluxElement;
 // pub mod string_constant;
 // pub mod time_constant;
 
+/// Older value enum without a Null variant. Nothing in the crate uses it. Constant holds a
+/// ConstantValueWithFloat instead.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConstantValue {
     String(String),
     Int(i32),
     Long(i64),
-    Float(f32), // Note: f32/f64 do not derive Eq/Hash directly. Wrappers or custom impls needed if ConstantValue needs Eq/Hash and contains floats.
-    // For now, removing Eq/Hash from ConstantValue if floats are to be kept directly.
-    // Or, use a wrapper struct for f32/f64 that implements Eq/Hash (e.g. based on bit patterns).
-    // Let's assume for now that direct comparison of f32/f64 is not needed for Hash/Eq at this level.
-    // For PartialEq, f32/f64 is fine. If Constant itself needs to be in a HashMap key, this will be an issue.
+    // The float variants are why this enum has no Eq or Hash. Keeping them out of hash
+    // keys, or wrapping them in a type such as `ordered-float`, would allow both.
+    Float(f32),
     Double(f64),
     Bool(bool),
-    Time(i64), // TimeConstant in Java is a subclass of LongConstant
+    /// A duration in milliseconds.
+    Time(i64),
 }
 
-// Make ConstantValue non-Eq and non-Hash for now due to floats.
-// Or use a crate like `ordered-float` if these need to be hashable/sortable.
-// For now, removing Eq, Hash from ConstantValue and Constant struct if it contains floats.
-// Let's re-evaluate. The prompt asks for PartialEq. Default can be added.
-// If Constant is used in HashMap keys later, this needs revisit.
-
-// Re-adding Eq, Hash for ConstantValue assuming we handle floats appropriately when used in HashMaps (e.g. by not using float constants as keys).
-// For derive purposes, PartialEq is fine. For Eq/Hash, direct f32/f64 is problematic.
-// Let's remove Eq, Hash from ConstantValue and Constant for safety if they contain f32/f64.
-// The prompt asks for PartialEq, so that's fine.
-
-// Simpler approach: Keep PartialEq, add Default. Eq/Hash will be omitted for now for ConstantValue and Constant.
+/// The value of a constant. The name stresses that it holds float variants, so it has
+/// PartialEq but no Eq or Hash. Do not use it as a hash key.
+///
+/// Defaults to an empty `String`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConstantValueWithFloat {
-    // Renaming to clarify it has floats
     String(String),
     Int(i32),
     Long(i64),
     Float(f32),
     Double(f64),
     Bool(bool),
+    /// A duration in milliseconds.
     Time(i64),
-    Null, // NULL constant for CASE expressions
+    /// SQL NULL, used for example when a CASE has no ELSE.
+    Null,
 }
 
 impl Default for ConstantValueWithFloat {
     fn default() -> Self {
         ConstantValueWithFloat::String(String::new())
-    } // Default to empty string or Int(0)
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A literal value in an expression. The default holds an empty string.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Constant {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
-    pub value: ConstantValueWithFloat,       // Using the renamed enum that includes floats
+    pub eventflux_element: EventFluxElement,
+    pub value: ConstantValueWithFloat,
 }
 
 impl Constant {
@@ -87,13 +81,12 @@ impl Constant {
         }
     }
 
-    // Getter method
     pub fn get_value(&self) -> &ConstantValueWithFloat {
         &self.value
     }
 }
 
-// Helper constructors similar to Expression.value() static methods in Java
+// Shortcut constructors, one per value kind.
 impl Constant {
     pub fn string(value: String) -> Self {
         Constant::new(ConstantValueWithFloat::String(value))
@@ -119,17 +112,21 @@ impl Constant {
         Constant::new(ConstantValueWithFloat::Bool(value))
     }
 
+    /// A duration constant. `value` is in milliseconds.
     pub fn time(value: i64) -> Self {
-        // Specifically for TimeConstant values which are long in Java
         Constant::new(ConstantValueWithFloat::Time(value))
     }
 
+    /// A NULL constant. The SQL converter uses it as the CASE result when ELSE is missing.
     pub fn null() -> Self {
-        // NULL constant for CASE ELSE when missing in SQL
         Constant::new(ConstantValueWithFloat::Null)
     }
 }
 
+/// Converts time amounts to milliseconds.
+///
+/// The `*_val` functions return the plain number. The others wrap it in a Time constant.
+/// None of them check for overflow.
 pub struct TimeUtil;
 
 impl TimeUtil {
@@ -151,10 +148,9 @@ impl TimeUtil {
     pub fn week_val(val: i64) -> i64 {
         val * 7 * 24 * 60 * 60 * 1000
     }
-    // Using direct values from Java for month/year for precision if needed, or keep simplified.
-    // Java uses 30 * 24 * 60 * 60 * 1000 for month, 365 * 24 * 60 * 60 * 1000 for year in Expression.Time
-    // But TimeConstant itself uses 2630000000L for month and 31556900000L for year.
-    // Let's use the more precise ones from TimeConstant.java if this TimeUtil is for constructing those.
+    // Month and year use average lengths, not 30 and 365 days. A month is 2_630_000_000 ms
+    // (about 30.44 days) and a year is 31_556_900_000 ms (about 365.24 days). Note that
+    // aggregation::Duration::to_millis uses 30 and 365 days instead.
     pub fn month_val(val: i64) -> i64 {
         val * 2_630_000_000
     }
@@ -162,7 +158,7 @@ impl TimeUtil {
         val * 31_556_900_000
     }
 
-    // Constructors for direct Time Constant creation
+    // These return a Time constant.
     pub fn millisec(val: i64) -> Constant {
         Constant::time(Self::millisec_val(val))
     }
@@ -218,7 +214,7 @@ mod tests {
     #[test]
     fn test_constant_float() {
         let c = Constant::float(12.34);
-        // Direct comparison of floats can be tricky. PartialEq should handle it.
+        // Exact float equality is fine here because the same literal is stored and read.
         assert_eq!(c.get_value(), &ConstantValueWithFloat::Float(12.34));
     }
 
@@ -236,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_constant_time() {
-        let c = Constant::time(5000); // Represents a time duration in milliseconds
+        let c = Constant::time(5000); // 5000 ms
         assert_eq!(c.get_value(), &ConstantValueWithFloat::Time(5000));
     }
 

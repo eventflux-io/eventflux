@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.annotation.Annotation & Element.java
-use crate::query_api::eventflux_element::EventFluxElement; // The struct to be composed
+use crate::query_api::eventflux_element::EventFluxElement;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// One key and value pair inside an annotation.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Element {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
     pub key: String,
     pub value: String,
 }
@@ -35,7 +35,7 @@ impl Element {
     }
 }
 
-// If direct access to EventFluxElement fields is needed often:
+// Possible Deref impls, if callers ever need direct access to the EventFluxElement fields.
 // impl std::ops::Deref for Element {
 //     type Target = EventFluxElement;
 //     fn deref(&self) -> &Self::Target { &self.eventflux_element }
@@ -44,9 +44,10 @@ impl Element {
 //     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.eventflux_element }
 // }
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A named annotation with key and value elements and nested annotations.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Annotation {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
     pub name: String,
     pub elements: Vec<Element>,
@@ -63,12 +64,12 @@ impl Annotation {
         }
     }
 
-    // Builder methods from Java
     pub fn name(mut self, name: String) -> Self {
         self.name = name;
         self
     }
 
+    /// Add an element. A missing key defaults to `"value"`.
     pub fn element(mut self, key: Option<String>, value: String) -> Self {
         let actual_key = key.unwrap_or_else(|| "value".to_string());
         self.elements.push(Element::new(actual_key, value));
@@ -86,17 +87,11 @@ impl Annotation {
     }
 }
 
-// No longer need to impl EventFluxElement for Annotation/Element as they compose it.
-// Access to context indices would be via `my_annotation.eventflux_element.query_context_start_index`.
-// Or via Deref/DerefMut if implemented.
+// Annotation and Element hold an EventFluxElement field instead of implementing a trait.
+// Read the query positions through it, as in
+// `my_annotation.eventflux_element.query_context_start_index`.
 
-// Note: The prompt had `pub element: EventFluxElement` for the composed field.
-// I used `element_context` in `Element` to avoid potential naming conflicts if `Element` itself
-// had methods named `element`. For `Annotation`, `eventflux_element` is fine.
-// I will stick to `eventflux_element` for consistency as per the general instruction.
-
-// Re-adjusting Element to use `eventflux_element` for the composed field name.
-// (This block is part of the same overwrite operation)
+// Old copy of Element, kept for reference. The live definition is at the top of this file.
 // #[derive(Clone, Debug, PartialEq, Default)]
 // pub struct Element {
 //     pub eventflux_element: EventFluxElement,
@@ -112,4 +107,3 @@ impl Annotation {
 //         }
 //     }
 // }
-// The above change for Element is now incorporated directly into the main struct definition for Element.

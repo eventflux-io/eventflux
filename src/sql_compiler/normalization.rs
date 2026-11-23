@@ -15,23 +15,24 @@
  * limitations under the License.
  */
 
-//! SQL Normalization Utilities
+//! SQL normalization helpers.
 //!
-//! Provides utilities for normalizing EventFlux SQL syntax to be compatible
-//! with standard SQL parsers.
+//! Rewrite EventFlux SQL so a standard SQL parser can read it.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-/// Regex pattern for case-insensitive CREATE STREAM matching
+/// Matches `CREATE STREAM` in any letter case, with any whitespace between the words.
 static CREATE_STREAM_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bCREATE\s+STREAM\b").unwrap());
 
-/// Normalize EventFlux-specific SQL syntax to standard SQL
+/// Rewrite every `CREATE STREAM` as `CREATE TABLE` so a standard SQL parser accepts it.
 ///
-/// This function converts EventFlux's `CREATE STREAM` syntax to `CREATE TABLE`
-/// so it can be parsed by standard SQL parsers. The conversion is case-insensitive
-/// and preserves whitespace patterns.
+/// Matching ignores letter case. The match, including the whitespace between the two
+/// words, is replaced with the exact text `CREATE TABLE`. Whitespace elsewhere is kept.
+///
+/// This is a plain text replace, not a SQL lexer. `CREATE STREAM` inside a string
+/// literal or comment is rewritten too.
 ///
 /// # Examples
 ///
@@ -54,9 +55,9 @@ pub fn normalize_stream_syntax(sql: &str) -> String {
         .to_string()
 }
 
-/// Check if SQL contains CREATE STREAM statement
+/// Whether the text contains `CREATE STREAM` in any letter case.
 ///
-/// This is a case-insensitive check for the presence of CREATE STREAM syntax.
+/// Like `normalize_stream_syntax`, this also matches text inside string literals.
 pub fn is_create_stream(sql: &str) -> bool {
     CREATE_STREAM_RE.is_match(sql)
 }
@@ -119,11 +120,10 @@ mod tests {
 
     #[test]
     fn test_normalize_inside_string_not_affected() {
-        // Note: This is a limitation - we'd need a proper lexer to handle this correctly
-        // For now, we document that string literals containing "CREATE STREAM" may be affected
+        // Known limitation. Despite the test name, text inside a string literal IS
+        // rewritten. Fixing it would need a real SQL lexer.
         let sql = "SELECT 'CREATE STREAM inside string' FROM MyStream";
         let normalized = normalize_stream_syntax(sql);
-        // This WILL replace inside the string (known limitation)
         assert_eq!(
             normalized,
             "SELECT 'CREATE TABLE inside string' FROM MyStream"

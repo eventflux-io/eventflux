@@ -15,35 +15,36 @@
  * limitations under the License.
  */
 
-//! CAST Expression
+//! CAST expression.
 //!
-//! Represents a type conversion expression: CAST(expr AS type)
+//! A type conversion, written CAST(expr AS type).
 
 use super::expression::Expression;
 use crate::query_api::definition::attribute::Type as AttributeType;
 use crate::query_api::eventflux_element::EventFluxElement;
 
-/// CAST expression for type conversion
+/// A type conversion.
 ///
 /// SQL syntax: `CAST(expression AS target_type)`
 ///
-/// Supports conversions between:
+/// This type only holds the parse result. The conversions themselves happen in
+/// `CastExecutor`, which supports:
 /// - String to numeric types (INT, LONG, FLOAT, DOUBLE)
-/// - Numeric types to String
-/// - Numeric type widening (INT -> LONG, FLOAT -> DOUBLE)
-/// - Numeric type narrowing (LONG -> INT, DOUBLE -> FLOAT)
+/// - Numeric and BOOL values to String
+/// - Numeric widening (such as INT -> LONG, FLOAT -> DOUBLE)
+/// - Numeric narrowing (such as LONG -> INT, DOUBLE -> FLOAT)
+/// - String, INT and LONG to BOOL
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cast {
-    /// The expression to convert
+    /// The expression to convert.
     pub expression: Box<Expression>,
-    /// The target type to convert to
+    /// The type to convert to.
     pub target_type: AttributeType,
-    /// EventFlux element metadata
+    /// Position in the query text.
     pub eventflux_element: EventFluxElement,
 }
 
 impl Cast {
-    /// Create a new Cast expression
     pub fn new(expression: Expression, target_type: AttributeType) -> Self {
         Self {
             expression: Box::new(expression),

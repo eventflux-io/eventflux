@@ -15,26 +15,21 @@
  * limitations under the License.
  */
 
-// Corresponds to the package io.eventflux.query.api.expression.math
+// Arithmetic expressions.
+//
+// Each math struct holds an `eventflux_element: EventFluxElement`, a `left_value` and a
+// `right_value`, both Box<Expression>. The Expression enum in expression/expression.rs
+// wraps them, as in Expression::Add(Box<Add>). The boxes break the type recursion through
+// Expression.
 
 pub mod add;
 pub mod divide;
-pub mod mod_op;
+pub mod mod_op; // not named `mod` because that is a Rust keyword
 pub mod multiply;
-pub mod subtract; // Renamed from mod to mod_op to avoid keyword clash
+pub mod subtract;
 
 pub use self::add::Add;
 pub use self::divide::Divide;
 pub use self::mod_op::ModOp;
 pub use self::multiply::Multiply;
 pub use self::subtract::Subtract;
-
-// Comments from before are still relevant:
-// Each math operation struct (Add, Subtract, etc.) will contain:
-// - eventflux_element: EventFluxElement (updated from direct fields)
-// - left_value: Box<Expression>
-// - right_value: Box<Expression>
-//
-// The Expression enum will be defined in the parent module (expression/expression.rs)
-// and will have variants like Expression::Add(Box<Add>), etc.
-// Box<T> is used because these are recursive types via the Expression enum.

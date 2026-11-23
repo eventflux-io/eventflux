@@ -17,6 +17,7 @@
 
 use crate::query_api::expression::Expression;
 
+/// One range of a range partition. Events matching `condition` get `partition_key`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RangePartitionProperty {
     pub query_context_start_index: Option<(i32, i32)>,
@@ -36,20 +37,16 @@ impl RangePartitionProperty {
     }
 }
 
-// impl EventFluxElement for RangePartitionProperty removed
-
+/// Splits one stream into partitions by a list of conditions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RangePartitionType {
-    // This 'element' field was in the prompt, but Java RangePartitionType implements EventFluxElement directly.
-    // So, query_context_start/end_index will be direct fields.
+    // Position in the query text. Held directly instead of through EventFluxElement.
     pub query_context_start_index: Option<(i32, i32)>,
     pub query_context_end_index: Option<(i32, i32)>,
 
-    pub stream_id: String, // The ID of the stream that is being partitioned
+    /// Id of the stream being partitioned.
+    pub stream_id: String,
 
-    // In Java, this is `RangePartitionProperty[] rangePartitionProperties`.
-    // The prompt used `intervals: Vec<(Expression, String)>`.
-    // Using Vec<RangePartitionProperty> is closer to Java and retains named fields.
     pub range_partition_properties: Vec<RangePartitionProperty>,
 }
 
@@ -63,5 +60,3 @@ impl RangePartitionType {
         }
     }
 }
-
-// impl EventFluxElement for RangePartitionType removed

@@ -15,48 +15,32 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.store.Store
-// Extends SingleInputStream (conceptually) and implements InputStore in Java.
-
-use super::input_store::InputStoreTrait;
-// For new_with_id constructor
-use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::execution::query::input::stream::SingleInputStream; // Changed
-use crate::query_api::expression::Expression;
-// For on() methods returning these types, which are then wrapped in InputStore enum
-// These will need to be refactored to compose EventFluxElement as well.
 use super::aggregation_input_store::AggregationInputStore;
 use super::condition_input_store::ConditionInputStore;
+use super::input_store::InputStoreTrait;
+use crate::query_api::eventflux_element::EventFluxElement;
+use crate::query_api::execution::query::input::stream::SingleInputStream;
+use crate::query_api::expression::Expression;
 
-// Using Within from query_api::aggregation
 use crate::query_api::aggregation::Within;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A table, window or aggregation read by an on demand query. Named through a basic
+/// SingleInputStream so it can carry an alias and stream handlers.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Store {
-    // Composes SingleInputStream to inherit its stream-like properties
-    pub single_input_stream: SingleInputStream, // Changed field name
-    // Store has its own EventFluxElement context, separate from SingleInputStream's inner one.
-    // However, Java Store directly uses context of SingleInputStream.
-    // Let's ensure `eventflux_element` is part of `Store` directly or consistently accessed.
-    // The current impl delegates EventFluxElement to basic_single_input_stream.
-    // If Store needs its *own* context distinct from the stream it represents,
-    // it would need its own `eventflux_element: EventFluxElement` field.
-    // For now, assuming it shares context with its SingleInputStream representation.
-    // This means Store does not need its own eventflux_element field if SingleInputStream has one.
-    // SingleInputStream has `eventflux_element`.
-    // So, Store effectively gets its context via `single_input_stream.eventflux_element`.
-    // The `impl EventFluxElement for Store` was removed. Store uses its own eventflux_element field.
-    pub eventflux_element: EventFluxElement, // Store itself is a EventFluxElement
+    /// Holds the store id, its alias and any handlers such as filters.
+    pub single_input_stream: SingleInputStream,
+    /// Query positions of the store itself. Separate from the ones on
+    /// `single_input_stream`.
+    pub eventflux_element: EventFluxElement,
 }
 
 impl Store {
-    // Internal constructor, used by factories in InputStore enum.
-    // Made pub(super) in previous version, now pub for direct use if needed.
+    /// A store with just an id. Used by `InputStore::store`.
     pub fn new_with_id(store_id: String) -> Self {
         Store {
             eventflux_element: EventFluxElement::default(),
-            // BasicSingleInputStream::new functionality is now part of SingleInputStream::new_basic_from_id or similar.
-            // Assuming a basic, non-fault, non-inner stream for a simple store definition.
+            // Basic stream that is neither inner nor a fault stream.
             single_input_stream: SingleInputStream::new_basic(
                 store_id,
                 false,
@@ -67,6 +51,7 @@ impl Store {
         }
     }
 
+    /// A store with an id and an alias. Used by `InputStore::store_with_ref`.
     pub fn new_with_ref(store_reference_id: String, store_id: String) -> Self {
         Store {
             eventflux_element: EventFluxElement::default(),
@@ -80,52 +65,34 @@ impl Store {
         }
     }
 
-    // Constructor from prompt: `new(store_id: String, on_condition: Option<Expression>)`
-    // This seems to conflate Store with ConditionInputStore.
-    // Java Store is just an ID; conditions are applied via `.on()`.
-    // Sticking to Java structure: Store itself doesn't take on_condition in constructor.
+    // Store takes no condition itself. Add one with on_condition() or the
+    // on_aggregation_* methods. The results can be wrapped in the InputStore enum.
 
-    // Methods corresponding to `on(Expression)` and `on(Within, Per)`
-    // These return concrete types which can then be wrapped by the InputStore enum.
+    /// Read this store filtered by `on_condition`.
     pub fn on_condition(self, on_condition: Expression) -> ConditionInputStore {
-        // ConditionInputStore would take `self` (a Store instance) and the condition.
-        ConditionInputStore::new(self, on_condition) // Assumes ConditionInputStore::new is defined
+        ConditionInputStore::new(self, on_condition)
     }
 
+    /// Read this aggregation over `within` at the `per` time unit, filtered by
+    /// `on_condition`.
     pub fn on_aggregation_condition(
         self,
         on_condition: Expression,
-        within: Within, // Changed from WithinPlaceholder
+        within: Within,
         per: Expression,
     ) -> AggregationInputStore {
         AggregationInputStore::new_with_condition(self, on_condition, within, per)
-        // Assumes constructor exists
     }
 
-    pub fn on_aggregation_only(
-        self,
-        within: Within, // Changed from WithinPlaceholder
-        per: Expression,
-    ) -> AggregationInputStore {
-        AggregationInputStore::new_no_condition(self, within, per) // Assumes constructor exists
+    /// Read this aggregation over `within` at the `per` time unit, with no condition.
+    pub fn on_aggregation_only(self, within: Within, per: Expression) -> AggregationInputStore {
+        AggregationInputStore::new_no_condition(self, within, per)
     }
 }
 
-// Implement EventFluxElement for Store.
-// It should have its own context, separate from the BasicSingleInputStream it composes if it's a distinct element.
-// Java's Store extends BasicSingleInputStream, so it *is* a BasicSingleInputStream and shares its context.
-// Our BasicSingleInputStream gets context via its `inner: SingleInputStream`.
-// The previous EventFluxElement impl for Store delegated to basic_single_input_stream.
-// If Store itself is a EventFluxElement, it should use its own `eventflux_element` field.
-// The prompt's example for `StoreQuery` has `element: EventFluxElement`, implying StoreQuery is the element,
-// not necessarily the `Store` struct itself if `Store` is just an ID wrapper.
-// Let's assume `Store` itself needs to be a `EventFluxElement`.
-// `impl EventFluxElement for Store` removed. Store uses its own `eventflux_element` field.
-
-// Implement InputStoreTrait
 impl InputStoreTrait for Store {
+    /// The store id is the stream id of the inner SingleInputStream.
     fn get_store_id(&self) -> &str {
-        // The ID of the store is the stream_id of the composed SingleInputStream
         self.single_input_stream.get_stream_id_str()
     }
 
@@ -134,11 +101,12 @@ impl InputStoreTrait for Store {
     }
 }
 
-// Delegate stream-like methods (filter, function, window, as) to SingleInputStream
+// Stream builder methods passed on to the inner SingleInputStream.
 impl Store {
+    /// Add a filter handler to the inner stream.
     pub fn filter(mut self, filter_expression: Expression) -> Self {
-        self.single_input_stream = self.single_input_stream.filter(filter_expression); // Assuming SingleInputStream has filter
+        self.single_input_stream = self.single_input_stream.filter(filter_expression);
         self
     }
-    // TODO: Add other delegated methods: function, window, as_ref from SingleInputStream
+    // TODO: Pass on function, window and as_ref from SingleInputStream too.
 }

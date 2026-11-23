@@ -15,20 +15,19 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.AttributeFunction
-// This also implements Extension in Java, which means it has namespace and name.
 use super::Expression;
-use crate::query_api::eventflux_element::EventFluxElement; // Assuming expression.rs will define the Expression enum.
+use crate::query_api::eventflux_element::EventFluxElement;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A function call in an expression, such as `sum(price)` or `str:concat(a, b)`.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct AttributeFunction {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Extension fields
+    /// The extension namespace, such as `str` in `str:concat`. `None` for built in
+    /// functions.
     pub extension_namespace: Option<String>,
     pub function_name: String,
 
-    // AttributeFunction specific fields
     pub parameters: Vec<Expression>,
 }
 
@@ -47,9 +46,8 @@ impl AttributeFunction {
     }
 }
 
-// The Java `Extension` interface has `getNamespace()` and `getName()`.
-// These are covered by `extension_namespace` and `function_name` fields.
-// If an `Extension` trait is defined in Rust, this struct would implement it.
+// The namespace and name are plain fields today. If a shared Extension trait is added,
+// it would look like this:
 // pub trait Extension {
 //     fn get_namespace(&self) -> Option<&str>;
 //     fn get_name(&self) -> &str;
@@ -59,7 +57,7 @@ impl AttributeFunction {
 //     fn get_name(&self) -> &str { &self.function_name }
 // }
 
-// Deref if needed:
+// Possible Deref impls, if callers ever need direct access to the EventFluxElement fields.
 // impl std::ops::Deref for AttributeFunction {
 //     type Target = EventFluxElement;
 //     fn deref(&self) -> &Self::Target { &self.eventflux_element }

@@ -15,11 +15,12 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.handler.Filter
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-// Corrected structure (previous duplicate removed):
+/// A filter on an input stream, as in `InputStream[price > 10]`.
+///
+/// Has no `Default` because the filter expression is required.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Filter {
     pub eventflux_element: EventFluxElement,
@@ -34,10 +35,8 @@ impl Filter {
         }
     }
 
-    // For StreamHandlerTrait's get_parameters_as_option_vec
+    // Used by StreamHandlerTrait::get_parameters_as_option_vec.
     pub(super) fn get_parameters_ref_internal(&self) -> Vec<&Expression> {
         vec![&self.filter_expression]
     }
 }
-
-// No Default derive for Filter as filter_expression is mandatory.

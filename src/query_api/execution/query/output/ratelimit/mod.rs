@@ -18,7 +18,8 @@
 pub mod events_output_rate;
 pub mod output_rate;
 pub mod snapshot_output_rate;
-pub mod time_output_rate; // This is the main file with the OutputRate enum/struct
+pub mod time_output_rate;
+// OutputRate itself lives in output_rate.rs.
 
 pub use self::events_output_rate::EventsOutputRate;
 pub use self::output_rate::{OutputRate, OutputRateBehavior, OutputRateVariant};

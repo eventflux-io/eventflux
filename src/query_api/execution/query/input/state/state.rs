@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.state.State (factory class)
 use super::absent_stream_state_element::AbsentStreamStateElement;
 use super::count_state_element::{CountStateElement, ANY_COUNT};
 use super::every_state_element::EveryStateElement;
@@ -24,10 +23,10 @@ use super::next_state_element::NextStateElement;
 use super::state_element::StateElement;
 use super::stream_state_element::StreamStateElement;
 
-use crate::query_api::execution::query::input::stream::SingleInputStream; // Changed
-use crate::query_api::expression::constant::Constant as ExpressionConstant; // Renamed TimeConstant
+use crate::query_api::execution::query::input::stream::SingleInputStream;
+use crate::query_api::expression::constant::Constant as ExpressionConstant;
 
-// Utility struct to hold factory methods
+/// Factory functions that build pattern and sequence elements. Holds no data.
 pub struct State;
 
 impl State {
@@ -35,34 +34,38 @@ impl State {
         StateElement::Every(Box::new(EveryStateElement::new(state_element)))
     }
 
-    // Updated to use StateElement directly for sse1 and sse2 in LogicalStateElement::new
     pub fn logical_and(sse1: StreamStateElement, sse2: StreamStateElement) -> StateElement {
         StateElement::Logical(LogicalStateElement::new(
-            StateElement::Stream(sse1), // Wrap in StateElement enum
+            StateElement::Stream(sse1),
             LogicalType::And,
-            StateElement::Stream(sse2), // Wrap in StateElement enum
+            StateElement::Stream(sse2),
         ))
     }
 
     pub fn logical_or(sse1: StreamStateElement, sse2: StreamStateElement) -> StateElement {
         StateElement::Logical(LogicalStateElement::new(
-            StateElement::Stream(sse1), // Wrap in StateElement enum
+            StateElement::Stream(sse1),
             LogicalType::Or,
-            StateElement::Stream(sse2), // Wrap in StateElement enum
+            StateElement::Stream(sse2),
         ))
     }
 
+    /// Build a NOT step that waits `time` for the stream to stay silent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stream has a reference id, as in `e1=StockStream`. A NOT step cannot
+    /// be referenced.
     pub fn logical_not(
         stream_state_element: StreamStateElement,
         time: Option<ExpressionConstant>,
     ) -> AbsentStreamStateElement {
-        // Assuming get_single_input_stream() returns a reference to the SingleInputStream composed in StreamStateElement
         if stream_state_element
             .get_single_input_stream()
             .get_stream_reference_id_str()
             .is_some()
         {
-            // TODO: This should ideally return a Result or handle error more gracefully
+            // TODO: Return a Result instead of panicking.
             panic!(
                 "EventFluxAppValidationException: NOT pattern cannot have reference id but found {}",
                 stream_state_element
@@ -71,23 +74,20 @@ impl State {
                     .unwrap_or_default()
             );
         }
-        // AbsentStreamStateElement::new expects an owned SingleInputStream.
-        // StreamStateElement.basic_single_input_stream is an owned SingleInputStream.
-        // We need to clone it if StreamStateElement is not consumed.
-        // If StreamStateElement is consumed, we can move it.
-        // For now, assuming clone() is available and appropriate.
+        // The clone is not needed because stream_state_element is owned here. A move
+        // would do.
         AbsentStreamStateElement::new(stream_state_element.basic_single_input_stream.clone(), time)
     }
 
-    // Now this can be implemented correctly
+    /// Build `NOT A AND B`.
     pub fn logical_not_and(
         absent_sse: AbsentStreamStateElement,
         sse2: StreamStateElement,
     ) -> StateElement {
         StateElement::Logical(LogicalStateElement::new(
-            StateElement::AbsentStream(absent_sse), // Wrap in StateElement enum
+            StateElement::AbsentStream(absent_sse),
             LogicalType::And,
-            StateElement::Stream(sse2), // Wrap in StateElement enum
+            StateElement::Stream(sse2),
         ))
     }
 
@@ -101,6 +101,7 @@ impl State {
         )))
     }
 
+    /// Match the stream between `min` and `max` times. Pass `ANY_COUNT` for no bound.
     pub fn count(stream_state_element: StreamStateElement, min: i32, max: i32) -> StateElement {
         StateElement::Count(CountStateElement::new(stream_state_element, min, max))
     }
@@ -120,12 +121,11 @@ impl State {
     }
 
     pub fn stream(single_input_stream: SingleInputStream) -> StreamStateElement {
-        // Changed parameter type
         StreamStateElement::new(single_input_stream)
     }
 
+    /// Same as `stream`, wrapped in `StateElement::Stream`.
     pub fn stream_element(single_input_stream: SingleInputStream) -> StateElement {
-        // Changed parameter type
         StateElement::Stream(Self::stream(single_input_stream))
     }
 

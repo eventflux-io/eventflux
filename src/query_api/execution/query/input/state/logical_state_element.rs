@@ -15,33 +15,36 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.state.LogicalStateElement
 use super::state_element::StateElement;
 use crate::query_api::eventflux_element::EventFluxElement;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)] // Added Eq, Hash, Copy
-#[derive(Default)]
+/// How the two sides of a logical pattern step combine. Defaults to `And`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum Type {
     #[default]
     And,
     Or,
-    // NOT is not part of Java's LogicalStateElement.Type; it's handled by AbsentStreamStateElement.
+    // No Not variant. NOT is modelled with AbsentStreamStateElement.
 }
 
-#[derive(Clone, Debug, PartialEq)] // Default is complex due to Box<StateElement>
+/// A pattern step joining two stream steps with AND or OR, as in `A AND B`.
+///
+/// Has no `Default` because both sides are required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct LogicalStateElement {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // LogicalStateElement fields
     pub stream_state_element_1: Box<StateElement>,
     pub logical_type: Type,
-    pub stream_state_element_2: Box<StateElement>, // Kept as required, not Option
+    pub stream_state_element_2: Box<StateElement>,
 }
 
 impl LogicalStateElement {
+    /// # Panics
+    ///
+    /// Panics if either side is not a `StateElement::Stream` or `StateElement::AbsentStream`.
     pub fn new(sse1: StateElement, logical_type: Type, sse2: StateElement) -> Self {
-        // Validation from previous step is good:
-        // Ensure sse1 and sse2 are variants that represent a single effective stream.
+        // Each side must stand for a single stream.
         match sse1 {
             StateElement::Stream(_) | StateElement::AbsentStream(_) => {}
             _ => panic!(
@@ -64,12 +67,8 @@ impl LogicalStateElement {
     }
 }
 
-// Custom Default implementation because Box<StateElement> requires StateElement to be Default,
-// which is tricky for enums with non-defaultable variants or recursive structures.
-// A truly useful Default for LogicalStateElement is unlikely without specific default StateElements.
-// For now, omitting Default derive and custom impl unless a clear default pattern emerges for StateElement.
-// If StateElement had a simple Default (e.g. StateElement::Stream(StreamStateElement::default())),
-// then this could be:
+// No Default impl, because StateElement has no Default. If StateElement ever gets one,
+// such as StateElement::Stream(StreamStateElement::default()), this would work:
 // impl Default for LogicalStateElement {
 //     fn default() -> Self {
 //         Self {

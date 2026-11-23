@@ -15,55 +15,50 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.definition.AggregationDefinition
+use crate::query_api::aggregation::TimePeriod;
 use crate::query_api::annotation::Annotation;
 use crate::query_api::definition::abstract_definition::AbstractDefinition;
-// BasicSingleInputStream was merged into SingleInputStream; AggregationDefinition should use SingleInputStream.
-use crate::query_api::aggregation::TimePeriod;
 use crate::query_api::execution::query::input::stream::SingleInputStream;
 use crate::query_api::execution::query::selection::Selector;
-use crate::query_api::expression::Variable; // Using actual TimePeriod
+use crate::query_api::expression::Variable;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// An incremental aggregation definition. Reads one input stream, groups by a time
+/// attribute and keeps results per time unit. Annotations live in `abstract_definition`.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct AggregationDefinition {
-    // Composition for inheritance from AbstractDefinition
     pub abstract_definition: AbstractDefinition,
 
-    // Fields specific to AggregationDefinition
-    pub basic_single_input_stream: Option<SingleInputStream>, // Changed from BasicSingleInputStream
-    pub selector: Option<Selector>, // In Java, it's Selector, not BasicSelector for the field type
-    pub aggregate_attribute: Option<Variable>, // This is 'aggregateBy' in Java
-    pub time_period: Option<TimePeriod>, // This is 'every' in Java
-
-                                    // annotations are in AbstractDefinition
+    /// The input stream. The name is historical. Any SingleInputStream is accepted.
+    pub basic_single_input_stream: Option<SingleInputStream>,
+    pub selector: Option<Selector>,
+    /// The time attribute to aggregate by. Set with `aggregate_by`.
+    pub aggregate_attribute: Option<Variable>,
+    /// The time units to keep results for. Set with `every`.
+    pub time_period: Option<TimePeriod>,
 }
 
 impl AggregationDefinition {
-    // Constructor that takes an id, as per Java's `AggregationDefinition.id(aggregationName)`
+    /// An empty definition with just the id set.
     pub fn new(id: String) -> Self {
         AggregationDefinition {
             abstract_definition: AbstractDefinition::new(id),
             basic_single_input_stream: None,
-            selector: None, // Java initializes selector to null
+            selector: None,
             aggregate_attribute: None,
             time_period: None,
         }
     }
 
-    // Static factory `id` from Java
+    /// Same as `new`. Starts a builder chain.
     pub fn id(aggregation_name: String) -> Self {
         Self::new(aggregation_name)
     }
 
-    // Builder-style methods from Java
     pub fn from(mut self, stream: SingleInputStream) -> Self {
-        // Changed from BasicSingleInputStream
         self.basic_single_input_stream = Some(stream);
         self
     }
 
-    // In Java, select takes BasicSelector, but field is Selector.
-    // Using Selector type here.
     pub fn select(mut self, selector: Selector) -> Self {
         self.selector = Some(selector);
         self
@@ -85,7 +80,7 @@ impl AggregationDefinition {
     }
 }
 
-// Provide access to AbstractDefinition fields and EventFluxElement fields
+// Access to the shared definition fields and the query positions.
 impl AsRef<AbstractDefinition> for AggregationDefinition {
     fn as_ref(&self) -> &AbstractDefinition {
         &self.abstract_definition

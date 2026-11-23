@@ -15,41 +15,42 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.store.ConditionInputStore
 use super::input_store::InputStoreTrait;
-use super::store::Store; // The Store struct (wrapper around BasicSingleInputStream)
+use super::store::Store;
 use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::expression::Expression; // To implement get_store_id etc.
+use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq)] // Default is not straightforward due to Store and Expression
+/// A read from a store filtered by an ON condition. Has no `Default`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConditionInputStore {
-    pub eventflux_element: EventFluxElement, // For its own context if needed
+    /// Query positions of this element. Separate from the ones on `store`.
+    pub eventflux_element: EventFluxElement,
 
-    pub store: Store, // The underlying store (table, window, aggregation)
-    pub on_condition: Option<Expression>, // Condition is optional in some Store.on() calls in Java, but required for ConditionInputStore
+    /// The table, window or aggregation being read.
+    pub store: Store,
+    /// Always `Some` when built with `new`.
+    pub on_condition: Option<Expression>,
 }
 
 impl ConditionInputStore {
     pub fn new(store: Store, on_condition: Expression) -> Self {
         ConditionInputStore {
-            eventflux_element: EventFluxElement::default(), // Or copy context from store?
+            eventflux_element: EventFluxElement::default(),
             store,
             on_condition: Some(on_condition),
         }
     }
 
-    // If on_condition can truly be optional for this type (Java constructor implies it's not)
+    // A constructor that allows no condition, if that is ever needed.
     // pub fn new_optional_condition(store: Store, on_condition: Option<Expression>) -> Self { ... }
 }
 
-// `impl EventFluxElement for ConditionInputStore` removed.
-
 impl InputStoreTrait for ConditionInputStore {
     fn get_store_id(&self) -> &str {
-        self.store.get_store_id() // Delegate to composed Store
+        self.store.get_store_id()
     }
 
     fn get_store_reference_id(&self) -> Option<&str> {
-        self.store.get_store_reference_id() // Delegate to composed Store
+        self.store.get_store_reference_id()
     }
 }
