@@ -24,7 +24,7 @@ pub trait ErrorStore: Send + Sync + std::fmt::Debug {
 
 #[derive(Default, Debug)]
 pub struct InMemoryErrorStore {
-    inner: Mutex<Vec<(String, String)>>, // Store error messages as strings
+    inner: Mutex<Vec<(String, String)>>, // (stream id, error message) pairs
 }
 
 impl InMemoryErrorStore {

@@ -17,23 +17,25 @@
 
 //! # Data Mapping System
 //!
-//! Provides mappers for transforming raw data to/from EventFlux events.
+//! Mappers that turn raw data into EventFlux events and back.
 //!
 //! ## Mapper Types
 //!
-//! - **SourceMapper**: Maps raw bytes (JSON, CSV, etc.) → EventFlux events
-//! - **SinkMapper**: Maps EventFlux events → raw bytes for external systems
+//! - **SourceMapper**: maps raw bytes (JSON, CSV, and so on) to EventFlux events
+//! - **SinkMapper**: maps EventFlux events to raw bytes for outside systems
 //!
-//! ## Auto-Mapping Policy (All-or-Nothing)
+//! ## Auto Mapping Rule (All or Nothing)
 //!
-//! EventFlux enforces strict auto-mapping rules:
-//! - **NO `mapping.*` properties** → Auto-map ALL top-level fields by name
-//! - **ANY `mapping.*` properties** → Explicitly map ALL fields (no auto-mapping)
+//! - **NO `mapping.*` properties**: auto map ALL fields. JSON matches top level
+//!   keys by schema field name when the schema is known. CSV maps by position.
+//! - **ANY `mapping.*` property**: ALL fields must be mapped explicitly, with no
+//!   auto mapping
 //!
 //! ## Supported Formats
 //!
-//! - JSON (with JSONPath extraction)
-//! - CSV (with field mapping)
+//! - JSON (with JSONPath)
+//! - CSV (with column mapping)
+//! - bytes (raw binary passed through as is)
 //!
 //! ## Configuration Example
 //!
@@ -62,8 +64,9 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Current wall-clock time in epoch milliseconds, used as the timestamp of
-/// mapped events. Returns 0 if the system clock is set before the epoch.
+/// Current wall clock time in milliseconds since the Unix epoch, used as the
+/// timestamp of mapped events. Returns 0 if the system clock is set before
+/// the epoch.
 pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -71,10 +74,10 @@ pub(crate) fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Order explicit `mapping.*` entries alphabetically by field name.
+/// Sorts explicit `mapping.*` entries by field name.
 ///
-/// Used when no stream schema is available: HashMap iteration order is
-/// non-deterministic, so a stable order is required.
+/// Used when there is no stream schema. HashMap order is random, so a fixed
+/// order is needed.
 pub(crate) fn alphabetical_mappings<V: Clone>(mappings: &HashMap<String, V>) -> Vec<(String, V)> {
     let mut ordered: Vec<(String, V)> = mappings
         .iter()
@@ -84,7 +87,7 @@ pub(crate) fn alphabetical_mappings<V: Clone>(mappings: &HashMap<String, V>) -> 
     ordered
 }
 
-/// First field name declared more than once (exact match), if any.
+/// Returns the first field name declared more than once (exact match), if any.
 fn first_duplicate(field_names: &[String]) -> Option<&str> {
     field_names
         .iter()
@@ -93,12 +96,16 @@ fn first_duplicate(field_names: &[String]) -> Option<&str> {
         .map(|(_, name)| name.as_str())
 }
 
-/// Reject a schema that declares the same field name twice.
+/// Rejects a schema that declares the same field name twice (exact match).
 ///
-/// Stream definitions only warn about duplicate attribute names, but
-/// name-based mapping cannot tell the two positions apart: one JSON key or
-/// `mapping.*` entry would feed both, or one output key would overwrite the
-/// other. Called when a mapper is configured, so the app fails at creation.
+/// Stream definitions only warn about duplicate attribute names, but mapping
+/// by name cannot tell the two positions apart. One JSON key or `mapping.*`
+/// entry would feed both, or one output key would overwrite the other. Called
+/// when a mapper is set up, so the app fails when it is created.
+///
+/// # Errors
+///
+/// Returns a configuration error naming the first duplicate field.
 pub(crate) fn ensure_unique_field_names(
     field_names: &[String],
     format: &str,
@@ -115,16 +122,21 @@ pub(crate) fn ensure_unique_field_names(
     }
 }
 
-/// Match schema field names to keys (JSON object keys or `mapping.*` keys)
-/// one-to-one, returning the matched key for each field in schema order.
+/// Pairs schema field names with keys (JSON object keys or `mapping.*` keys),
+/// one key per field. Returns the matched key for each field, in schema order.
 ///
-/// Field names must be unique (duplicates are rejected). Exact matches are
-/// resolved first. A remaining field then matches a key
-/// ASCII case-insensitively only when the pairing is unambiguous in both
-/// directions: the field has exactly one unclaimed candidate key, and that
-/// key matches no other unresolved field. Anything else is reported as an
-/// error rather than guessed, so the outcome never depends on key order and
-/// one key never feeds two fields. A field with no candidate maps to `None`.
+/// Field names must be unique. Exact matches are found first. A field left
+/// over then matches a key ignoring ASCII case only when the pair is clear
+/// both ways. The field must have exactly one key that differs only by case
+/// and is not taken, and that key must match no other field left over.
+/// Anything else is an error instead of a guess, so the result never depends
+/// on key order and one key never feeds two fields. A field with no key gives
+/// `None`.
+///
+/// # Errors
+///
+/// Returns an error message when a field name is declared twice or a match
+/// ignoring case is ambiguous.
 pub(crate) fn match_field_names<'k>(
     field_names: &[String],
     keys: &[&'k str],
@@ -184,13 +196,17 @@ pub(crate) fn match_field_names<'k>(
     Ok(matched)
 }
 
-/// Output order for explicit `mapping.*` entries, derived from scratch.
+/// Works out the output order for explicit `mapping.*` entries from scratch.
 ///
-/// Schema order when `field_names` is non-empty (validated, see
+/// Schema order when `field_names` is not empty (checked, see
 /// [`schema_ordered_mappings`]), alphabetical when there is no schema, and
-/// empty when there are no explicit mappings. Mappers recompute their order
-/// through this on every schema change, so a cleared or replaced schema can
-/// never leave a stale order behind.
+/// empty when there are no explicit mappings. Mappers call this on every
+/// schema change, so a cleared or replaced schema never leaves an old order
+/// behind.
+///
+/// # Errors
+///
+/// Returns the error from [`schema_ordered_mappings`].
 pub(crate) fn order_mappings<V: Clone>(
     field_names: &[String],
     mappings: &HashMap<String, V>,
@@ -205,13 +221,17 @@ pub(crate) fn order_mappings<V: Clone>(
     }
 }
 
-/// Order explicit `mapping.*` entries by stream schema, validating fail-fast.
+/// Puts explicit `mapping.*` entries in stream schema order and checks them
+/// right away.
 ///
-/// Fields are paired with mapping keys by [`match_field_names`]. Fails if a
-/// field name is declared twice, if a schema field has no mapping, if a
-/// pairing is ambiguous, or if a mapping key matches no schema field (typo
-/// or stale entry).
-/// `format` is the property prefix (e.g. "json") used in error messages.
+/// Fields are paired with mapping keys by [`match_field_names`]. `format` is
+/// the property prefix, such as "json", used in error messages.
+///
+/// # Errors
+///
+/// Returns a configuration error when a field name is declared twice, a
+/// schema field has no mapping, a pair is ambiguous, or a mapping key matches
+/// no schema field (a typo or an old entry).
 fn schema_ordered_mappings<V: Clone>(
     field_names: &[String],
     mappings: &HashMap<String, V>,
@@ -224,7 +244,8 @@ fn schema_ordered_mappings<V: Clone>(
         config_key: Some(format!("{format}.mapping.{key}")),
     };
 
-    // Sorted so error messages are stable; the matching itself is order-independent
+    // Sorted so error messages are always the same. The matching itself does
+    // not depend on order.
     let mut keys: Vec<&str> = mappings.keys().map(String::as_str).collect();
     keys.sort_unstable();
 
@@ -262,27 +283,29 @@ fn schema_ordered_mappings<V: Clone>(
     Ok(ordered)
 }
 
-/// Trait for mapping raw bytes to EventFlux events (for source streams)
+/// Maps raw bytes to EventFlux events, for source streams.
 ///
-/// Mappers are fully configured and ready to use when created via factories.
-/// The `map` method handles all parsing, extraction, and error handling.
+/// Mappers built by the factories are fully set up and ready to use. `map`
+/// does all the parsing, field lookup, and error handling.
 pub trait SourceMapper: Debug + Send + Sync {
-    /// Map raw input bytes to EventFlux events
+    /// Maps raw input bytes to EventFlux events.
     ///
     /// # Arguments
-    /// * `input` - Raw bytes from external source (JSON, CSV, etc.)
+    /// * `input` - Raw bytes from the outside source (JSON, CSV, and so on)
     ///
     /// # Returns
-    /// * `Ok(Vec<Event>)` - Successfully mapped events (may contain multiple events for batch processing)
-    /// * `Err(EventFluxError)` - Mapping failed due to malformed input or extraction errors
+    /// * `Ok(Vec<Event>)` - The mapped events. May hold several events for a
+    ///   batch input, or none when input is skipped.
+    /// * `Err(EventFluxError)` - Mapping failed because the input is broken or a
+    ///   field could not be read
     ///
     /// # Implementation Notes
-    /// - Must handle malformed input gracefully
-    /// - May return multiple events for array/batch inputs
-    /// - Should validate data against expected schema when possible
+    /// - Must return an error for broken input, not panic
+    /// - May return several events for array or batch inputs
+    /// - Should check data against the expected schema when it can
     fn map(&self, input: &[u8]) -> Result<Vec<Event>, EventFluxError>;
 
-    /// Clone this mapper into a boxed trait object
+    /// Clones this mapper into a boxed trait object
     fn clone_box(&self) -> Box<dyn SourceMapper>;
 }
 
@@ -292,35 +315,35 @@ impl Clone for Box<dyn SourceMapper> {
     }
 }
 
-/// Trait for mapping EventFlux events to raw bytes (for sink streams)
+/// Maps EventFlux events to raw bytes, for sink streams.
 ///
-/// Mappers are fully configured and ready to use when created via factories.
-/// The `map_event` method handles all serialization and template rendering.
+/// Mappers built by the factories are fully set up and ready to use.
+/// `map_event` does all the encoding and template filling.
 ///
-/// # One event = one transport message
+/// # One event gives one transport message
 ///
-/// Mappers serialize exactly ONE event into ONE payload. `SinkCallbackAdapter`
-/// iterates batches and calls `map_event` + `Sink::publish` per event, matching
-/// the per-record semantics of real transports (Kafka record, AMQP message,
-/// WebSocket frame). Sinks that want transport-level batching (e.g. HTTP batch
-/// POST) must buffer internally — batching is a transport concern, not a
-/// formatting concern.
+/// Mappers encode exactly ONE event into ONE payload. `SinkCallbackAdapter`
+/// walks through batches and calls `map_event` and `Sink::publish` for each
+/// event. This matches how real transports work one record at a time (a Kafka
+/// record, an AMQP message, a WebSocket frame). Sinks that want to batch on the
+/// wire, such as an HTTP batch POST, must buffer on their own. Batching belongs
+/// to the transport, not to the format.
 pub trait SinkMapper: Debug + Send + Sync {
-    /// Map ONE EventFlux event to one transport payload
+    /// Maps ONE EventFlux event to one transport payload.
     ///
     /// # Arguments
-    /// * `event` - EventFlux event to serialize
+    /// * `event` - EventFlux event to encode
     ///
     /// # Returns
-    /// * `Ok(Vec<u8>)` - Successfully serialized bytes ready for external sink
-    /// * `Err(EventFluxError)` - Mapping failed due to serialization errors
+    /// * `Ok(Vec<u8>)` - The encoded bytes, ready for the outside sink
+    /// * `Err(EventFluxError)` - Encoding failed
     ///
     /// # Implementation Notes
-    /// - Must handle template rendering errors gracefully
-    /// - Output format must match sink expectations
+    /// - Must return an error when a template cannot be filled, not panic
+    /// - The output format must match what the sink expects
     fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError>;
 
-    /// Clone this mapper into a boxed trait object
+    /// Clones this mapper into a boxed trait object
     fn clone_box(&self) -> Box<dyn SinkMapper>;
 }
 
@@ -369,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_match_exact_key_is_never_reused_by_case_variant_field() {
-        // "id" takes its exact key; "ID" must not fall back to it
+        // "id" takes its exact key, and "ID" must not fall back to it
         let fields = names(&["ID", "id"]);
         let matched = match_field_names(&fields, &["id"]).unwrap();
         assert_eq!(matched, vec![None, Some("id")]);

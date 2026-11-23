@@ -17,7 +17,7 @@
 
 //! # HTTP Sink
 //!
-//! Sends each event's formatted payload as an HTTP request (webhook-style).
+//! Sends each event's formatted payload as an HTTP request, like a webhook.
 //!
 //! ## Architecture
 //!
@@ -25,10 +25,11 @@
 //! Events → per event: SinkMapper → bytes → HttpSink::publish() → ureq request (+ retry) → endpoint
 //! ```
 //!
-//! One event = one request. Retries with exponential backoff apply to
-//! transport errors and retryable statuses (408/429/5xx) — other 4xx mean the
-//! request itself is wrong and are returned to the pipeline immediately.
-//! Retries block inside `publish()`, which is backpressure by design.
+//! One event gives one request. Network errors and the statuses worth a retry
+//! (408, 429, 5xx) are retried, with a wait that grows after each try. Other
+//! 4xx mean the request itself is wrong and go back to the pipeline at once.
+//! Retries block inside `publish()`. This is on purpose, so a slow endpoint
+//! slows the pipeline down.
 
 use super::sink_trait::Sink;
 use crate::core::exception::EventFluxError;
@@ -46,37 +47,44 @@ use std::sync::Arc;
 /// Configuration for HTTP sink
 #[derive(Debug, Clone)]
 pub struct HttpSinkConfig {
-    /// Endpoint to send to (http/https)
+    /// Endpoint to send to (http or https)
     pub url: String,
     /// `POST` (default), `PUT`, or `PATCH`
     pub method: String,
-    /// Request headers from `http.headers.<Name>` (values redacted in Debug)
+    /// Request headers from `http.headers.<Name>`. Values are hidden in Debug.
     pub headers: Vec<(String, Redacted)>,
-    /// Content-Type: explicit `http.content.type`, else derived from the
-    /// stream format (json/csv/bytes); `None` when a
-    /// `http.headers.Content-Type` entry supplies it verbatim instead
+    /// Content-Type. `http.content.type` when set, else picked from the stream
+    /// format (json, csv, or bytes). `None` when an `http.headers.Content-Type`
+    /// entry sets it as is instead.
     pub content_type: Option<String>,
-    /// Per-request timeout (default 30000)
+    /// Timeout for each request in ms. Default 30000.
     pub timeout_ms: u64,
-    /// Exponential-backoff retry policy
+    /// Retry policy, with a wait that grows after each try
     pub retry: HttpRetryConfig,
-    /// Startup probe: `HEAD` (default), `GET`, `OPTIONS`, or `none`
+    /// Startup check method. `HEAD` (default), `GET`, `OPTIONS`, or `NONE` to
+    /// skip it. Stored in uppercase.
     pub validation_method: String,
 }
 
 impl HttpSinkConfig {
-    /// Parse configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URL, method, validation method, timeout, or
+    /// retry settings are invalid, or Content-Type is set through both
+    /// `http.content.type` and `http.headers.Content-Type`.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let url = parse_url(properties)?;
         let method = parse_method(properties, "http.method", "POST", &["POST", "PUT", "PATCH"])?;
         let headers = parse_headers(properties);
 
-        // Precedence: a verbatim http.headers.Content-Type wins (setting
-        // both is rejected — two sources of truth); else explicit
-        // http.content.type; else derived from the stream's format (injected
-        // by stream_initializer as _format); else a safe binary default.
-        // `header()` appends rather than replaces, so the derived value must
-        // be withheld when a header already carries one.
+        // Order of choice. An http.headers.Content-Type wins as is, and also
+        // setting http.content.type is rejected so it is not set in two places.
+        // Next comes http.content.type. Next a value from the stream format,
+        // which stream_initializer adds as _format. Last a safe binary
+        // default. `header()` adds a header instead of replacing it, so the
+        // picked value must be left out when a header already sets one.
         let header_has_content_type = headers
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
@@ -126,24 +134,22 @@ struct SinkMetrics {
     requests_failed: AtomicU64,
 }
 
-/// HTTP sink that sends each event as its own request
+/// HTTP sink that sends each event as its own request.
 ///
-/// This implementation:
-/// - Uses a blocking `ureq` client (rustls) — no runtime bridging
-/// - Retries transport errors and 408/429/5xx with exponential backoff
-/// - Treats other 4xx as permanent request errors (no retry)
+/// - Uses a blocking `ureq` client (rustls), so no async runtime is needed
+/// - Retries network errors and 408, 429, and 5xx, waiting longer each time
+/// - Treats other 4xx as request errors that a retry cannot fix
 #[derive(Debug)]
 pub struct HttpSink {
-    /// Configuration
     config: HttpSinkConfig,
-    /// Reusable blocking client (thread-safe, connection pooling)
+    /// Reused blocking client. Thread safe, and keeps a connection pool.
     agent: ureq::Agent,
-    /// Sent/failed counters
+    /// Sent and failed counters
     metrics: Arc<SinkMetrics>,
 }
 
 impl HttpSink {
-    /// Create a new HTTP sink
+    /// Creates an HTTP sink
     pub fn new(config: HttpSinkConfig) -> Self {
         let agent = build_agent(config.timeout_ms);
         Self {
@@ -153,20 +159,21 @@ impl HttpSink {
         }
     }
 
-    /// Create an HTTP sink from properties
+    /// Creates an HTTP sink from properties. Fails when the config is invalid.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         Ok(Self::new(HttpSinkConfig::from_properties(properties)?))
     }
 
-    /// One request attempt; `Ok(true)` = delivered, `Ok(false)` = retryable
-    /// failure, `Err` = permanent failure
+    /// Makes one request. Returns `Ok(true)` when delivered, `Ok(false)` for a
+    /// failure worth a retry, and `Err` for a failure a retry cannot fix (a
+    /// request that cannot be built, or a 4xx other than 408 and 429).
     fn attempt(&self, payload: &[u8]) -> Result<bool, EventFluxError> {
         let mut request =
             build_request(&self.config.method, &self.config.url, &self.config.headers);
         if let Some(content_type) = &self.config.content_type {
             request = request.header("Content-Type", content_type);
         }
-        // The body borrows the payload — no copy, even across retry attempts
+        // The body borrows the payload, so it is never copied, even on retries
         let request = request.body(payload).map_err(|e| {
             EventFluxError::configuration(format!("Failed to build HTTP request: {e}"))
         })?;
@@ -190,7 +197,7 @@ impl HttpSink {
                 }
             }
             Err(e) => {
-                // Transport-level failure (connect, timeout, TLS) — retryable
+                // Network failure (connect, timeout, TLS), worth a retry
                 log::warn!("[HttpSink] Request to '{}' failed: {e}", self.config.url);
                 Ok(false)
             }
@@ -200,8 +207,8 @@ impl HttpSink {
 
 impl Clone for HttpSink {
     fn clone(&self) -> Self {
-        // ureq::Agent is Arc-shared internally — clones reuse the same
-        // connection pool; shared metrics keep the stop-log totals accurate
+        // ureq::Agent shares its insides through an Arc, so clones reuse the
+        // same connection pool. Shared metrics keep the stop log totals right.
         Self {
             config: self.config.clone(),
             agent: self.agent.clone(),
@@ -221,7 +228,7 @@ impl Sink for HttpSink {
                 }
                 Ok(false) if attempt_no < self.config.retry.max_attempts => {
                     attempt_no += 1;
-                    // Blocking backoff inside publish() = backpressure
+                    // Waiting inside publish() slows the pipeline down on purpose
                     std::thread::sleep(self.config.retry.delay_for(attempt_no));
                 }
                 Ok(false) => {
@@ -272,10 +279,10 @@ impl Sink for HttpSink {
 // HTTP Sink Factory
 // ============================================================================
 
-/// Factory for creating HTTP sink instances.
+/// Factory for HTTP sinks.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// HTTP sinks from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build HTTP sinks from the SQL
+/// WITH clause config.
 #[derive(Debug, Clone)]
 pub struct HttpSinkFactory;
 
@@ -302,7 +309,7 @@ impl SinkFactory for HttpSinkFactory {
             "http.retry.max-delay-ms",
             "http.retry.backoff-multiplier",
             "http.validation.method",
-            // http.headers.<Name> passthrough is also accepted
+            // http.headers.<Name> keys are also accepted
         ]
     }
 
@@ -365,7 +372,7 @@ mod tests {
         );
 
         let config = HttpSinkConfig::from_properties(&props).unwrap();
-        assert_eq!(config.method, "PUT"); // normalized
+        assert_eq!(config.method, "PUT"); // uppercased
         assert_eq!(config.content_type.as_deref(), Some("application/xml"));
         assert_eq!(config.timeout_ms, 5000);
         assert_eq!(config.retry.max_attempts, 5);
@@ -396,7 +403,7 @@ mod tests {
             );
         }
 
-        // Explicit override beats derivation
+        // An explicit value beats the one picked from the format
         let mut props = base_props();
         props.insert(INJECTED_FORMAT_KEY.to_string(), "json".to_string());
         props.insert("http.content.type".to_string(), "text/plain".to_string());
@@ -406,8 +413,8 @@ mod tests {
 
     #[test]
     fn test_content_type_header_wins_and_conflicts_rejected() {
-        // A verbatim http.headers.Content-Type suppresses the derived value
-        // (header() appends — a second Content-Type would be malformed)
+        // An http.headers.Content-Type leaves out the picked value. header()
+        // adds headers, so a second Content-Type would make a bad request.
         let mut props = base_props();
         props.insert(INJECTED_FORMAT_KEY.to_string(), "json".to_string());
         props.insert(
@@ -421,7 +428,7 @@ mod tests {
             vec![("Content-Type".to_string(), Redacted::new("application/xml"))]
         );
 
-        // Both mechanisms at once is ambiguous — rejected
+        // Setting both at once is ambiguous, so it is rejected
         props.insert("http.content.type".to_string(), "text/plain".to_string());
         let err = HttpSinkConfig::from_properties(&props).unwrap_err();
         assert!(err.contains("http.content.type"), "got: {err}");
@@ -455,7 +462,7 @@ mod tests {
     #[test]
     fn test_validation_none_skips_probe() {
         let mut props = base_props();
-        // Unreachable endpoint, but validation is disabled
+        // The endpoint cannot be reached, but the check is turned off
         props.insert("http.validation.method".to_string(), "none".to_string());
         let sink = HttpSink::from_properties(&props).unwrap();
         assert!(sink.validate_connectivity().is_ok());

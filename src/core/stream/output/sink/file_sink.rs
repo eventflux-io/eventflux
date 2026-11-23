@@ -17,8 +17,8 @@
 
 //! # File Sink
 //!
-//! Appends each event's formatted payload as one line to a file, with
-//! optional size/time-based rotation and zstd compression of rolled files.
+//! Appends each event's formatted payload as one line to a file. Can roll the
+//! file over by size or by age, and compress rolled files with zstd.
 //!
 //! ## Architecture
 //!
@@ -27,10 +27,10 @@
 //!   → flush policy → rotation check (size/time) → roll (+ optional zstd)
 //! ```
 //!
-//! One event = one line. `publish()` blocks for the write (and flush, under
-//! the default policy) — backpressure by design, like the other sinks. The
-//! rotation check runs after the write, so a line is never split across
-//! files.
+//! One event gives one line. `publish()` blocks for the write, and for the
+//! flush under the default policy. This is on purpose, so a slow disk slows the
+//! pipeline down, like the other sinks. The rotation check runs after the
+//! write, so a line is never split across files.
 
 use super::sink_trait::Sink;
 use crate::core::exception::EventFluxError;
@@ -48,31 +48,39 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotateCompression {
     None,
-    /// Rolled file becomes `<name>.zst` (zstd is already a workspace
-    /// dependency; gzip is deferred — rationale in feat/file/README.md §9)
+    /// The rolled file becomes `<name>.zst`. zstd is already a workspace
+    /// dependency. gzip is put off for now, see feat/file/README.md section 9
+    /// for why.
     Zstd,
 }
 
 /// File sink configuration
 #[derive(Debug, Clone)]
 pub struct FileSinkConfig {
-    /// Output file path (parent directory must exist)
+    /// Output file path. The parent directory must exist.
     pub path: PathBuf,
-    /// Append to an existing file (default) or truncate at startup
+    /// Append to an existing file (default true), or empty it at startup
     pub append: bool,
-    /// 0 = flush after every event (default); N > 0 = flush at most every N ms
+    /// 0 flushes after every event (the default). N above 0 flushes when a
+    /// write comes at least N ms after the last flush.
     pub flush_interval_ms: u64,
-    /// Roll when the file reaches this size (0 = off)
+    /// Roll when the file reaches this many bytes. 0 turns it off (default).
     pub rotate_size_bytes: u64,
-    /// Roll when the file's age — counted from when it was opened —
-    /// reaches this (0 = off)
+    /// Roll when the file's age, counted from when it was opened, reaches
+    /// this many ms. 0 turns it off (default). Only checked after a write.
     pub rotate_interval_ms: u64,
-    /// Compression for rolled files
+    /// Compression for rolled files. Default none.
     pub rotate_compression: RotateCompression,
 }
 
 impl FileSinkConfig {
-    /// Parse configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `file.path` is missing or blank,
+    /// `file.rotate.compression` is not `none` or `zstd`, a number or bool does
+    /// not parse, or compression is set with no rotation trigger.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let path = crate::core::stream::connector_util::parse_required(properties, "file.path")?;
 
@@ -114,33 +122,33 @@ impl FileSinkConfig {
     }
 }
 
-/// Open output file with write progress and flush bookkeeping
+/// The open output file, with how much was written and when it was last flushed
 struct SinkInner {
     writer: BufWriter<File>,
-    /// Current size of the file (drives size rotation)
+    /// Current size of the file, used for size rotation
     bytes_written: u64,
-    /// When this file was opened (drives time rotation)
+    /// When this file was opened, used for time rotation
     opened_at: Instant,
-    /// Last flush (drives the interval flush policy)
+    /// Time of the last flush, used for the interval flush policy
     last_flush: Instant,
 }
 
-/// Mutex-guarded sink state: the open file plus counters for the stop log.
-/// Plain integers, not atomics — every touch already happens under this
-/// lock (unlike the lock-free HTTP sink, where atomics are load-bearing).
+/// Sink state behind the mutex. The open file and the counters for the stop
+/// log. Plain integers, not atomics, since every use already holds this lock.
+/// The HTTP sink takes no lock, so there the atomics matter.
 #[derive(Default)]
 struct SinkState {
-    /// Open only while started; publish opens on demand as a fallback
+    /// Open only while started. publish opens it on demand as a fallback.
     file: Option<SinkInner>,
-    /// Set when a truncating startup open failed: the on-demand reopen in
-    /// publish() still owes the `file.append = false` truncation
+    /// Set when the emptying open at startup failed. The open in publish()
+    /// must then still empty the file, as `file.append = false` asks.
     truncate_pending: bool,
     written: u64,
     failed: u64,
     rolled: u64,
 }
 
-/// File sink appending one line per event (see module docs)
+/// File sink that appends one line per event. See the module docs.
 pub struct FileSink {
     config: FileSinkConfig,
     state: Arc<Mutex<SinkState>>,
@@ -155,7 +163,7 @@ impl Debug for FileSink {
 }
 
 impl FileSink {
-    /// Create a new file sink (the file is opened by `start()`)
+    /// Creates a file sink. `start()` opens the file.
     pub fn new(config: FileSinkConfig) -> Self {
         Self {
             config,
@@ -163,15 +171,17 @@ impl FileSink {
         }
     }
 
-    /// Create a file sink from properties
+    /// Creates a file sink from properties. Fails when the config is invalid.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         Ok(Self::new(FileSinkConfig::from_properties(properties)?))
     }
 
+    /// Opens the output file, creating it if needed.
+    ///
     /// `truncate` must be true only for the startup open with
     /// `file.append = false`. Every later reopen (rotation, recovery after a
-    /// failed roll, publish after stop) appends — reapplying startup
-    /// truncation there would wipe live data.
+    /// failed roll, publish after stop) appends. Emptying the file again there
+    /// would wipe live data.
     fn open_inner(config: &FileSinkConfig, truncate: bool) -> std::io::Result<SinkInner> {
         let file = OpenOptions::new()
             .create(true)
@@ -199,7 +209,7 @@ impl FileSink {
         }
     }
 
-    /// Whether a rotation trigger has fired for the current file
+    /// Returns true when the size or age trigger has fired for the current file
     fn should_rotate(&self, inner: &SinkInner) -> bool {
         (self.config.rotate_size_bytes > 0 && inner.bytes_written >= self.config.rotate_size_bytes)
             || (self.config.rotate_interval_ms > 0
@@ -207,12 +217,19 @@ impl FileSink {
                     >= Duration::from_millis(self.config.rotate_interval_ms))
     }
 
-    /// Roll the current file: flush + close, rename to a timestamped name
-    /// (numeric suffix on collision), optionally compress, reopen fresh.
+    /// Rolls the current file. Flushes and closes it, renames it to a name with
+    /// a timestamp (plus a number if that name is taken), compresses it if
+    /// set, and opens a new empty file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from the flush, rename, compression, or reopen.
+    /// If the flush fails the file stays open. After any later failure the
+    /// file is closed, and the next publish opens it again.
     fn rotate(&self, state: &mut SinkState) -> std::io::Result<()> {
-        // Flush BEFORE closing: if it fails, the writer (and its buffered
-        // already-acknowledged events) must stay alive for a later retry
-        // instead of being dropped with the error swallowed
+        // Flush BEFORE closing. If it fails, the writer and the events in its
+        // buffer, which were already accepted, must stay alive for a later
+        // retry instead of being dropped with the error lost
         if let Some(current) = state.file.as_mut() {
             current.writer.flush()?;
         }
@@ -221,15 +238,15 @@ impl FileSink {
         let rolled = rolled_path(&self.config.path);
         std::fs::rename(&self.config.path, &rolled)?;
 
-        // The roll physically happened at the rename — count it now so a
-        // failed compression doesn't hide it from the stop summary
+        // The roll really happened at the rename. Count it now so a failed
+        // compression does not hide it from the stop summary.
         state.rolled += 1;
 
         if self.config.rotate_compression == RotateCompression::Zstd {
             compress_zstd(&rolled)?;
         }
 
-        // The rename freed the path — the successor file always appends
+        // The rename freed the path, so the new file always appends
         state.file = Some(Self::open_inner(&self.config, false)?);
         log::info!(
             "[FileSink] Rolled '{}' → '{}'{}",
@@ -245,10 +262,10 @@ impl FileSink {
     }
 }
 
-/// `<path>.<UTC timestamp>`, with a numeric suffix if that name is taken.
-/// A name counts as taken when either it or its compressed form exists —
-/// after a zstd roll only `<name>.zst` remains, and a same-second second
-/// roll must not reuse (and thereby overwrite) it.
+/// Returns `<path>.<UTC timestamp>`, in the form `YYYYMMDDTHHMMSSZ`, with a
+/// `.N` suffix if that name is taken. A name counts as taken when it or its
+/// compressed form exists. After a zstd roll only `<name>.zst` is left, and a
+/// second roll in the same second must not reuse, and so overwrite, it.
 fn rolled_path(path: &Path) -> PathBuf {
     let taken = |p: &Path| p.exists() || PathBuf::from(format!("{}.zst", p.display())).exists();
 
@@ -266,9 +283,9 @@ fn rolled_path(path: &Path) -> PathBuf {
     unreachable!("suffix loop always finds a free name");
 }
 
-/// Compress `<rolled>` to `<rolled>.zst` and remove the original. On
-/// failure the partial `.zst` is cleaned up (best effort) so consumers
-/// never see a truncated frame; the uncompressed roll stays intact.
+/// Compresses `<rolled>` to `<rolled>.zst` at zstd's default level and removes
+/// the original. If encoding fails, the partial `.zst` is removed (best effort)
+/// so readers never see a cut off frame, and the uncompressed file stays.
 fn compress_zstd(rolled: &Path) -> std::io::Result<()> {
     let target = PathBuf::from(format!("{}.zst", rolled.display()));
     let mut input = File::open(rolled)?;
@@ -282,8 +299,8 @@ fn compress_zstd(rolled: &Path) -> std::io::Result<()> {
 
 impl Clone for FileSink {
     fn clone(&self) -> Self {
-        // Clones share the state — a file has exactly one writing cursor,
-        // and shared counters keep the stop-log totals accurate
+        // Clones share the state. A file has exactly one write position, and
+        // shared counters keep the stop log totals right.
         Self {
             config: self.config.clone(),
             state: Arc::clone(&self.state),
@@ -295,11 +312,11 @@ impl Sink for FileSink {
     fn publish(&self, payload: &[u8]) -> Result<(), EventFluxError> {
         let mut state = self.state.lock().unwrap();
 
-        // start() opens the file; opening on demand keeps direct publish()
-        // use (tests, embedding) working
+        // start() opens the file. Opening on demand here keeps direct calls to
+        // publish() working, such as in tests or when embedded.
         if state.file.is_none() {
-            // Recovery/late-open path — appends, unless a truncating
-            // startup open failed and the truncation is still owed
+            // Late open or recovery. Appends, unless the emptying open at
+            // startup failed and the file still has to be emptied.
             match Self::open_inner(&self.config, state.truncate_pending) {
                 Ok(inner) => {
                     state.file = Some(inner);
@@ -318,7 +335,8 @@ impl Sink for FileSink {
                 inner.writer.write_all(payload)?;
                 inner.writer.write_all(b"\n")?;
                 inner.bytes_written += payload.len() as u64 + 1;
-                // Flush policy: every event (0) or at most every N ms
+                // Flush after every event (0), or when N ms have passed
+                // since the last flush
                 if self.config.flush_interval_ms == 0
                     || inner.last_flush.elapsed()
                         >= Duration::from_millis(self.config.flush_interval_ms)
@@ -334,11 +352,12 @@ impl Sink for FileSink {
             return Err(self.io_error("write to", &e));
         }
 
-        // The event is durably written from here on — count it before the
-        // rotation check so a failed roll doesn't misreport it as failed
+        // The event is in the writer from here on (flushed to the OS only per
+        // the flush policy). Count it before the rotation check so a failed
+        // roll does not report it as failed.
         state.written += 1;
 
-        // After the write, so a line never splits across files
+        // Checked after the write, so a line never splits across files
         let rotate_due = state.file.as_ref().is_some_and(|f| self.should_rotate(f));
         if rotate_due {
             if let Err(e) = self.rotate(&mut state) {
@@ -352,12 +371,11 @@ impl Sink for FileSink {
     fn start(&self) {
         let mut state = self.state.lock().unwrap();
         let truncate = !self.config.append;
-        // Every (re)start applies the configured startup semantics
-        // deterministically: with file.append = false the file is truncated
-        // even if a stray publish already opened it append-mode between
-        // stop() and this start()
+        // Every start and restart applies the startup rule the same way. With
+        // file.append = false the file is emptied, even if a stray publish
+        // already opened it for append between stop() and this start().
         if truncate {
-            state.file = None; // close before reopening with truncation
+            state.file = None; // close before reopening to empty it
         }
         if state.file.is_none() {
             match Self::open_inner(&self.config, truncate) {
@@ -366,9 +384,9 @@ impl Sink for FileSink {
                     state.truncate_pending = false;
                 }
                 Err(e) => {
-                    // publish() will retry the open — and still owes the
-                    // startup truncation — and surfaces errors through the
-                    // pipeline's error handling
+                    // publish() will try the open again, still emptying the
+                    // file, and report errors through the pipeline's error
+                    // handling
                     state.truncate_pending = truncate;
                     log::error!(
                         "[FileSink] Failed to open '{}': {e}",
@@ -402,8 +420,9 @@ impl Sink for FileSink {
     }
 
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
-        // Probe: open in append mode and close — creates the file if absent,
-        // which matches append semantics; catches missing/unwritable dirs
+        // Open for append and close. This creates the file if it is missing,
+        // which append mode would do anyway, and catches a missing or read
+        // only directory
         OpenOptions::new()
             .create(true)
             .append(true)
@@ -417,10 +436,10 @@ impl Sink for FileSink {
 // File Sink Factory
 // ============================================================================
 
-/// Factory for creating file sink instances.
+/// Factory for file sinks.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// file sinks from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build file sinks from the SQL
+/// WITH clause config.
 #[derive(Debug, Clone)]
 pub struct FileSinkFactory;
 

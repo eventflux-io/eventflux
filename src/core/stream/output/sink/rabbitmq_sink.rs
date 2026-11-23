@@ -17,7 +17,7 @@
 
 //! # RabbitMQ Sink
 //!
-//! Publishes formatted event data to RabbitMQ exchanges.
+//! Publishes formatted event data to a RabbitMQ exchange.
 //!
 //! ## Architecture
 //!
@@ -50,31 +50,32 @@ use std::sync::{Arc, Mutex};
 /// Configuration for RabbitMQ sink
 #[derive(Debug, Clone)]
 pub struct RabbitMQSinkConfig {
-    /// RabbitMQ broker hostname
+    /// RabbitMQ broker host name
     pub host: String,
-    /// RabbitMQ broker port (default: 5672)
+    /// RabbitMQ broker port. Default 5672.
     pub port: u16,
-    /// Virtual host (default: "/")
+    /// Virtual host. Default "/".
     pub vhost: String,
-    /// Exchange name to publish to
+    /// Exchange to publish to
     pub exchange: String,
-    /// Routing key for messages (default: "")
+    /// Routing key for messages. Default "".
     pub routing_key: String,
-    /// Username for authentication (default: "guest")
+    /// User name for login. Default "guest".
     pub username: String,
-    /// Password for authentication (default: "guest"); redacted in Debug
-    /// output — call `.expose()` at the point of use
+    /// Password for login. Default "guest". Hidden in Debug output. Call
+    /// `.expose()` only where it is used.
     pub password: crate::core::stream::connector_util::Redacted,
-    /// Whether messages should be persistent (default: true)
+    /// Mark messages as persistent (delivery mode 2). Default true.
     pub persistent: bool,
-    /// Content type header for messages (default: "application/octet-stream")
+    /// Content type header for messages. Default none, so no header is sent.
     pub content_type: Option<String>,
-    /// Whether to declare the exchange if it doesn't exist (default: false)
+    /// Declare the exchange (as durable) if it is missing. Default false.
     pub declare_exchange: bool,
-    /// Exchange type when declaring (default: "direct")
+    /// Exchange type used when declaring. Default "direct".
     pub exchange_type: String,
-    /// Whether to use mandatory flag for publishing (default: false)
-    /// When true, unroutable messages will trigger a return instead of being silently dropped
+    /// Set the mandatory flag when publishing. Default false.
+    /// When true, the broker returns messages it cannot route instead of
+    /// silently dropping them. This sink does not read those returns.
     pub mandatory: bool,
 }
 
@@ -98,9 +99,9 @@ impl Default for RabbitMQSinkConfig {
 }
 
 impl RabbitMQSinkConfig {
-    /// Build AMQP URI from configuration
+    /// Builds the AMQP URI. The result holds the raw password, so never log it.
     pub fn amqp_uri(&self) -> String {
-        // The default vhost "/" must be URL-encoded as "%2f"
+        // The default vhost "/" must be URL encoded, which gives "%2F"
         let encoded_vhost = urlencoding::encode(&self.vhost);
         format!(
             "amqp://{}:{}@{}:{}/{}",
@@ -112,24 +113,26 @@ impl RabbitMQSinkConfig {
         )
     }
 
-    /// Parse configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `rabbitmq.host` or `rabbitmq.exchange` is missing,
+    /// or a port or bool value does not parse.
     #[allow(clippy::field_reassign_with_default)]
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
 
-        // Required: host
         config.host = properties
             .get("rabbitmq.host")
             .ok_or("Missing required property: rabbitmq.host")?
             .clone();
 
-        // Required: exchange
         config.exchange = properties
             .get("rabbitmq.exchange")
             .ok_or("Missing required property: rabbitmq.exchange")?
             .clone();
 
-        // Optional properties
         if let Some(port) = properties.get("rabbitmq.port") {
             config.port = port
                 .parse()
@@ -181,7 +184,8 @@ impl RabbitMQSinkConfig {
         Ok(config)
     }
 
-    /// Convert the exchange_type string to lapin::ExchangeKind
+    /// Turns `exchange_type` into a lapin::ExchangeKind. Any value other than
+    /// "fanout", "topic", or "headers" gives Direct.
     pub fn exchange_kind(&self) -> lapin::ExchangeKind {
         match self.exchange_type.as_str() {
             "fanout" => lapin::ExchangeKind::Fanout,
@@ -192,32 +196,30 @@ impl RabbitMQSinkConfig {
     }
 }
 
-/// Internal state for RabbitMQ connection
+/// The open RabbitMQ connection and channel
 struct RabbitMQConnectionState {
     connection: lapin::Connection,
     channel: lapin::Channel,
 }
 
-/// RabbitMQ sink that publishes messages to an exchange
+/// RabbitMQ sink that publishes messages to an exchange.
 ///
-/// This implementation:
-/// - Maintains a persistent connection/channel in `start()`
-/// - Publishes messages synchronously via internal tokio runtime
-/// - Supports configurable persistence, routing keys, and exchange declaration
+/// - Opens one connection and channel in `start()` and keeps them open
+/// - `publish()` blocks until the async publish finishes, using a tokio runtime
+/// - Persistence, routing key, and exchange declaration are configurable
 #[derive(Debug)]
 pub struct RabbitMQSink {
-    /// Configuration
     config: RabbitMQSinkConfig,
-    /// Connection state (established in start())
+    /// Connection state, set in start()
     state: Arc<Mutex<Option<RabbitMQConnectionState>>>,
-    /// Tokio runtime for async operations (owned runtime when created by us)
+    /// Tokio runtime this sink created, when start() ran outside a runtime
     runtime: Arc<Mutex<Option<tokio::runtime::Runtime>>>,
-    /// Runtime handle for async operations (stored when started inside existing runtime)
+    /// Handle to the outside runtime, when start() ran inside one
     runtime_handle: Arc<Mutex<Option<tokio::runtime::Handle>>>,
 }
 
 impl RabbitMQSink {
-    /// Create a new RabbitMQ sink
+    /// Creates a RabbitMQ sink. `start()` connects.
     pub fn new(config: RabbitMQSinkConfig) -> Self {
         Self {
             config,
@@ -227,28 +229,33 @@ impl RabbitMQSink {
         }
     }
 
-    /// Create a RabbitMQ sink from properties
+    /// Creates a RabbitMQ sink from properties.
     ///
     /// # Required Properties
-    /// - `rabbitmq.host`: Broker hostname
-    /// - `rabbitmq.exchange`: Exchange name to publish to
+    /// - `rabbitmq.host`: broker host name
+    /// - `rabbitmq.exchange`: exchange to publish to
     ///
     /// # Optional Properties
-    /// - `rabbitmq.port`: Broker port (default: 5672)
-    /// - `rabbitmq.vhost`: Virtual host (default: "/")
-    /// - `rabbitmq.username`: Username (default: "guest")
-    /// - `rabbitmq.password`: Password (default: "guest")
-    /// - `rabbitmq.routing.key`: Routing key (default: "")
-    /// - `rabbitmq.persistent`: Message persistence (default: true)
+    /// - `rabbitmq.port`: broker port (default 5672)
+    /// - `rabbitmq.vhost`: virtual host (default "/")
+    /// - `rabbitmq.username`: user name (default "guest")
+    /// - `rabbitmq.password`: password (default "guest")
+    /// - `rabbitmq.routing.key`: routing key (default "")
+    /// - `rabbitmq.persistent`: persistent messages (default true)
     /// - `rabbitmq.content.type`: Content-Type header
-    /// - `rabbitmq.declare.exchange`: Declare exchange if missing (default: false)
-    /// - `rabbitmq.exchange.type`: Exchange type when declaring (default: "direct")
+    /// - `rabbitmq.declare.exchange`: declare the exchange if missing (default false)
+    /// - `rabbitmq.exchange.type`: exchange type when declaring (default "direct")
+    /// - `rabbitmq.mandatory`: set the mandatory flag (default false)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the config is invalid.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let config = RabbitMQSinkConfig::from_properties(properties)?;
         Ok(Self::new(config))
     }
 
-    /// Get or create tokio runtime
+    /// Creates this sink's own tokio runtime if it does not have one yet
     fn get_runtime(&self) -> Result<(), EventFluxError> {
         let mut runtime_guard = self.runtime.lock().unwrap();
         if runtime_guard.is_none() {
@@ -261,7 +268,7 @@ impl RabbitMQSink {
     }
 }
 
-// Custom Debug impl since RabbitMQConnectionState doesn't implement Debug
+// Written by hand because the lapin types inside do not implement Debug
 impl std::fmt::Debug for RabbitMQConnectionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RabbitMQConnectionState")
@@ -272,8 +279,8 @@ impl std::fmt::Debug for RabbitMQConnectionState {
 
 impl Clone for RabbitMQSink {
     fn clone(&self) -> Self {
-        // Clone creates a new sink with same config but no connection
-        // Connection will be established on start()
+        // The clone has the same config but no connection or runtime.
+        // start() connects it.
         Self {
             config: self.config.clone(),
             state: Arc::new(Mutex::new(None)),
@@ -288,12 +295,10 @@ impl Sink for RabbitMQSink {
         let config = self.config.clone();
         let state = Arc::clone(&self.state);
 
-        // Create async connection logic
         let connect_future = async move {
             let uri = config.amqp_uri();
             log::info!("[RabbitMQSink] Connecting to {}", config.host);
 
-            // Connect to RabbitMQ
             let connection =
                 lapin::Connection::connect(&uri, lapin::ConnectionProperties::default())
                     .await
@@ -302,7 +307,6 @@ impl Sink for RabbitMQSink {
                         source: Some(Box::new(e)),
                     })?;
 
-            // Create channel
             let channel = connection.create_channel().await.map_err(|e| {
                 EventFluxError::ConnectionUnavailable {
                     message: format!("Failed to create channel: {}", e),
@@ -310,7 +314,6 @@ impl Sink for RabbitMQSink {
                 }
             })?;
 
-            // Declare exchange if configured
             if config.declare_exchange {
                 channel
                     .exchange_declare(
@@ -331,7 +334,6 @@ impl Sink for RabbitMQSink {
                     })?;
             }
 
-            // Store connection state
             let mut state_guard = state.lock().unwrap();
             *state_guard = Some(RabbitMQConnectionState {
                 connection,
@@ -346,18 +348,19 @@ impl Sink for RabbitMQSink {
             Ok::<(), EventFluxError>(())
         };
 
-        // Check if we're already inside a tokio runtime
         let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // Store the handle for later use in publish()/stop() from non-async threads
+            // Already inside a tokio runtime. Keep the handle so publish() and
+            // stop() can use it later from threads outside the runtime.
             {
                 let mut handle_guard = self.runtime_handle.lock().unwrap();
                 *handle_guard = Some(handle.clone());
             }
-            // Use block_in_place to avoid nested runtime panic
+            // block_in_place avoids the panic from starting a runtime inside a
+            // runtime. It needs the multi thread runtime.
             tokio::task::block_in_place(|| handle.block_on(connect_future))
         } else {
-            // Not inside a runtime - create one and use block_on
-            // Also initialize the stored runtime for later use
+            // Not inside a runtime, so create this sink's own runtime and keep
+            // it for later calls
             if let Err(e) = self.get_runtime() {
                 log::error!("[RabbitMQSink] Failed to initialize runtime: {}", e);
                 return;
@@ -374,17 +377,17 @@ impl Sink for RabbitMQSink {
             rt.block_on(connect_future)
         };
 
+        // A failed start is only logged. publish() then fails with "not started".
         if let Err(e) = result {
             log::error!("[RabbitMQSink] Start failed: {}", e);
         }
     }
 
     fn publish(&self, payload: &[u8]) -> Result<(), EventFluxError> {
-        // Build publish properties
         let mut properties = lapin::BasicProperties::default();
 
         if self.config.persistent {
-            properties = properties.with_delivery_mode(2); // Persistent
+            properties = properties.with_delivery_mode(2); // persistent
         }
 
         if let Some(ref content_type) = self.config.content_type {
@@ -400,9 +403,9 @@ impl Sink for RabbitMQSink {
             ..Default::default()
         };
 
-        // Define the async publish operation
         let publish_future = async move {
-            // Clone the channel (internally Arc-based) and drop the guard before .await
+            // Clone the channel, which is cheap since it is Arc based inside,
+            // and drop the guard before any .await
             let channel = {
                 let state_guard = state
                     .lock()
@@ -435,12 +438,12 @@ impl Sink for RabbitMQSink {
             Ok::<(), EventFluxError>(())
         };
 
-        // Check if we're already inside a tokio runtime
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // We're inside a runtime - use block_in_place to avoid nested runtime panic
+            // Inside a runtime. block_in_place avoids the panic from starting a
+            // runtime inside a runtime.
             tokio::task::block_in_place(|| handle.block_on(publish_future))
         } else {
-            // Not inside a runtime - try our owned runtime first
+            // Not inside a runtime. Try this sink's own runtime first.
             let runtime_guard = self
                 .runtime
                 .lock()
@@ -451,7 +454,7 @@ impl Sink for RabbitMQSink {
             }
             drop(runtime_guard);
 
-            // Fall back to stored handle (set when start() was called inside a runtime)
+            // Then the kept handle, set when start() ran inside a runtime
             let handle_guard = self
                 .runtime_handle
                 .lock()
@@ -470,10 +473,9 @@ impl Sink for RabbitMQSink {
     fn stop(&self) {
         log::info!("[RabbitMQSink] Stopping...");
 
-        // Create the shutdown future
         let state = Arc::clone(&self.state);
         let shutdown_future = async move {
-            // Take the connection state and drop the guard before .await
+            // Take the connection state and drop the guard before any .await
             let conn_state = {
                 let mut state_guard = state.lock().unwrap();
                 state_guard.take()
@@ -488,26 +490,25 @@ impl Sink for RabbitMQSink {
             }
         };
 
-        // Try to use runtime/handle in order of preference
+        // Pick a runtime in this order: this sink's own runtime, the current
+        // runtime, then the kept handle
         let runtime_guard = self.runtime.lock().unwrap();
         if let Some(rt) = runtime_guard.as_ref() {
-            // Use our owned runtime
             rt.block_on(shutdown_future);
         } else {
             drop(runtime_guard);
 
-            // Try current runtime context
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 tokio::task::block_in_place(|| {
                     handle.block_on(shutdown_future);
                 });
             } else {
-                // Fall back to stored handle (set when start() was called inside a runtime)
+                // The kept handle, set when start() ran inside a runtime
                 let handle_guard = self.runtime_handle.lock().unwrap();
                 if let Some(handle) = handle_guard.as_ref() {
                     handle.block_on(shutdown_future);
                 } else {
-                    // No runtime available - connection state will be dropped when sink is dropped
+                    // No runtime, so the connection state is only dropped with the sink
                     log::warn!("[RabbitMQSink] No runtime available for graceful shutdown");
                 }
             }
@@ -523,11 +524,10 @@ impl Sink for RabbitMQSink {
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
         let config = self.config.clone();
 
-        // Create the async validation logic
         let validate_future = async move {
             let uri = config.amqp_uri();
 
-            // Try to connect with a timeout to avoid hanging on unreachable brokers
+            // Give up after 10 s so a broker that cannot be reached does not hang startup
             let connection = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 lapin::Connection::connect(&uri, lapin::ConnectionProperties::default()),
@@ -548,7 +548,6 @@ impl Sink for RabbitMQSink {
                 source: Some(Box::new(e)),
             })?;
 
-            // Create channel and check exchange exists (if not declaring)
             let channel = connection.create_channel().await.map_err(|e| {
                 EventFluxError::ConnectionUnavailable {
                     message: format!("Failed to create channel: {}", e),
@@ -556,13 +555,13 @@ impl Sink for RabbitMQSink {
                 }
             })?;
 
-            // Validate exchange access - behavior depends on declare_exchange setting:
-            // - If declare_exchange=true: attempt actual declaration to verify permissions
-            // - If declare_exchange=false: passive declare to verify exchange exists
+            // How the exchange is checked depends on declare_exchange
+            // - true: really declare it, to check permissions
+            // - false: a passive declare, to check that it exists
             if config.declare_exchange {
-                // Try to declare exchange (mirrors start() behavior) to fail fast on
-                // permission issues, invalid type, etc. Exchange declaration is idempotent
-                // so this won't cause issues if the exchange already exists with same config.
+                // Declare it the same way start() does, to fail early on
+                // missing permissions, a bad type, and so on. Declaring is safe
+                // to repeat when the exchange already exists with the same config.
                 channel
                     .exchange_declare(
                         &config.exchange,
@@ -582,16 +581,17 @@ impl Sink for RabbitMQSink {
                         ))
                     })?;
             } else {
-                // Passive declare to check exchange exists
-                // Note: Passive declare may fail with PRECONDITION_FAILED if exchange exists
-                // with different properties (e.g., durable=true vs our durable=false default).
-                // This is still a success case - the exchange exists and we can publish to it.
+                // A passive declare checks that the exchange exists. It is
+                // treated as possibly failing with PRECONDITION_FAILED when the
+                // exchange exists with other properties, such as durable=true
+                // against our durable=false default. That still counts as
+                // success, since the exchange exists and can take messages.
                 let passive_result = channel
                     .exchange_declare(
                         &config.exchange,
                         config.exchange_kind(),
                         lapin::options::ExchangeDeclareOptions {
-                            passive: true, // Just check existence
+                            passive: true, // only check that it exists
                             ..Default::default()
                         },
                         lapin::types::FieldTable::default(),
@@ -600,22 +600,23 @@ impl Sink for RabbitMQSink {
 
                 match passive_result {
                     Ok(_) => {
-                        // Exchange exists with matching properties - validation passes
+                        // The exchange exists, so the check passes
                     }
                     Err(e) => {
-                        // Check if PRECONDITION_FAILED (exchange exists with different properties)
+                        // PRECONDITION_FAILED means it exists with other properties
                         let is_precondition_failed = e.to_string().contains("PRECONDITION_FAILED")
                             || e.to_string().contains("406");
 
                         if is_precondition_failed {
-                            // Exchange exists but with different properties (e.g., durable)
-                            // This is fine - validation passes, we can still publish to it
+                            // The exchange exists with other properties, such as
+                            // durable. The check passes, since it can still take
+                            // messages.
                             log::debug!(
                                 "[RabbitMQSink] Exchange '{}' exists with different properties, validation passes",
                                 config.exchange
                             );
                         } else {
-                            // Exchange truly doesn't exist
+                            // The exchange does not exist
                             return Err(EventFluxError::configuration(format!(
                                 "Exchange '{}' does not exist (expected type '{}'): {}",
                                 config.exchange, config.exchange_type, e
@@ -625,19 +626,19 @@ impl Sink for RabbitMQSink {
                 }
             }
 
-            // Clean up
             let _ = channel.close(200, "Validation complete").await;
             let _ = connection.close(200, "Validation complete").await;
 
             Ok::<(), EventFluxError>(())
         };
 
-        // Check if we're already inside a tokio runtime
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // Use block_in_place to avoid nested runtime panic
+            // Already inside a tokio runtime. block_in_place avoids the panic
+            // from starting a runtime inside a runtime. It needs the multi
+            // thread runtime.
             tokio::task::block_in_place(|| handle.block_on(validate_future))
         } else {
-            // Not inside a runtime - create a temporary one
+            // Not inside a runtime, so make a short lived one
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 EventFluxError::configuration(format!("Failed to create tokio runtime: {}", e))
             })?;
@@ -650,10 +651,10 @@ impl Sink for RabbitMQSink {
 // RabbitMQ Sink Factory
 // ============================================================================
 
-/// Factory for creating RabbitMQ sink instances.
+/// Factory for RabbitMQ sinks.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// RabbitMQ sinks from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build RabbitMQ sinks from the
+/// SQL WITH clause config.
 #[derive(Debug, Clone)]
 pub struct RabbitMQSinkFactory;
 
@@ -688,11 +689,9 @@ impl SinkFactory for RabbitMQSinkFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Sink>, EventFluxError> {
-        // Parse and validate configuration
         let parsed =
             RabbitMQSinkConfig::from_properties(config).map_err(EventFluxError::configuration)?;
 
-        // Create RabbitMQ sink
         let sink = RabbitMQSink::new(parsed);
 
         Ok(Box::new(sink))
@@ -788,7 +787,7 @@ mod tests {
             ..Default::default()
         };
 
-        // Default vhost "/" is URL-encoded as "%2f"
+        // The default vhost "/" is URL encoded as "%2F"
         assert_eq!(config.amqp_uri(), "amqp://guest:guest@localhost:5672/%2F");
     }
 
@@ -813,7 +812,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn test_exchange_kind_conversion() {
-        // Test all supported exchange types
+        // Every supported exchange type
         let mut config = RabbitMQSinkConfig::default();
 
         config.exchange_type = "direct".to_string();
@@ -871,7 +870,7 @@ mod tests {
 
         assert_eq!(cloned.config.host, "localhost");
         assert_eq!(cloned.config.exchange, "test");
-        // Cloned sink should not have connection state
+        // The cloned sink must have no connection state
         assert!(cloned.state.lock().unwrap().is_none());
     }
 

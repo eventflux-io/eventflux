@@ -15,24 +15,22 @@
  * limitations under the License.
  */
 
-//! Source mapper trait and implementations
+//! Source mappers.
 //!
-//! Re-exports the canonical `SourceMapper` trait from `stream::mapper` module.
+//! Re-exports the `SourceMapper` trait from the `stream::mapper` module, which is
+//! where it is defined, and adds the default `PassthroughMapper`.
 
-// Re-export the canonical SourceMapper trait from mapper module
 pub use crate::core::stream::mapper::SourceMapper;
 
 use crate::core::event::event::Event;
 use crate::core::exception::EventFluxError;
 
-/// Default passthrough mapper for Sources
+/// Default source mapper, used when no format such as JSON or CSV is set.
 ///
-/// When no format is specified (no JSON/CSV/XML mapper), this mapper
-/// deserializes Events from an efficient binary format using bincode.
-///
-/// This is the inverse of output::mapper::PassthroughMapper and is used for:
-/// - Debug sources like TimerSource that produce Events directly
-/// - Internal event passing where no external format is needed
+/// Reads events from the compact bincode binary encoding. It is the reverse of
+/// `output::mapper::PassthroughMapper`. It is used for
+/// - debug sources like TimerSource that build events directly
+/// - passing events inside the engine where no outside format is needed
 ///
 /// # Example
 ///
@@ -49,10 +47,10 @@ impl PassthroughMapper {
         Self
     }
 
-    /// Serialize Events to bytes
+    /// Encodes events to bytes that `map` can read back.
     ///
-    /// Used by sources that generate Events internally and need to convert
-    /// them to binary format for the mapper pipeline.
+    /// Used by sources that build events themselves and must pass them through
+    /// the mapper step as bytes. Returns an error string if encoding fails.
     pub fn serialize(events: &[Event]) -> Result<Vec<u8>, String> {
         crate::core::util::serialization::to_bytes(events)
             .map_err(|e| format!("Failed to serialize events: {}", e))
@@ -67,7 +65,7 @@ impl Default for PassthroughMapper {
 
 impl SourceMapper for PassthroughMapper {
     fn map(&self, input: &[u8]) -> Result<Vec<Event>, EventFluxError> {
-        // Use bincode for efficient binary deserialization
+        // Bad bytes return MappingFailed instead of being dropped silently
         crate::core::util::serialization::from_bytes(input).map_err(|e| {
             EventFluxError::MappingFailed {
                 message: format!("Failed to deserialize events from binary format: {}", e),
@@ -94,7 +92,6 @@ mod tests {
             vec![AttributeValue::String("test".to_string())],
         )];
 
-        // Serialize and deserialize
         let bytes = PassthroughMapper::serialize(&events).unwrap();
         let result = mapper.map(&bytes);
 
@@ -108,11 +105,10 @@ mod tests {
     fn test_passthrough_mapper_invalid_input_returns_error() {
         let mapper = PassthroughMapper::new();
 
-        // Invalid bincode data
         let invalid_bytes = b"this is not valid bincode data";
         let result = mapper.map(invalid_bytes);
 
-        // Should return error instead of silently dropping data
+        // Must return an error, not drop the data silently
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(matches!(error, EventFluxError::MappingFailed { .. }));
@@ -125,10 +121,8 @@ mod tests {
     fn test_passthrough_mapper_empty_input_returns_error() {
         let mapper = PassthroughMapper::new();
 
-        // Empty input
         let result = mapper.map(&[]);
 
-        // Should return error
         assert!(result.is_err());
     }
 }

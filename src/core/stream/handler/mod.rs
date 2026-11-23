@@ -17,19 +17,19 @@
 
 //! # Stream Handler Module
 //!
-//! Provides lifecycle management for source and sink streams with proper
-//! initialization, startup, and shutdown handling.
+//! Starts and stops source and sink streams.
 //!
 //! ## Architecture
 //!
-//! - **SourceStreamHandler**: Manages source streams with mapper integration
-//! - **SinkStreamHandler**: Manages sink streams with mapper integration
-//! - Both handlers provide start/stop lifecycle control
+//! - **SourceStreamHandler**: owns a source, its optional mapper, and the input
+//!   handler that receives the mapped events
+//! - **SinkStreamHandler**: owns a sink and its optional mapper
+//! - Both handlers have start and stop calls that are safe to repeat
 //!
 //! ## Thread Safety
 //!
-//! All handlers are designed to be used behind Arc for shared ownership across
-//! multiple threads during query processing.
+//! Handlers are meant to be shared across threads behind an `Arc`. The running
+//! flag is atomic and the source, sink, and mappers sit behind a `Mutex`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,10 +41,10 @@ use crate::core::stream::input::source::{Source, SourceCallbackAdapter};
 use crate::core::stream::output::mapper::SinkMapper;
 use crate::core::stream::output::sink::Sink;
 
-/// Handler for source streams with lifecycle management
+/// Starts and stops one source stream.
 ///
-/// Manages a source with its associated mapper and input handler.
-/// Provides thread-safe start/stop operations.
+/// Holds the source, its optional mapper, and the input handler that receives
+/// the mapped events. Start and stop are thread safe.
 #[derive(Debug)]
 pub struct SourceStreamHandler {
     source: Arc<Mutex<Box<dyn Source>>>,
@@ -55,14 +55,15 @@ pub struct SourceStreamHandler {
 }
 
 impl SourceStreamHandler {
-    /// Create a new source stream handler
+    /// Creates a source stream handler in the stopped state.
     ///
     /// # Arguments
     ///
-    /// * `source` - The source implementation
-    /// * `mapper` - Optional source mapper for data transformation
-    /// * `input_handler` - Input handler for processing events
-    /// * `stream_id` - Unique identifier for this stream
+    /// * `source` - The source to run
+    /// * `mapper` - Mapper that turns source bytes into events. When `None`,
+    ///   `start` uses a `PassthroughMapper`
+    /// * `input_handler` - Receives the mapped events
+    /// * `stream_id` - Id of this stream
     pub fn new(
         source: Box<dyn Source>,
         mapper: Option<Box<dyn SourceMapper>>,
@@ -78,17 +79,17 @@ impl SourceStreamHandler {
         }
     }
 
-    /// Start the source stream
+    /// Starts the source and wires its output through the mapper into the input
+    /// handler.
     ///
-    /// Begins processing events from the source. This operation is idempotent;
-    /// calling start() on an already-running source is a no-op and returns Ok.
+    /// Safe to repeat. Calling it on a running source does nothing and returns
+    /// `Ok`. It currently never returns an error.
     pub fn start(&self) -> Result<(), EventFluxError> {
         log::info!(
             "[SourceStreamHandler] start() called for stream '{}'",
             self.stream_id
         );
 
-        // Check if already running - if so, this is a no-op
         if self.is_running.load(Ordering::SeqCst) {
             log::debug!(
                 "[SourceStreamHandler] Stream '{}' already running, skipping",
@@ -97,9 +98,9 @@ impl SourceStreamHandler {
             return Ok(());
         }
 
-        // Atomically transition to running state
+        // The swap makes sure only one caller starts the source
         if self.is_running.swap(true, Ordering::SeqCst) {
-            // Another thread started it between our check and swap
+            // Another thread started it between the check above and this swap
             log::debug!(
                 "[SourceStreamHandler] Stream '{}' was started by another thread",
                 self.stream_id
@@ -107,15 +108,16 @@ impl SourceStreamHandler {
             return Ok(());
         }
 
-        // Get mapper from handler (custom format) or use PassthroughMapper (binary default)
+        // Use the configured mapper. With no format set, fall back to the
+        // PassthroughMapper, which reads the default binary encoding.
         let mapper = self.mapper.clone().unwrap_or_else(|| {
-            // No format specified - use efficient binary passthrough
             Arc::new(Mutex::new(
                 Box::new(PassthroughMapper::new()) as Box<dyn SourceMapper>
             ))
         });
 
-        // Create adapter: Source → bytes → SourceCallback → SourceMapper → Events → InputHandler
+        // Data flow: source bytes go to the callback, the mapper turns them into
+        // events, and the events go to the input handler
         let callback = Arc::new(SourceCallbackAdapter::new(
             mapper,
             Arc::clone(&self.input_handler),
@@ -125,55 +127,51 @@ impl SourceStreamHandler {
             "[SourceStreamHandler] Starting source for stream '{}'",
             self.stream_id
         );
-        // Start the source with callback
         self.source.lock().unwrap().start(callback);
         Ok(())
     }
 
-    /// Stop the source stream
-    ///
-    /// Gracefully stops event processing from the source.
+    /// Stops the source. Does nothing if it is not running.
     pub fn stop(&self) {
         if self.is_running.swap(false, Ordering::SeqCst) {
             self.source.lock().unwrap().stop();
         }
     }
 
-    /// Check if the source is currently running
+    /// Returns true while the source is running.
     #[inline]
     pub fn is_running(&self) -> bool {
         self.is_running.load(Ordering::SeqCst)
     }
 
-    /// Get the stream identifier
+    /// Returns the stream id.
     #[inline]
     pub fn stream_id(&self) -> &str {
         &self.stream_id
     }
 
-    /// Get reference to the source
+    /// Returns a shared handle to the source.
     #[inline]
     pub fn source(&self) -> Arc<Mutex<Box<dyn Source>>> {
         Arc::clone(&self.source)
     }
 
-    /// Get reference to the mapper (if any)
+    /// Returns a shared handle to the configured mapper, or `None` if there is none.
     #[inline]
     pub fn mapper(&self) -> Option<Arc<Mutex<Box<dyn SourceMapper>>>> {
         self.mapper.as_ref().map(Arc::clone)
     }
 
-    /// Get reference to the input handler
+    /// Returns a shared handle to the input handler.
     #[inline]
     pub fn input_handler(&self) -> Arc<Mutex<InputHandler>> {
         Arc::clone(&self.input_handler)
     }
 }
 
-/// Handler for sink streams with lifecycle management
+/// Starts and stops one sink stream.
 ///
-/// Manages a sink with its associated mapper.
-/// Provides thread-safe start/stop operations.
+/// Holds the sink and its optional mapper. Start and stop are thread safe.
 #[derive(Debug)]
 pub struct SinkStreamHandler {
     sink: Arc<Mutex<Box<dyn Sink>>>,
@@ -183,13 +181,13 @@ pub struct SinkStreamHandler {
 }
 
 impl SinkStreamHandler {
-    /// Create a new sink stream handler
+    /// Creates a sink stream handler in the stopped state.
     ///
     /// # Arguments
     ///
-    /// * `sink` - The sink implementation
-    /// * `mapper` - Optional sink mapper for data transformation
-    /// * `stream_id` - Unique identifier for this stream
+    /// * `sink` - The sink to run
+    /// * `mapper` - Optional mapper that turns events into sink bytes
+    /// * `stream_id` - Id of this stream
     pub fn new(
         sink: Box<dyn Sink>,
         mapper: Option<Box<dyn SinkMapper>>,
@@ -203,43 +201,40 @@ impl SinkStreamHandler {
         }
     }
 
-    /// Start the sink stream
-    ///
-    /// Begins accepting events at the sink.
+    /// Starts the sink. Does nothing if it is already running.
     pub fn start(&self) {
         if !self.is_running.swap(true, Ordering::SeqCst) {
             self.sink.lock().unwrap().start();
         }
     }
 
-    /// Stop the sink stream
-    ///
-    /// Gracefully stops the sink and flushes any pending events.
+    /// Stops the sink. Does nothing if it is not running. Any flushing of
+    /// pending events is up to the sink's own `stop`.
     pub fn stop(&self) {
         if self.is_running.swap(false, Ordering::SeqCst) {
             self.sink.lock().unwrap().stop();
         }
     }
 
-    /// Check if the sink is currently running
+    /// Returns true while the sink is running.
     #[inline]
     pub fn is_running(&self) -> bool {
         self.is_running.load(Ordering::SeqCst)
     }
 
-    /// Get the stream identifier
+    /// Returns the stream id.
     #[inline]
     pub fn stream_id(&self) -> &str {
         &self.stream_id
     }
 
-    /// Get reference to the sink
+    /// Returns a shared handle to the sink.
     #[inline]
     pub fn sink(&self) -> Arc<Mutex<Box<dyn Sink>>> {
         Arc::clone(&self.sink)
     }
 
-    /// Get reference to the mapper (if any)
+    /// Returns a shared handle to the mapper, or `None` if there is none.
     #[inline]
     pub fn mapper(&self) -> Option<Arc<Mutex<Box<dyn SinkMapper>>>> {
         self.mapper.as_ref().map(Arc::clone)
@@ -255,7 +250,7 @@ mod tests {
     use crate::core::stream::input::source::timer_source::TimerSource;
     use crate::core::stream::output::sink::log_sink::LogSink;
 
-    /// Mock InputProcessor for testing
+    /// InputProcessor that accepts and drops every event.
     #[derive(Debug)]
     struct MockInputProcessor;
 
@@ -282,18 +277,15 @@ mod tests {
         }
     }
 
-    /// Helper to create a test InputHandler
+    /// Builds an InputHandler backed by `MockInputProcessor` and a default app context.
     fn create_test_input_handler(stream_id: String) -> Arc<Mutex<InputHandler>> {
         use crate::core::config::eventflux_context::EventFluxContext;
         use crate::query_api::eventflux_app::EventFluxApp;
 
-        // Create minimal EventFluxContext
         let eventflux_context = Arc::new(EventFluxContext::default());
 
-        // Create minimal EventFluxApp
         let eventflux_app = Arc::new(EventFluxApp::default());
 
-        // Create EventFluxAppContext
         let app_context = Arc::new(EventFluxAppContext::new(
             eventflux_context,
             "TestApp".to_string(),
@@ -333,7 +325,7 @@ mod tests {
         assert!(handler.start().is_ok());
         assert!(handler.is_running());
 
-        // Starting again should be idempotent (no-op, returns Ok)
+        // A second start does nothing and still returns Ok
         assert!(handler.start().is_ok());
         assert!(handler.is_running());
 

@@ -20,7 +20,8 @@ use std::sync::{Arc, Mutex};
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::event::Event;
 
-/// Trait representing processors that can accept events from `InputHandler`.
+/// A processor that takes events from an `InputHandler`. `stream_index` tells it
+/// which input stream the events came from.
 pub trait InputProcessor: Send + Sync + std::fmt::Debug {
     fn send_event_with_data(
         &mut self,
@@ -43,7 +44,7 @@ pub struct InputHandler {
     stream_index: usize,
     eventflux_app_context: Arc<EventFluxAppContext>,
     input_processor: Option<Arc<Mutex<dyn InputProcessor>>>,
-    paused_input_publisher: Arc<Mutex<dyn InputProcessor>>, // stored for resume/connect
+    paused_input_publisher: Arc<Mutex<dyn InputProcessor>>, // restored by connect and resume
 }
 
 impl InputHandler {
@@ -97,13 +98,13 @@ impl InputHandler {
         data: Vec<crate::core::event::value::AttributeValue>,
     ) -> Result<(), String> {
         if self.eventflux_app_context.is_playback {
-            // TODO: Update timestamp generator with event timestamp for replay mode
-            // In playback mode, the timestamp generator should track the max event timestamp
-            // so that internally generated events (timers, etc.) use replay time not system time.
-            // Implementation deferred until playback/replay feature is prioritized (M3+).
+            // TODO: in playback mode, feed the event timestamp to the timestamp
+            // generator. It should track the largest event timestamp so events made
+            // inside the engine, such as timers, use replay time and not system time.
+            // Not done until the playback and replay feature is picked up (M3 or later).
         }
 
-        // Use ThreadBarrier to coordinate with restoration operations
+        // Enter the ThreadBarrier so events do not run while state is being restored
         if let Some(barrier) = self.eventflux_app_context.get_thread_barrier() {
             barrier.enter();
             let result = self
@@ -123,8 +124,8 @@ impl InputHandler {
 
     pub fn send_single_event(&self, event: Event) -> Result<(), String> {
         if self.eventflux_app_context.is_playback {
-            // TODO: Update timestamp generator with event.timestamp for replay mode
-            // See send_data() comment above for details. Deferred to M3+.
+            // TODO: feed event.timestamp to the timestamp generator in playback mode.
+            // See the note in send_event_with_timestamp(). Not done until M3 or later.
         }
         self.ensure_processor()?
             .lock()
@@ -134,8 +135,9 @@ impl InputHandler {
 
     pub fn send_multiple_events(&self, events: Vec<Event>) -> Result<(), String> {
         if self.eventflux_app_context.is_playback && !events.is_empty() {
-            // TODO: Update timestamp generator with max(events.timestamp) for replay mode
-            // See send_data() comment above for details. Deferred to M3+.
+            // TODO: feed the largest event timestamp to the timestamp generator in
+            // playback mode. See the note in send_event_with_timestamp(). Not done
+            // until M3 or later.
         }
         self.ensure_processor()?
             .lock()

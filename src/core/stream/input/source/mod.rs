@@ -36,27 +36,28 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// Callback for receiving data from sources
+/// Receives data from a source.
 ///
-/// Sources produce raw bytes from external systems and deliver them via this callback.
-/// The callback is responsible for parsing bytes into Events and delivering to InputHandler.
+/// Sources read raw bytes from outside systems and pass them to this callback.
+/// The callback turns the bytes into events and hands them to the InputHandler.
 pub trait SourceCallback: Debug + Send + Sync {
-    /// Called when source has new data available
+    /// Called when the source has new data.
     ///
     /// # Arguments
-    /// * `data` - Raw bytes from external system (JSON, CSV, binary, etc.)
+    /// * `data` - Raw bytes from the outside system, such as JSON, CSV, or binary
     ///
     /// # Returns
-    /// * `Ok(())` - Data processed successfully
+    /// * `Ok(())` - The data was processed
     /// * `Err(EventFluxError)` - Processing failed
     fn on_data(&self, data: &[u8]) -> Result<(), EventFluxError>;
 }
 
+/// A connector that reads data from an outside system into a stream.
 pub trait Source: Debug + Send + Sync {
-    /// Start the source with a callback for data delivery
+    /// Starts the source and gives it the callback for its data.
     ///
-    /// Sources read from external systems and deliver raw bytes via the callback.
-    /// The callback handles parsing (via SourceMapper) and event delivery.
+    /// Sources read from outside systems and pass raw bytes to the callback.
+    /// The callback parses them with a SourceMapper and delivers the events.
     ///
     /// # Architecture
     /// ```text
@@ -64,31 +65,30 @@ pub trait Source: Debug + Send + Sync {
     /// ```
     fn start(&mut self, callback: Arc<dyn SourceCallback>);
 
-    /// Stop the source.
+    /// Stops the source.
     ///
-    /// Contract: synchronous (no callback may fire after it returns) and
-    /// idempotent. Do not implement by hand — embed a [`SourceWorker`] and
-    /// delegate to [`SourceWorker::stop`], which guarantees both.
+    /// It must block until the source has stopped, so no callback fires after
+    /// it returns, and it must be safe to call more than once. Do not write
+    /// this by hand. Hold a [`SourceWorker`] and call [`SourceWorker::stop`],
+    /// which gives both.
     fn stop(&mut self);
 
     fn clone_box(&self) -> Box<dyn Source>;
 
-    /// Phase 2 validation: Verify connectivity and external resource availability
+    /// Phase 2 check that outside systems can be reached and are set up right.
     ///
-    /// This method is called during application initialization (Phase 2) to validate
-    /// that external systems are reachable and properly configured.
-    ///
-    /// **Fail-Fast Principle**: Application should NOT start if transports are not ready.
+    /// Called during app startup (Phase 2). The app should NOT start when a
+    /// transport is not ready, so problems show up early.
     ///
     /// # Default Implementation
     ///
-    /// Returns Ok by default - sources that don't need external validation can use this.
-    /// Sources with external dependencies (Kafka, HTTP, etc.) MUST override this method.
+    /// Returns Ok. Sources with no outside system to check can keep it.
+    /// Sources that depend on one (Kafka, HTTP, and so on) MUST override it.
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - External system is reachable and properly configured
-    /// * `Err(EventFluxError)` - Validation failed, application should not start
+    /// * `Ok(())` - The outside system can be reached and is set up right
+    /// * `Err(EventFluxError)` - The check failed and the app should not start
     ///
     /// # Examples
     ///
@@ -109,23 +109,21 @@ pub trait Source: Debug + Send + Sync {
     /// }
     /// ```
     fn validate_connectivity(&self) -> Result<(), crate::core::exception::EventFluxError> {
-        Ok(()) // Default: no validation needed
+        Ok(())
     }
 
-    /// Set the DLQ junction for error routing
+    /// Sets the DLQ junction that failed events are sent to.
     ///
-    /// This method allows setting the DLQ junction after source creation,
-    /// enabling DLQ strategy when the factory creates a source before the DLQ
-    /// junction is available. `EventFluxAppRuntime` wires it when attaching
-    /// the source to its stream.
+    /// The factory builds a source before the DLQ junction exists, so the
+    /// junction is set afterwards. `EventFluxAppRuntime` calls this when it
+    /// attaches the source to its stream.
     ///
-    /// Sources that support DLQ error handling must override this method.
-    /// The default rejects the junction, so a DLQ configured on a source
-    /// that cannot dead-letter fails attachment instead of silently
-    /// dropping failed events.
+    /// Sources that support the DLQ strategy must override this. The default
+    /// returns a configuration error, so a DLQ set on a source that cannot use
+    /// one fails at attach time instead of silently dropping failed events.
     ///
     /// # Arguments
-    /// * `stream_name` - Name of the stream this source feeds; DLQ events
+    /// * `stream_name` - Name of the stream this source feeds. DLQ events
     ///   report it as `streamName`
     /// * `_junction` - The InputHandler for the DLQ stream
     fn set_error_dlq_junction(
@@ -146,27 +144,27 @@ impl Clone for Box<dyn Source> {
     }
 }
 
-/// Default grace period sources wait for their worker thread in `stop()`.
+/// How long `stop()` waits for a source's worker thread before giving up on it.
 pub const SOURCE_STOP_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
-/// Lifecycle handle for a source's worker thread.
+/// Starts and stops a source's worker thread.
 ///
-/// Every thread-based source embeds one of these instead of hand-rolling a
-/// `running: Arc<AtomicBool>` + `JoinHandle` pair. It captures the shutdown
-/// pattern once so implementations cannot get it wrong:
+/// Every source that runs a thread holds one of these instead of its own
+/// `running: Arc<AtomicBool>` and `JoinHandle` pair. The shutdown logic lives
+/// here once so sources cannot get it wrong.
 ///
-/// - [`start`](Self::start) sets the running flag and spawns the worker
-/// - [`stop`](Self::stop) clears the flag and joins the thread (bounded by
-///   [`SOURCE_STOP_GRACE_PERIOD`]), making `Source::stop()` synchronous —
-///   no callback can fire after it returns. Idempotent.
-/// - `Drop` calls `stop()`, so a source that is dropped without being
-///   stopped still shuts its worker down (RAII)
-/// - `Clone` yields a fresh, unstarted worker — runtime state never leaks
-///   into clones
+/// - [`start`](Self::start) sets the running flag and starts the thread
+/// - [`stop`](Self::stop) clears the flag and joins the thread, waiting up to
+///   [`SOURCE_STOP_GRACE_PERIOD`]. So `Source::stop()` blocks and no callback
+///   fires after it returns, unless the thread missed the grace period and was
+///   left running. Safe to call more than once.
+/// - `Drop` calls `stop()`, so a source dropped without being stopped still
+///   shuts its thread down
+/// - `Clone` gives a new worker that has not started. Runtime state never
+///   carries over to clones.
 ///
-/// Worker loops that wait between iterations should use
-/// [`sleep_while_running`] instead of `thread::sleep` so long intervals don't
-/// delay shutdown.
+/// Worker loops that wait between rounds should use [`sleep_while_running`]
+/// instead of `thread::sleep`, so a long interval does not delay shutdown.
 ///
 /// # Usage
 ///
@@ -196,14 +194,15 @@ pub const SOURCE_STOP_GRACE_PERIOD: Duration = Duration::from_secs(5);
 pub struct SourceWorker {
     /// Source name used in shutdown log messages
     name: &'static str,
-    /// Running flag polled by the worker loop
+    /// Running flag that the worker loop checks
     running: Arc<AtomicBool>,
     /// Worker thread handle, joined in `stop()`
     handle: Option<JoinHandle<()>>,
 }
 
 impl SourceWorker {
-    /// Create an unstarted worker. `name` appears in shutdown log messages.
+    /// Creates a worker that has not started. `name` appears in shutdown log
+    /// messages.
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -212,11 +211,12 @@ impl SourceWorker {
         }
     }
 
-    /// Set the running flag and spawn the worker thread.
+    /// Sets the running flag and starts the worker thread.
     ///
-    /// The closure receives the running flag and must poll it at least every
-    /// ~100ms so that `stop()` returns promptly (use [`sleep_while_running`]
-    /// for waits between iterations).
+    /// The closure gets the running flag and must check it about every 100 ms
+    /// or more often, so `stop()` returns quickly. Use [`sleep_while_running`]
+    /// for waits between rounds. Call `stop()` before starting again, since a
+    /// second start replaces the old handle without joining it.
     pub fn start<F>(&mut self, body: F)
     where
         F: FnOnce(Arc<AtomicBool>) + Send + 'static,
@@ -226,11 +226,11 @@ impl SourceWorker {
         self.handle = Some(std::thread::spawn(move || body(running)));
     }
 
-    /// Signal shutdown and join the worker thread.
+    /// Tells the worker to stop and joins its thread.
     ///
-    /// Bounded by [`SOURCE_STOP_GRACE_PERIOD`]; a worker stuck in slow I/O is
-    /// detached with a warning. Idempotent — safe to call without `start()`
-    /// or multiple times.
+    /// Waits up to [`SOURCE_STOP_GRACE_PERIOD`]. A worker stuck in slow I/O is
+    /// left running on its own, with a warning. Safe to call before `start()`
+    /// or more than once.
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
@@ -241,23 +241,23 @@ impl SourceWorker {
 
 impl Drop for SourceWorker {
     fn drop(&mut self) {
-        // RAII: a source dropped without stop() still shuts its worker down.
+        // A source dropped without stop() still shuts its worker down
         self.stop();
     }
 }
 
 impl Clone for SourceWorker {
     fn clone(&self) -> Self {
-        // Runtime state (flag, handle) never leaks into clones.
+        // The running flag and thread handle never carry over to clones
         Self::new(self.name)
     }
 }
 
-/// Sleep for `duration`, waking early when `running` is cleared.
+/// Sleeps for `duration`, waking early when `running` is cleared.
 ///
-/// Worker loops use this instead of `thread::sleep` for waits between
-/// iterations, so a long interval (e.g. a 60s timer) never delays `stop()`:
-/// the sleep is taken in ≤100ms slices with the flag checked between slices.
+/// Worker loops use this instead of `thread::sleep` for waits between rounds,
+/// so a long interval, such as a 60s timer, never delays `stop()`. It sleeps in
+/// slices of at most 100 ms and checks the flag between slices.
 pub fn sleep_while_running(running: &AtomicBool, duration: Duration) {
     let deadline = Instant::now() + duration;
     while running.load(Ordering::SeqCst) {
@@ -269,17 +269,19 @@ pub fn sleep_while_running(running: &AtomicBool, duration: Duration) {
     }
 }
 
-/// Join a worker thread, bounded by `timeout`. Internal to [`SourceWorker`].
+/// Joins a worker thread, waiting at most `timeout`. Used only by
+/// [`SourceWorker`].
 ///
-/// std has no native timed join, so this polls [`JoinHandle::is_finished`]
-/// until the deadline. On timeout the worker is detached (its handle is
-/// dropped) with a warning — no extra threads, nothing left parked.
+/// std has no join with a timeout, so this checks [`JoinHandle::is_finished`]
+/// every 10 ms until the deadline. On timeout it logs a warning and drops the
+/// handle, which leaves the thread running on its own. No extra thread is
+/// started. A worker that panicked is logged, not passed on.
 fn join_with_timeout(handle: JoinHandle<()>, timeout: Duration, source_name: &str) {
     let deadline = Instant::now() + timeout;
     while !handle.is_finished() {
         if Instant::now() >= deadline {
             log::warn!("[{source_name}] Worker thread did not stop within {timeout:?}; detaching");
-            return; // dropping the handle detaches the thread
+            return; // dropping the handle leaves the thread running on its own
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -288,15 +290,14 @@ fn join_with_timeout(handle: JoinHandle<()>, timeout: Duration, source_name: &st
     }
 }
 
-/// Adapter that connects the Source architecture (produces bytes) with SourceMapper and InputHandler
+/// Connects a source, which produces bytes, to a SourceMapper and an InputHandler.
 ///
-/// This adapter implements the clean architecture flow:
 /// ```text
 /// Source → bytes → SourceCallback::on_data() → SourceMapper → Events → InputHandler
 /// ```
 ///
-/// The adapter receives raw bytes from sources, uses the mapper to parse them into Events,
-/// and delivers the Events to the InputHandler for processing.
+/// It takes raw bytes from the source, parses them into events with the
+/// mapper, and sends each event to the InputHandler.
 #[derive(Debug)]
 pub struct SourceCallbackAdapter {
     mapper: Arc<Mutex<Box<dyn SourceMapper>>>,
@@ -314,11 +315,11 @@ impl SourceCallbackAdapter {
 
 impl SourceCallback for SourceCallbackAdapter {
     fn on_data(&self, data: &[u8]) -> Result<(), EventFluxError> {
-        // Transform bytes → Events via mapper
-        // Mapper can now report parsing errors instead of silently dropping data
+        // A parse error is returned to the source instead of dropping the data.
+        // A send error stops at the failing event, so earlier events in the
+        // batch are already delivered.
         let events = self.mapper.lock().unwrap().map(data)?;
 
-        // Deliver Events to InputHandler
         for event in events.iter() {
             self.handler
                 .lock()
@@ -381,7 +382,7 @@ mod tests {
             "join must not block past the grace period"
         );
 
-        // Let the detached worker exit so the test doesn't leak a spinning thread
+        // Let the abandoned worker exit so the test does not leave a thread spinning
         running.store(false, Ordering::SeqCst);
     }
 
@@ -391,7 +392,7 @@ mod tests {
             panic!("intentional test panic");
         });
 
-        // Must log and return, not propagate the panic
+        // Must log and return, not pass the panic on
         join_with_timeout(handle, Duration::from_secs(5), "TestSource");
     }
 
@@ -417,7 +418,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         worker.stop();
 
-        // stop() joined the worker — the tick count must be frozen
+        // stop() joined the worker, so the tick count must not change now
         let at_stop = ticks.load(Ordering::SeqCst);
         assert!(at_stop > 0, "worker should have run");
         std::thread::sleep(Duration::from_millis(30));
@@ -431,10 +432,10 @@ mod tests {
     #[test]
     fn test_source_worker_stop_is_idempotent() {
         let mut worker = SourceWorker::new("TestSource");
-        worker.stop(); // Without start — no-op
+        worker.stop(); // before start, does nothing
         worker.start(|running| while running.load(Ordering::SeqCst) {});
         worker.stop();
-        worker.stop(); // Handle already taken — no-op
+        worker.stop(); // handle already taken, does nothing
     }
 
     #[test]

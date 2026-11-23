@@ -21,10 +21,10 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
 
-/// A secret configuration value (password, token, credential-bearing header)
-/// whose `Debug`/`Display` output is always `***`. The raw value must be
-/// requested explicitly via [`Redacted::expose`], so a `{:?}` of a connector
-/// config can never leak credentials into logs (#143).
+/// A secret config value, such as a password, token, or a header that carries
+/// credentials. Its `Debug` and `Display` output is always `***`. Callers must ask
+/// for the raw value with [`Redacted::expose`], so a `{:?}` of a connector config
+/// never leaks credentials into logs (#143).
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct Redacted(String);
 
@@ -33,8 +33,9 @@ impl Redacted {
         Self(value.into())
     }
 
-    /// The actual secret — call only at the point of use (connection
-    /// building, header injection), never in log/format paths.
+    /// Returns the raw secret. Call it only where the value is used, such as
+    /// when building a connection or adding a header. Never call it to log or
+    /// format the value.
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -64,13 +65,17 @@ impl Display for Redacted {
     }
 }
 
-/// Key injected by `stream_initializer` into the properties map passed to
-/// source/sink factories, carrying the stream's `format` (e.g. "json").
-/// The leading underscore marks it as reserved/injected — factories must not
-/// accept it from user configuration under another meaning.
+/// Key that `stream_initializer` adds to the properties map passed to source and
+/// sink factories. It holds the stream's `format`, for example "json".
+/// The leading underscore marks it as reserved. Factories must not accept it from
+/// user config with any other meaning.
 pub const INJECTED_FORMAT_KEY: &str = "_format";
 
-/// Fetch a required property, rejecting missing or blank values.
+/// Returns a required property.
+///
+/// # Errors
+///
+/// Returns an error when the key is missing or the value is blank.
 pub fn parse_required(properties: &HashMap<String, String>, key: &str) -> Result<String, String> {
     let value = properties
         .get(key)
@@ -81,7 +86,11 @@ pub fn parse_required(properties: &HashMap<String, String>, key: &str) -> Result
     Ok(value.clone())
 }
 
-/// Parse an optional property, falling back to `default` when absent.
+/// Parses an optional property. Returns `default` when the key is missing.
+///
+/// # Errors
+///
+/// Returns `Invalid <key>: ...` when the value is present but does not parse.
 pub fn parse_or<T: FromStr>(
     properties: &HashMap<String, String>,
     key: &str,
@@ -96,9 +105,10 @@ where
     }
 }
 
-/// Collect `<prefix><Name>` properties into `(Name, value)` pairs — the
-/// header-map convention used by the WebSocket and HTTP connectors
-/// (e.g. `http.headers.Authorization`).
+/// Collects `<prefix><Name>` properties into `(Name, value)` pairs, sorted by name.
+/// The WebSocket and HTTP connectors use this to read headers, for example
+/// `http.headers.Authorization`. Keys with an empty name after the prefix are
+/// skipped.
 pub fn parse_prefixed(properties: &HashMap<String, String>, prefix: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = properties
         .iter()
@@ -108,7 +118,7 @@ pub fn parse_prefixed(properties: &HashMap<String, String>, prefix: &str) -> Vec
                 .map(|name| (name.to_string(), v.clone()))
         })
         .collect();
-    // HashMap iteration order is arbitrary — sort for deterministic behavior
+    // HashMap order is random, so sort to get the same order every time
     out.sort();
     out
 }

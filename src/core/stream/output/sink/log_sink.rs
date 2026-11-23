@@ -23,10 +23,11 @@ use crate::core::stream::output::sink::sink_trait::Sink;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// LogSink - Debug sink that logs events to stdout/log system
+/// Debug sink that writes events to the log at info level.
 ///
-/// This sink deserializes binary event payloads and logs them for debugging.
-/// Used primarily for development and testing.
+/// A payload that is UTF-8 and starts with `{` or `[` is logged as text. Any
+/// other payload is decoded from the binary PassthroughMapper format, and each
+/// event is logged and kept in `events`. Mostly used for development and tests.
 #[derive(Debug, Clone)]
 pub struct LogSink {
     pub events: Arc<Mutex<Vec<Event>>>,
@@ -49,7 +50,8 @@ impl LogSink {
         }
     }
 
-    /// Create a new LogSink with configuration reader support
+    /// Creates a LogSink that reads its `prefix` setting from the config
+    /// reader, under `sink_name`
     pub fn new_with_config(
         config_reader: Option<Arc<ProcessorConfigReader>>,
         sink_name: String,
@@ -61,7 +63,7 @@ impl LogSink {
         }
     }
 
-    /// Get the configured prefix for this sink
+    /// Returns the configured log prefix for this sink, or `[LOG]` when none is set
     fn get_prefix(&self) -> String {
         if let Some(ref config_reader) = self.config_reader {
             if let Some(ConfigValue::String(prefix)) =
@@ -70,7 +72,7 @@ impl LogSink {
                 return prefix;
             }
         }
-        "[LOG]".to_string() // Default prefix
+        "[LOG]".to_string()
     }
 }
 
@@ -78,18 +80,18 @@ impl Sink for LogSink {
     fn publish(&self, payload: &[u8]) -> Result<(), EventFluxError> {
         let prefix = self.get_prefix();
 
-        // Check if payload looks like JSON (starts with '{' or '[' after optional whitespace)
-        // This handles JSON mapper output which should be logged as text
+        // A payload that looks like JSON (starts with '{' or '[' after any
+        // leading whitespace) comes from the JSON mapper. Log it as text. It is
+        // not added to `events`.
         if let Ok(text) = std::str::from_utf8(payload) {
             let trimmed = text.trim_start();
             if trimmed.starts_with('{') || trimmed.starts_with('[') {
-                // JSON format - log as-is without deserialization
                 log::info!("{} {}", prefix, text);
                 return Ok(());
             }
         }
 
-        // Fall back to binary deserialization for bincode format
+        // Otherwise decode the binary bincode format. Anything else fails.
         let events = PassthroughMapper::deserialize(payload).map_err(|e| {
             EventFluxError::app_runtime(format!("LogSink deserialization failed: {}", e))
         })?;

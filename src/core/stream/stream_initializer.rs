@@ -17,18 +17,17 @@
 
 //! Stream Initialization Module
 //!
-//! Bridges the factory registries in [`EventFluxContext`] and the runtime:
-//! turns a validated stream/table configuration into ready-to-use connector
-//! instances.
+//! Links the factory registries in [`EventFluxContext`] to the runtime. Turns a
+//! checked stream or table config into connector instances ready to use.
 //!
-//! - [`initialize_source_stream`] → [`InitializedSource`] (source + mapper)
-//! - [`initialize_sink_stream`] → [`InitializedSink`] (sink + mapper)
+//! - [`initialize_source_stream`] → [`InitializedSource`] (source and mapper)
+//! - [`initialize_sink_stream`] → [`InitializedSink`] (sink and mapper)
 //! - [`initialize_table`] → [`InitializedTable`] (backing store)
 //!
-//! Each function looks up the factories, validates format and mapper
-//! configuration, creates the instances, and checks external connectivity
-//! (fail-fast). Wiring the result into junctions and handlers is the
-//! runtime's job (`EventFluxAppRuntime`).
+//! Each function finds the factories, checks the format and mapper config,
+//! builds the instances, and checks that outside systems can be reached, so
+//! problems show up early. Connecting the result to junctions and handlers is
+//! the runtime's job (`EventFluxAppRuntime`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,32 +41,33 @@ use crate::core::stream::output::mapper::SinkMapper;
 use crate::core::stream::output::sink::Sink;
 use crate::core::table::Table;
 
-/// Fully initialized stream with source and mapper components
+/// A source stream that is fully set up, with its source and mapper
 pub struct InitializedSource {
     pub source: Box<dyn Source>,
-    pub mapper: Option<Box<dyn SourceMapper>>, // Optional - None = use PassthroughMapper
+    pub mapper: Option<Box<dyn SourceMapper>>, // None means use the PassthroughMapper
     pub extension: String,
-    pub format: Option<String>, // Optional - None = no format (binary passthrough)
+    pub format: Option<String>, // None means no format, so binary passthrough
 }
 
-/// Fully initialized sink stream with sink and mapper components
+/// A sink stream that is fully set up, with its sink and mapper
 pub struct InitializedSink {
     pub sink: Box<dyn Sink>,
-    pub mapper: Option<Box<dyn SinkMapper>>, // Optional - None = use PassthroughMapper
+    pub mapper: Option<Box<dyn SinkMapper>>, // None means use the PassthroughMapper
     pub extension: String,
-    pub format: Option<String>, // Optional - None = no format (binary passthrough)
+    pub format: Option<String>, // None means no format, so binary passthrough
 }
 
-/// Fully initialized table with backing store
+/// A table that is fully set up, with its backing store.
 ///
-/// Tables are bidirectional data structures for persistent lookups and joins.
-/// Unlike streams, tables:
-/// - Have no type property (always bidirectional)
-/// - Have no format property (use relational schema only)
-/// - Require an extension property (specifies backing store: mysql, postgres, redis, etc.)
+/// Tables hold data for lookups and joins, and are both read and written.
+/// Unlike streams, tables
+/// - have no type property, since they are always both ways
+/// - have no format property, since they use only the relational schema
+/// - need an extension property that names the backing store, such as mysql,
+///   postgres, or redis
 ///
-/// Note: Tables use Arc for shared ownership since they can be accessed concurrently
-/// by multiple queries, unlike sources/sinks which are owned by a single stream.
+/// Tables use Arc so several queries can share and use them at the same time.
+/// A source or sink belongs to a single stream.
 pub struct InitializedTable {
     pub table: Arc<dyn Table>,
     pub extension: String,
@@ -99,9 +99,9 @@ impl std::fmt::Debug for InitializedTable {
     }
 }
 
-/// Connectors that exist in the codebase but were excluded from this build
-/// by cargo features. The feature is always named after the extension (see
-/// the `[features]` section in Cargo.toml), so one entry per gated connector.
+/// Connectors that exist in the code but were left out of this build by cargo
+/// features. The feature always has the same name as the extension (see the
+/// `[features]` section in Cargo.toml), so there is one entry per such connector.
 const GATED_OUT_EXTENSIONS: &[&str] = &[
     #[cfg(not(feature = "file"))]
     "file",
@@ -115,10 +115,10 @@ const GATED_OUT_EXTENSIONS: &[&str] = &[
     "websocket",
 ];
 
-/// Error for a failed connector factory lookup.
+/// Builds the error for a connector factory that was not found.
 ///
-/// If the extension is known but compiled out, the error tells the user how
-/// to rebuild instead of reporting a bare "extension not found".
+/// If the extension is known but was left out of the build, the error tells
+/// the user how to rebuild, instead of a bare "extension not found".
 fn connector_lookup_error(kind: &str, extension: &str) -> EventFluxError {
     if GATED_OUT_EXTENSIONS.contains(&extension) {
         EventFluxError::configuration(format!(
@@ -130,8 +130,8 @@ fn connector_lookup_error(kind: &str, extension: &str) -> EventFluxError {
     }
 }
 
-/// Reject a stream configuration whose type isn't the one being initialized
-/// (e.g. a sink config passed to source initialization).
+/// Rejects a stream config whose type is not the one being set up, such as a
+/// sink config passed to source setup.
 fn ensure_stream_type(
     stream_config: &StreamTypeConfig,
     expected: StreamType,
@@ -146,10 +146,11 @@ fn ensure_stream_type(
     )))
 }
 
-/// Properties handed to source/sink factories: the user's map plus
-/// engine-injected reserved keys (leading underscore). Currently `_format`
-/// carries the stream's declared format so connectors can derive
-/// format-dependent settings (e.g. the HTTP sink's Content-Type).
+/// Builds the properties passed to source and sink factories. That is the
+/// user's map plus reserved keys the engine adds, which start with an
+/// underscore. Today that is only `_format`, which holds the stream's format
+/// so connectors can pick settings that depend on it, such as the HTTP sink's
+/// Content-Type.
 fn factory_properties(stream_config: &StreamTypeConfig) -> HashMap<String, String> {
     let mut properties = stream_config.properties.clone();
     if let Some(format) = stream_config.format() {
@@ -161,21 +162,29 @@ fn factory_properties(stream_config: &StreamTypeConfig) -> HashMap<String, Strin
     properties
 }
 
-/// Initialize a source stream with factory lookup and fail-fast validation
+/// Sets up a source stream. Finds the factories and checks everything up front.
 ///
-/// This is the main integration point between the factory registry and the
-/// stream runtime for sources:
+/// This is where the factory registry meets the stream runtime for sources.
 ///
-/// 1. Look up the appropriate source factory by extension name
-/// 2. Validate that the factory supports the requested format
-/// 3. Look up the mapper factory by format name
-/// 4. Create fully initialized instances with fail-fast validation
-/// 5. Return wired components guaranteed to be in valid state
+/// 1. Find the source factory by extension name
+/// 2. Check that the factory supports the requested format
+/// 3. Find the mapper factory by format name
+/// 4. Check the mapper config against source rules
+/// 5. Build the source and mapper
+/// 6. Check that the outside system can be reached
+/// 7. Return the parts, known to be valid
 ///
-/// `field_names` is the stream's schema in declaration order; it lets format
-/// mappers (e.g. JSON) match incoming fields to stream attributes by name
-/// instead of only by position (#201). Pass an empty slice when no schema is
-/// available — mapping then falls back to positional order.
+/// `field_names` is the stream's schema in declaration order. It lets format
+/// mappers such as JSON match incoming fields to stream attributes by name,
+/// not only by position (#201). Pass an empty slice when there is no schema,
+/// and mapping then goes by position.
+///
+/// # Errors
+///
+/// Returns an error when the config is not a source config, the extension or
+/// mapper is not found, the format is not supported, no format is given for a
+/// source that needs one, the mapper config is invalid, building fails, or the
+/// connectivity check fails.
 pub fn initialize_source_stream(
     context: &EventFluxContext,
     stream_config: &StreamTypeConfig,
@@ -183,7 +192,7 @@ pub fn initialize_source_stream(
 ) -> Result<InitializedSource, EventFluxError> {
     ensure_stream_type(stream_config, StreamType::Source)?;
 
-    // 1. Look up source factory by extension
+    // 1. Find the source factory by extension
     let extension = stream_config
         .extension()
         .map_err(|e| EventFluxError::configuration(format!("Stream configuration error: {}", e)))?;
@@ -192,25 +201,25 @@ pub fn initialize_source_stream(
         .get_source_factory(extension)
         .ok_or_else(|| connector_lookup_error("source", extension))?;
 
-    // 2. Validate format support (if format is specified)
+    // 2. Check format support, when a format is given
     let mapper_factory = if let Some(format) = stream_config.format() {
-        // Format specified - validate and look up mapper factory
         if !source_factory.supported_formats().contains(&format) {
             return Err(EventFluxError::unsupported_format(format, extension));
         }
 
-        // 3. Look up mapper factory by format
+        // 3. Find the mapper factory by format
         Some(
             context
                 .get_source_mapper_factory(format)
                 .ok_or_else(|| EventFluxError::extension_not_found("source mapper", format))?,
         )
     } else {
-        // No format specified - validate that source supports binary passthrough
+        // No format given. Only a source that lists no formats takes binary
+        // passthrough.
         let supported_formats = source_factory.supported_formats();
         if !supported_formats.is_empty() {
-            // Source requires explicit format but none was specified
-            // This prevents silent data loss for external sources (Kafka, HTTP, etc.)
+            // The source needs a format but none was given. Failing here stops
+            // silent data loss for outside sources such as Kafka or HTTP.
             return Err(EventFluxError::configuration(format!(
                 "Source extension '{}' requires a format specification. \
                 Supported formats: {}. \
@@ -219,12 +228,12 @@ pub fn initialize_source_stream(
                 supported_formats.join(", ")
             )));
         }
-        // PassthroughMapper will be used for binary-only sources
+        // Binary only sources use the PassthroughMapper
         None
     };
 
-    // 4. Phase 1 Validation: Verify mapper configuration (if format is specified)
-    // This ensures source streams don't use sink-only properties (template, pretty-print, etc.)
+    // 4. Phase 1 check of the mapper config, when a format is given. Source
+    // streams must not use sink only properties such as template or pretty-print.
     if let Some(format) = stream_config.format() {
         crate::core::stream::mapper::validation::validate_source_mapper_config(
             &stream_config.properties,
@@ -242,15 +251,16 @@ pub fn initialize_source_stream(
         })?;
     }
 
-    // 5. Create fully initialized instances (fail-fast validation)
+    // 5. Build the instances, which check their own config. The source gets
+    // the injected `_format` key, the mapper gets the user's properties only.
     let factory_properties = factory_properties(stream_config);
     let source = source_factory.create_initialized(&factory_properties)?;
     let mapper = mapper_factory
         .map(|factory| factory.create_with_schema(&stream_config.properties, field_names))
         .transpose()?;
 
-    // 6. Phase 2 Validation: Verify external connectivity (FAIL-FAST)
-    // This ensures "What's the point of deploying if transports aren't ready?"
+    // 6. Phase 2 check that the outside system can be reached. There is no
+    // point deploying when the transport is not ready.
     source.validate_connectivity().map_err(|e| {
         EventFluxError::app_creation(format!(
             "Source '{}' connectivity validation failed: {}. \
@@ -259,7 +269,7 @@ pub fn initialize_source_stream(
         ))
     })?;
 
-    // 7. Return wired components - instances are guaranteed valid
+    // 7. Return the parts, which are known to be valid
     Ok(InitializedSource {
         source,
         mapper,
@@ -268,11 +278,19 @@ pub fn initialize_source_stream(
     })
 }
 
-/// Initialize a sink stream with factory lookup and fail-fast validation
+/// Sets up a sink stream. Finds the factories and checks everything up front,
+/// in the same steps as [`initialize_source_stream`].
 ///
-/// `field_names` is the stream's schema in declaration order; format mappers
-/// use it for output field names (e.g. JSON keys `"symbol"` instead of
-/// `"field_0"`). Pass an empty slice when no schema is available.
+/// `field_names` is the stream's schema in declaration order. Format mappers
+/// use it for output field names, such as the JSON key `"symbol"` instead of
+/// `"field_0"`. Pass an empty slice when there is no schema.
+///
+/// # Errors
+///
+/// Returns an error when the config is not a sink config, the extension or
+/// mapper is not found, the format is not supported, no format is given for a
+/// sink that needs one, the mapper config is invalid, building fails, or the
+/// connectivity check fails.
 pub fn initialize_sink_stream(
     context: &EventFluxContext,
     stream_config: &StreamTypeConfig,
@@ -280,7 +298,7 @@ pub fn initialize_sink_stream(
 ) -> Result<InitializedSink, EventFluxError> {
     ensure_stream_type(stream_config, StreamType::Sink)?;
 
-    // 1. Look up sink factory by extension
+    // 1. Find the sink factory by extension
     let extension = stream_config
         .extension()
         .map_err(|e| EventFluxError::configuration(format!("Stream configuration error: {}", e)))?;
@@ -289,25 +307,25 @@ pub fn initialize_sink_stream(
         .get_sink_factory(extension)
         .ok_or_else(|| connector_lookup_error("sink", extension))?;
 
-    // 2. Validate format support (if format is specified)
+    // 2. Check format support, when a format is given
     let mapper_factory = if let Some(format) = stream_config.format() {
-        // Format specified - validate and look up mapper factory
         if !sink_factory.supported_formats().contains(&format) {
             return Err(EventFluxError::unsupported_format(format, extension));
         }
 
-        // 3. Look up mapper factory by format
+        // 3. Find the mapper factory by format
         Some(
             context
                 .get_sink_mapper_factory(format)
                 .ok_or_else(|| EventFluxError::extension_not_found("sink mapper", format))?,
         )
     } else {
-        // No format specified - validate that sink supports binary passthrough
+        // No format given. Only a sink that lists no formats takes binary
+        // passthrough.
         let supported_formats = sink_factory.supported_formats();
         if !supported_formats.is_empty() {
-            // Sink requires explicit format but none was specified
-            // This prevents silent data loss for external sinks (HTTP, Kafka, etc.)
+            // The sink needs a format but none was given. Failing here stops
+            // silent data loss for outside sinks such as HTTP or Kafka.
             return Err(EventFluxError::configuration(format!(
                 "Sink extension '{}' requires a format specification. \
                 Supported formats: {}. \
@@ -316,12 +334,13 @@ pub fn initialize_sink_stream(
                 supported_formats.join(", ")
             )));
         }
-        // PassthroughMapper will be used for binary-only sinks
+        // Binary only sinks use the PassthroughMapper
         None
     };
 
-    // 4. Phase 1 Validation: Verify mapper configuration (if format is specified)
-    // This ensures sink streams don't use source-only properties (mapping.*, ignore-parse-errors, etc.)
+    // 4. Phase 1 check of the mapper config, when a format is given. Sink
+    // streams must not use source only properties such as mapping.* or
+    // ignore-parse-errors.
     if let Some(format) = stream_config.format() {
         crate::core::stream::mapper::validation::validate_sink_mapper_config(
             &stream_config.properties,
@@ -339,7 +358,8 @@ pub fn initialize_sink_stream(
         })?;
     }
 
-    // 5. Create fully initialized instances (fail-fast validation)
+    // 5. Build the instances, which check their own config. The sink gets the
+    // injected `_format` key, the mapper gets the user's properties only.
     let factory_properties = factory_properties(stream_config);
     let sink = sink_factory.create_initialized(&factory_properties)?;
 
@@ -347,8 +367,8 @@ pub fn initialize_sink_stream(
         .map(|factory| factory.create_with_schema(&stream_config.properties, field_names))
         .transpose()?;
 
-    // 6. Phase 2 Validation: Verify external connectivity (FAIL-FAST)
-    // This ensures "What's the point of deploying if transports aren't ready?"
+    // 6. Phase 2 check that the outside system can be reached. There is no
+    // point deploying when the transport is not ready.
     sink.validate_connectivity().map_err(|e| {
         EventFluxError::app_creation(format!(
             "Sink '{}' connectivity validation failed: {}. \
@@ -357,7 +377,7 @@ pub fn initialize_sink_stream(
         ))
     })?;
 
-    // 7. Return wired components - instances are guaranteed valid
+    // 7. Return the parts, which are known to be valid
     Ok(InitializedSink {
         sink,
         mapper,
@@ -366,24 +386,25 @@ pub fn initialize_sink_stream(
     })
 }
 
-/// Initialize a table with factory lookup and validation
+/// Sets up a table. Finds its factory, builds it, and checks its backing store.
 ///
-/// Tables are bidirectional data structures for persistent lookups and joins.
-/// Unlike streams, tables:
-/// - Do NOT have a 'type' property (always bidirectional)
-/// - Do NOT have a 'format' property (use relational schema only)
-/// - MUST have an 'extension' property (specifies backing store)
+/// Tables hold data for lookups and joins, and are both read and written.
+/// Unlike streams, tables
+/// - do NOT have a 'type' property, since they are always both ways
+/// - do NOT have a 'format' property, since they use only the relational schema
+/// - MUST have an 'extension' property that names the backing store
 ///
 /// # Arguments
 ///
-/// * `context` - EventFlux context containing table factory registries
-/// * `table_config` - Typed table configuration with validation
-/// * `table_name` - Name of the table being initialized
+/// * `context` - EventFlux context that holds the table factory registry
+/// * `table_config` - Typed and checked table config
+/// * `table_name` - Name of the table being set up
 ///
 /// # Returns
 ///
-/// * `Ok(InitializedTable)` - Fully initialized table instance
-/// * `Err(EventFluxError)` - If factory not found or initialization fails
+/// * `Ok(InitializedTable)` - The table, ready to use
+/// * `Err(EventFluxError)` - The factory was not found, building failed, or
+///   the backing store could not be reached
 ///
 /// # Example
 ///
@@ -405,15 +426,15 @@ pub fn initialize_table(
     table_config: &TableTypeConfig,
     table_name: &str,
 ) -> Result<InitializedTable, EventFluxError> {
-    // 1. Look up table factory by extension
+    // 1. Find the table factory by extension
     let extension = table_config.extension();
 
     let table_factory = context
         .get_table_factory(extension)
         .ok_or_else(|| EventFluxError::extension_not_found("table", extension))?;
 
-    // 2. Create fully initialized table instance (fail-fast validation)
-    // Note: TableFactory::create() returns Arc<dyn Table> for shared ownership
+    // 2. Build the table, which checks its own config. TableFactory::create()
+    // returns Arc<dyn Table> so it can be shared.
     let table = table_factory
         .create(
             table_name.to_string(),
@@ -424,8 +445,8 @@ pub fn initialize_table(
             EventFluxError::configuration(format!("Failed to create table '{}': {}", table_name, e))
         })?;
 
-    // 3. Phase 2 Validation: Verify external backing store connectivity (FAIL-FAST)
-    // This ensures "What's the point of deploying if backing stores aren't ready?"
+    // 3. Phase 2 check that the backing store can be reached. There is no
+    // point deploying when it is not ready.
     table.validate_connectivity().map_err(|e| {
         EventFluxError::app_creation(format!(
             "Table '{}' (extension '{}') connectivity validation failed: {}. \
@@ -434,7 +455,7 @@ pub fn initialize_table(
         ))
     })?;
 
-    // 4. Return initialized table - instance is guaranteed valid
+    // 4. Return the table, which is known to be valid
     Ok(InitializedTable {
         table,
         extension: extension.to_string(),
@@ -454,16 +475,16 @@ mod tests {
 
     #[test]
     fn test_connector_lookup_error_unknown_extension() {
-        // Names not in the gated-out table keep the plain not-found error
+        // Names not in the left out list keep the plain not found error
         let err = connector_lookup_error("source", "no-such-connector");
         let msg = err.to_string();
         assert!(msg.contains("no-such-connector"), "got: {msg}");
         assert!(!msg.contains("--features"), "got: {msg}");
     }
 
-    // Only meaningful in builds where the connector is compiled out
-    // (the default minimal build) — with the feature on, the extension is
-    // registered and the lookup never fails.
+    // Only makes sense in builds where the connector is left out, such as the
+    // default minimal build. With the feature on, the extension is registered
+    // and the lookup never fails.
     #[cfg(not(feature = "rabbitmq"))]
     #[test]
     fn test_connector_lookup_error_gated_out_extension_hints_feature() {
@@ -518,7 +539,7 @@ mod tests {
         )
         .unwrap();
 
-        // Schema order: price, symbol, volume
+        // Schema order is price, symbol, volume
         let field_names = vec![
             "price".to_string(),
             "symbol".to_string(),
@@ -575,7 +596,7 @@ mod tests {
         let stream_config = StreamTypeConfig::new(
             StreamType::Source,
             Some("example".to_string()),
-            Some("xml".to_string()), // The example stub doesn't support XML
+            Some("xml".to_string()), // the example stub does not support XML
             HashMap::new(),
         )
         .unwrap();
@@ -599,7 +620,7 @@ mod tests {
     fn test_initialize_source_stream_mapper_not_found() {
         let context = EventFluxContext::new();
         context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
-        // Note: json/csv mappers are registered by default, use a non-existent format
+        // json and csv mappers are registered by default, so use a format that does not exist
 
         let mut config = HashMap::new();
         config.insert("example.servers".to_string(), "localhost:9092".to_string());
@@ -712,7 +733,7 @@ mod tests {
         let result = initialize_source_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
-        // Should get InvalidParameter error from factory (for missing parameter)
+        // The factory must return an InvalidParameter error for the missing parameter
         match result.unwrap_err() {
             EventFluxError::InvalidParameter { parameter, .. } => {
                 if let Some(param) = parameter {
@@ -730,13 +751,13 @@ mod tests {
     fn test_initialize_source_stream_missing_required_format() {
         let context = EventFluxContext::new();
         context.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
-        // Don't add mapper factory - we're testing the format requirement validation
+        // No mapper factory is added, since this tests the check that a format is required
 
         let mut config = HashMap::new();
         config.insert("example.servers".to_string(), "localhost:9092".to_string());
         config.insert("example.topic".to_string(), "test-topic".to_string());
 
-        // Example source WITHOUT format - should be rejected
+        // An example source WITHOUT a format must be rejected
         let stream_config = StreamTypeConfig::new(
             StreamType::Source,
             Some("example".to_string()),
@@ -748,7 +769,7 @@ mod tests {
         let result = initialize_source_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
-        // Should get Configuration error requiring format
+        // Must be a Configuration error that asks for a format
         match result.unwrap_err() {
             EventFluxError::Configuration { message, .. } => {
                 assert!(message.contains("requires a format specification"));
@@ -774,7 +795,7 @@ mod tests {
             "http://localhost:8080/events".to_string(),
         );
 
-        // Example sink WITHOUT format - should be rejected
+        // An example sink WITHOUT a format must be rejected
         let stream_config = StreamTypeConfig::new(
             StreamType::Sink,
             Some("example-sink".to_string()),
@@ -786,7 +807,7 @@ mod tests {
         let result = initialize_sink_stream(&context, &stream_config, &[]);
         assert!(result.is_err());
 
-        // Should get Configuration error requiring format
+        // Must be a Configuration error that asks for a format
         match result.unwrap_err() {
             EventFluxError::Configuration { message, .. } => {
                 assert!(message.contains("requires a format specification"));
@@ -817,7 +838,7 @@ mod tests {
         let table = initialize_table(&context, &table_config, "TestTable")
             .expect("table initialization should succeed");
         assert_eq!(table.extension, "inMemory");
-        // Table is Arc<dyn Table> for shared ownership
+        // The table is an Arc<dyn Table> so it can be shared
     }
 
     #[test]
@@ -846,7 +867,7 @@ mod tests {
 
     #[test]
     fn test_initialize_table_with_multiple_properties() {
-        // Test table initialization with multiple properties to verify property passing
+        // Setting up a table with several properties must pass them through
         let context = EventFluxContext::new();
 
         let mut properties = HashMap::new();
@@ -863,24 +884,24 @@ mod tests {
 
     #[test]
     fn test_table_config_validation_flow() {
-        // Test that TableTypeConfig properly validates before initialization
+        // TableTypeConfig must check the config before the table is set up
         let context = EventFluxContext::new();
 
-        // Test 1: Valid config with inMemory backend
+        // Case 1: valid config with the inMemory backend
         let mut properties1 = HashMap::new();
         properties1.insert("extension".to_string(), "inMemory".to_string());
         let config1 = TableTypeConfig::new("inMemory".to_string(), properties1).unwrap();
         let result1 = initialize_table(&context, &config1, "Table1");
         assert!(result1.is_ok());
 
-        // Test 2: Try to create table config with forbidden 'type' property
+        // Case 2: a table config with the forbidden 'type' property
         let mut flat_config = FlatConfig::new();
         flat_config.set("extension", "inMemory", PropertySource::SqlWith);
         flat_config.set("type", "source", PropertySource::SqlWith);
         let config2 = TableTypeConfig::from_flat_config(&flat_config);
         assert!(config2.is_err());
 
-        // Test 3: Try to create table config with forbidden 'format' property
+        // Case 3: a table config with the forbidden 'format' property
         let mut flat_config2 = FlatConfig::new();
         flat_config2.set("extension", "inMemory", PropertySource::SqlWith);
         flat_config2.set("format", "json", PropertySource::SqlWith);
@@ -892,7 +913,7 @@ mod tests {
     fn test_initialize_table_from_flat_config() {
         let context = EventFluxContext::new();
 
-        // Simulate multi-layer configuration merge
+        // Config merged from more than one source, such as SQL and TOML
         let mut config = FlatConfig::new();
         config.set("extension", "inMemory", PropertySource::SqlWith);
         config.set("cache.ttl", "3600", PropertySource::TomlApplication);
@@ -907,7 +928,7 @@ mod tests {
     fn test_table_forbids_type_property() {
         let mut config = FlatConfig::new();
         config.set("extension", "inMemory", PropertySource::SqlWith);
-        config.set("type", "source", PropertySource::SqlWith); // Forbidden for tables
+        config.set("type", "source", PropertySource::SqlWith); // not allowed on tables
 
         let result = TableTypeConfig::from_flat_config(&config);
         assert!(result.is_err());
@@ -918,7 +939,7 @@ mod tests {
     fn test_table_forbids_format_property() {
         let mut config = FlatConfig::new();
         config.set("extension", "inMemory", PropertySource::SqlWith);
-        config.set("format", "json", PropertySource::SqlWith); // Forbidden for tables
+        config.set("format", "json", PropertySource::SqlWith); // not allowed on tables
 
         let result = TableTypeConfig::from_flat_config(&config);
         assert!(result.is_err());

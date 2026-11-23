@@ -15,12 +15,10 @@
  * limitations under the License.
  */
 
-// src/core/stream/output/mod.rs
-
 pub mod error_store;
 pub mod mapper;
 pub mod sink;
-pub mod stream_callback; // For sink implementations
+pub mod stream_callback;
 
 pub use self::error_store::{ErrorStore, InMemoryErrorStore};
 pub use self::mapper::SinkMapper;

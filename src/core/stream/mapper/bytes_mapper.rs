@@ -15,20 +15,21 @@
  * limitations under the License.
  */
 
-//! Bytes Mapper - Raw binary passthrough for external systems
+//! Bytes Mapper. Passes raw binary payloads to and from outside systems.
 //!
-//! This mapper provides raw bytes passthrough for external message systems like RabbitMQ,
-//! Kafka, etc. Unlike the internal PassthroughMapper (which uses bincode), this mapper:
+//! Used with message systems like RabbitMQ and Kafka. Unlike the internal
+//! PassthroughMapper, which uses bincode, this mapper keeps the bytes as they are.
 //!
-//! - **BytesSourceMapper**: Stores raw bytes in `AttributeValue::Bytes` to preserve
-//!   binary data exactly without any UTF-8 conversion or mutation
-//! - **BytesSinkMapper**: Extracts the raw bytes and outputs them unchanged
+//! - **BytesSourceMapper**: puts the raw bytes in `AttributeValue::Bytes`, with no
+//!   UTF-8 conversion or other change
+//! - **BytesSinkMapper**: takes the raw bytes from one field and outputs them
+//!   unchanged
 //!
 //! ## Use Cases
 //!
-//! - Binary protocol messages (protobuf, msgpack, etc.)
-//! - Pre-formatted payloads that should pass through unchanged
-//! - Custom serialization formats handled by downstream processors
+//! - Binary protocol messages, such as protobuf or msgpack
+//! - Payloads already in their final format that should pass through unchanged
+//! - Custom encodings that later processors handle
 //!
 //! ## Example
 //!
@@ -47,10 +48,11 @@ use crate::core::event::AttributeValue;
 use crate::core::event::Event;
 use crate::core::exception::EventFluxError;
 
-/// Source mapper for raw binary payloads
+/// Source mapper for raw binary payloads.
 ///
-/// Stores incoming bytes in an `AttributeValue::Bytes` variant.
-/// This preserves binary data exactly without any UTF-8 conversion or mutation.
+/// Turns each payload into one event with a single `AttributeValue::Bytes` field
+/// and the current time as its timestamp. The bytes are kept exactly, with no
+/// UTF-8 conversion or other change.
 #[derive(Debug, Clone, Default)]
 pub struct BytesSourceMapper;
 
@@ -62,7 +64,6 @@ impl BytesSourceMapper {
 
 impl SourceMapper for BytesSourceMapper {
     fn map(&self, input: &[u8]) -> Result<Vec<Event>, EventFluxError> {
-        // Store raw bytes directly in AttributeValue::Bytes
         let event = Event::new_with_data(now_millis(), vec![AttributeValue::Bytes(input.to_vec())]);
 
         Ok(vec![event])
@@ -73,27 +74,29 @@ impl SourceMapper for BytesSourceMapper {
     }
 }
 
-/// Sink mapper for raw binary output
+/// Sink mapper for raw binary output.
 ///
-/// Extracts raw bytes from `AttributeValue::Bytes`,
-/// or converts other attribute types to their byte representation.
+/// Outputs one field of the event. `AttributeValue::Bytes` is output as is.
+/// Strings are output as their UTF-8 bytes, numbers and bools as their text
+/// form, Null as `null`, and Object as `<object>`.
 #[derive(Debug, Clone)]
 pub struct BytesSinkMapper {
-    /// Field index to extract (default: 0 = first field)
+    /// Index of the field to output. Default 0, the first field.
     field_index: usize,
 }
 
 impl BytesSinkMapper {
+    /// Creates a mapper that outputs the first field
     pub fn new() -> Self {
         Self { field_index: 0 }
     }
 
-    /// Create mapper that extracts a specific field by index
+    /// Creates a mapper that outputs the field at `index`
     pub fn with_field_index(index: usize) -> Self {
         Self { field_index: index }
     }
 
-    /// Set the field index to extract
+    /// Sets the index of the field to output
     pub fn set_field_index(&mut self, index: usize) {
         self.field_index = index;
     }
@@ -107,9 +110,9 @@ impl Default for BytesSinkMapper {
 
 impl SinkMapper for BytesSinkMapper {
     fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
-        // One event = one binary payload. The per-event contract makes the old
-        // "cannot concatenate binary batches" failure mode structurally
-        // impossible — batches are iterated by SinkCallbackAdapter.
+        // One event gives one binary payload. SinkCallbackAdapter walks through
+        // batches one event at a time, so the old "cannot concatenate binary
+        // batches" failure can no longer happen.
         if self.field_index >= event.data.len() {
             return Err(EventFluxError::MappingFailed {
                 message: format!(
@@ -121,7 +124,6 @@ impl SinkMapper for BytesSinkMapper {
             });
         }
 
-        // Extract bytes from the specified field
         let bytes = match &event.data[self.field_index] {
             AttributeValue::Bytes(bytes) => bytes.clone(),
             AttributeValue::String(s) => s.as_bytes().to_vec(),
@@ -155,7 +157,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data.len(), 1);
 
-        // Verify it's stored as Bytes
+        // Must be stored as Bytes
         if let AttributeValue::Bytes(bytes) = &events[0].data[0] {
             assert_eq!(bytes, b"Hello, World!");
         } else {
@@ -172,7 +174,7 @@ mod tests {
         let events = mapper.map(&input).unwrap();
         assert_eq!(events.len(), 1);
 
-        // Verify binary data is preserved exactly
+        // The binary data must be kept exactly
         if let AttributeValue::Bytes(bytes) = &events[0].data[0] {
             assert_eq!(bytes, &input, "Binary data should be preserved exactly");
         } else {
@@ -185,7 +187,7 @@ mod tests {
         let source_mapper = BytesSourceMapper::new();
         let sink_mapper = BytesSinkMapper::new();
 
-        // Test with various binary patterns including invalid UTF-8
+        // Several binary patterns, including invalid UTF-8
         let test_cases: Vec<Vec<u8>> = vec![
             vec![0x00, 0x01, 0x02, 0x03],        // null bytes
             vec![0xff, 0xfe, 0xfd],              // high bytes
@@ -215,7 +217,7 @@ mod tests {
         let events = mapper.map(&input).unwrap();
         let cloned_events: Vec<Event> = events.to_vec();
 
-        // Verify cloned data is preserved exactly
+        // The cloned data must be kept exactly
         if let AttributeValue::Bytes(bytes) = &cloned_events[0].data[0] {
             assert_eq!(
                 bytes, &input,
@@ -256,9 +258,9 @@ mod tests {
 
     #[test]
     fn test_bytes_sink_mapper_events_map_independently() {
-        // With the per-event contract, each event in a batch maps to its own
-        // payload (SinkCallbackAdapter iterates) — the old "cannot concatenate
-        // binary batches" failure mode is structurally impossible.
+        // Each event in a batch maps to its own payload, since
+        // SinkCallbackAdapter walks through the batch. The old "cannot
+        // concatenate binary batches" failure can no longer happen.
         let mapper = BytesSinkMapper::new();
         let events = [
             Event::new_with_data(1, vec![AttributeValue::Bytes(b"First".to_vec())]),
