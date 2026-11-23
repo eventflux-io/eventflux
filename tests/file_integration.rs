@@ -1041,6 +1041,24 @@ async fn test_e2e_sql_dlq_wrong_schema_fails_at_creation() {
 }
 
 #[tokio::test]
+async fn test_e2e_sql_dlq_duplicate_field_fails_at_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+
+    // Every required field plus a second originalEvent
+    let sql = format!(
+        "{source}\nCREATE STREAM OrderErrors ({DLQ_COLUMNS}, originalEvent STRING);",
+        source = orders_source_with_dlq(&input, "OrderErrors"),
+    );
+
+    let err = creation_error(&sql).await;
+    assert!(
+        err.contains("declares field 'originalEvent' more than once"),
+        "got: {err}"
+    );
+}
+
+#[tokio::test]
 async fn test_e2e_sql_dlq_stream_with_own_dlq_fails_at_creation() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("orders.jsonl");

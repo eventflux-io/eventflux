@@ -92,13 +92,24 @@ pub fn validate_dlq_schema(
         )
     })?;
 
-    // 2. Extract actual schema from DLQ stream definition
-    let actual_fields: HashMap<String, AttributeType> = dlq_stream
-        .abstract_definition
-        .attribute_list
-        .iter()
-        .map(|attr| (attr.name.clone(), attr.attribute_type))
-        .collect();
+    // 2. Extract actual schema from DLQ stream definition. A duplicated field
+    // would collapse in the map and slip past the count check, while DLQ
+    // events always carry exactly one value per required field.
+    let mut actual_fields: HashMap<String, AttributeType> = HashMap::new();
+    for attr in &dlq_stream.abstract_definition.attribute_list {
+        if actual_fields
+            .insert(attr.name.clone(), attr.attribute_type)
+            .is_some()
+        {
+            return Err(EventFluxError::configuration_with_key(
+                format!(
+                    "DLQ stream '{}' declares field '{}' more than once",
+                    dlq_stream_name, attr.name
+                ),
+                DLQ_STREAM_KEY,
+            ));
+        }
+    }
 
     // 3. Validate exact field count (no more, no less)
     if actual_fields.len() != REQUIRED_DLQ_FIELDS.len() {
@@ -365,6 +376,25 @@ mod tests {
         let err_msg = err.to_string();
         assert!(err_msg.contains("timestamp"));
         assert!(err_msg.contains("has type INT, expected LONG"));
+    }
+
+    #[test]
+    fn test_validate_dlq_schema_duplicate_field() {
+        // All six required fields plus a second originalEvent: the duplicate
+        // must not collapse into a six-field schema that passes
+        let stream_def =
+            create_valid_dlq_stream().attribute("originalEvent".to_string(), AttributeType::STRING);
+
+        let mut parsed_streams = HashMap::new();
+        parsed_streams.insert("DupDLQ".to_string(), Arc::new(stream_def));
+
+        let err = validate_dlq_schema("Orders", "DupDLQ", &parsed_streams)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("declares field 'originalEvent' more than once"),
+            "got: {err}"
+        );
     }
 
     #[test]
