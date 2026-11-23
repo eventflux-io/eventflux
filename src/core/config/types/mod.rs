@@ -17,8 +17,8 @@
 
 //! Configuration Type Definitions
 //!
-//! This module defines all configuration structures for EventFlux Rust,
-//! following industry-standard practices for configuration management.
+//! All configuration structures for EventFlux, plus the helpers that read and write
+//! durations as text such as "30s".
 
 pub mod application_config;
 pub mod distributed_config;
@@ -30,7 +30,7 @@ pub mod metadata;
 pub use eventflux_config::EventFluxConfig;
 pub use metadata::ConfigMetadata;
 
-// Application config re-exports (avoid conflicts)
+// Application config re-exports. Clashing names are renamed with `as`.
 pub use application_config::{
     AggregationConfig, ApplicationConfig, CompressionType as AppCompressionType, DefinitionConfig,
     DeliveryGuarantee, ErrorHandlingConfig, FunctionConfig,
@@ -38,7 +38,7 @@ pub use application_config::{
     SinkConfig, SourceConfig, StreamConfig, TableConfig, TriggerConfig, WindowConfig,
 };
 
-// Global config re-exports (avoid conflicts)
+// Global config re-exports. Clashing names are renamed with `as`.
 pub use global_config::{
     AuditConfig, AuditDestination, AuditLevel, AuthenticationConfig, AuthenticationMethod,
     AuthorizationConfig, AuthorizationPolicy, AuthorizationProvider, BackpressureStrategy,
@@ -63,9 +63,10 @@ pub use distributed_config::{
 use serde::Deserialize;
 use std::time::Duration;
 
-// Utility function for duration parsing from strings
+// Parses a duration such as "30s", "5m", "1.5h" or "2d". The number may have a
+// fraction. Units are s, m, h and d, or their longer names like "sec" or "minutes",
+// in any case. There is no unit below a second, so "100ms" is rejected.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
-    // Support formats like "30s", "5m", "1h", "2d"
     let s = s.trim();
     if s.is_empty() {
         return Err("Empty duration string".to_string());
@@ -93,7 +94,9 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs_f64(seconds))
 }
 
-// Custom serde module for Duration parsing from strings
+// Serde helpers that read a Duration with parse_duration and write it in the largest
+// whole unit (d, h, m or s). Writing keeps whole seconds only, so a fraction of a
+// second is lost and a duration under one second is written as "0d".
 pub mod duration_serde {
     use super::*;
     use serde::{Deserializer, Serializer};
@@ -124,7 +127,7 @@ pub mod duration_serde {
     }
 }
 
-// Optional Duration serde module
+// Same as duration_serde for Option<Duration>. None reads and writes as null.
 pub mod optional_duration_serde {
     use super::*;
     use serde::{Deserializer, Serializer};
@@ -177,6 +180,7 @@ mod tests {
 
         let duration = Duration::from_secs(3600);
         let _serialized = serde_json::to_string(&duration).unwrap();
-        // Note: This test would work with a wrapper struct that uses the serde module
+        // Only checks that serializing does not panic. It uses the default Duration
+        // format, not duration_serde, which would need a wrapper struct.
     }
 }

@@ -18,11 +18,11 @@
 // Corresponds to io.eventflux.core.config.EventFluxOnDemandQueryContext
 use super::eventflux_app_context::EventFluxAppContext;
 use super::eventflux_query_context::EventFluxQueryContext;
-use std::sync::Arc; // To compose/delegate
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct EventFluxOnDemandQueryContext {
-    // In Java, this extends EventFluxQueryContext. We'll use composition.
+    // Java extends EventFluxQueryContext. Here it wraps one and derefs to it.
     pub query_context: EventFluxQueryContext,
     pub on_demand_query_string: String,
 }
@@ -33,8 +33,8 @@ impl EventFluxOnDemandQueryContext {
         query_name: String,
         query_string: String,
     ) -> Self {
-        // Java constructor: super(eventfluxAppContext, queryName, null);
-        // The 'null' is for partitionId, which EventFluxQueryContext::new handles.
+        // Matches the Java super(eventfluxAppContext, queryName, null) call.
+        // On demand queries have no partition id, so it is None.
         Self {
             query_context: EventFluxQueryContext::new(eventflux_app_context, query_name, None),
             on_demand_query_string: query_string,
@@ -45,14 +45,14 @@ impl EventFluxOnDemandQueryContext {
         &self.on_demand_query_string
     }
 
-    // Delegate other EventFluxQueryContext methods if needed, e.g.:
+    // Other EventFluxQueryContext methods are reached through Deref or the public
+    // query_context field. An explicit wrapper would look like this:
     // pub fn get_eventflux_app_context(&self) -> Arc<EventFluxAppContext> {
     //     Arc::clone(&self.query_context.eventflux_app_context)
     // }
-    // Or provide access via `pub query_context`.
 }
 
-// Implement Deref and DerefMut to easily access EventFluxQueryContext fields/methods
+// Deref and DerefMut give direct access to the EventFluxQueryContext fields and methods
 use std::ops::{Deref, DerefMut};
 
 impl Deref for EventFluxOnDemandQueryContext {

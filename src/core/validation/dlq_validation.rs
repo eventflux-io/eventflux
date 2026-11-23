@@ -17,9 +17,9 @@
 
 //! DLQ (Dead Letter Queue) Validation
 //!
-//! Implements Phase 1 and Phase 2 validation for DLQ configurations:
-//! - Phase 1: DLQ stream name existence validation
-//! - Phase 2: DLQ schema validation and recursive restriction validation
+//! Phase 1 and Phase 2 checks for DLQ configuration.
+//! - Phase 1: the DLQ stream exists
+//! - Phase 2: the DLQ stream has the right schema and has no DLQ of its own
 
 use crate::core::config::{ElementType, ResolvedElementConfig};
 use crate::core::error::{DLQ_FIELDS, DLQ_STREAM_KEY};
@@ -28,8 +28,8 @@ use crate::query_api::definition::StreamDefinition;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// The required DLQ schema as SQL column declarations, e.g.
-/// `originalEvent STRING, errorMessage STRING, ...`
+/// The required DLQ schema as SQL column declarations, such as
+/// `originalEvent STRING, errorMessage STRING, ...`. Used in error messages.
 fn required_dlq_schema() -> String {
     DLQ_FIELDS
         .iter()
@@ -38,15 +38,14 @@ fn required_dlq_schema() -> String {
         .join(", ")
 }
 
-/// Validate DLQ stream schema against [`DLQ_FIELDS`]
+/// Check the DLQ stream schema against [`DLQ_FIELDS`]
 ///
-/// **Phase 2 Validation** (Application Initialization)
+/// **Phase 2 Validation** (Application Start)
 ///
-/// Validates that the DLQ stream declares exactly the DLQ fields, with the
-/// exact types, in the exact order. DLQ events are positional and always
-/// carry their values in `DLQ_FIELDS` order, so any other order would put
-/// values under the wrong attributes. Duplicate and extra fields fail the
-/// count or position checks.
+/// The DLQ stream must declare exactly the DLQ fields, with the exact types, in
+/// the exact order. DLQ events carry their values by position, always in
+/// `DLQ_FIELDS` order, so any other order would put values under the wrong
+/// attributes. Duplicate and extra fields fail the count or position checks.
 ///
 /// # Arguments
 /// * `stream_name` - Name of the stream using the DLQ
@@ -54,8 +53,9 @@ fn required_dlq_schema() -> String {
 /// * `parsed_streams` - Map of all parsed stream definitions
 ///
 /// # Returns
-/// * `Ok(())` if schema is valid
-/// * `Err(EventFluxError)` if schema validation fails
+/// * `Ok(())` if the schema is valid
+/// * `Err(EventFluxError)` keyed by `error.dlq.stream` if the DLQ stream is missing
+///   or its schema is wrong. The message lists the required schema.
 ///
 /// # Example Valid DLQ Stream
 /// ```sql
@@ -73,7 +73,7 @@ pub fn validate_dlq_schema(
     dlq_stream_name: &str,
     parsed_streams: &HashMap<String, Arc<StreamDefinition>>,
 ) -> EventFluxResult<()> {
-    // 1. Look up DLQ stream schema from parsed CREATE STREAM definition
+    // 1. Find the DLQ stream's CREATE STREAM definition
     let dlq_stream = parsed_streams.get(dlq_stream_name).ok_or_else(|| {
         EventFluxError::configuration_with_key(
             format!(
@@ -128,12 +128,11 @@ pub fn validate_dlq_schema(
     Ok(())
 }
 
-/// Validate DLQ stream name exists in parsed streams
+/// Check that the DLQ stream is defined
 ///
-/// **Phase 1 Validation** (Parse-Time)
+/// **Phase 1 Validation** (Parse Time)
 ///
-/// Checks that the referenced DLQ stream has been defined.
-/// Schema validation happens in Phase 2.
+/// Only checks that the stream exists. The schema is checked in Phase 2.
 ///
 /// # Arguments
 /// * `stream_name` - Name of the stream using the DLQ
@@ -141,8 +140,8 @@ pub fn validate_dlq_schema(
 /// * `parsed_streams` - Map of all parsed stream definitions
 ///
 /// # Returns
-/// * `Ok(())` if DLQ stream exists
-/// * `Err(EventFluxError)` if DLQ stream not found
+/// * `Ok(())` if the DLQ stream exists
+/// * `Err(EventFluxError)` keyed by `error.dlq.stream` if it does not
 pub fn validate_dlq_stream_name(
     stream_name: &str,
     dlq_stream_name: &str,
@@ -161,11 +160,11 @@ pub fn validate_dlq_stream_name(
     Ok(())
 }
 
-/// Validate DLQ stream does not have its own DLQ (no recursive error handling)
+/// Check that a DLQ stream has no DLQ of its own
 ///
-/// **Phase 2 Validation** (Application Initialization)
+/// **Phase 2 Validation** (Application Start)
 ///
-/// DLQ streams cannot have their own DLQ to prevent infinite error loops.
+/// A DLQ stream may not have its own DLQ, so failures cannot loop forever.
 ///
 /// # Arguments
 /// * `stream_name` - Name of the stream being validated
@@ -173,8 +172,8 @@ pub fn validate_dlq_stream_name(
 /// * `is_dlq_stream` - Whether this stream is itself a DLQ for another stream
 ///
 /// # Returns
-/// * `Ok(())` if validation passes
-/// * `Err(EventFluxError)` if DLQ stream has its own DLQ
+/// * `Ok(())` if the check passes
+/// * `Err(EventFluxError)` keyed by `error.dlq.stream` if a DLQ stream has its own DLQ
 pub fn validate_no_recursive_dlq(
     stream_name: &str,
     dlq_config_key: Option<&str>,
@@ -193,13 +192,14 @@ pub fn validate_no_recursive_dlq(
     Ok(())
 }
 
-/// Validate one source stream's DLQ reference
+/// Check one source stream's DLQ reference
 ///
-/// **Phase 2 Validation** (Application Initialization)
+/// **Phase 2 Validation** (Application Start)
 ///
-/// Runs every DLQ rule for `stream_name -> dlq_stream_name`: the DLQ stream
-/// exists, has the exact DLQ schema, and does not route its own failures to
-/// another DLQ. A stream naming itself as its DLQ fails the recursion rule.
+/// Runs every DLQ rule for `stream_name -> dlq_stream_name`. The DLQ stream must
+/// exist, have the exact DLQ schema, and not send its own failures to another
+/// DLQ. A stream that names itself as its DLQ fails the last rule. Returns the
+/// first rule that fails.
 ///
 /// # Arguments
 /// * `stream_name` - Name of the stream using the DLQ
@@ -217,8 +217,8 @@ pub fn validate_dlq_reference(
     validate_no_recursive_dlq(dlq_stream_name, dlq_stream_own_dlq, true)
 }
 
-/// The DLQ stream that `stream`'s source routes failures to, if its resolved
-/// configuration sets `error.dlq.stream` (a source-only property)
+/// The DLQ stream that `stream`'s source sends failures to, if its resolved
+/// source configuration sets `error.dlq.stream`. Only sources have this property.
 pub fn source_dlq_stream<'a>(
     resolved_configs: &'a HashMap<String, ResolvedElementConfig>,
     stream: &str,
@@ -229,15 +229,15 @@ pub fn source_dlq_stream<'a>(
         .map(String::as_str)
 }
 
-/// Validate the DLQ reference of every source stream in an app
+/// Check the DLQ reference of every source stream in an app
 ///
-/// **Phase 2 Validation** (Application Initialization)
+/// **Phase 2 Validation** (Application Start)
 ///
-/// Checks each source whose resolved configuration (YAML + SQL WITH) sets
-/// `error.dlq.stream`, using [`validate_dlq_reference`]. Runs whatever the
-/// error strategy, since an explicit stream reference that is wrong is a
-/// configuration mistake either way. Every violation is reported, not just
-/// the first, in stream-name order.
+/// Checks each source whose resolved configuration, YAML merged with SQL WITH,
+/// sets `error.dlq.stream`, using [`validate_dlq_reference`]. Runs whatever the
+/// error strategy is, because a wrong stream reference is a configuration
+/// mistake either way. Reports one error for each bad stream, not just the
+/// first, sorted by stream name.
 ///
 /// # Arguments
 /// * `resolved_configs` - Resolved element configs keyed by
@@ -338,8 +338,8 @@ mod tests {
 
     #[test]
     fn test_validate_dlq_schema_duplicate_field() {
-        // All six required fields plus a second originalEvent: the duplicate
-        // must not collapse into a six-field schema that passes
+        // All six required fields plus a second originalEvent. The duplicate must
+        // not collapse into a six field schema that passes.
         let stream_def =
             create_valid_dlq_stream().attribute("originalEvent".to_string(), AttributeType::STRING);
         // Six fields, but originalEvent twice in place of streamName
@@ -464,8 +464,8 @@ mod tests {
 
     #[test]
     fn test_dlq_schema_rejects_noncanonical_field_order() {
-        // DLQ events are positional and always emitted in DLQ_FIELDS order,
-        // so the right fields in another order would receive swapped values
+        // DLQ events carry values by position, always in DLQ_FIELDS order, so the
+        // right fields in another order would get swapped values
         let stream_def = StreamDefinition::new("ReorderedDLQ".to_string())
             .attribute("streamName".to_string(), AttributeType::STRING)
             .attribute("attemptCount".to_string(), AttributeType::INT)
@@ -580,8 +580,8 @@ mod tests {
 
     #[test]
     fn test_validate_source_dlq_configs_ignores_non_source_configs() {
-        // error.dlq.stream is a source property; other element kinds never
-        // consume it, so it is not validated for them
+        // error.dlq.stream is a source property. Other element kinds never read
+        // it, so it is not checked for them.
         let resolved = HashMap::from([(
             ElementType::Sink.config_key("Orders"),
             config_with_dlq(ElementType::Sink, "Missing"),
@@ -591,8 +591,8 @@ mod tests {
 
     #[test]
     fn test_validate_source_dlq_configs_rejects_dlq_with_own_dlq() {
-        // OrderErrors is a valid DLQ for Orders, but is itself a source that
-        // routes failures to Payments: recursive error handling
+        // OrderErrors is a valid DLQ for Orders, but it is also a source that sends
+        // its own failures to Payments, which is not allowed
         let resolved = HashMap::from([
             source_with_dlq("Orders", "OrderErrors"),
             source_with_dlq("OrderErrors", "Payments"),

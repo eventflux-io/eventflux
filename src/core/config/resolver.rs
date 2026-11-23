@@ -17,28 +17,28 @@
 
 //! Configuration Resolvers
 //!
-//! Handles resolution of configuration values from various sources including
-//! environment variables, CLI arguments, and variable substitution.
+//! Fills in `${VAR}` references in configuration from custom variables and
+//! environment variables. Also holds a CLI argument resolver that is not built yet.
 
 use crate::core::config::{ConfigError, ConfigResult, EventFluxConfig};
 use std::collections::HashMap;
 use std::env;
 
-/// Variable resolver for configuration values
+/// Replaces `${VAR}` references in configuration values
 #[derive(Debug)]
 pub struct VariableResolver {
-    /// Custom variable mappings
+    /// Custom variables. These win over environment variables.
     variables: HashMap<String, String>,
 
-    /// Enable environment variable resolution
+    /// Whether environment variables are looked up. Defaults to true.
     env_enabled: bool,
 
-    /// Environment variable prefix filter
+    /// Prefix tried before the plain variable name. None by default.
     env_prefix: Option<String>,
 }
 
 impl VariableResolver {
-    /// Create a new variable resolver
+    /// Create a resolver with no custom variables and environment lookup on
     pub fn new() -> Self {
         Self {
             variables: HashMap::new(),
@@ -57,16 +57,23 @@ impl VariableResolver {
         self.env_enabled = enabled;
     }
 
-    /// Set environment variable prefix filter
+    /// Set the prefix to try first, as in `<prefix><NAME IN UPPER CASE>`
     pub fn set_env_prefix(&mut self, prefix: Option<String>) {
         self.env_prefix = prefix;
     }
 
-    /// Resolve all variables in a configuration
+    /// Replace every `${VAR}` reference anywhere in the configuration.
+    ///
+    /// Works on the config as JSON text. Values are inserted as is, without JSON
+    /// escaping, so a value holding a quote or backslash breaks the JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EnvironmentVariableNotFound` for an unknown variable with no default,
+    /// and `InternalError` if the config cannot be turned into JSON and back.
     pub fn resolve_all(&self, config: EventFluxConfig) -> ConfigResult<EventFluxConfig> {
         let mut resolved_config = config;
 
-        // Serialize to JSON for easy string manipulation
         let json_str = serde_json::to_string(&resolved_config).map_err(|e| {
             ConfigError::internal_error(format!(
                 "Failed to serialize config for variable resolution: {}",
@@ -74,10 +81,8 @@ impl VariableResolver {
             ))
         })?;
 
-        // Resolve all variables in the JSON string
         let resolved_json = self.resolve_variables_in_string(&json_str)?;
 
-        // Deserialize back to EventFluxConfig
         resolved_config = serde_json::from_str(&resolved_json).map_err(|e| {
             ConfigError::internal_error(format!("Failed to deserialize resolved config: {}", e))
         })?;
@@ -85,16 +90,24 @@ impl VariableResolver {
         Ok(resolved_config)
     }
 
-    /// Resolve variables in a string using ${VAR} and ${VAR:default} syntax
+    /// Replace `${VAR}` and `${VAR:default}` references in a string.
+    ///
+    /// The default is used only when the variable cannot be found. It may be empty.
+    /// Values that contain references are resolved again, up to 10 passes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EnvironmentVariableNotFound` for an unknown variable with no default,
+    /// and `InternalError` after 10 passes, which usually means a reference loop.
     pub fn resolve_variables_in_string(&self, input: &str) -> ConfigResult<String> {
         let mut result = input.to_string();
         let var_pattern = regex::Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").map_err(|e| {
             ConfigError::internal_error(format!("Invalid variable pattern regex: {}", e))
         })?;
 
-        // Keep resolving until no more variables are found (supports nested resolution)
+        // Repeat so references inside resolved values get filled in too
         let mut iterations = 0;
-        const MAX_ITERATIONS: usize = 10; // Prevent infinite loops
+        const MAX_ITERATIONS: usize = 10; // Stops reference loops
 
         loop {
             let mut changed = false;
@@ -147,14 +160,18 @@ impl VariableResolver {
         Ok(result)
     }
 
-    /// Resolve a single variable reference
+    /// Look up one variable by name.
+    ///
+    /// Tries the custom variables, then `<prefix><NAME IN UPPER CASE>` when a prefix is
+    /// set, then the plain environment variable. The environment is skipped when
+    /// environment lookup is off.
+    ///
+    /// Returns `EnvironmentVariableNotFound` when nothing matches.
     pub fn resolve_variable(&self, reference: &str) -> ConfigResult<String> {
-        // Check custom variables first
         if let Some(value) = self.variables.get(reference) {
             return Ok(value.clone());
         }
 
-        // Check environment variables if enabled
         if self.env_enabled {
             if let Some(ref prefix) = self.env_prefix {
                 let env_key = format!("{}{}", prefix, reference.to_uppercase());
@@ -178,22 +195,24 @@ impl Default for VariableResolver {
     }
 }
 
-/// CLI argument resolver
+/// CLI argument resolver. Not built yet. It collects arguments but `resolve` always
+/// returns `None`.
 #[derive(Debug)]
 pub struct CliArgumentResolver {
-    /// Parsed CLI arguments
+    /// Arguments keyed by config path
     args: HashMap<String, String>,
 }
 
 impl CliArgumentResolver {
-    /// Create a new CLI argument resolver
+    /// Create a resolver with no arguments
     pub fn new() -> Self {
         Self {
             args: HashMap::new(),
         }
     }
 
-    /// Parse CLI arguments from command line
+    /// Create a resolver from the process arguments. Parsing is not built yet, so the
+    /// result has no arguments.
     pub fn from_args() -> Self {
         let mut resolver = Self::new();
         resolver.parse_env_args();
@@ -205,23 +224,22 @@ impl CliArgumentResolver {
         self.args.insert(key.into(), value.into());
     }
 
-    /// Parse arguments from std::env::args()
+    /// Parse arguments from std::env::args(). Does nothing yet.
     ///
-    /// Implementation placeholder: Future versions will support parsing
-    /// CLI arguments in the format --config-key=value and mapping them
-    /// to configuration paths for override functionality.
+    /// The plan is to read `--config-key=value` arguments and map them to config paths
+    /// as overrides. The CLI `--set` flag already does this through
+    /// `apply_config_overrides`.
     fn parse_env_args(&mut self) {
-        // Implementation pending: CLI argument parsing infrastructure
+        // Not built yet
     }
 
-    /// Resolve CLI arguments into a configuration overlay
+    /// Turn the arguments into a config to merge on top. Always returns `None` for now.
     pub fn resolve(&self) -> ConfigResult<Option<EventFluxConfig>> {
         if self.args.is_empty() {
             return Ok(None);
         }
 
-        // Implementation pending: Convert CLI arguments into partial EventFluxConfig
-        // Future implementation will parse arguments and create configuration overlays
+        // Not built yet. The arguments are not turned into a config.
 
         Ok(None)
     }
@@ -278,7 +296,7 @@ mod tests {
         let mut resolver = CliArgumentResolver::new();
         resolver.set_arg("runtime.mode", "distributed");
 
-        // Basic test - actual implementation would convert to config
+        // Only checks that the argument is stored, since resolve() is not built yet
         assert!(!resolver.args.is_empty());
         assert_eq!(
             resolver.args.get("runtime.mode"),
@@ -368,8 +386,8 @@ mod tests {
         env::set_var("EVENTFLUX_RUNTIME_MODE", "distributed");
 
         let config = EventFluxConfig::default();
-        // This is a mock test - in real usage, the config would have variable placeholders
-        // For now, just verify the function runs without error
+        // The default config has no references, so this only checks that the round
+        // trip through JSON works
         let resolved = resolver.resolve_all(config).unwrap();
         assert_eq!(resolved.api_version, "eventflux.io/v1");
 

@@ -17,7 +17,7 @@
 
 //! Global EventFlux Configuration Types
 //!
-//! Defines global runtime configuration for EventFlux applications.
+//! Global runtime configuration shared by all EventFlux applications in a process.
 
 use super::duration_serde;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ use std::time::Duration;
 /// Global EventFlux runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct EventFluxGlobalConfig {
-    /// Application configuration (name, async mode, etc.)
+    /// Application settings, such as the name and the default async mode
     #[serde(skip_serializing_if = "Option::is_none")]
     pub application: Option<ApplicationGlobalConfig>,
 
@@ -59,11 +59,13 @@ pub struct EventFluxGlobalConfig {
 }
 
 impl EventFluxGlobalConfig {
-    /// Merge another global configuration into this one
+    /// Merge `other` into this config. Values from `other` win.
     ///
-    /// The other configuration takes precedence for conflicting values.
+    /// Each optional section is merged when both sides have it, taken from `other`
+    /// when only `other` has it, and left alone otherwise. `runtime` is always merged,
+    /// and [`RuntimeConfig::merge`] copies every scalar from `other`, so a default
+    /// `other.runtime` resets values set earlier.
     pub fn merge(&mut self, other: EventFluxGlobalConfig) {
-        // Merge application configuration
         if other.application.is_some() {
             match (&mut self.application, other.application) {
                 (Some(ref mut self_app), Some(other_app)) => {
@@ -76,10 +78,8 @@ impl EventFluxGlobalConfig {
             }
         }
 
-        // Deep merge runtime configuration
         self.runtime.merge(other.runtime);
 
-        // Merge persistence configuration
         if other.persistence.is_some() {
             match (&mut self.persistence, other.persistence) {
                 (Some(ref mut self_pers), Some(other_pers)) => {
@@ -92,7 +92,6 @@ impl EventFluxGlobalConfig {
             }
         }
 
-        // For optional configurations, other takes precedence if present
         if other.distributed.is_some() {
             match (&mut self.distributed, other.distributed) {
                 (Some(ref mut self_dist), Some(other_dist)) => {
@@ -155,27 +154,25 @@ impl EventFluxGlobalConfig {
     }
 }
 
-/// Application-level global configuration
+/// Settings for the whole application, the `eventflux.application` section
 ///
-/// Configures application-wide settings like application name and default async mode.
-/// Used to replace `@app` annotations in the old EventFluxQL syntax.
+/// Holds the application name and the default async mode. Takes the place of the
+/// `@app` annotations of the old EventFluxQL syntax.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ApplicationGlobalConfig {
-    /// Application name used for runtime identification and persistence
+    /// Application name, used to identify the runtime and its persisted state
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
-    /// Default async mode for all streams (unless overridden by stream-level config)
+    /// Whether streams run asynchronously by default. A stream can override it.
+    /// Treated as false when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub async_default: Option<bool>,
 }
 
 impl ApplicationGlobalConfig {
-    /// Merge another application configuration into this one
-    ///
-    /// The other configuration takes precedence for conflicting values.
+    /// Merge `other` into this config. Each field is replaced only when set in `other`.
     pub fn merge(&mut self, other: ApplicationGlobalConfig) {
-        // Other's values take precedence if present
         if other.name.is_some() {
             self.name = other.name;
         }
@@ -185,17 +182,17 @@ impl ApplicationGlobalConfig {
     }
 }
 
-/// Runtime mode selection
+/// Runtime mode. Written in kebab case, such as `single-node`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeMode {
-    /// Single-node mode (default, zero overhead)
+    /// One node with no cluster overhead. The default.
     SingleNode,
 
-    /// Distributed mode with cluster coordination
+    /// Several nodes that coordinate as a cluster
     Distributed,
 
-    /// Hybrid mode (local processing with distributed state)
+    /// Processing on the local node with state shared across nodes
     Hybrid,
 }
 
@@ -205,10 +202,10 @@ impl Default for RuntimeMode {
     }
 }
 
-/// Runtime performance configuration
+/// Runtime mode, performance and resource settings
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuntimeConfig {
-    /// Runtime mode selection
+    /// Runtime mode
     pub mode: RuntimeMode,
 
     /// Performance configuration
@@ -230,15 +227,16 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    /// Merge another runtime configuration into this one
+    /// Merge `other` into this config.
+    ///
+    /// `mode` always comes from `other`. Performance is merged with
+    /// [`PerformanceConfig::merge`]. Resources are merged when both sides have them and
+    /// taken from `other` when only it has them.
     pub fn merge(&mut self, other: RuntimeConfig) {
-        // Other's mode takes precedence
         self.mode = other.mode;
 
-        // Deep merge performance configuration
         self.performance.merge(other.performance);
 
-        // Other's resources take precedence if present
         if other.resources.is_some() {
             match (&mut self.resources, other.resources) {
                 (Some(ref mut self_res), Some(other_res)) => {
@@ -256,13 +254,13 @@ impl RuntimeConfig {
 /// Performance tuning configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PerformanceConfig {
-    /// Number of threads in the thread pool
+    /// Number of threads in the thread pool. `Default` uses the CPU count.
     pub thread_pool_size: usize,
 
-    /// Size of event buffer for each stream
+    /// Event buffer size for each stream. `Default` uses 1,000,000.
     pub event_buffer_size: usize,
 
-    /// Enable batch processing for improved throughput
+    /// Process events in batches for more throughput. Defaults to true.
     #[serde(default = "default_true")]
     pub batch_processing: bool,
 
@@ -270,11 +268,11 @@ pub struct PerformanceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_size: Option<usize>,
 
-    /// Enable async processing mode
+    /// Process events asynchronously. Defaults to false.
     #[serde(default)]
     pub async_processing: bool,
 
-    /// Backpressure strategy
+    /// Backpressure strategy. Defaults to `Block`.
     #[serde(default)]
     pub backpressure_strategy: BackpressureStrategy,
 }
@@ -293,33 +291,34 @@ impl Default for PerformanceConfig {
 }
 
 impl PerformanceConfig {
-    /// Merge another performance configuration into this one
+    /// Merge `other` into this config.
+    ///
+    /// Every field except `batch_size` always comes from `other`, even when it only
+    /// holds a default. `batch_size` is replaced only when set in `other`.
     pub fn merge(&mut self, other: PerformanceConfig) {
-        // Other values take precedence for all fields
         self.thread_pool_size = other.thread_pool_size;
         self.event_buffer_size = other.event_buffer_size;
         self.batch_processing = other.batch_processing;
         self.async_processing = other.async_processing;
         self.backpressure_strategy = other.backpressure_strategy;
 
-        // Other's batch size takes precedence if present
         if other.batch_size.is_some() {
             self.batch_size = other.batch_size;
         }
     }
 }
 
-/// Backpressure handling strategies
+/// What to do when a buffer is full. Defaults to `Block`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BackpressureStrategy {
-    /// Drop new events when buffer is full
+    /// Drop new events while the buffer is full
     Drop,
 
-    /// Block producers when buffer is full
+    /// Make producers wait while the buffer is full
     Block,
 
-    /// Use exponential backoff
+    /// Retry with a delay that doubles each time
     ExponentialBackoff,
 }
 
@@ -350,9 +349,9 @@ pub struct ResourceConfig {
 }
 
 impl ResourceConfig {
-    /// Merge another resource configuration into this one
+    /// Merge `other` into this config. Each section is merged when both sides have it,
+    /// taken from `other` when only it has it, and left alone otherwise.
     pub fn merge(&mut self, other: ResourceConfig) {
-        // Merge memory configuration
         if other.memory.is_some() {
             match (&mut self.memory, other.memory) {
                 (Some(ref mut self_mem), Some(other_mem)) => {
@@ -365,7 +364,6 @@ impl ResourceConfig {
             }
         }
 
-        // Merge CPU configuration
         if other.cpu.is_some() {
             match (&mut self.cpu, other.cpu) {
                 (Some(ref mut self_cpu), Some(other_cpu)) => {
@@ -378,7 +376,6 @@ impl ResourceConfig {
             }
         }
 
-        // Merge network configuration
         if other.network.is_some() {
             match (&mut self.network, other.network) {
                 (Some(ref mut self_net), Some(other_net)) => {
@@ -391,7 +388,6 @@ impl ResourceConfig {
             }
         }
 
-        // Merge storage configuration
         if other.storage.is_some() {
             match (&mut self.storage, other.storage) {
                 (Some(ref mut self_stor), Some(other_stor)) => {
@@ -409,33 +405,33 @@ impl ResourceConfig {
 /// Memory resource configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryConfig {
-    /// Maximum heap size (e.g., "2Gi", "512Mi")
+    /// Maximum heap size, such as "2Gi" or "512Mi"
     pub max_heap: String,
 
-    /// Initial heap size (e.g., "1Gi", "256Mi")
+    /// Initial heap size, such as "1Gi" or "256Mi"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_heap: Option<String>,
 
-    /// Memory management strategy
+    /// Memory management strategy. Defaults to `Adaptive`.
     #[serde(default)]
     pub gc_strategy: GcStrategy,
 }
 
 impl MemoryConfig {
-    /// Merge another memory configuration into this one
+    /// Merge `other` into this config. `initial_heap` is replaced only when set in
+    /// `other`. The other fields always come from `other`.
     pub fn merge(&mut self, other: MemoryConfig) {
-        // Other values take precedence
         self.max_heap = other.max_heap;
         self.gc_strategy = other.gc_strategy;
 
-        // Other's initial heap takes precedence if present
         if other.initial_heap.is_some() {
             self.initial_heap = other.initial_heap;
         }
     }
 }
 
-/// Garbage collection strategy (Rust memory management equivalent)
+/// How eagerly memory is cleaned up. Named after garbage collection settings, though
+/// Rust has no garbage collector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GcStrategy {
@@ -458,21 +454,19 @@ impl Default for GcStrategy {
 /// CPU resource configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CpuConfig {
-    /// Maximum CPU cores (e.g., "2", "500m")
+    /// Maximum CPU, such as "2" cores or "500m" millicores
     pub max_cpu: String,
 
-    /// CPU requests (e.g., "1", "100m")
+    /// CPU requested, such as "1" or "100m"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requests: Option<String>,
 }
 
 impl CpuConfig {
-    /// Merge another CPU configuration into this one
+    /// Merge `other` into this config. `requests` is replaced only when set in `other`.
     pub fn merge(&mut self, other: CpuConfig) {
-        // Other values take precedence
         self.max_cpu = other.max_cpu;
 
-        // Other's requests take precedence if present
         if other.requests.is_some() {
             self.requests = other.requests;
         }
@@ -482,21 +476,20 @@ impl CpuConfig {
 /// Network resource configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetworkConfig {
-    /// Maximum network bandwidth (bytes/sec)
+    /// Maximum network bandwidth in bytes per second
     pub max_bandwidth: u64,
 
-    /// Connection limits
+    /// Maximum number of connections
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<usize>,
 }
 
 impl NetworkConfig {
-    /// Merge another network configuration into this one
+    /// Merge `other` into this config. `max_connections` is replaced only when set in
+    /// `other`.
     pub fn merge(&mut self, other: NetworkConfig) {
-        // Other values take precedence
         self.max_bandwidth = other.max_bandwidth;
 
-        // Other's max connections take precedence if present
         if other.max_connections.is_some() {
             self.max_connections = other.max_connections;
         }
@@ -515,12 +508,11 @@ pub struct StorageConfig {
 }
 
 impl StorageConfig {
-    /// Merge another storage configuration into this one
+    /// Merge `other` into this config. `storage_class` is replaced only when set in
+    /// `other`.
     pub fn merge(&mut self, other: StorageConfig) {
-        // Other values take precedence
         self.max_capacity = other.max_capacity;
 
-        // Other's storage class takes precedence if present
         if other.storage_class.is_some() {
             self.storage_class = other.storage_class;
         }
@@ -548,9 +540,9 @@ pub struct SecurityConfig {
 }
 
 impl SecurityConfig {
-    /// Merge another security configuration into this one
+    /// Merge `other` into this config. Each section is replaced whole when `other`
+    /// has it. Sections are not merged field by field.
     pub fn merge(&mut self, other: SecurityConfig) {
-        // For simplicity, other takes precedence for all optional configurations
         if other.authentication.is_some() {
             self.authentication = other.authentication;
         }
@@ -575,7 +567,7 @@ pub struct AuthenticationConfig {
     /// Authentication method
     pub method: AuthenticationMethod,
 
-    /// Provider-specific configuration
+    /// Settings for the chosen method. Holds every other key at the same YAML level.
     #[serde(flatten)]
     pub provider_config: serde_yaml::Value,
 }
@@ -587,7 +579,7 @@ pub enum AuthenticationMethod {
     /// Mutual TLS authentication
     MutualTls,
 
-    /// OAuth2/OIDC
+    /// OAuth2 or OIDC
     OAuth2,
 
     /// JWT tokens
@@ -603,14 +595,14 @@ pub enum AuthenticationMethod {
 /// Authorization configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AuthorizationConfig {
-    /// Enable authorization
+    /// Turn authorization on. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
     /// Authorization provider
     pub provider: AuthorizationProvider,
 
-    /// Default policy
+    /// Policy when no rule matches. Defaults to `Deny`.
     #[serde(default)]
     pub default_policy: AuthorizationPolicy,
 }
@@ -619,10 +611,10 @@ pub struct AuthorizationConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AuthorizationProvider {
-    /// Role-based access control
+    /// Access control by role (RBAC)
     Rbac,
 
-    /// Attribute-based access control
+    /// Access control by attributes (ABAC)
     Abac,
 
     /// Open Policy Agent
@@ -646,7 +638,7 @@ impl Default for AuthorizationPolicy {
 /// TLS configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TlsConfig {
-    /// Enable TLS
+    /// Turn TLS on. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
@@ -660,16 +652,16 @@ pub struct TlsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<String>,
 
-    /// Verify peer certificates
+    /// Check the peer certificate. Defaults to true.
     #[serde(default = "default_true")]
     pub verify_peer: bool,
 
-    /// Minimum TLS version
+    /// Lowest TLS version allowed. Defaults to 1.2.
     #[serde(default)]
     pub min_version: TlsVersion,
 }
 
-/// TLS versions
+/// TLS versions, written as "1.2" and "1.3"
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TlsVersion {
@@ -688,11 +680,11 @@ impl Default for TlsVersion {
 /// Audit configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AuditConfig {
-    /// Enable audit logging
+    /// Turn audit logging on. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Audit log level
+    /// Audit log level. Defaults to `Standard`.
     #[serde(default)]
     pub level: AuditLevel,
 
@@ -741,9 +733,9 @@ pub struct ObservabilityConfig {
 }
 
 impl ObservabilityConfig {
-    /// Merge another observability configuration into this one
+    /// Merge `other` into this config. Each section is replaced whole when `other`
+    /// has it. Sections are not merged field by field.
     pub fn merge(&mut self, other: ObservabilityConfig) {
-        // For simplicity, other takes precedence for all optional configurations
         if other.metrics.is_some() {
             self.metrics = other.metrics;
         }
@@ -761,27 +753,27 @@ impl ObservabilityConfig {
 /// Metrics configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MetricsConfig {
-    /// Enable metrics collection
+    /// Collect metrics. Defaults to true.
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Metrics provider
+    /// Metrics provider. Defaults to `Prometheus`.
     #[serde(default)]
     pub provider: MetricsProvider,
 
-    /// Metrics server port
+    /// Metrics server port. Defaults to 9090.
     #[serde(default = "default_metrics_port")]
     pub port: u16,
 
-    /// Metrics endpoint path
+    /// Metrics endpoint path. Defaults to "/metrics".
     #[serde(default = "default_metrics_path")]
     pub path: String,
 
-    /// Collection interval
+    /// Time between collections. Defaults to 10 seconds.
     #[serde(with = "duration_serde", default = "default_metrics_interval")]
     pub interval: Duration,
 
-    /// Custom labels for all metrics
+    /// Labels added to every metric
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
 }
@@ -817,7 +809,7 @@ impl Default for MetricsProvider {
 /// Tracing configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TracingConfig {
-    /// Enable distributed tracing
+    /// Turn tracing across services on. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
@@ -827,7 +819,7 @@ pub struct TracingConfig {
     /// Tracing endpoint
     pub endpoint: String,
 
-    /// Sample rate (0.0 to 1.0)
+    /// Share of requests to trace, from 0.0 to 1.0. Defaults to 0.1.
     #[serde(default = "default_sample_rate")]
     pub sample_rate: f64,
 }
@@ -844,23 +836,23 @@ pub enum TracingProvider {
 /// Logging configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LoggingConfig {
-    /// Log level
+    /// Log level. Defaults to `Info`.
     #[serde(default)]
     pub level: LogLevel,
 
-    /// Log format
+    /// Log format. Defaults to `Json`.
     #[serde(default)]
     pub format: LogFormat,
 
-    /// Log output destination
+    /// Log output destination. Defaults to `Stdout`.
     #[serde(default)]
     pub output: LogOutput,
 
-    /// Include correlation ID in logs
+    /// Include a correlation id in each log line. Defaults to true.
     #[serde(default = "default_true")]
     pub correlation_id: bool,
 
-    /// Structured logging fields
+    /// Fields added to each structured log entry
     #[serde(default)]
     pub fields: std::collections::HashMap<String, String>,
 }
@@ -931,7 +923,7 @@ pub struct ExtensionsConfig {
     #[serde(default)]
     pub directories: Vec<String>,
 
-    /// Explicitly loaded extensions
+    /// Extensions to load by name
     #[serde(default)]
     pub extensions: std::collections::HashMap<String, ExtensionConfig>,
 
@@ -941,15 +933,16 @@ pub struct ExtensionsConfig {
 }
 
 impl ExtensionsConfig {
-    /// Merge another extensions configuration into this one
+    /// Merge `other` into this config.
+    ///
+    /// Directories from `other` are appended, so duplicates are kept. Extensions are
+    /// added by name, and one with the same name is replaced. Security is replaced
+    /// only when `other` has it.
     pub fn merge(&mut self, other: ExtensionsConfig) {
-        // Merge directories (other's directories are appended)
         self.directories.extend(other.directories);
 
-        // Merge extensions (other takes precedence for conflicts)
         self.extensions.extend(other.extensions);
 
-        // Other's security takes precedence if present
         if other.security.is_some() {
             self.security = other.security;
         }
@@ -959,14 +952,14 @@ impl ExtensionsConfig {
 /// Individual extension configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtensionConfig {
-    /// Path to extension library
+    /// Path to the extension library
     pub path: String,
 
-    /// Extension-specific configuration
+    /// Settings passed to the extension
     #[serde(default)]
     pub config: serde_yaml::Value,
 
-    /// Enable/disable extension
+    /// Whether the extension is loaded. Defaults to true.
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -974,7 +967,7 @@ pub struct ExtensionConfig {
 /// Extension security configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtensionSecurityConfig {
-    /// Allow loading unsigned extensions
+    /// Allow loading unsigned extensions. Defaults to false.
     #[serde(default)]
     pub allow_unsigned: bool,
 
@@ -982,12 +975,12 @@ pub struct ExtensionSecurityConfig {
     #[serde(default)]
     pub trusted_publishers: Vec<String>,
 
-    /// Extension sandboxing
+    /// Run extensions in a sandbox. Defaults to true.
     #[serde(default = "default_true")]
     pub sandboxing: bool,
 }
 
-// Helper functions for defaults
+// Default values used by the serde attributes above
 fn default_true() -> bool {
     true
 }
@@ -1018,8 +1011,8 @@ fn default_checkpoint_interval() -> Duration {
 
 /// Global persistence backend configuration
 ///
-/// Configures the persistence backend for EventFlux engine state, including
-/// checkpoints, window state, and aggregation state.
+/// Chooses where the EventFlux engine saves its state, such as checkpoints, window
+/// state and aggregation state.
 ///
 /// # Example YAML
 ///
@@ -1030,7 +1023,7 @@ fn default_checkpoint_interval() -> Duration {
 ///     path: ./eventflux.db
 /// ```
 ///
-/// Or for file-based:
+/// Or for files on disk:
 ///
 /// ```yaml
 /// eventflux:
@@ -1049,31 +1042,31 @@ fn default_checkpoint_interval() -> Duration {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GlobalPersistenceConfig {
-    /// Persistence backend type
+    /// Persistence backend type. Written as `type` in YAML.
     #[serde(rename = "type")]
     pub backend_type: PersistenceBackendType,
 
-    /// Path for file-based or SQLite persistence
+    /// Directory for file persistence, or database file for SQLite
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
-    /// URL for network-based persistence (Redis, etc.)
+    /// URL for persistence over the network, such as Redis
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 
-    /// Enable persistence (defaults to true when config is present)
+    /// Turn persistence on. Defaults to true when the section is present.
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Checkpoint interval
+    /// Time between checkpoints. Defaults to 60 seconds.
     #[serde(with = "duration_serde", default = "default_checkpoint_interval")]
     pub checkpoint_interval: Duration,
 
-    /// Enable compression for persisted state
+    /// Compression for persisted state. Defaults to `None`.
     #[serde(default)]
     pub compression: PersistenceCompression,
 
-    /// Additional backend-specific options
+    /// Extra options for the chosen backend
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub options: std::collections::HashMap<String, String>,
 }
@@ -1093,7 +1086,7 @@ impl Default for GlobalPersistenceConfig {
 }
 
 impl GlobalPersistenceConfig {
-    /// Create a file-based persistence configuration
+    /// Create a config that saves snapshot files in the `path` directory
     pub fn file(path: impl Into<String>) -> Self {
         Self {
             backend_type: PersistenceBackendType::File,
@@ -1102,7 +1095,7 @@ impl GlobalPersistenceConfig {
         }
     }
 
-    /// Create a SQLite-based persistence configuration
+    /// Create a config that saves state in the SQLite database at `path`
     pub fn sqlite(path: impl Into<String>) -> Self {
         Self {
             backend_type: PersistenceBackendType::Sqlite,
@@ -1111,7 +1104,7 @@ impl GlobalPersistenceConfig {
         }
     }
 
-    /// Create a Redis-based persistence configuration
+    /// Create a config that saves state in Redis at `url`
     pub fn redis(url: impl Into<String>) -> Self {
         Self {
             backend_type: PersistenceBackendType::Redis,
@@ -1120,7 +1113,8 @@ impl GlobalPersistenceConfig {
         }
     }
 
-    /// Create an in-memory persistence configuration (no persistence)
+    /// Create a config that keeps state in memory only. It is enabled, but nothing
+    /// survives a restart.
     pub fn memory() -> Self {
         Self {
             backend_type: PersistenceBackendType::Memory,
@@ -1129,7 +1123,11 @@ impl GlobalPersistenceConfig {
         }
     }
 
-    /// Merge another persistence configuration into this one
+    /// Merge `other` into this config.
+    ///
+    /// Backend type, enabled, checkpoint interval and compression always come from
+    /// `other`. `path` and `url` are replaced only when set in `other`. Options are
+    /// added by key, and `other` wins on a clash.
     pub fn merge(&mut self, other: GlobalPersistenceConfig) {
         self.backend_type = other.backend_type;
         self.enabled = other.enabled;
@@ -1143,19 +1141,18 @@ impl GlobalPersistenceConfig {
             self.url = other.url;
         }
 
-        // Merge options
         self.options.extend(other.options);
     }
 }
 
-/// Persistence backend types
+/// Persistence backend types. Defaults to `File`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PersistenceBackendType {
-    /// In-memory only (no persistence across restarts)
+    /// Memory only. Nothing survives a restart.
     Memory,
 
-    /// File-based persistence (directory with snapshot files)
+    /// Snapshot files in a directory
     File,
 
     /// SQLite database persistence
@@ -1171,17 +1168,17 @@ impl Default for PersistenceBackendType {
     }
 }
 
-/// Compression options for persistence
+/// Compression options for persistence. Defaults to `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PersistenceCompression {
     /// No compression
     None,
 
-    /// LZ4 compression (fast)
+    /// LZ4 compression, which is fast
     Lz4,
 
-    /// Zstd compression (better ratio)
+    /// Zstd compression, which makes smaller output
     Zstd,
 }
 
@@ -1191,7 +1188,7 @@ impl Default for PersistenceCompression {
     }
 }
 
-// Import distributed config from separate module
+// DistributedConfig lives in its own module
 use super::distributed_config::DistributedConfig;
 
 #[cfg(test)]

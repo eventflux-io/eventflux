@@ -25,7 +25,7 @@ use crate::core::util::id_generator::IdGenerator;
 use crate::core::util::Scheduler;
 use crate::query_api::EventFluxApp; // From query_api
 use std::cell::RefCell;
-use std::collections::HashMap; // For scriptFunctionMap
+use std::collections::HashMap; // For script_function_map
 use std::sync::Arc;
 use std::thread_local;
 // use super::statistics_manager::StatisticsManager; // TODO: Define later
@@ -39,7 +39,7 @@ use std::thread_local;
 // use com::lmax::disruptor::ExceptionHandler; // This is a Java type
 // use java::beans::ExceptionListener; // This is a Java type
 
-// Placeholders for complex Java/EventFlux types not yet ported/defined
+// Stand ins for Java types that are not ported yet
 #[derive(Debug, Clone, Default)]
 pub struct StatisticsManagerPlaceholder {}
 #[derive(Debug, Clone, Default)]
@@ -76,7 +76,7 @@ thread_local! {
     static PARTITION_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-// Placeholder for stats Level enum
+// Stand in for the Java statistics Level enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MetricsLevelPlaceholder {
     #[default]
@@ -86,9 +86,9 @@ pub enum MetricsLevelPlaceholder {
 }
 
 /// Context specific to a single EventFlux Application instance.
-#[derive(Debug, Clone)] // Default is tricky due to Arc<EventFluxApp> and Arc<EventFluxContext>
+#[derive(Debug, Clone)] // No Default because the Arc fields have no sensible default value
 pub struct EventFluxAppContext {
-    pub eventflux_context: Arc<EventFluxContext>, // Shared global context
+    pub eventflux_context: Arc<EventFluxContext>, // Global context shared by all apps
     pub name: String,                             // Name of the EventFluxApp
     pub eventflux_app_string: String,             // The raw EventFluxQL string
     pub eventflux_app: Arc<EventFluxApp>,         // Parsed EventFluxApp definition from query_api
@@ -96,50 +96,52 @@ pub struct EventFluxAppContext {
     pub is_playback: bool,
     pub is_enforce_order: bool,
     pub root_metrics_level: MetricsLevelPlaceholder,
-    pub statistics_manager: Option<StatisticsManagerPlaceholder>, // Manages collection and reporting of runtime statistics. Option because it's set post-construction in Java.
+    pub statistics_manager: Option<StatisticsManagerPlaceholder>, // Stand in. Always None for now. Java sets it after construction.
 
-    // Threading and scheduling (using placeholders)
-    pub executor_service: Option<Arc<ExecutorService>>, // General purpose thread pool for the EventFlux App.
+    // Threading and scheduling
+    pub executor_service: Option<Arc<ExecutorService>>, // Thread pool shared by all stream junctions of the app.
     pub scheduled_executor_service: Option<Arc<crate::core::util::ScheduledExecutorService>>, // Thread pool for scheduled tasks.
-    pub scheduler: Option<Arc<Scheduler>>, // Exposed scheduler for timers
+    pub scheduler: Option<Arc<Scheduler>>, // Scheduler for timers
 
-    // External references and lifecycle management (using placeholders)
+    // External references and lifecycle management (not ported yet)
     // pub external_referenced_holders: Vec<ExternalReferencedHolderPlaceholder>, // Manages external resources that need lifecycle management.
     // pub trigger_holders: Vec<TriggerPlaceholder>, // Holds trigger runtime instances.
-    pub snapshot_service: Option<Arc<SnapshotService>>, // Manages state snapshotting and persistence.
+    pub snapshot_service: Option<Arc<SnapshotService>>, // Takes and restores state snapshots.
     pub thread_barrier: Option<Arc<ThreadBarrier>>, // Coordinates threads when ordering is enforced.
     pub config_reader: Option<Arc<ProcessorConfigReader>>, // Configuration reader for processors
-    pub timestamp_generator: TimestampGeneratorPlaceholder, // Generates timestamps, especially for playback mode. Has a default in Java if not set by user.
-    pub id_generator: Option<IdGenerator>, // Generates unique IDs for runtime elements. Option because it's set.
+    pub timestamp_generator: TimestampGeneratorPlaceholder, // Stand in for the playback timestamp generator. Java makes a default one if the user sets none.
+    pub id_generator: Option<IdGenerator>, // Generates unique ids for runtime elements. None until set_id_generator is called.
 
     // pub script_function_map: HashMap<String, ScriptPlaceholder>, // Holds script function implementations.
 
-    // Exception handling (using placeholders)
+    // Exception handling (not ported yet)
     // pub disruptor_exception_handler: Option<DisruptorExceptionHandlerPlaceholder>, // Handles exceptions from async event processing.
     // pub runtime_exception_listener: Option<ExceptionListenerPlaceholder>, // Listener for runtime exceptions.
-    pub buffer_size: i32, // Default buffer size for event channels.
+    pub buffer_size: i32, // Stream junction buffer size. Defaults to the EventFluxContext junction buffer size.
     // pub included_metrics: Option<Vec<String>>, // Specific metrics to include if statistics are enabled.
     pub transport_channel_creation_enabled: bool, // Whether transport channels (for sources/sinks) should be created.
     // pub scheduler_list: Vec<SchedulerPlaceholder>, // List of schedulers.
 
-    // Simplified placeholder fields for now
+    // Unused stand ins for fields that are not ported yet
     _external_refs_placeholder: Vec<String>,
     _triggers_placeholder: Vec<String>,
-    /// Placeholder storage for script functions keyed by name.
+    /// Script functions keyed by name. Only the return type is stored for now.
     pub script_function_map: HashMap<String, ScriptFunctionPlaceholder>,
     _schedulers_placeholder: Vec<String>,
 
-    // Configuration system integration
+    // Configuration
     /// Global EventFlux configuration
     pub global_config: Arc<EventFluxConfig>,
-    /// Application-specific configuration
+    /// Configuration of this application
     pub app_config: Option<ApplicationConfig>,
     /// Configuration manager for dynamic updates
     pub config_manager: Option<Arc<ConfigManager>>,
 }
 
 impl EventFluxAppContext {
-    // ---- Static flow utilities ----
+    // ---- Flow keys ----
+    // The current partition and group by keys are thread local, so each worker
+    // thread tracks its own flow.
     pub fn start_group_by_flow(key: String) {
         GROUP_BY_KEY.with(|k| *k.borrow_mut() = Some(key));
     }
@@ -170,11 +172,12 @@ impl EventFluxAppContext {
         GROUP_BY_KEY.with(|k| k.borrow().clone())
     }
 
-    // Constructor needs essential parts. Others can be set via builder methods or setters.
+    // Uses the default global config with no app config and no config manager.
+    // Other fields are set later through the setters.
     pub fn new(
         eventflux_context: Arc<EventFluxContext>,
         name: String,
-        eventflux_app_definition: Arc<EventFluxApp>, // Renamed from eventflux_app to avoid confusion with field
+        eventflux_app_definition: Arc<EventFluxApp>, // Not named eventflux_app so it is not confused with the field
         eventflux_app_string: String,
     ) -> Self {
         Self::new_with_config(
@@ -188,7 +191,10 @@ impl EventFluxAppContext {
         )
     }
 
-    /// Constructor with configuration support
+    /// Build a context with the given configuration.
+    ///
+    /// Creates a thread pool shared by all stream junctions with one thread per CPU,
+    /// and a [`ProcessorConfigReader`] over `app_config` and `global_config`.
     pub fn new_with_config(
         eventflux_context: Arc<EventFluxContext>,
         name: String,
@@ -201,8 +207,8 @@ impl EventFluxAppContext {
         // Default values from Java EventFluxAppContext() constructor and field initializers
         let default_buffer = eventflux_context.get_default_junction_buffer_size() as i32;
 
-        // Initialize shared executor service for all stream junctions
-        // This prevents unbounded thread growth (one pool instead of one per junction)
+        // One pool for all stream junctions, so the thread count does not grow with
+        // every junction
         let thread_count = num_cpus::get();
         let shared_executor = Arc::new(crate::core::util::ExecutorService::new(
             "shared-junction-pool",
@@ -229,7 +235,7 @@ impl EventFluxAppContext {
                 app_config.clone(),
                 Some(global_config.as_ref().clone()),
             ))),
-            timestamp_generator: TimestampGeneratorPlaceholder::default(), // Java new-s one if null
+            timestamp_generator: TimestampGeneratorPlaceholder::default(), // Java makes one if unset
             id_generator: None,                                            // Set later
             // script_function_map: HashMap::new(),
             // disruptor_exception_handler: None, // Uses eventfluxContext's default if not set
@@ -243,7 +249,7 @@ impl EventFluxAppContext {
             script_function_map: HashMap::new(),
             _schedulers_placeholder: Vec::new(),
 
-            // Configuration system integration
+            // Configuration
             global_config,
             app_config,
             config_manager,
@@ -260,29 +266,29 @@ impl EventFluxAppContext {
             .insert(name, ScriptFunctionPlaceholder { return_type });
     }
 
-    /// Lookup a registered script function placeholder by name.
+    /// Look up a registered script function by name.
     pub fn get_script_function(&self, name: &str) -> Option<&ScriptFunctionPlaceholder> {
         self.script_function_map.get(name)
     }
 
-    // --- Getter and Setter examples ---
+    // ---- Getters and setters ----
     pub fn get_eventflux_context(&self) -> Arc<EventFluxContext> {
         Arc::clone(&self.eventflux_context)
     }
 
-    /// Convenience wrapper that lists available scalar function names.
+    /// Names of the scalar functions registered in the EventFluxContext.
     pub fn list_scalar_function_names(&self) -> Vec<String> {
         self.eventflux_context.list_scalar_function_names()
     }
 
-    /// Convenience wrapper that lists available attribute aggregators.
+    /// Names of the attribute aggregators registered in the EventFluxContext.
     pub fn list_attribute_aggregator_names(&self) -> Vec<String> {
         self.eventflux_context.list_attribute_aggregator_names()
     }
 
-    // In Java, getAttributes() delegates to eventfluxContext.getAttributes().
+    // Returns the EventFluxContext attributes, as Java getAttributes() does.
+    // Holds a read lock on the map until the guard is dropped.
     pub fn get_attributes(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, String>> {
-        // Delegate to EventFluxContext's thread-safe attributes map
         self.eventflux_context.get_attributes()
     }
 
@@ -401,14 +407,14 @@ impl EventFluxAppContext {
         self.id_generator = Some(id_gen);
     }
 
-    // ---- Configuration system methods ----
+    // ---- Configuration ----
 
     /// Get the global EventFlux configuration
     pub fn get_global_config(&self) -> &EventFluxConfig {
         &self.global_config
     }
 
-    /// Get application-specific configuration if available
+    /// Get the configuration of this application, if one was given
     pub fn get_app_config(&self) -> Option<&ApplicationConfig> {
         self.app_config.as_ref()
     }
@@ -423,7 +429,7 @@ impl EventFluxAppContext {
         self.global_config = config;
     }
 
-    /// Update the application-specific configuration
+    /// Replace the configuration of this application
     pub fn update_app_config(&mut self, config: Option<ApplicationConfig>) {
         self.app_config = config;
     }
@@ -433,15 +439,20 @@ impl EventFluxAppContext {
         self.config_manager = manager;
     }
 
-    /// Get a configuration value from the global config using a dot-notation path
-    /// Example: "eventflux.runtime.performance.thread_pool_size"
+    /// Get a value from the global config by its dotted path.
+    ///
+    /// Only these paths are supported:
+    /// "eventflux.runtime.performance.thread_pool_size",
+    /// "eventflux.runtime.performance.event_buffer_size",
+    /// "eventflux.runtime.performance.batch_processing" and
+    /// "eventflux.runtime.performance.async_processing".
+    ///
+    /// Returns `None` for any other path, or if the value does not convert to `T`.
     pub fn get_config_value<T>(&self, path: &str) -> Option<T>
     where
         T: serde::de::DeserializeOwned + std::fmt::Debug + Clone,
     {
-        // This is a simplified implementation - in a full implementation you would
-        // walk the configuration structure using the path to find the specific value
-        // For now, we'll implement basic commonly used configuration values
+        // Not a general walk of the config tree. Each supported path is listed by hand.
 
         match path {
             "eventflux.runtime.performance.thread_pool_size" => Some(
@@ -540,10 +551,10 @@ impl EventFluxAppContext {
 
 #[cfg(test)]
 impl EventFluxAppContext {
-    /// Convenience constructor used across unit tests to build a minimal
-    /// `EventFluxAppContext` instance.  Having this single implementation avoids
-    /// multiple `impl` blocks in test modules which previously caused duplicate
-    /// method definition errors during compilation.
+    /// Build a minimal `EventFluxAppContext` for unit tests.
+    ///
+    /// Keep this as the one shared test constructor. Defining it again in test
+    /// modules causes duplicate method errors at compile time.
     pub fn default_for_testing() -> Self {
         use crate::query_api::eventflux_app::EventFluxApp as ApiEventFluxApp;
 

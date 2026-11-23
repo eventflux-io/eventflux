@@ -17,42 +17,43 @@
 
 //! Application Configuration Types
 //!
-//! Defines per-application configuration structures with definition-level granularity.
+//! Configuration for one application, down to each stream, definition and query.
+//! Durations use `duration_serde`, so they read and write as text such as "30s".
 
 use super::{duration_serde, optional_duration_serde};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Application-specific configuration
+/// Configuration of one application
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ApplicationConfig {
-    /// Per-stream configuration (input/output streams with sources/sinks)
+    /// Config for each stream, keyed by stream name, with its source or sink
     #[serde(default)]
     pub streams: HashMap<String, StreamConfig>,
 
-    /// Per-definition configuration (tables, windows, etc.)
+    /// Config for each definition, such as tables and windows, keyed by name
     #[serde(default)]
     pub definitions: HashMap<String, DefinitionConfig>,
 
-    /// Per-query configuration
+    /// Config for each query, keyed by query name
     #[serde(default)]
     pub queries: HashMap<String, QueryConfig>,
 
-    /// Application-level persistence configuration
+    /// Persistence settings for the whole application
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persistence: Option<PersistenceConfig>,
 
-    /// Application-level monitoring configuration
+    /// Monitoring settings for the whole application
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monitoring: Option<MonitoringConfig>,
 
-    /// Application-level error handling configuration
+    /// Error handling settings for the whole application
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_handling: Option<ErrorHandlingConfig>,
 }
 
-/// Configuration for individual definitions (streams, tables, windows, etc.)
+/// Config of one definition. The `type` field picks the variant, in lower case.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
@@ -79,11 +80,11 @@ pub enum DefinitionConfig {
 /// Stream configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamConfig {
-    /// Source configuration (for input streams)
+    /// Source configuration, for input streams
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceConfig>,
 
-    /// Sink configuration (for output streams)
+    /// Sink configuration, for output streams
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sink: Option<SinkConfig>,
 
@@ -91,7 +92,7 @@ pub struct StreamConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<SchemaConfig>,
 
-    /// Stream-specific processing configuration
+    /// Processing settings for this stream
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processing: Option<StreamProcessingConfig>,
 }
@@ -99,15 +100,15 @@ pub struct StreamConfig {
 /// Source configuration for input streams
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceConfig {
-    /// Source type (kafka, http, tcp, file, etc.)
+    /// Source type, such as kafka, http, tcp or file. Written as `type` in YAML.
     #[serde(rename = "type")]
     pub source_type: String,
 
-    /// Data format (json, avro, protobuf, csv, etc.)
+    /// Data format, such as json, avro, protobuf or csv
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 
-    /// Connection configuration
+    /// Connection settings. Holds every other key at the same YAML level.
     #[serde(flatten)]
     pub connection: serde_yaml::Value,
 
@@ -127,15 +128,15 @@ pub struct SourceConfig {
 /// Sink configuration for output streams
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SinkConfig {
-    /// Sink type (kafka, http, tcp, file, etc.)
+    /// Sink type, such as kafka, http, tcp or file. Written as `type` in YAML.
     #[serde(rename = "type")]
     pub sink_type: String,
 
-    /// Data format (json, avro, protobuf, csv, etc.)
+    /// Data format, such as json, avro, protobuf or csv
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 
-    /// Connection configuration
+    /// Connection settings. Holds every other key at the same YAML level.
     #[serde(flatten)]
     pub connection: serde_yaml::Value,
 
@@ -143,7 +144,7 @@ pub struct SinkConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security: Option<SinkSecurityConfig>,
 
-    /// Delivery guarantees
+    /// Delivery guarantee. See [`DeliveryGuarantee`] for the default.
     #[serde(default)]
     pub delivery_guarantee: DeliveryGuarantee,
 
@@ -191,23 +192,23 @@ pub struct SinkSecurityConfig {
 /// TLS configuration for sources and sinks
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TlsConfig {
-    /// Enable TLS
+    /// Turn TLS on. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Certificate file path or content
+    /// Certificate, as a file path or the PEM text itself
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cert: Option<String>,
 
-    /// Private key file path or content
+    /// Private key, as a file path or the PEM text itself
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
 
-    /// CA certificate file path or content
+    /// CA certificate, as a file path or the PEM text itself
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ca: Option<String>,
 
-    /// Verify peer certificates
+    /// Check the peer certificate. Defaults to true.
     #[serde(default = "default_true")]
     pub verify_peer: bool,
 
@@ -216,7 +217,8 @@ pub struct TlsConfig {
     pub server_name: Option<String>,
 }
 
-/// Delivery guarantee options
+/// Delivery guarantee options. Written in kebab case, such as `at-least-once`.
+/// Defaults to `AtLeastOnce`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeliveryGuarantee {
@@ -239,15 +241,15 @@ impl Default for DeliveryGuarantee {
 /// Source error handling configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceErrorHandling {
-    /// Strategy for handling source errors
+    /// What to do when the source fails. Defaults to `LogAndContinue`.
     #[serde(default)]
     pub strategy: ErrorStrategy,
 
-    /// Dead letter queue configuration
+    /// Dead letter queue to send failed events to
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dead_letter_queue: Option<String>,
 
-    /// Maximum retry attempts
+    /// Maximum retry attempts. Defaults to 3.
     #[serde(default = "default_max_retries")]
     pub max_retry_attempts: usize,
 
@@ -256,7 +258,8 @@ pub struct SourceErrorHandling {
     pub backoff: Option<BackoffConfig>,
 }
 
-/// Error handling strategies
+/// Error handling strategies. Written in kebab case, such as `log-and-continue`.
+/// Defaults to `LogAndContinue`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorStrategy {
@@ -275,7 +278,7 @@ pub enum ErrorStrategy {
     /// Retry with backoff
     RetryWithBackoff,
 
-    /// Fail fast
+    /// Fail at the first error
     FailFast,
 }
 
@@ -288,23 +291,24 @@ impl Default for ErrorStrategy {
 /// Retry configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RetryConfig {
-    /// Maximum retry attempts
+    /// Maximum retry attempts. Defaults to 3.
     #[serde(default = "default_max_retries")]
     pub max_attempts: usize,
 
-    /// Initial retry delay
+    /// Delay before the first retry. Defaults to 100 ms.
     #[serde(with = "duration_serde", default = "default_initial_delay")]
     pub initial_delay: Duration,
 
-    /// Maximum retry delay
+    /// Longest delay between retries. Defaults to 30 seconds.
     #[serde(with = "duration_serde", default = "default_max_delay")]
     pub max_delay: Duration,
 
-    /// Backoff multiplier
+    /// Factor the delay grows by after each retry. Defaults to 2.0.
     #[serde(default = "default_backoff_multiplier")]
     pub backoff_multiplier: f64,
 
-    /// Jitter configuration
+    /// Add random jitter to the delay. False when missing from YAML, but
+    /// `RetryConfig::default()` sets it to true.
     #[serde(default)]
     pub jitter: bool,
 }
@@ -324,19 +328,19 @@ impl Default for RetryConfig {
 /// Backoff configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BackoffConfig {
-    /// Backoff type
+    /// How the delay grows. Defaults to `Exponential`.
     #[serde(default)]
     pub backoff_type: BackoffType,
 
-    /// Base delay
+    /// Starting delay. Defaults to 100 ms.
     #[serde(with = "duration_serde", default = "default_base_delay")]
     pub base_delay: Duration,
 
-    /// Maximum delay
+    /// Longest delay. Defaults to 30 seconds.
     #[serde(with = "duration_serde", default = "default_max_delay")]
     pub max_delay: Duration,
 
-    /// Multiplier for exponential backoff
+    /// Multiplier for exponential backoff. Defaults to 2.0.
     #[serde(default = "default_backoff_multiplier")]
     pub multiplier: f64,
 }
@@ -378,11 +382,11 @@ pub struct RateLimitConfig {
     /// Maximum requests per second
     pub max_rate: f64,
 
-    /// Burst capacity
+    /// Requests allowed at once above the steady rate. Defaults to 100.
     #[serde(default = "default_burst_capacity")]
     pub burst_capacity: usize,
 
-    /// Rate limiting strategy
+    /// Rate limiting strategy. Defaults to `TokenBucket`.
     #[serde(default)]
     pub strategy: RateLimitStrategy,
 }
@@ -413,15 +417,15 @@ impl Default for RateLimitStrategy {
 /// Batching configuration for sinks
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BatchingConfig {
-    /// Maximum batch size
+    /// Most events in one batch. Defaults to 100.
     #[serde(default = "default_batch_size")]
     pub max_batch_size: usize,
 
-    /// Maximum batch timeout
+    /// Longest wait before a partial batch is sent. Defaults to 100 ms.
     #[serde(with = "duration_serde", default = "default_batch_timeout")]
     pub max_batch_timeout: Duration,
 
-    /// Memory limit for batching
+    /// Memory limit for one batch
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_batch_memory: Option<usize>,
 }
@@ -442,7 +446,7 @@ pub struct SchemaConfig {
     /// Schema definition
     pub schema: serde_yaml::Value,
 
-    /// Validation mode
+    /// Validation mode. Defaults to `Strict`.
     #[serde(default)]
     pub validation_mode: SchemaValidationMode,
 
@@ -455,10 +459,10 @@ pub struct SchemaConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SchemaValidationMode {
-    /// Strict validation (reject invalid data)
+    /// Reject invalid data
     Strict,
 
-    /// Lenient validation (log and continue)
+    /// Log invalid data and carry on
     Lenient,
 
     /// No validation
@@ -474,11 +478,11 @@ impl Default for SchemaValidationMode {
 /// Schema evolution configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SchemaEvolutionConfig {
-    /// Allow schema evolution
+    /// Allow the schema to change over time. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Auto-migrate data
+    /// Move existing data to the new schema automatically. Defaults to false.
     #[serde(default)]
     pub auto_migrate: bool,
 }
@@ -486,31 +490,31 @@ pub struct SchemaEvolutionConfig {
 /// Stream processing configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamProcessingConfig {
-    /// Enable async processing
+    /// Process the stream asynchronously. Defaults to false.
     #[serde(default)]
     pub async_mode: bool,
 
-    /// Buffer size for stream
+    /// Buffer size for the stream
     #[serde(skip_serializing_if = "Option::is_none")]
     pub buffer_size: Option<usize>,
 
-    /// Parallelism level
+    /// Number of parallel workers. Defaults to 1.
     #[serde(default = "default_parallelism")]
     pub parallelism: usize,
 
-    /// Ordering guarantees
+    /// Ordering guarantee. Defaults to `None`.
     #[serde(default)]
     pub ordering: OrderingGuarantee,
 }
 
-/// Ordering guarantee options
+/// Ordering guarantee options. Written in kebab case, such as `per-key`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OrderingGuarantee {
-    /// No ordering guarantees
+    /// No ordering guarantee
     None,
 
-    /// Per-key ordering
+    /// Events with the same key stay in order
     PerKey,
 
     /// Global ordering
@@ -545,11 +549,11 @@ pub struct TableConfig {
 /// Store configuration for tables
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StoreConfig {
-    /// Store type (rdbms, mongodb, redis, etc.)
+    /// Store type, such as rdbms, mongodb or redis. Written as `type` in YAML.
     #[serde(rename = "type")]
     pub store_type: String,
 
-    /// Connection configuration
+    /// Connection settings. Holds every other key at the same YAML level.
     #[serde(flatten)]
     pub connection: serde_yaml::Value,
 
@@ -557,7 +561,7 @@ pub struct StoreConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool: Option<ConnectionPoolConfig>,
 
-    /// Store-specific security configuration
+    /// Security settings, in whatever shape the store expects
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security: Option<serde_yaml::Value>,
 }
@@ -565,19 +569,19 @@ pub struct StoreConfig {
 /// Connection pool configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConnectionPoolConfig {
-    /// Maximum pool size
+    /// Maximum pool size. Defaults to 10.
     #[serde(default = "default_max_pool_size")]
     pub max_size: usize,
 
-    /// Minimum pool size
+    /// Minimum pool size. Defaults to 1.
     #[serde(default = "default_min_pool_size")]
     pub min_size: usize,
 
-    /// Connection timeout
+    /// Time allowed to open a connection. Defaults to 30 seconds.
     #[serde(with = "duration_serde", default = "default_connection_timeout")]
     pub connection_timeout: Duration,
 
-    /// Idle timeout
+    /// How long an unused connection is kept
     #[serde(
         with = "optional_duration_serde",
         skip_serializing_if = "Option::is_none"
@@ -607,11 +611,11 @@ impl Default for ConnectionPoolConfig {
 /// Caching configuration for tables
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CachingConfig {
-    /// Enable caching
+    /// Turn caching on. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Cache type
+    /// Cache type. Defaults to `Memory`.
     #[serde(default)]
     pub cache_type: CacheType,
 
@@ -619,14 +623,14 @@ pub struct CachingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_size: Option<usize>,
 
-    /// Cache TTL
+    /// How long an entry stays in the cache
     #[serde(
         with = "optional_duration_serde",
         skip_serializing_if = "Option::is_none"
     )]
     pub ttl: Option<Duration>,
 
-    /// Cache eviction policy
+    /// Cache eviction policy. Defaults to `Lru`.
     #[serde(default)]
     pub eviction_policy: CacheEvictionPolicy,
 }
@@ -635,10 +639,10 @@ pub struct CachingConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CacheType {
-    /// In-memory cache
+    /// Cache in memory
     Memory,
 
-    /// Disk-based cache
+    /// Cache on disk
     Disk,
 
     /// Distributed cache
@@ -664,7 +668,7 @@ pub enum CacheEvictionPolicy {
     /// First In, First Out
     Fifo,
 
-    /// Time-based expiration
+    /// Expire entries after a set time
     TimeToLive,
 }
 
@@ -677,7 +681,7 @@ impl Default for CacheEvictionPolicy {
 /// Indexing configuration for tables
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexingConfig {
-    /// Primary key configuration
+    /// Primary key columns
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_key: Option<Vec<String>>,
 
@@ -685,7 +689,7 @@ pub struct IndexingConfig {
     #[serde(default)]
     pub indexes: Vec<IndexConfig>,
 
-    /// Auto-indexing configuration
+    /// Automatic index creation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_indexing: Option<AutoIndexingConfig>,
 }
@@ -699,11 +703,11 @@ pub struct IndexConfig {
     /// Indexed columns
     pub columns: Vec<String>,
 
-    /// Index type
+    /// Index type. Defaults to `BTree`.
     #[serde(default)]
     pub index_type: IndexType,
 
-    /// Unique constraint
+    /// Whether the indexed values must be unique. Defaults to false.
     #[serde(default)]
     pub unique: bool,
 }
@@ -718,7 +722,7 @@ pub enum IndexType {
     /// Hash index
     Hash,
 
-    /// Full-text index
+    /// Full text search index
     FullText,
 
     /// Spatial index
@@ -731,18 +735,18 @@ impl Default for IndexType {
     }
 }
 
-/// Auto-indexing configuration
+/// Automatic index creation settings
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoIndexingConfig {
-    /// Enable auto-indexing
+    /// Turn automatic indexing on. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Threshold for creating indexes
+    /// Threshold for creating an index. Defaults to 1000.
     #[serde(default = "default_auto_index_threshold")]
     pub threshold: usize,
 
-    /// Maximum number of auto-created indexes
+    /// Most indexes that may be created automatically. Defaults to 10.
     #[serde(default = "default_max_auto_indexes")]
     pub max_indexes: usize,
 }
@@ -750,7 +754,7 @@ pub struct AutoIndexingConfig {
 /// Window configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WindowConfig {
-    /// Window type (time, length, session, etc.)
+    /// Window type, such as time, length or session
     pub window_type: String,
 
     /// Window parameters
@@ -769,27 +773,27 @@ pub struct WindowConfig {
 /// Window persistence configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WindowPersistenceConfig {
-    /// Enable persistence for this window
+    /// Turn persistence on for this window. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Checkpoint interval for window state
+    /// Time between checkpoints of the window state. Defaults to 60 seconds.
     #[serde(
         with = "duration_serde",
         default = "default_window_checkpoint_interval"
     )]
     pub checkpoint_interval: Duration,
 
-    /// Compression for window state
+    /// Compression for the window state. Defaults to `Lz4`.
     #[serde(default)]
     pub compression: CompressionType,
 
-    /// Persistence backend override
+    /// Persistence backend to use instead of the global one
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
 }
 
-/// Compression types for window persistence
+/// Compression types for window persistence. Defaults to `Lz4`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompressionType {
@@ -808,15 +812,15 @@ impl Default for CompressionType {
 /// Window memory management configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WindowMemoryConfig {
-    /// Maximum memory usage for window
+    /// Maximum memory for the window, as text such as "512MB"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_memory: Option<String>,
 
-    /// Memory threshold for spilling to disk
+    /// Memory level at which window data spills to disk
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spill_threshold: Option<f32>,
 
-    /// Enable memory monitoring
+    /// Track memory use. Defaults to true.
     #[serde(default = "default_true")]
     pub monitoring_enabled: bool,
 }
@@ -839,18 +843,18 @@ pub struct AggregationConfig {
 /// Retention configuration for aggregations
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RetentionConfig {
-    /// Time-based retention
+    /// Keep data for this long
     #[serde(
         with = "optional_duration_serde",
         skip_serializing_if = "Option::is_none"
     )]
     pub by_time: Option<Duration>,
 
-    /// Memory-based retention
+    /// Keep data up to this much memory, as text
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by_memory: Option<String>,
 
-    /// Count-based retention
+    /// Keep up to this many records
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by_count: Option<usize>,
 }
@@ -874,13 +878,13 @@ pub struct PartitioningConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PartitioningStrategy {
-    /// Hash-based partitioning
+    /// Partition by hash of the key
     Hash,
 
-    /// Range-based partitioning
+    /// Partition by key ranges
     Range,
 
-    /// Time-based partitioning
+    /// Partition by time
     Time,
 
     /// Custom partitioning
@@ -890,7 +894,7 @@ pub enum PartitioningStrategy {
 /// Function configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FunctionConfig {
-    /// Function implementation details
+    /// Implementation settings. Holds every other key at the same YAML level.
     #[serde(flatten)]
     pub implementation: serde_yaml::Value,
 
@@ -906,7 +910,7 @@ pub struct FunctionConfig {
 /// Function security configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FunctionSecurityConfig {
-    /// Sandboxing configuration
+    /// Run the function in a sandbox. Defaults to true.
     #[serde(default = "default_true")]
     pub sandboxing_enabled: bool,
 
@@ -941,7 +945,7 @@ pub struct FunctionResourceConfig {
 /// Trigger configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TriggerConfig {
-    /// Trigger-specific configuration
+    /// Trigger settings. Holds every other key at the same YAML level.
     #[serde(flatten)]
     pub config: serde_yaml::Value,
 
@@ -953,15 +957,15 @@ pub struct TriggerConfig {
 /// Trigger error handling
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TriggerErrorHandling {
-    /// Error strategy
+    /// Error strategy. Defaults to `LogAndContinue`.
     #[serde(default)]
     pub strategy: ErrorStrategy,
 
-    /// Maximum failures before stopping
+    /// Failures allowed before the trigger stops. Defaults to 5.
     #[serde(default = "default_max_failures")]
     pub max_failures: usize,
 
-    /// Recovery strategy
+    /// Recovery strategy. Defaults to `Restart`.
     #[serde(default)]
     pub recovery: TriggerRecovery,
 }
@@ -986,10 +990,10 @@ impl Default for TriggerRecovery {
     }
 }
 
-/// Query-level configuration
+/// Configuration of one query
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueryConfig {
-    /// Parallelism level for query
+    /// Number of parallel workers for the query. Defaults to 1.
     #[serde(default = "default_parallelism")]
     pub parallelism: usize,
 
@@ -1013,7 +1017,7 @@ pub struct QueryConfig {
 /// Query error handling configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueryErrorHandling {
-    /// Error strategy
+    /// Error strategy. Defaults to `LogAndContinue`.
     #[serde(default)]
     pub strategy: ErrorStrategy,
 
@@ -1021,7 +1025,7 @@ pub struct QueryErrorHandling {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dead_letter_queue: Option<String>,
 
-    /// Maximum retry attempts
+    /// Maximum retry attempts. Defaults to 3.
     #[serde(default = "default_max_retries")]
     pub max_retry_attempts: usize,
 }
@@ -1029,15 +1033,15 @@ pub struct QueryErrorHandling {
 /// Query checkpointing configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueryCheckpointingConfig {
-    /// Checkpoint interval
+    /// Time between checkpoints. Defaults to 60 seconds.
     #[serde(with = "duration_serde", default = "default_checkpoint_interval")]
     pub interval: Duration,
 
-    /// Checkpointing strategy
+    /// Checkpointing strategy. Defaults to `Async`.
     #[serde(default)]
     pub strategy: CheckpointingStrategy,
 
-    /// Enable incremental checkpointing
+    /// Save only what changed since the last checkpoint. Defaults to true.
     #[serde(default = "default_true")]
     pub incremental: bool,
 }
@@ -1081,46 +1085,46 @@ pub struct QueryResourceConfig {
     pub max_execution_time: Option<Duration>,
 }
 
-/// Application-level persistence configuration
+/// Persistence settings for the whole application
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PersistenceConfig {
-    /// Enable persistence
+    /// Turn persistence on. Defaults to false.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Store type override
+    /// Store type to use instead of the global one
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store_type: Option<String>,
 
-    /// Checkpoint interval
+    /// Time between checkpoints. Defaults to 60 seconds.
     #[serde(with = "duration_serde", default = "default_checkpoint_interval")]
     pub checkpoint_interval: Duration,
 
-    /// Enable incremental checkpointing
+    /// Save only what changed since the last checkpoint. Defaults to true.
     #[serde(default = "default_true")]
     pub incremental: bool,
 
-    /// Persistence-specific configuration
+    /// Extra settings for the persistence store
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_yaml::Value>,
 }
 
-/// Application-level monitoring configuration
+/// Monitoring settings for the whole application
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MonitoringConfig {
-    /// Enable metrics collection
+    /// Collect metrics. Defaults to true.
     #[serde(default = "default_true")]
     pub metrics_enabled: bool,
 
-    /// Prometheus metrics port
+    /// Prometheus metrics port. Defaults to 9090.
     #[serde(default = "default_prometheus_port")]
     pub prometheus_port: u16,
 
-    /// Health check port
+    /// Health check port. Defaults to 8080.
     #[serde(default = "default_health_port")]
     pub health_check_port: u16,
 
-    /// Log level for application
+    /// Log level for the application. Defaults to `Info`.
     #[serde(default)]
     pub log_level: LogLevel,
 
@@ -1146,14 +1150,14 @@ impl Default for LogLevel {
     }
 }
 
-/// Application-level error handling configuration
+/// Error handling settings for the whole application
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ErrorHandlingConfig {
-    /// Default error strategy
+    /// Error strategy used when nothing more specific is set. Defaults to `LogAndContinue`.
     #[serde(default)]
     pub default_strategy: ErrorStrategy,
 
-    /// Maximum retry attempts
+    /// Maximum retry attempts. Defaults to 3.
     #[serde(default = "default_max_retries")]
     pub max_retry_attempts: usize,
 
@@ -1175,12 +1179,12 @@ pub struct ErrorHandlerConfig {
     /// Error types to handle
     pub error_types: Vec<String>,
 
-    /// Handler configuration
+    /// Handler settings. Holds every other key at the same YAML level.
     #[serde(flatten)]
     pub config: serde_yaml::Value,
 }
 
-// Helper functions for defaults
+// Default values used by the serde attributes above
 fn default_true() -> bool {
     true
 }

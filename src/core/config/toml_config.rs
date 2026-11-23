@@ -17,21 +17,24 @@
 
 //! # TOML Configuration Module
 //!
-//! This module provides TOML-based configuration loading and merging for EventFlux streams.
+//! Loads TOML configuration for EventFlux streams and tables and merges its layers.
 //!
 //! ## Features
 //!
-//! - **TOML Loading**: Parse TOML configuration files with nested structure support
-//! - **Environment Variable Substitution**: Eager loading with `${VAR}` or `${VAR:default}` syntax
-//! - **Configuration Merging**: Multi-layer property resolution with precedence
-//! - **Validation**: Ensures SQL-first principle by rejecting forbidden TOML fields
+//! - **TOML Loading**: Reads TOML files, including nested tables
+//! - **Environment Variable Substitution**: Fills in `${VAR}` and `${VAR:default}` once,
+//!   when the file is loaded
+//! - **Configuration Merging**: Layers properties so higher priority sources win
+//! - **Validation**: Rejects fields that belong in SQL, so SQL stays the source of truth
+//!   for the shape of each stream
 //!
 //! ## Configuration Sources (Priority: Low to High)
 //!
-//! 1. **Rust defaults** - Built-in defaults (PropertySource::RustDefault)
-//! 2. **TOML [application]** - Global application-level config (PropertySource::TomlApplication)
-//! 3. **TOML [streams.StreamName]** - Stream-specific config (PropertySource::TomlStream)
-//! 4. **SQL WITH clause** - Highest priority (PropertySource::SqlWith)
+//! 1. **Rust defaults**. Built in defaults (PropertySource::RustDefault).
+//! 2. **TOML [application]**. Shared by all streams and tables
+//!    (PropertySource::TomlApplication).
+//! 3. **TOML [streams.StreamName]**. One stream (PropertySource::TomlStream).
+//! 4. **SQL WITH clause**. Highest priority (PropertySource::SqlWith).
 //!
 //! ## Example TOML Configuration
 //!
@@ -66,47 +69,47 @@ use std::env;
 // Data Structures
 // ============================================================================
 
-/// Top-level TOML configuration structure
+/// Whole TOML configuration file
 #[derive(Deserialize, Debug, Clone)]
 pub struct TomlConfig {
-    /// Global application-level configuration
+    /// The `[application]` section, shared by all streams and tables
     pub application: Option<ApplicationSection>,
 
-    /// Stream-specific configurations
+    /// The `[streams.<name>]` sections, keyed by stream name
     pub streams: Option<HashMap<String, TomlStreamConfig>>,
 
-    /// Table-specific configurations
+    /// The `[tables.<name>]` sections, keyed by table name
     pub tables: Option<HashMap<String, TomlTableConfig>>,
 }
 
-/// Application-level configuration section
+/// The `[application]` section
 ///
-/// All properties in this section apply as defaults to all streams and tables.
+/// Every property here is a default for all streams and tables.
 #[derive(Deserialize, Debug, Clone)]
 pub struct ApplicationSection {
-    /// Flattened properties with arbitrary nesting
+    /// Properties of any depth, not yet flattened
     #[serde(flatten)]
     pub properties: HashMap<String, toml::Value>,
 }
 
-/// Stream-specific configuration from TOML
+/// One `[streams.<name>]` section
 ///
-/// **IMPORTANT**: The `type`, `extension`, and `format` fields are **NOT allowed** in TOML.
-/// These MUST be defined in the SQL WITH clause to enforce the SQL-first principle.
+/// **IMPORTANT**: `type`, `extension` and `format` are **NOT allowed** in TOML. They
+/// MUST be set in the SQL WITH clause, so SQL alone decides the shape of a stream.
 #[derive(Deserialize, Debug, Clone)]
 pub struct TomlStreamConfig {
-    /// All stream properties (type, extension, format are forbidden here)
+    /// All stream properties. `type`, `extension` and `format` are rejected by `validate`.
     #[serde(flatten)]
     pub properties: HashMap<String, toml::Value>,
 }
 
-/// Table-specific configuration from TOML
+/// One `[tables.<name>]` section
 ///
-/// **IMPORTANT**: The `type` and `format` fields are **NOT allowed** for tables.
-/// Tables are always bidirectional and use relational schema only.
+/// **IMPORTANT**: `type` and `format` are **NOT allowed** for tables. Data flows both
+/// ways and tables only use the relational schema.
 #[derive(Deserialize, Debug, Clone)]
 pub struct TomlTableConfig {
-    /// All table properties (type and format are forbidden here)
+    /// All table properties. `type` and `format` are rejected by `validate`.
     #[serde(flatten)]
     pub properties: HashMap<String, toml::Value>,
 }
@@ -115,10 +118,11 @@ pub struct TomlTableConfig {
 // TOML Flattening
 // ============================================================================
 
-/// Flatten nested TOML structures into dot-separated keys
+/// Flatten nested TOML values into dotted keys
 ///
-/// This function recursively traverses TOML values and converts nested structures
-/// into flat key-value pairs with dot notation.
+/// Walks the value and writes each leaf into `config` under its dotted path. Arrays
+/// become comma separated strings. Array items that are not scalars are skipped with
+/// a warning on stderr. Datetimes keep their TOML text form.
 ///
 /// # Examples
 ///
@@ -136,16 +140,16 @@ pub struct TomlTableConfig {
 /// kafka.brokers = "localhost:9092"
 /// kafka.topic = "orders"
 /// ```
-/// Produces (identical):
+/// Produces the same result:
 /// - `kafka.brokers` = "localhost:9092"
 /// - `kafka.topic` = "orders"
 ///
 /// # Arguments
 ///
-/// * `prefix` - Current key prefix (empty for root level)
+/// * `prefix` - Key path so far. Empty at the root.
 /// * `value` - TOML value to flatten
-/// * `config` - Target FlatConfig to populate
-/// * `source` - Property source for tracking
+/// * `config` - FlatConfig to write into
+/// * `source` - Source recorded for every property written
 pub fn flatten_toml_value(
     prefix: &str,
     value: &toml::Value,
@@ -176,7 +180,6 @@ pub fn flatten_toml_value(
             config.set(prefix, b.to_string(), source);
         }
         toml::Value::Array(arr) => {
-            // Arrays converted to comma-separated strings
             let str_values: Vec<String> = arr
                 .iter()
                 .filter_map(|v| match v {
@@ -193,7 +196,6 @@ pub fn flatten_toml_value(
             config.set(prefix, str_values.join(","), source);
         }
         toml::Value::Datetime(_) => {
-            // Convert datetime to string representation
             config.set(prefix, value.to_string(), source);
         }
     }
@@ -203,26 +205,26 @@ pub fn flatten_toml_value(
 // Environment Variable Substitution
 // ============================================================================
 
-/// Compiled regex for environment variable substitution (compiled once at startup)
+/// Pattern for `${VAR}` and `${VAR:default}`. Compiled once, on first use.
 static ENV_VAR_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap());
 
-/// Substitute environment variables in a string value
+/// Replace environment variable references in a string
 ///
 /// # Syntax
 ///
-/// - `${VAR_NAME}` - Required variable (fails if missing)
-/// - `${VAR_NAME:default}` - Optional variable with default value
+/// - `${VAR_NAME}` is required and fails when the variable is unset
+/// - `${VAR_NAME:default}` uses the default when the variable is unset
 ///
 /// # Timing
 ///
-/// Eager loading at configuration resolution time (not lazy).
+/// Runs once, when the configuration is loaded, not each time a value is read.
 ///
 /// # Behavior
 ///
-/// - Missing variable WITHOUT default: Returns Err
-/// - Missing variable WITH default: Uses default value
-/// - Variable exists: Uses environment variable value
+/// - Unset variable with no default: returns `Err` naming every such variable
+/// - Unset variable with a default: uses the default
+/// - Set variable: uses its value, even when it is empty
 ///
 /// # Examples
 ///
@@ -274,18 +276,19 @@ pub fn substitute_env_vars(value: &str) -> Result<String, String> {
     Ok(result)
 }
 
-/// Recursively substitute environment variables in TOML values
+/// Replace environment variable references in every string inside a TOML value
 ///
-/// This function traverses the entire TOML structure and replaces environment
-/// variable placeholders in string values.
+/// Walks tables and arrays and changes the strings in place with
+/// [`substitute_env_vars`]. Other value types are left alone.
 ///
 /// # Arguments
 ///
-/// * `value` - Mutable TOML value to process
+/// * `value` - TOML value to change in place
 ///
 /// # Returns
 ///
-/// `Ok(())` on success, or `Err(String)` if required variables are missing
+/// `Ok(())` on success, or `Err(String)` if a required variable is unset. Strings
+/// handled before the error stay changed.
 pub fn substitute_toml_env_vars(value: &mut toml::Value) -> Result<(), String> {
     match value {
         toml::Value::String(s) => {
@@ -311,11 +314,11 @@ pub fn substitute_toml_env_vars(value: &mut toml::Value) -> Result<(), String> {
 // ============================================================================
 
 impl TomlStreamConfig {
-    /// Validate that type/extension/format are NOT present in TOML
+    /// Check that `type`, `extension` and `format` are not set in TOML
     ///
-    /// These fields MUST be in the SQL WITH clause to enforce the SQL-first principle.
-    /// They are structural properties required at parse-time (Phase 1), so they cannot
-    /// be in TOML configuration.
+    /// These MUST be in the SQL WITH clause. They decide the shape of the stream and
+    /// the parser needs them while it reads the SQL, before TOML is merged in. Only
+    /// top level keys are checked.
     pub fn validate(&self) -> Result<(), String> {
         let forbidden = ["type", "extension", "format"];
         for key in &forbidden {
@@ -331,9 +334,8 @@ impl TomlStreamConfig {
         Ok(())
     }
 
-    /// Convert stream config to flat configuration
-    ///
-    /// Flattens all nested TOML structures into dot-notation properties.
+    /// Flatten the stream properties into a [`FlatConfig`] with dotted keys, all marked
+    /// with `source`
     pub fn to_flat_config(&self, source: PropertySource) -> FlatConfig {
         let mut config = FlatConfig::new();
 
@@ -346,9 +348,10 @@ impl TomlStreamConfig {
 }
 
 impl TomlTableConfig {
-    /// Validate that type/format are NOT present in TOML for tables
+    /// Check that `type` and `format` are not set in TOML for a table
     ///
-    /// Tables are always bidirectional and use relational schema only.
+    /// Data flows both ways in a table and it only uses the relational schema. Only
+    /// top level keys are checked.
     pub fn validate(&self) -> Result<(), String> {
         let forbidden = ["type", "format"];
         for key in &forbidden {
@@ -363,9 +366,8 @@ impl TomlTableConfig {
         Ok(())
     }
 
-    /// Convert table config to flat configuration
-    ///
-    /// Flattens all nested TOML structures into dot-notation properties.
+    /// Flatten the table properties into a [`FlatConfig`] with dotted keys, all marked
+    /// with `source`
     pub fn to_flat_config(&self, source: PropertySource) -> FlatConfig {
         let mut config = FlatConfig::new();
 
@@ -381,17 +383,17 @@ impl TomlTableConfig {
 // Configuration Container
 // ============================================================================
 
-/// Configuration container holding separated stream and table configurations
+/// Loaded stream and table configurations, kept in separate maps
 ///
-/// Keeps streams and tables in separate namespaces to prevent naming collisions
-/// and allow proper type-specific validation.
+/// Separate maps stop a stream and a table with the same name from clashing, and let
+/// each be checked with its own rules.
 ///
 /// # Why Separate Namespaces?
 ///
 /// Streams and tables can have the same name without conflict:
-/// - Stream "Data" can coexist with Table "Data"
-/// - Each has different validation rules (streams have type/format, tables don't)
-/// - Prevents accidental misconfiguration
+/// - Stream "Data" and table "Data" can both exist
+/// - Each has its own validation rules. Streams have type and format, tables do not.
+/// - One cannot overwrite the other's settings by mistake
 ///
 /// # Example
 ///
@@ -413,14 +415,18 @@ pub struct LoadedConfig {
 // Configuration Loading and Merging
 // ============================================================================
 
-/// Load and merge TOML configuration into per-stream FlatConfig instances
+/// Load a TOML file and build one merged [`FlatConfig`] per stream and per table
+///
+/// Fills in environment variables first, then starts each stream and table from the
+/// `[application]` properties and lays its own section on top.
 ///
 /// # Merge Order (lowest to highest priority)
 ///
-/// 1. Rust defaults (PropertySource::RustDefault)
+/// 1. Rust defaults (PropertySource::RustDefault). Not added here.
 /// 2. TOML [application] (PropertySource::TomlApplication)
-/// 3. TOML [streams.StreamName] (PropertySource::TomlStream)
-/// 4. SQL WITH clause (PropertySource::SqlWith) - merged later by caller
+/// 3. TOML [streams.StreamName] (PropertySource::TomlStream). Table sections also use
+///    TomlStream.
+/// 4. SQL WITH clause (PropertySource::SqlWith). The caller merges this later.
 ///
 /// # Arguments
 ///
@@ -428,7 +434,13 @@ pub struct LoadedConfig {
 ///
 /// # Returns
 ///
-/// HashMap mapping stream names to their merged FlatConfig instances
+/// A [`LoadedConfig`] with the stream and table configs keyed by name. Streams and
+/// tables with no section of their own are not included.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or parsed, a required environment
+/// variable is unset, or a stream or table section sets a forbidden key.
 ///
 /// # Example
 ///
@@ -441,9 +453,10 @@ pub struct LoadedConfig {
 /// ```
 ///
 /// Results in:
-/// - Orders stream gets both `buffer_size=2048` (from app) and `kafka.topic=orders` (from stream)
+/// - The Orders stream gets `buffer_size=2048` from `[application]` and
+///   `kafka.topic=orders` from its own section
 pub fn load_toml_config(toml_path: &str) -> Result<LoadedConfig, String> {
-    // 1. Read TOML file
+    // 1. Read the TOML file
     let toml_str = std::fs::read_to_string(toml_path)
         .map_err(|e| format!("Failed to read TOML file '{}': {}", toml_path, e))?;
 
@@ -451,7 +464,7 @@ pub fn load_toml_config(toml_path: &str) -> Result<LoadedConfig, String> {
     let mut toml_config: TomlConfig = toml::from_str(&toml_str)
         .map_err(|e| format!("Failed to parse TOML file '{}': {}", toml_path, e))?;
 
-    // 3. Substitute environment variables
+    // 3. Fill in environment variables
     if let Some(ref mut app) = toml_config.application {
         for (_, value) in app.properties.iter_mut() {
             substitute_toml_env_vars(value)?;
@@ -472,12 +485,12 @@ pub fn load_toml_config(toml_path: &str) -> Result<LoadedConfig, String> {
         }
     }
 
-    // 4. Build FlatConfig for each stream and table
-    //    CRITICAL: Streams and tables kept in separate HashMaps to prevent namespace collision
+    // 4. Build a FlatConfig for each stream and table
+    //    CRITICAL: separate maps so a stream and a table with the same name do not clash
     let mut stream_configs = HashMap::new();
     let mut table_configs = HashMap::new();
 
-    // 4a. Extract application-level defaults
+    // 4a. Flatten the [application] defaults
     let mut app_defaults = FlatConfig::new();
     if let Some(app) = toml_config.application {
         for (key, value) in &app.properties {
@@ -490,33 +503,28 @@ pub fn load_toml_config(toml_path: &str) -> Result<LoadedConfig, String> {
         }
     }
 
-    // 4b. Merge stream-specific configs
+    // 4b. Lay each stream section over the defaults
     if let Some(streams) = toml_config.streams {
         for (stream_name, stream_config) in streams {
-            // Validate stream config
             stream_config.validate()?;
 
-            // Start with application defaults
             let mut flat_config = app_defaults.clone();
 
-            // Merge stream-specific properties (higher priority)
+            // TomlStream outranks TomlApplication, so the stream section wins
             flat_config.merge(&stream_config.to_flat_config(PropertySource::TomlStream));
 
             stream_configs.insert(stream_name, flat_config);
         }
     }
 
-    // 4c. Merge table-specific configs (using same pattern as streams)
-    //     Tables go into separate HashMap to prevent namespace collision with streams
+    // 4c. Lay each table section over the defaults, the same way as streams
     if let Some(tables) = toml_config.tables {
         for (table_name, table_config) in tables {
-            // Validate table config
             table_config.validate()?;
 
-            // Start with application defaults
             let mut flat_config = app_defaults.clone();
 
-            // Merge table-specific properties (higher priority)
+            // Tables reuse the TomlStream source so they outrank [application]
             flat_config.merge(&table_config.to_flat_config(PropertySource::TomlStream));
 
             table_configs.insert(table_name, flat_config);

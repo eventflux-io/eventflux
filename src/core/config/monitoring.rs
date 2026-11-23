@@ -17,18 +17,19 @@
 
 //! Configuration Monitoring & Health Checks
 //!
-//! Provides comprehensive monitoring configuration for EventFlux applications,
-//! including health checks, metrics collection, alerting, and observability features.
+//! Configuration types for monitoring EventFlux applications. Covers health checks,
+//! metrics, alerting, tracing, logging and the monitoring endpoints. Each type has
+//! presets for development, production and Kubernetes.
 
 use crate::core::config::types::duration_serde;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Main monitoring configuration structure
+/// Top level monitoring configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MonitoringConfig {
-    /// Enable or disable monitoring globally
+    /// Turn all monitoring on or off. Defaults to true.
     pub enabled: bool,
 
     /// Health check configuration
@@ -37,13 +38,13 @@ pub struct MonitoringConfig {
     /// Metrics collection configuration
     pub metrics: MetricsConfig,
 
-    /// Alerting configuration
+    /// Alerting configuration. None by default.
     pub alerting: Option<AlertingConfig>,
 
-    /// Observability settings (tracing, logging)
+    /// Tracing and logging settings. None by default.
     pub observability: Option<ObservabilityConfig>,
 
-    /// Endpoints configuration for health and metrics
+    /// Health and metrics endpoints
     pub endpoints: EndpointConfig,
 }
 
@@ -61,12 +62,12 @@ impl Default for MonitoringConfig {
 }
 
 impl MonitoringConfig {
-    /// Create a new monitoring configuration
+    /// Create the default monitoring configuration
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Enable monitoring with default settings
+    /// Default settings with monitoring turned on
     pub fn enabled() -> Self {
         Self {
             enabled: true,
@@ -74,7 +75,7 @@ impl MonitoringConfig {
         }
     }
 
-    /// Disable monitoring
+    /// Default settings with monitoring turned off
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -82,7 +83,7 @@ impl MonitoringConfig {
         }
     }
 
-    /// Configure for development environment
+    /// Preset for development. No alerting.
     pub fn development() -> Self {
         Self {
             enabled: true,
@@ -94,7 +95,7 @@ impl MonitoringConfig {
         }
     }
 
-    /// Configure for production environment
+    /// Preset for production
     pub fn production() -> Self {
         Self {
             enabled: true,
@@ -106,7 +107,7 @@ impl MonitoringConfig {
         }
     }
 
-    /// Configure for Kubernetes deployment
+    /// Preset for Kubernetes
     pub fn kubernetes() -> Self {
         Self {
             enabled: true,
@@ -118,7 +119,11 @@ impl MonitoringConfig {
         }
     }
 
-    /// Merge another monitoring configuration into this one
+    /// Merge `other` into this config.
+    ///
+    /// `enabled` always takes the value from `other`. Alerting and observability are
+    /// replaced only when `other` has them. Health, metrics and endpoints merge field
+    /// by field.
     pub fn merge(&mut self, other: MonitoringConfig) {
         self.enabled = other.enabled;
         self.health.merge(other.health);
@@ -139,21 +144,21 @@ impl MonitoringConfig {
 /// Health check configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HealthCheckConfig {
-    /// Enable health checks
+    /// Turn health checks on or off
     pub enabled: bool,
 
-    /// Health check interval
+    /// Time between health checks. Defaults to 30 seconds.
     #[serde(with = "duration_serde")]
     pub interval: Duration,
 
-    /// Health check timeout
+    /// Time allowed for one health check. Defaults to 5 seconds.
     #[serde(with = "duration_serde")]
     pub timeout: Duration,
 
-    /// Failure threshold before marking unhealthy
+    /// Failures in a row before the app is marked unhealthy. Defaults to 3.
     pub failure_threshold: u32,
 
-    /// Success threshold before marking healthy again
+    /// Successes in a row before the app is marked healthy again. Defaults to 1.
     pub success_threshold: u32,
 
     /// Individual health checks to perform
@@ -190,7 +195,7 @@ impl Default for HealthCheckConfig {
 }
 
 impl HealthCheckConfig {
-    /// Development configuration
+    /// Preset for development
     pub fn development() -> Self {
         Self {
             interval: Duration::from_secs(10), // More frequent in dev
@@ -200,7 +205,7 @@ impl HealthCheckConfig {
         }
     }
 
-    /// Production configuration
+    /// Preset for production
     pub fn production() -> Self {
         Self {
             interval: Duration::from_secs(60), // Less frequent
@@ -211,7 +216,7 @@ impl HealthCheckConfig {
         }
     }
 
-    /// Kubernetes configuration
+    /// Preset for Kubernetes. Uses the Kubernetes probe presets.
     pub fn kubernetes() -> Self {
         Self {
             interval: Duration::from_secs(30),
@@ -225,7 +230,10 @@ impl HealthCheckConfig {
         }
     }
 
-    /// Merge another health check configuration
+    /// Merge `other` into this config.
+    ///
+    /// Scalar fields always take the value from `other`. `checks` is replaced only when
+    /// `other.checks` is not empty, and each probe only when `other` has one.
     pub fn merge(&mut self, other: HealthCheckConfig) {
         self.enabled = other.enabled;
         self.interval = other.interval;
@@ -260,18 +268,18 @@ pub struct HealthCheck {
     /// Health check type
     pub check_type: HealthCheckType,
 
-    /// Check-specific configuration
+    /// Settings for this check
     pub config: HashMap<String, String>,
 
-    /// Weight of this check in overall health (0.0 to 1.0)
+    /// Weight of this check in the overall health, from 0.0 to 1.0
     pub weight: f32,
 
-    /// Whether this check is critical for overall health
+    /// Whether a failure of this check makes the whole app unhealthy
     pub critical: bool,
 }
 
 impl HealthCheck {
-    /// System resource health check
+    /// System resource check. Limits are 80% CPU, 85% memory and 90% disk.
     pub fn system_resource() -> Self {
         let mut config = HashMap::new();
         config.insert("max_cpu_percent".to_string(), "80".to_string());
@@ -287,7 +295,8 @@ impl HealthCheck {
         }
     }
 
-    /// Event processing health check
+    /// Event processing check. Limits are 1000 ms latency, at least 100 events per
+    /// second and at most 1% errors.
     pub fn event_processing() -> Self {
         let mut config = HashMap::new();
         config.insert("max_processing_latency_ms".to_string(), "1000".to_string());
@@ -303,7 +312,8 @@ impl HealthCheck {
         }
     }
 
-    /// State persistence health check
+    /// State persistence check. Limits are a checkpoint at most 10 minutes old and a
+    /// checkpoint success rate of at least 0.95.
     pub fn state_persistence() -> Self {
         let mut config = HashMap::new();
         config.insert("max_checkpoint_age_minutes".to_string(), "10".to_string());
@@ -344,22 +354,22 @@ pub enum HealthCheckType {
     HttpEndpoint,
 }
 
-/// Probe configuration for Kubernetes-style health checks
+/// Probe settings in the style of Kubernetes startup, readiness and liveness probes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProbeConfig {
-    /// Initial delay before first probe
+    /// Wait before the first probe
     pub initial_delay: Duration,
 
-    /// Interval between probes
+    /// Time between probes
     pub period: Duration,
 
-    /// Probe timeout
+    /// Time allowed for one probe
     pub timeout: Duration,
 
-    /// Failure threshold
+    /// Failures in a row before the probe fails
     pub failure_threshold: u32,
 
-    /// Success threshold
+    /// Successes in a row before the probe passes again
     pub success_threshold: u32,
 }
 
@@ -434,14 +444,14 @@ impl ProbeConfig {
 /// Metrics collection configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MetricsConfig {
-    /// Enable metrics collection
+    /// Turn metrics collection on or off
     pub enabled: bool,
 
-    /// Metrics collection interval
+    /// Time between collections. Defaults to 15 seconds.
     #[serde(with = "duration_serde")]
     pub collection_interval: Duration,
 
-    /// Metrics retention period
+    /// How long metrics are kept. Defaults to 1 hour.
     #[serde(with = "duration_serde")]
     pub retention_period: Duration,
 
@@ -471,7 +481,7 @@ impl Default for MetricsConfig {
 }
 
 impl MetricsConfig {
-    /// Development configuration
+    /// Preset for development
     pub fn development() -> Self {
         Self {
             collection_interval: Duration::from_secs(5), // More frequent
@@ -480,7 +490,7 @@ impl MetricsConfig {
         }
     }
 
-    /// Production configuration
+    /// Preset for production. Exports to Prometheus and OpenTelemetry.
     pub fn production() -> Self {
         Self {
             collection_interval: Duration::from_secs(30),
@@ -493,7 +503,7 @@ impl MetricsConfig {
         }
     }
 
-    /// Kubernetes configuration
+    /// Preset for Kubernetes. Exports to Prometheus and OpenTelemetry.
     pub fn kubernetes() -> Self {
         Self {
             collection_interval: Duration::from_secs(15),
@@ -506,7 +516,10 @@ impl MetricsConfig {
         }
     }
 
-    /// Merge another metrics configuration
+    /// Merge `other` into this config.
+    ///
+    /// Scalar fields always take the value from `other`. Each list is replaced only
+    /// when the list in `other` is not empty.
     pub fn merge(&mut self, other: MetricsConfig) {
         self.enabled = other.enabled;
         self.collection_interval = other.collection_interval;
@@ -535,7 +548,7 @@ pub struct MetricsExporter {
     /// Exporter type
     pub exporter_type: MetricsExporterType,
 
-    /// Exporter-specific configuration
+    /// Settings for this exporter
     pub config: HashMap<String, String>,
 
     /// Whether this exporter is enabled
@@ -543,7 +556,7 @@ pub struct MetricsExporter {
 }
 
 impl MetricsExporter {
-    /// Default Prometheus exporter
+    /// Prometheus exporter on port 9090 at `/metrics`
     pub fn prometheus_default() -> Self {
         let mut config = HashMap::new();
         config.insert("endpoint".to_string(), "/metrics".to_string());
@@ -557,7 +570,7 @@ impl MetricsExporter {
         }
     }
 
-    /// Prometheus exporter for Kubernetes
+    /// Prometheus exporter for Kubernetes, on port 8080 at `/metrics`
     pub fn prometheus_kubernetes() -> Self {
         let mut config = HashMap::new();
         config.insert("endpoint".to_string(), "/metrics".to_string());
@@ -572,7 +585,7 @@ impl MetricsExporter {
         }
     }
 
-    /// Default OpenTelemetry exporter
+    /// OpenTelemetry exporter over gRPC to `http://localhost:4317`
     pub fn opentelemetry_default() -> Self {
         let mut config = HashMap::new();
         config.insert("endpoint".to_string(), "http://localhost:4317".to_string());
@@ -586,7 +599,8 @@ impl MetricsExporter {
         }
     }
 
-    /// OpenTelemetry exporter for Kubernetes
+    /// OpenTelemetry exporter for Kubernetes, over gRPC to the in cluster collector.
+    /// The `headers` value holds a `YOUR_API_KEY` placeholder that must be replaced.
     pub fn opentelemetry_kubernetes() -> Self {
         let mut config = HashMap::new();
         config.insert(
@@ -623,7 +637,7 @@ pub enum MetricsExporterType {
     /// Custom metrics exporter
     Custom,
 
-    /// Log-based metrics
+    /// Metrics written to the log
     Log,
 }
 
@@ -642,7 +656,7 @@ pub struct CustomMetric {
     /// Metric labels
     pub labels: Vec<String>,
 
-    /// Collection query/expression
+    /// Query or expression that produces the value
     pub query: String,
 }
 
@@ -665,10 +679,10 @@ pub enum MetricType {
 /// Alerting configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertingConfig {
-    /// Enable alerting
+    /// Turn alerting on or off
     pub enabled: bool,
 
-    /// Alert evaluation interval
+    /// Time between alert rule checks. Defaults to 60 seconds.
     #[serde(with = "duration_serde")]
     pub evaluation_interval: Duration,
 
@@ -691,7 +705,7 @@ impl Default for AlertingConfig {
 }
 
 impl AlertingConfig {
-    /// Production alerting configuration
+    /// Preset for production. The four built in rules, sent by email.
     pub fn production() -> Self {
         Self {
             enabled: true,
@@ -706,7 +720,8 @@ impl AlertingConfig {
         }
     }
 
-    /// Kubernetes alerting configuration
+    /// Preset for Kubernetes. The four built in rules, checked every 30 seconds and
+    /// sent to Slack.
     pub fn kubernetes() -> Self {
         Self {
             enabled: true,
@@ -728,10 +743,10 @@ pub struct AlertRule {
     /// Alert name
     pub name: String,
 
-    /// Alert expression (PromQL-like)
+    /// Alert condition, written like a PromQL expression
     pub expression: String,
 
-    /// Duration before firing
+    /// How long the condition must hold before the alert fires
     pub for_duration: Duration,
 
     /// Alert labels
@@ -742,7 +757,7 @@ pub struct AlertRule {
 }
 
 impl AlertRule {
-    /// High CPU usage alert
+    /// Warning when CPU usage stays above 80% for 5 minutes
     pub fn high_cpu_usage() -> Self {
         let mut labels = HashMap::new();
         labels.insert("severity".to_string(), "warning".to_string());
@@ -763,7 +778,7 @@ impl AlertRule {
         }
     }
 
-    /// High memory usage alert
+    /// Warning when memory usage stays above 85% for 5 minutes
     pub fn high_memory_usage() -> Self {
         let mut labels = HashMap::new();
         labels.insert("severity".to_string(), "warning".to_string());
@@ -783,7 +798,7 @@ impl AlertRule {
         }
     }
 
-    /// High processing latency alert
+    /// Critical alert when p99 processing latency stays above 1000 for 1 minute
     pub fn high_processing_latency() -> Self {
         let mut labels = HashMap::new();
         labels.insert("severity".to_string(), "critical".to_string());
@@ -797,7 +812,7 @@ impl AlertRule {
         }
     }
 
-    /// Checkpoint failure alert
+    /// Critical alert when the checkpoint failure rate stays above 0.1 for 2 minutes
     pub fn checkpoint_failure() -> Self {
         let mut labels = HashMap::new();
         labels.insert("severity".to_string(), "critical".to_string());
@@ -829,7 +844,8 @@ pub struct NotificationChannel {
 }
 
 impl NotificationChannel {
-    /// Default Slack notification channel
+    /// Slack channel `#eventflux-alerts`. The webhook URL comes from
+    /// `${SLACK_WEBHOOK_URL}`.
     pub fn slack_default() -> Self {
         let mut config = HashMap::new();
         config.insert(
@@ -846,7 +862,8 @@ impl NotificationChannel {
         }
     }
 
-    /// Default Email notification channel
+    /// Email channel. Server and addresses come from `${SMTP_SERVER}`, `${FROM_EMAIL}`
+    /// and `${ALERT_EMAIL_LIST}`.
     pub fn email_default() -> Self {
         let mut config = HashMap::new();
         config.insert("smtp_server".to_string(), "${SMTP_SERVER}".to_string());
@@ -923,13 +940,13 @@ impl ObservabilityConfig {
 /// Tracing configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TracingConfig {
-    /// Enable distributed tracing
+    /// Turn tracing across services on or off
     pub enabled: bool,
 
-    /// Tracing exporter type
+    /// Where traces are sent
     pub exporter: TracingExporter,
 
-    /// Sample rate (0.0 to 1.0)
+    /// Share of requests to trace, from 0.0 to 1.0
     pub sample_rate: f64,
 
     /// Service name for tracing
@@ -995,7 +1012,7 @@ pub enum TracingExporter {
     /// Jaeger tracing
     Jaeger,
 
-    /// Zipkin tracing  
+    /// Zipkin tracing
     Zipkin,
 
     /// OpenTelemetry
@@ -1005,16 +1022,16 @@ pub enum TracingExporter {
 /// Logging configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LoggingConfig {
-    /// Log level
+    /// Log level, such as "debug" or "info"
     pub level: String,
 
     /// Log format
     pub format: LogFormat,
 
-    /// Log output destinations
+    /// Where logs are written
     pub outputs: Vec<LogOutput>,
 
-    /// Structured logging fields
+    /// Fields added to each structured log entry
     pub structured_fields: Vec<String>,
 }
 
@@ -1099,19 +1116,19 @@ pub enum LogOutput {
 /// Endpoint configuration for monitoring services
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EndpointConfig {
-    /// Health check endpoint
+    /// Health check path. Defaults to "/health".
     pub health_endpoint: String,
 
-    /// Metrics endpoint
+    /// Metrics path. Defaults to "/metrics".
     pub metrics_endpoint: String,
 
-    /// Port for monitoring endpoints
+    /// Port for both endpoints. Defaults to 8080.
     pub port: u16,
 
-    /// Bind address
+    /// Address to listen on. Defaults to "0.0.0.0".
     pub bind_address: String,
 
-    /// Enable HTTPS
+    /// Serve over HTTPS. Defaults to false.
     pub tls_enabled: bool,
 }
 
@@ -1161,7 +1178,7 @@ impl EndpointConfig {
         }
     }
 
-    /// Merge another endpoint configuration
+    /// Merge `other` into this config. Every field takes the value from `other`.
     pub fn merge(&mut self, other: EndpointConfig) {
         self.health_endpoint = other.health_endpoint;
         self.metrics_endpoint = other.metrics_endpoint;
@@ -1180,10 +1197,10 @@ pub struct HealthStatus {
     /// Individual check results
     pub checks: HashMap<String, CheckResult>,
 
-    /// Overall health score (0.0 to 1.0)
+    /// Overall health score, from 0.0 to 1.0
     pub score: f32,
 
-    /// Last check timestamp
+    /// Time of the last check, in UTC
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
@@ -1212,10 +1229,10 @@ pub struct CheckResult {
     /// Check message
     pub message: String,
 
-    /// Check duration
+    /// How long the check took
     pub duration: Duration,
 
-    /// Check-specific data
+    /// Extra data reported by the check
     pub data: HashMap<String, serde_json::Value>,
 }
 

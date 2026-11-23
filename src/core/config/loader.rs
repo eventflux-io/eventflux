@@ -17,7 +17,8 @@
 
 //! Configuration Loaders
 //!
-//! Implements various configuration loaders for different sources (YAML files, Kubernetes, etc.).
+//! Loaders that read configuration from YAML files, environment variables, Kubernetes
+//! ConfigMaps and TOML files.
 
 use crate::core::config::{ConfigError, ConfigResult, EventFluxConfig};
 use async_trait::async_trait;
@@ -25,16 +26,16 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Trait for configuration loaders
+/// A source of configuration.
 #[async_trait]
 pub trait ConfigLoader: Send + Sync + std::fmt::Debug {
-    /// Load configuration from the source
+    /// Load configuration from the source. Returns `None` when the source has none.
     async fn load(&self) -> ConfigResult<Option<EventFluxConfig>>;
 
-    /// Check if this loader is available/configured
+    /// Check if this loader can be used right now.
     fn is_available(&self) -> bool;
 
-    /// Get the priority of this loader (higher = more priority)
+    /// Priority of this loader. A higher number wins.
     fn priority(&self) -> u32;
 
     /// Get a description of this loader
@@ -47,7 +48,7 @@ pub struct YamlConfigLoader {
     /// Paths to search for configuration files
     search_paths: Vec<PathBuf>,
 
-    /// Specific file path (takes precedence over search paths)
+    /// Exact file to load. When set, the search paths are ignored.
     file_path: Option<PathBuf>,
 
     /// Whether to fail if no configuration file is found
@@ -55,7 +56,10 @@ pub struct YamlConfigLoader {
 }
 
 impl YamlConfigLoader {
-    /// Create a new YAML loader with default search paths
+    /// Create a YAML loader that searches the default paths. The file is optional.
+    ///
+    /// Searches, in order, the current directory, `./config`, the user config
+    /// directory plus `eventflux`, `/etc/eventflux` and `/usr/local/etc/eventflux`.
     pub fn new() -> Self {
         let mut search_paths = vec![
             PathBuf::from("."),      // Current directory
@@ -78,7 +82,7 @@ impl YamlConfigLoader {
         }
     }
 
-    /// Create a YAML loader for a specific file
+    /// Create a YAML loader for one file. The file is required by default.
     pub fn from_file<P: Into<PathBuf>>(path: P) -> Self {
         Self {
             search_paths: vec![],
@@ -87,19 +91,22 @@ impl YamlConfigLoader {
         }
     }
 
-    /// Set whether configuration file is required
+    /// Set whether a missing configuration file is an error
     pub fn required(mut self, required: bool) -> Self {
         self.required = required;
         self
     }
 
-    /// Add a search path
+    /// Add a search path. It is searched after the existing ones.
     pub fn add_search_path<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.search_paths.push(path.into());
         self
     }
 
-    /// Find configuration file in search paths
+    /// Find the configuration file.
+    ///
+    /// Returns the explicit file if it exists. Otherwise tries each search path in
+    /// order and each known file name in order, and returns the first file found.
     fn find_config_file(&self) -> Option<PathBuf> {
         if let Some(ref path) = self.file_path {
             if path.exists() {
@@ -129,7 +136,12 @@ impl YamlConfigLoader {
         None
     }
 
-    /// Load configuration from a specific file
+    /// Load configuration from a specific file, expanding `${...}` references first.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IoError` if the file cannot be read, `EnvironmentVariableNotFound` for
+    /// an unset `${VAR}` with no default, and `YamlParseError` if the YAML is invalid.
     pub async fn load_file<P: AsRef<Path>>(&self, path: P) -> ConfigResult<EventFluxConfig> {
         let path = path.as_ref();
         let content = fs::read_to_string(path).map_err(ConfigError::IoError)?;
@@ -137,18 +149,20 @@ impl YamlConfigLoader {
         self.parse_yaml_content(&content, path.to_string_lossy().as_ref())
     }
 
-    /// Parse YAML content into configuration
+    /// Expand environment variables in `content`, then parse it as YAML.
+    /// `source` names the input in error messages.
     fn parse_yaml_content(&self, content: &str, source: &str) -> ConfigResult<EventFluxConfig> {
-        // Perform environment variable substitution
         let expanded_content = self.expand_environment_variables(content)?;
 
-        // Parse YAML
         serde_yaml::from_str(&expanded_content)
             .map_err(|e| ConfigError::yaml_parse_error(source, e.to_string()))
     }
 
-    /// Expand environment variables in YAML content
-    /// Supports ${VAR}, ${VAR:-default}, and ${VAR:default} formats
+    /// Replace each `${...}` in the YAML text with its environment variable value.
+    ///
+    /// Supports `${VAR}`, `${VAR:-default}` and `${VAR:default}`. See
+    /// `resolve_env_variable` for how each one behaves. References inside YAML
+    /// comments are expanded too.
     fn expand_environment_variables(&self, content: &str) -> ConfigResult<String> {
         use regex::Regex;
 
@@ -166,21 +180,18 @@ impl YamlConfigLoader {
         Ok(result)
     }
 
-    /// Resolve a single environment variable expression
+    /// Resolve the text inside one `${...}`.
+    ///
+    /// * `VAR:-default` uses the default only when VAR is unset. An empty VAR stays empty.
+    /// * `VAR:default` uses the default when VAR is unset or empty.
+    /// * `VAR` fails with `EnvironmentVariableNotFound` when VAR is unset.
     fn resolve_env_variable(&self, expr: &str) -> ConfigResult<String> {
-        // Parse different formats:
-        // VAR
-        // VAR:-default
-        // VAR:default
-
         if let Some(pos) = expr.find(":-") {
-            // Format: VAR:-default
             let var_name = &expr[..pos];
             let default_value = &expr[pos + 2..];
 
             Ok(std::env::var(var_name).unwrap_or_else(|_| default_value.to_string()))
         } else if let Some(pos) = expr.find(':') {
-            // Format: VAR:default
             let var_name = &expr[..pos];
             let default_value = &expr[pos + 1..];
 
@@ -191,7 +202,6 @@ impl YamlConfigLoader {
                 Ok(env_value)
             }
         } else {
-            // Format: VAR
             std::env::var(expr).map_err(|_| ConfigError::env_var_not_found(expr))
         }
     }
@@ -237,9 +247,9 @@ impl ConfigLoader for YamlConfigLoader {
 
     fn priority(&self) -> u32 {
         if self.file_path.is_some() {
-            100 // Explicit file path has highest priority
+            100 // An explicit file beats every other loader
         } else {
-            50 // Search path has medium priority
+            50 // A searched file sits below environment variables
         }
     }
 
@@ -252,7 +262,7 @@ impl ConfigLoader for YamlConfigLoader {
     }
 }
 
-/// Environment variable configuration loader
+/// Loads configuration from environment variables that start with a prefix.
 #[derive(Debug, Clone)]
 pub struct EnvironmentConfigLoader {
     /// Prefix for environment variables
@@ -260,33 +270,46 @@ pub struct EnvironmentConfigLoader {
 }
 
 impl EnvironmentConfigLoader {
-    /// Create a new environment variable loader
+    /// Create a loader for variables that start with `EVENTFLUX_`.
     pub fn new() -> Self {
         Self {
             prefix: "EVENTFLUX_".to_string(),
         }
     }
 
-    /// Create with custom prefix
+    /// Create a loader for variables that start with `prefix`.
     pub fn with_prefix(prefix: impl Into<String>) -> Self {
         Self {
             prefix: prefix.into(),
         }
     }
 
-    /// Load environment variables into a configuration overlay
+    /// Collect the prefixed variables, keyed by config path.
+    ///
+    /// The prefix is dropped, the rest is lowercased and every `_` becomes `.`. So
+    /// `EVENTFLUX_RUNTIME_MODE` becomes `runtime.mode`.
     fn load_env_vars(&self) -> HashMap<String, String> {
         std::env::vars()
             .filter(|(key, _)| key.starts_with(&self.prefix))
             .map(|(key, value)| {
-                // Remove prefix and convert to lowercase with underscores to dots
                 let config_key = key[self.prefix.len()..].to_lowercase().replace('_', ".");
                 (config_key, value)
             })
             .collect()
     }
 
-    /// Convert environment variables to partial configuration
+    /// Build a config from the collected variables.
+    ///
+    /// Starts from `EventFluxConfig::default()` and sets only the supported keys:
+    /// `runtime.mode`, `runtime.performance.thread.pool.size`,
+    /// `runtime.performance.event.buffer.size`, `runtime.performance.batch.processing`
+    /// and `observability.metrics.enabled`. Unknown keys print a warning to stderr
+    /// and are skipped. Returns `None` when there are no variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidEnvironmentVariable` when a supported key has a value that
+    /// does not parse.
     async fn env_vars_to_config(
         &self,
         env_vars: HashMap<String, String>,
@@ -295,8 +318,8 @@ impl EnvironmentConfigLoader {
             return Ok(None);
         }
 
-        // This is a simplified implementation that handles common configuration overrides
-        // A full implementation would need to handle the complete configuration structure
+        // Only a handful of common keys are mapped. Other config fields cannot be set
+        // from the environment yet.
 
         let mut config = EventFluxConfig::default();
         let mut has_changes = false;
@@ -369,7 +392,7 @@ impl EnvironmentConfigLoader {
                     }
                 }
                 _ => {
-                    // For unknown keys, we could log a warning but continue
+                    // Unknown keys are reported and skipped, not treated as errors
                     eprintln!(
                         "Warning: Unknown configuration environment variable: {}",
                         key
@@ -392,7 +415,7 @@ impl Default for EnvironmentConfigLoader {
     }
 }
 
-/// Environment Configuration Loader with custom priority
+/// [`EnvironmentConfigLoader`] with a priority chosen by the caller instead of 80.
 #[derive(Debug, Clone)]
 pub struct EnvironmentConfigLoaderWithPriority {
     base: EnvironmentConfigLoader,
@@ -400,7 +423,7 @@ pub struct EnvironmentConfigLoaderWithPriority {
 }
 
 impl EnvironmentConfigLoaderWithPriority {
-    /// Create a new environment loader with custom priority
+    /// Create an `EVENTFLUX_` environment loader with the given priority
     pub fn new(priority: u32) -> Self {
         Self {
             base: EnvironmentConfigLoader::new(),
@@ -440,7 +463,7 @@ impl ConfigLoader for EnvironmentConfigLoader {
     }
 
     fn priority(&self) -> u32 {
-        80 // Environment variables have high priority
+        80 // Above searched files, below explicit files
     }
 
     fn description(&self) -> String {
@@ -448,7 +471,7 @@ impl ConfigLoader for EnvironmentConfigLoader {
     }
 }
 
-/// Kubernetes ConfigMap loader
+/// Loads YAML configuration from one key of a Kubernetes ConfigMap.
 #[cfg(feature = "kubernetes")]
 #[derive(Debug, Clone)]
 pub struct KubernetesConfigMapLoader {
@@ -459,7 +482,10 @@ pub struct KubernetesConfigMapLoader {
 
 #[cfg(feature = "kubernetes")]
 impl KubernetesConfigMapLoader {
-    /// Create a new Kubernetes ConfigMap loader
+    /// Create a loader for the named ConfigMap.
+    ///
+    /// Reads the `eventflux-config.yaml` key in the `default` namespace unless
+    /// changed with `with_key` and `with_namespace`.
     pub fn new(config_map_name: impl Into<String>) -> Self {
         Self {
             namespace: None,
@@ -480,7 +506,10 @@ impl KubernetesConfigMapLoader {
         self
     }
 
-    /// Load configuration from Kubernetes ConfigMap
+    /// Fetch the raw YAML text from the ConfigMap.
+    ///
+    /// Returns `None` if the ConfigMap does not exist (HTTP 404), has no data, or has
+    /// no entry for the key. Other API failures return `KubernetesError`.
     async fn load_from_k8s(&self) -> ConfigResult<Option<String>> {
         use k8s_openapi::api::core::v1::ConfigMap;
         use kube::{Api, Client};
@@ -507,7 +536,7 @@ impl KubernetesConfigMapLoader {
                 }
             }
             Err(kube::Error::Api(kube::error::ErrorResponse { code: 404, .. })) => {
-                // ConfigMap not found
+                // A missing ConfigMap is not an error
                 Ok(None)
             }
             Err(e) => Err(ConfigError::KubernetesError {
@@ -538,12 +567,12 @@ impl ConfigLoader for KubernetesConfigMapLoader {
     }
 
     fn is_available(&self) -> bool {
-        // Check if we're running in Kubernetes
+        // Kubernetes sets this variable in every pod
         std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
     }
 
     fn priority(&self) -> u32 {
-        70 // Kubernetes ConfigMaps have high priority in containerized environments
+        70 // Above searched files, below environment variables
     }
 
     fn description(&self) -> String {
@@ -558,18 +587,17 @@ impl ConfigLoader for KubernetesConfigMapLoader {
 
 /// TOML file configuration loader
 ///
-/// This loader reads TOML configuration files and does NOT load them into EventFluxConfig.
-/// Instead, it provides stream-level FlatConfig instances that can be merged with SQL WITH clauses.
+/// Reads TOML files but does not turn them into an EventFluxConfig. It gives one
+/// FlatConfig per stream or table, which can be merged with SQL WITH clauses.
 ///
-/// **Note**: This loader is different from other loaders. It returns None from the ConfigLoader trait
-/// because TOML configs are stream-specific and need to be accessed differently through
-/// the `load_toml_config()` function.
+/// **Note**: Unlike the other loaders, `ConfigLoader::load` always returns `None`.
+/// Use `load_toml_stream_configs()` and `load_toml_table_configs()` instead.
 #[derive(Debug, Clone)]
 pub struct TomlConfigLoader {
     /// Paths to search for TOML configuration files
     search_paths: Vec<PathBuf>,
 
-    /// Specific file path (takes precedence over search paths)
+    /// Exact file to load. When set, the search paths are ignored.
     file_path: Option<PathBuf>,
 
     /// Whether to fail if no configuration file is found
@@ -577,7 +605,9 @@ pub struct TomlConfigLoader {
 }
 
 impl TomlConfigLoader {
-    /// Create a new TOML loader with default search paths
+    /// Create a TOML loader that searches the default paths. The file is optional.
+    ///
+    /// Uses the same search paths as [`YamlConfigLoader::new`].
     pub fn new() -> Self {
         let mut search_paths = vec![
             PathBuf::from("."),      // Current directory
@@ -600,7 +630,7 @@ impl TomlConfigLoader {
         }
     }
 
-    /// Create a TOML loader for a specific file
+    /// Create a TOML loader for one file. The file is required by default.
     pub fn from_file<P: Into<PathBuf>>(path: P) -> Self {
         Self {
             search_paths: vec![],
@@ -609,19 +639,19 @@ impl TomlConfigLoader {
         }
     }
 
-    /// Set whether configuration file is required
+    /// Set whether a missing configuration file is an error
     pub fn required(mut self, required: bool) -> Self {
         self.required = required;
         self
     }
 
-    /// Add a search path
+    /// Add a search path. It is searched after the existing ones.
     pub fn add_search_path<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.search_paths.push(path.into());
         self
     }
 
-    /// Find TOML configuration file in search paths
+    /// Find the TOML file, the same way as [`YamlConfigLoader`] but with TOML file names.
     fn find_config_file(&self) -> Option<PathBuf> {
         if let Some(ref path) = self.file_path {
             if path.exists() {
@@ -644,10 +674,15 @@ impl TomlConfigLoader {
         None
     }
 
-    /// Load TOML configuration and return stream configs
+    /// Load the TOML file and return the stream configs, keyed by stream name.
     ///
-    /// This returns a HashMap of stream names to their FlatConfig instances.
-    /// Tables are loaded separately via `load_toml_table_configs()`.
+    /// Tables come from `load_toml_table_configs()`. Returns `None` when no file is
+    /// found and the file is not required.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FileNotFound` when a required file is missing, and `InternalError` if
+    /// the path is not valid UTF-8 or the TOML fails to load.
     pub fn load_toml_stream_configs(
         &self,
     ) -> ConfigResult<Option<HashMap<String, crate::core::config::FlatConfig>>> {
@@ -658,7 +693,6 @@ impl TomlConfigLoader {
             )
             .map_err(|e| ConfigError::internal_error(format!("TOML loading failed: {}", e)))?;
 
-            // Return only stream configurations (tables are separate)
             Ok(Some(loaded_config.streams))
         } else if self.required {
             let search_info = if let Some(ref path) = self.file_path {
@@ -682,10 +716,10 @@ impl TomlConfigLoader {
         }
     }
 
-    /// Load TOML configuration and return table configs
+    /// Load the TOML file and return the table configs, keyed by table name.
     ///
-    /// This returns a HashMap of table names to their FlatConfig instances.
-    /// Streams are loaded separately via `load_toml_stream_configs()`.
+    /// Streams come from `load_toml_stream_configs()`. Returns `None` and errors the
+    /// same way.
     pub fn load_toml_table_configs(
         &self,
     ) -> ConfigResult<Option<HashMap<String, crate::core::config::FlatConfig>>> {
@@ -696,7 +730,6 @@ impl TomlConfigLoader {
             )
             .map_err(|e| ConfigError::internal_error(format!("TOML loading failed: {}", e)))?;
 
-            // Return only table configurations (streams are separate)
             Ok(Some(loaded_config.tables))
         } else if self.required {
             let search_info = if let Some(ref path) = self.file_path {
@@ -729,12 +762,11 @@ impl Default for TomlConfigLoader {
 
 #[async_trait]
 impl ConfigLoader for TomlConfigLoader {
-    /// TOML configs are stream-specific and don't load into EventFluxConfig
+    /// Always returns `None`. TOML configs belong to single streams and tables, not to
+    /// EventFluxConfig.
     ///
-    /// Use `load_toml_stream_configs()` instead to get stream-level configurations.
+    /// Use `load_toml_stream_configs()` and `load_toml_table_configs()` instead.
     async fn load(&self) -> ConfigResult<Option<EventFluxConfig>> {
-        // TOML configurations are stream-specific and handled separately
-        // from the main EventFluxConfig structure
         Ok(None)
     }
 
@@ -744,9 +776,9 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn priority(&self) -> u32 {
         if self.file_path.is_some() {
-            95 // Slightly lower than explicit YAML files but higher than search paths
+            95 // Just below an explicit YAML file
         } else {
-            45 // Medium priority for search paths
+            45 // Just below a searched YAML file
         }
     }
 
@@ -787,7 +819,7 @@ apiVersion: eventflux.io/v1
 kind: EventFluxConfig
 metadata:
   name: test-config
-  
+
 eventflux:
   runtime:
     mode: single-node
@@ -820,7 +852,7 @@ kind: EventFluxConfig
 metadata:
   name: ${APP_NAME:-default-app}
   namespace: ${NAMESPACE}
-  
+
 eventflux:
   runtime:
     mode: single-node
@@ -956,6 +988,6 @@ eventflux:
         std::env::remove_var("EVENTFLUX_TEST");
         assert!(!loader.is_available());
 
-        // Restore existing variables if any (though we can't get their values back)
+        // The removed variables are not restored because their values were not saved
     }
 }

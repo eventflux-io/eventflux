@@ -17,9 +17,9 @@
 
 //! Extension System for EventFlux
 //!
-//! This module provides the factory traits and registration mechanisms for all
-//! extension points in EventFlux. Extensions are registered in `EventFluxContext`
-//! and looked up by name during query compilation.
+//! Factory traits for every EventFlux extension point, plus a few built in factories.
+//! Extensions are registered in `EventFluxContext` and looked up by name while queries
+//! are compiled.
 //!
 //! # Extension Types
 //!
@@ -31,13 +31,13 @@
 //! | Scalar Functions | `ScalarFunctionExecutor` | `convert()`, `coalesce()`, `abs()` |
 //! | Sources | `SourceFactory` | Kafka, HTTP, Timer sources |
 //! | Sinks | `SinkFactory` | Kafka, HTTP, Log sinks |
-//! | Mappers | `SourceMapperFactory`, `SinkMapperFactory` | JSON, CSV, Avro mappers |
+//! | Mappers | `SourceMapperFactory`, `SinkMapperFactory` | JSON, CSV, bytes mappers |
 //! | Tables | `TableFactory` | InMemory, JDBC, Cache tables |
 //!
 //! # Registration
 //!
-//! All built-in extensions are registered in `EventFluxContext::register_default_extensions()`.
-//! Custom extensions can be registered via `EventFluxContext::add_*_factory()` methods.
+//! All built in extensions are registered in `EventFluxContext::register_default_extensions()`.
+//! Register custom extensions with the `EventFluxContext::add_*_factory()` methods.
 //!
 //! # Example: Adding a Custom Aggregator
 //!
@@ -67,9 +67,9 @@ use std::sync::{Arc, Mutex};
 use crate::core::function::script::Script;
 use crate::core::store::Store;
 
-// Re-export mapper factory traits from their canonical location
+// Re-export the mapper factory traits from where they are defined
 pub use crate::core::stream::mapper::factory::{
-    // Also export the concrete factories for convenience
+    // The built in mapper factories too, so callers need one import path
     BytesSinkMapperFactory,
     BytesSourceMapperFactory,
     CsvSinkMapperFactory,
@@ -110,14 +110,16 @@ pub trait AttributeAggregatorFactory: Debug + Send + Sync {
     fn create(&self) -> Box<dyn AttributeAggregatorExecutor>;
     fn clone_box(&self) -> Box<dyn AttributeAggregatorFactory>;
 
-    /// Number of arguments expected (0 for count(), 1 for sum(x), etc.)
+    /// Number of arguments expected, such as 0 for count() or 1 for sum(x). Defaults to 1.
     fn arity(&self) -> usize {
         1
     }
 
-    /// Compute return type based on argument types
+    /// Work out the return type from the argument types.
+    ///
+    /// The default returns LONG when there are no arguments, as for count(), and
+    /// DOUBLE otherwise. It never returns an error.
     fn return_type(&self, arg_types: &[ApiAttributeType]) -> Result<ApiAttributeType, String> {
-        // Default: return DOUBLE for numeric aggregations
         if arg_types.is_empty() {
             Ok(ApiAttributeType::LONG) // count()
         } else {
@@ -125,7 +127,7 @@ pub trait AttributeAggregatorFactory: Debug + Send + Sync {
         }
     }
 
-    /// Description for documentation/help
+    /// Description for docs and help text. Empty by default.
     fn description(&self) -> &str {
         ""
     }
@@ -142,10 +144,9 @@ impl Clone for Box<dyn AttributeAggregatorFactory> {
 
 /// Trait for collection aggregation functions used in pattern queries.
 ///
-/// Collection aggregations operate over bounded event collections created by
-/// count quantifiers (e.g., `e1{3,5}`). Unlike window aggregators which use
-/// incremental add/remove semantics, collection aggregations perform batch
-/// computation over complete collections.
+/// They work on the fixed size groups of events that count quantifiers such as
+/// `e1{3,5}` collect. Window aggregators update as each event is added or removed.
+/// Collection aggregations instead compute once over the whole group.
 ///
 /// # Example
 ///
@@ -182,34 +183,37 @@ impl Clone for Box<dyn AttributeAggregatorFactory> {
 /// }
 /// ```
 pub trait CollectionAggregationFunction: Debug + Send + Sync {
-    /// Unique name for this aggregation function (e.g., "sum", "avg", "median")
+    /// Unique name of the function, such as "sum", "avg" or "median"
     fn name(&self) -> &'static str;
 
     /// Aggregate over a slice of numeric values.
     ///
-    /// Returns `None` if the slice is empty or if no valid values exist.
-    /// This matches SQL NULL semantics for aggregations over empty sets.
+    /// Should return `None` when there are no values to aggregate, which matches SQL
+    /// NULL for an aggregate over an empty set. `count` is the exception and returns
+    /// 0.
     fn aggregate(&self, values: &[f64]) -> Option<f64>;
 
-    /// Whether this function supports count-only mode (no attribute needed).
+    /// Whether the function can run with no attribute. Defaults to false.
     ///
-    /// When `true`, `count(e1)` is valid and counts events in the collection.
-    /// When `false`, an attribute must be provided (e.g., `sum(e1.price)`).
+    /// When `true`, `count(e1)` is valid and counts the events in the collection.
+    /// When `false`, an attribute must be given, as in `sum(e1.price)`.
     fn supports_count_only(&self) -> bool {
         false
     }
 
-    /// Determine the return type based on the input attribute type.
+    /// Work out the return type from the input attribute type.
     ///
-    /// - `avg` always returns DOUBLE
-    /// - `sum` preserves the input type (INT → LONG, FLOAT → DOUBLE)
-    /// - `min`/`max` preserve the input type
+    /// For the built in functions:
+    /// - `avg` and `stdDev` always return DOUBLE
+    /// - `sum` returns LONG for INT or LONG input, and DOUBLE otherwise
+    /// - `min` and `max` keep the input type
+    /// - `count` always returns LONG
     fn return_type(&self, input_type: ApiAttributeType) -> ApiAttributeType;
 
-    /// Clone this function for registry storage.
+    /// Clone this function so the registry can hand out copies.
     fn clone_box(&self) -> Box<dyn CollectionAggregationFunction>;
 
-    /// Description for documentation/help
+    /// Description for docs and help text. Empty by default.
     fn description(&self) -> &str {
         ""
     }
@@ -222,10 +226,11 @@ impl Clone for Box<dyn CollectionAggregationFunction> {
 }
 
 // ============================================================================
-// Built-in Collection Aggregation Functions
+// Built in Collection Aggregation Functions
 // ============================================================================
 
-/// Collection count function: `count(e1)` - counts events in collection
+/// `count(e1)`. Counts the events in the collection. Returns 0, not `None`, when it
+/// is empty.
 #[derive(Debug, Clone)]
 pub struct CollectionCountFunction;
 
@@ -255,7 +260,7 @@ impl CollectionAggregationFunction for CollectionCountFunction {
     }
 }
 
-/// Collection sum function: `sum(e1.price)` - sums attribute values
+/// `sum(e1.price)`. Adds up the attribute values.
 #[derive(Debug, Clone)]
 pub struct CollectionSumFunction;
 
@@ -288,7 +293,7 @@ impl CollectionAggregationFunction for CollectionSumFunction {
     }
 }
 
-/// Collection average function: `avg(e1.price)` - averages attribute values
+/// `avg(e1.price)`. Averages the attribute values.
 #[derive(Debug, Clone)]
 pub struct CollectionAvgFunction;
 
@@ -318,7 +323,7 @@ impl CollectionAggregationFunction for CollectionAvgFunction {
     }
 }
 
-/// Collection min function: `min(e1.price)` - finds minimum value
+/// `min(e1.price)`. Finds the smallest value.
 #[derive(Debug, Clone)]
 pub struct CollectionMinFunction;
 
@@ -344,7 +349,7 @@ impl CollectionAggregationFunction for CollectionMinFunction {
     }
 }
 
-/// Collection max function: `max(e1.price)` - finds maximum value
+/// `max(e1.price)`. Finds the largest value.
 #[derive(Debug, Clone)]
 pub struct CollectionMaxFunction;
 
@@ -370,7 +375,7 @@ impl CollectionAggregationFunction for CollectionMaxFunction {
     }
 }
 
-/// Collection standard deviation function: `stdDev(e1.price)`
+/// `stdDev(e1.price)`. Population standard deviation, which divides by n, not n - 1.
 #[derive(Debug, Clone)]
 pub struct CollectionStdDevFunction;
 
@@ -405,25 +410,23 @@ impl CollectionAggregationFunction for CollectionStdDevFunction {
 pub trait SourceFactory: Debug + Send + Sync {
     fn name(&self) -> &'static str;
 
-    /// List supported formats for this source extension
-    /// Example: &["json", "avro", "bytes"]
-    /// NO DEFAULT - Must be explicitly implemented
+    /// Formats this source supports, such as `&["json", "avro", "bytes"]`.
+    /// Has no default, so every factory must list them.
     fn supported_formats(&self) -> &[&str];
 
-    /// List required configuration properties
-    /// Example: &["kafka.brokers", "kafka.topic"]
-    /// NO DEFAULT - Must be explicitly implemented
+    /// Required configuration properties, such as `&["kafka.brokers", "kafka.topic"]`.
+    /// Has no default, so every factory must list them.
     fn required_parameters(&self) -> &[&str];
 
-    /// List optional configuration properties
-    /// Example: &["kafka.consumer.group", "kafka.security.protocol"]
-    /// NO DEFAULT - Must be explicitly implemented
+    /// Optional configuration properties, such as
+    /// `&["kafka.consumer.group", "kafka.security.protocol"]`.
+    /// Has no default, so every factory must list them.
     fn optional_parameters(&self) -> &[&str];
 
-    /// Create a fully initialized, ready-to-use Source instance
-    /// Validates configuration and returns error if invalid
-    /// Source is guaranteed to be in valid state upon successful return
-    /// NO DEFAULT - Must be explicitly implemented
+    /// Create a source that is ready to use.
+    ///
+    /// Checks `config` first and returns an error if it is invalid, so a returned
+    /// source is always in a valid state. Has no default.
     fn create_initialized(
         &self,
         config: &std::collections::HashMap<String, String>,
@@ -432,9 +435,11 @@ pub trait SourceFactory: Debug + Send + Sync {
         crate::core::exception::EventFluxError,
     >;
 
-    /// Legacy create method for backward compatibility
-    /// Deprecated: Use create_initialized instead
-    /// Returns None if factory requires configuration parameters
+    /// Old creation method, kept for existing callers. Use `create_initialized`
+    /// instead.
+    ///
+    /// Calls `create_initialized` with an empty config, so it returns `None` for any
+    /// factory that needs configuration.
     fn create(&self) -> Option<Box<dyn crate::core::stream::input::source::Source>> {
         self.create_initialized(&std::collections::HashMap::new())
             .ok()
@@ -451,25 +456,22 @@ impl Clone for Box<dyn SourceFactory> {
 pub trait SinkFactory: Debug + Send + Sync {
     fn name(&self) -> &'static str;
 
-    /// List supported formats for this sink extension
-    /// Example: &["json", "csv", "bytes"]
-    /// NO DEFAULT - Must be explicitly implemented
+    /// Formats this sink supports, such as `&["json", "csv", "bytes"]`.
+    /// Has no default, so every factory must list them.
     fn supported_formats(&self) -> &[&str];
 
-    /// List required configuration properties
-    /// Example: &["http.url", "http.method"]
-    /// NO DEFAULT - Must be explicitly implemented
+    /// Required configuration properties, such as `&["http.url", "http.method"]`.
+    /// Has no default, so every factory must list them.
     fn required_parameters(&self) -> &[&str];
 
-    /// List optional configuration properties
-    /// Example: &["http.headers", "http.timeout"]
-    /// NO DEFAULT - Must be explicitly implemented
+    /// Optional configuration properties, such as `&["http.headers", "http.timeout"]`.
+    /// Has no default, so every factory must list them.
     fn optional_parameters(&self) -> &[&str];
 
-    /// Create a fully initialized, ready-to-use Sink instance
-    /// Validates configuration and returns error if invalid
-    /// Sink is guaranteed to be in valid state upon successful return
-    /// NO DEFAULT - Must be explicitly implemented
+    /// Create a sink that is ready to use.
+    ///
+    /// Checks `config` first and returns an error if it is invalid, so a returned
+    /// sink is always in a valid state. Has no default.
     fn create_initialized(
         &self,
         config: &std::collections::HashMap<String, String>,
@@ -478,9 +480,11 @@ pub trait SinkFactory: Debug + Send + Sync {
         crate::core::exception::EventFluxError,
     >;
 
-    /// Legacy create method for backward compatibility
-    /// Deprecated: Use create_initialized instead
-    /// Returns None if factory requires configuration parameters
+    /// Old creation method, kept for existing callers. Use `create_initialized`
+    /// instead.
+    ///
+    /// Calls `create_initialized` with an empty config, so it returns `None` for any
+    /// factory that needs configuration.
     fn create(&self) -> Option<Box<dyn crate::core::stream::output::sink::Sink>> {
         self.create_initialized(&std::collections::HashMap::new())
             .ok()
@@ -544,8 +548,8 @@ impl SourceFactory for TimerSourceFactory {
     }
 
     fn supported_formats(&self) -> &[&str] {
-        // Timer uses internal binary passthrough format (no external format needed)
-        // When no format is specified, PassthroughMapper is automatically used
+        // Timer events pass through in their own binary form, so no format is
+        // needed. PassthroughMapper is used when no format is set.
         &[]
     }
 
@@ -564,7 +568,6 @@ impl SourceFactory for TimerSourceFactory {
         Box<dyn crate::core::stream::input::source::Source>,
         crate::core::exception::EventFluxError,
     > {
-        // Parse optional interval parameter
         let interval_ms = if let Some(interval_str) = config.get("timer.interval") {
             interval_str.parse::<u64>().map_err(|_| {
                 crate::core::exception::EventFluxError::invalid_parameter_with_details(
@@ -596,7 +599,7 @@ impl SinkFactory for LogSinkFactory {
     }
 
     fn supported_formats(&self) -> &[&str] {
-        &["json", "text", "csv", "bytes"] // Log sink accepts all formats
+        &["json", "text", "csv", "bytes"] // Every built in format
     }
 
     fn required_parameters(&self) -> &[&str] {
@@ -604,7 +607,7 @@ impl SinkFactory for LogSinkFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        &["log.prefix", "log.level"] // Optional logging parameters
+        &["log.prefix", "log.level"] // Listed but not read yet, see create_initialized
     }
 
     fn create_initialized(
@@ -614,8 +617,8 @@ impl SinkFactory for LogSinkFactory {
         Box<dyn crate::core::stream::output::sink::Sink>,
         crate::core::exception::EventFluxError,
     > {
-        // LogSink doesn't need configuration validation for now
-        // Future: could add log level validation, prefix customization, etc.
+        // The config is ignored for now, so log.prefix and log.level have no effect.
+        // Checking the log level and using a custom prefix could come later.
         Ok(Box::new(crate::core::stream::output::sink::LogSink::new()))
     }
 
@@ -647,7 +650,7 @@ mod tests {
     fn test_factory_registration() {
         let context = EventFluxContext::new();
 
-        // Test built-in factory registration
+        // The built in factories are registered
         let factory = context.get_source_factory("timer");
         assert!(factory.is_some());
         assert_eq!(factory.unwrap().name(), "timer");
@@ -832,7 +835,7 @@ mod tests {
     fn test_collection_aggregation_functions_registered() {
         let context = EventFluxContext::new();
 
-        // Verify all built-in collection aggregation functions are registered
+        // All built in collection aggregation functions are registered
         let names = context.list_collection_aggregation_function_names();
         assert!(names.contains(&"count".to_string()));
         assert!(names.contains(&"sum".to_string()));
@@ -901,7 +904,7 @@ mod tests {
     fn test_window_factories_registered() {
         let context = EventFluxContext::new();
 
-        // Verify all built-in window factories are registered
+        // All built in window factories are registered
         let names = context.list_window_factory_names();
         assert!(names.contains(&"length".to_string()));
         assert!(names.contains(&"time".to_string()));
@@ -919,7 +922,7 @@ mod tests {
     fn test_attribute_aggregators_registered() {
         let context = EventFluxContext::new();
 
-        // Verify all built-in aggregators are registered
+        // All built in aggregators are registered
         let names = context.list_attribute_aggregator_names();
         assert!(names.contains(&"sum".to_string()));
         assert!(names.contains(&"avg".to_string()));

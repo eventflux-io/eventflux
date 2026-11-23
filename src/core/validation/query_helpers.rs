@@ -17,25 +17,28 @@
 
 //! Query Helper Functions
 //!
-//! Provides utilities to extract dependencies from queries for validation.
+//! Helpers that find which streams each query reads and writes, so the dependencies
+//! between streams can be checked.
 
 use crate::query_api::execution::query::input::stream::input_stream::InputStreamTrait;
 use crate::query_api::execution::query::input::stream::InputStream;
 use crate::query_api::execution::query::Query;
 use std::collections::HashSet;
 
-/// Trait for extracting source streams from queries
+/// Finds the source and target streams of a query
 pub trait QuerySourceExtractor {
-    /// Extract all source stream names from query
+    /// Names of every stream the query reads from.
     ///
-    /// Returns stream names from:
-    /// - FROM clause (primary data source)
-    /// - JOIN clauses (all JOIN types: INNER, LEFT, RIGHT, FULL)
+    /// Includes:
+    /// - The FROM stream
+    /// - Both sides of a JOIN, for every JOIN type (INNER, LEFT, RIGHT, FULL)
+    /// - Every stream in a pattern or sequence
     ///
-    /// NOTE: Subqueries NOT supported (EventFlux does not support subqueries)
+    /// Returns an empty list when the query has no input stream. Names may repeat.
+    /// EventFlux has no subqueries, so there are none to look into.
     fn get_source_streams(&self) -> Vec<String>;
 
-    /// Get the target stream name (output stream)
+    /// Name of the stream the query writes to, if it has one
     fn get_target_stream(&self) -> Option<String>;
 }
 
@@ -55,29 +58,26 @@ impl QuerySourceExtractor for Query {
     }
 }
 
-/// Extract source stream names from InputStream recursively
+/// Push the stream names an input stream reads from onto `sources`
 fn extract_sources_from_input_stream(input_stream: &InputStream, sources: &mut Vec<String>) {
     match input_stream {
         InputStream::Single(single) => {
-            // Get stream ID from single input stream
             let stream_id = single.get_stream_id_str().to_string();
             sources.push(stream_id);
         }
         InputStream::Join(join) => {
-            // Extract from left and right streams in JOIN
             extract_sources_from_single_stream(&join.left_input_stream, sources);
             extract_sources_from_single_stream(&join.right_input_stream, sources);
         }
         InputStream::State(state) => {
-            // Extract from pattern/sequence state elements
-            // State streams contain multiple stream references
+            // A pattern or sequence can refer to many streams
             let stream_ids = state.get_all_stream_ids();
             sources.extend(stream_ids);
         }
     }
 }
 
-/// Extract source from SingleInputStream
+/// Push the stream name of one side of a join onto `sources`
 fn extract_sources_from_single_stream(
     single: &crate::query_api::execution::query::input::stream::SingleInputStream,
     sources: &mut Vec<String>,
@@ -86,15 +86,16 @@ fn extract_sources_from_single_stream(
     sources.push(stream_id);
 }
 
-/// Build dependency graph from queries
+/// Build the dependency graph of a set of queries
 ///
-/// Creates a HashMap mapping target_stream → [source_streams] for validation.
+/// Maps each target stream to the set of streams it reads from. Queries that write to
+/// the same target are combined. Queries with no target are left out.
 ///
 /// # Arguments
-/// * `queries` - List of queries to analyze
+/// * `queries` - Queries to look at
 ///
 /// # Returns
-/// * HashMap where keys are target streams and values are sets of source streams
+/// * HashMap keyed by target stream, holding the set of its source streams
 pub fn build_dependency_graph(
     queries: &[Query],
 ) -> std::collections::HashMap<String, HashSet<String>> {
@@ -189,8 +190,8 @@ mod tests {
 
     #[test]
     fn test_build_dependency_graph_multiple_sources() {
-        // If we had JOIN support, this would test multiple sources
-        // For now, test single source per query
+        // create_test_query only builds single source queries, so two queries write to
+        // the same target instead of one JOIN
         let queries = vec![
             create_test_query("Source1", "Target"),
             create_test_query("Source2", "Target"),
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_query_without_target() {
-        // Query without output target should not appear in dependency graph
+        // An empty target id is still Some(""), so the query is kept under the key ""
         let mut query = create_test_query("Input", "Output");
         query.output_stream.action = OutputStreamAction::InsertInto(InsertIntoStreamAction {
             target_id: String::new(),
@@ -219,8 +220,7 @@ mod tests {
         let queries = vec![query];
         let deps = build_dependency_graph(&queries);
 
-        // Should have entry for empty string if that's the target
-        // In real scenarios, queries should always have valid targets
+        // Accepts either result. Real queries always have a target name.
         assert!(deps.is_empty() || deps.contains_key(""));
     }
 }

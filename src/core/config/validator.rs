@@ -17,29 +17,29 @@
 
 //! Configuration Validation
 //!
-//! Provides comprehensive validation for EventFlux configurations including
-//! schema validation, connectivity validation, and custom business rules.
+//! Checks an EventFlux configuration for structural problems, bad values and custom
+//! rules, and collects the findings in a [`ValidationResult`].
 
 use crate::core::config::{EventFluxConfig, ValidationError, ValidationResult};
 
 /// Configuration validator
 #[derive(Debug)]
 pub struct ConfigValidator {
-    /// Enable strict validation mode
+    /// Strict mode flag. Defaults to true. `validate` does not read it yet.
     strict_mode: bool,
 
-    /// Custom validation rules
+    /// Custom rules, run in the order they were added
     custom_rules: Vec<Box<dyn ValidationRule>>,
 
-    /// Enable connectivity validation
+    /// Run the connectivity checks. Defaults to false.
     connectivity_validation: bool,
 
-    /// Enable resource validation
+    /// Run the resource checks. Defaults to false.
     resource_validation: bool,
 }
 
 impl ConfigValidator {
-    /// Create a new configuration validator
+    /// Create a validator with strict mode on and the optional checks off
     pub fn new() -> Self {
         Self {
             strict_mode: true,
@@ -54,43 +54,41 @@ impl ConfigValidator {
         self.strict_mode = strict;
     }
 
-    /// Add a custom validation rule
+    /// Add a custom rule. Rules run in the order added. `priority()` is not used.
     pub fn add_rule(&mut self, rule: Box<dyn ValidationRule>) {
         self.custom_rules.push(rule);
     }
 
-    /// Enable connectivity validation
+    /// Turn on the connectivity checks
     pub fn enable_connectivity_validation(&mut self) {
         self.connectivity_validation = true;
     }
 
-    /// Enable resource validation
+    /// Turn on the resource checks
     pub fn enable_resource_validation(&mut self) {
         self.resource_validation = true;
     }
 
-    /// Validate a EventFlux configuration
+    /// Validate an EventFlux configuration.
+    ///
+    /// Runs the structure checks, the value checks, each custom rule, and then the
+    /// connectivity and resource checks when they are turned on. Returns every finding.
     pub async fn validate(&self, config: &EventFluxConfig) -> ValidationResult {
         let mut result = ValidationResult::new();
 
-        // Basic structural validation
         result.merge(self.validate_structure(config));
 
-        // Semantic validation
         result.merge(self.validate_semantics(config));
 
-        // Custom rules validation
         for rule in &self.custom_rules {
             result.merge(rule.validate(config));
         }
 
-        // Connectivity validation (if enabled)
         if self.connectivity_validation {
             let connectivity_result = self.validate_connectivity(config).await;
             result.merge(connectivity_result);
         }
 
-        // Resource validation (if enabled)
         if self.resource_validation {
             result.merge(self.validate_resources(config));
         }
@@ -98,16 +96,15 @@ impl ConfigValidator {
         result
     }
 
-    /// Validate basic configuration structure
+    /// Check the metadata, that distributed or hybrid mode has a `distributed`
+    /// section, and that application names are valid identifiers
     fn validate_structure(&self, config: &EventFluxConfig) -> ValidationResult {
         let mut result = ValidationResult::new();
 
-        // Validate metadata
         if let Err(e) = config.metadata.validate() {
             result.add_error(ValidationError::custom_validation("metadata", e));
         }
 
-        // Validate required fields based on runtime mode
         match config.eventflux.runtime.mode {
             crate::core::config::RuntimeMode::Distributed
             | crate::core::config::RuntimeMode::Hybrid => {
@@ -120,7 +117,6 @@ impl ConfigValidator {
             _ => {}
         }
 
-        // Validate application names
         for name in config.applications.keys() {
             if name.is_empty() {
                 result.add_error(ValidationError::invalid_field_value(
@@ -139,11 +135,13 @@ impl ConfigValidator {
         result
     }
 
-    /// Validate configuration semantics and business rules
+    /// Check performance values and the distributed section.
+    ///
+    /// A thread pool or event buffer of 0 is an error. A thread pool over 1000 or an
+    /// event buffer under 1000 is a warning.
     fn validate_semantics(&self, config: &EventFluxConfig) -> ValidationResult {
         let mut result = ValidationResult::new();
 
-        // Validate thread pool size
         let thread_pool_size = config.eventflux.runtime.performance.thread_pool_size;
         if thread_pool_size == 0 {
             result.add_error(ValidationError::invalid_field_value(
@@ -157,7 +155,6 @@ impl ConfigValidator {
             ));
         }
 
-        // Validate event buffer size
         let buffer_size = config.eventflux.runtime.performance.event_buffer_size;
         if buffer_size == 0 {
             result.add_error(ValidationError::invalid_field_value(
@@ -171,7 +168,6 @@ impl ConfigValidator {
             ));
         }
 
-        // Validate distributed configuration consistency
         if let Some(ref distributed) = config.eventflux.distributed {
             result.merge(self.validate_distributed_config(distributed));
         }
@@ -179,14 +175,16 @@ impl ConfigValidator {
         result
     }
 
-    /// Validate distributed configuration
+    /// Check the distributed section.
+    ///
+    /// Errors when `min_nodes` is 0, when `expected_size` is below `min_nodes`, or when
+    /// the transport pool size is 0. Warns when there are no seed nodes.
     fn validate_distributed_config(
         &self,
         distributed: &crate::core::config::DistributedConfig,
     ) -> ValidationResult {
         let mut result = ValidationResult::new();
 
-        // Validate cluster configuration
         if let Some(ref cluster) = distributed.cluster {
             if cluster.min_nodes == 0 {
                 result.add_error(ValidationError::invalid_field_value(
@@ -209,7 +207,6 @@ impl ConfigValidator {
             }
         }
 
-        // Validate transport configuration
         let pool_size = distributed.transport.pool_size;
         if pool_size == 0 {
             result.add_error(ValidationError::invalid_field_value(
@@ -221,24 +218,21 @@ impl ConfigValidator {
         result
     }
 
-    /// Validate connectivity to external services
+    /// Check that external services can be reached. Not built yet, so it always
+    /// returns an empty result.
     async fn validate_connectivity(&self, _config: &EventFluxConfig) -> ValidationResult {
-        // Implementation pending: External service connectivity validation
-        // Future implementation will test database connections, validate Kafka brokers,
-        // check Redis connectivity, and verify external service endpoints
+        // The plan is to test database connections, Kafka brokers, Redis and other
+        // external endpoints
 
         ValidationResult::new()
     }
 
-    /// Validate resource requirements and limits
+    /// Check resource settings. Only the format of `memory.max_heap` is checked today.
     fn validate_resources(&self, config: &EventFluxConfig) -> ValidationResult {
         let mut result = ValidationResult::new();
 
-        // Implementation pending: Resource constraint validation
-        // Future implementation will validate memory limits, CPU allocations,
-        // storage requirements, and network bandwidth constraints for feasibility
-
-        // Basic validation for now
+        // Not done yet: checking that the memory, CPU, storage and bandwidth limits
+        // are workable
         if let Some(ref resources) = config.eventflux.runtime.resources {
             if let Some(ref memory) = resources.memory {
                 if let Err(e) = self.validate_memory_spec(&memory.max_heap) {
@@ -254,13 +248,15 @@ impl ConfigValidator {
         result
     }
 
-    /// Validate memory specification format
+    /// Check a memory size such as "2Gi", "512Mi" or "1.5G".
+    ///
+    /// Accepts a number, with an optional fraction, followed by K, M, G or T and an
+    /// optional `i`. Returns the reason as text when the format is wrong.
     fn validate_memory_spec(&self, spec: &str) -> Result<(), String> {
         if spec.is_empty() {
             return Err("empty specification".to_string());
         }
 
-        // Simple validation for memory specs like "2Gi", "512Mi", etc.
         let re = regex::Regex::new(r"^\d+(\.\d+)?[KMGT]i?$").unwrap();
         if !re.is_match(spec) {
             return Err(format!("invalid format: {}", spec));
@@ -269,7 +265,8 @@ impl ConfigValidator {
         Ok(())
     }
 
-    /// Check if a string is a valid identifier
+    /// Check that a name is not empty, has only letters, digits, `-` and `_`, and does
+    /// not start or end with `-`
     fn is_valid_identifier(&self, name: &str) -> bool {
         !name.is_empty()
             && name
@@ -286,21 +283,25 @@ impl Default for ConfigValidator {
     }
 }
 
-/// Trait for custom validation rules
+/// A custom check for [`ConfigValidator`]
 pub trait ValidationRule: Send + Sync + std::fmt::Debug {
-    /// Validate a configuration and return validation result
+    /// Check a configuration and return the findings
     fn validate(&self, config: &EventFluxConfig) -> ValidationResult;
 
     /// Get a description of this validation rule
     fn description(&self) -> String;
 
-    /// Get the priority of this rule (higher = more important)
+    /// Rule priority, where a higher number means more important. Defaults to 50.
+    /// [`ConfigValidator`] does not use it yet.
     fn priority(&self) -> u32 {
         50
     }
 }
 
-/// Built-in validation rule for application-specific checks
+/// Built in rule that checks each application.
+///
+/// Warns when an application has no definitions and errors on an empty definition
+/// name.
 #[derive(Debug)]
 pub struct ApplicationValidationRule;
 
@@ -309,7 +310,6 @@ impl ValidationRule for ApplicationValidationRule {
         let mut result = ValidationResult::new();
 
         for (app_name, app_config) in &config.applications {
-            // Validate that each application has at least one definition
             if app_config.definitions.is_empty() {
                 result.add_warning(ValidationError::custom_validation(
                     format!("applications.{}.definitions", app_name),
@@ -317,7 +317,6 @@ impl ValidationRule for ApplicationValidationRule {
                 ));
             }
 
-            // Validate definition configurations
             for (def_name, def_config) in &app_config.definitions {
                 result.merge(self.validate_definition(app_name, def_name, def_config));
             }
@@ -336,7 +335,7 @@ impl ValidationRule for ApplicationValidationRule {
 }
 
 impl ApplicationValidationRule {
-    /// Validate a definition configuration
+    /// Check one definition. Only the name is checked today.
     fn validate_definition(
         &self,
         app_name: &str,
@@ -345,7 +344,6 @@ impl ApplicationValidationRule {
     ) -> ValidationResult {
         let mut result = ValidationResult::new();
 
-        // Validate definition name
         if def_name.is_empty() {
             result.add_error(ValidationError::invalid_field_value(
                 format!("applications.{}.definitions.<name>", app_name),
@@ -353,14 +351,16 @@ impl ApplicationValidationRule {
             ));
         }
 
-        // Implementation pending: Type-specific definition validation
-        // Future implementation will add specialized validation for each definition type
+        // Not done yet: checks specific to each definition type
 
         result
     }
 }
 
-/// Validation rule for security configurations
+/// Built in rule for TLS settings.
+///
+/// Warns when TLS is off in distributed or hybrid mode, and when TLS is on without
+/// peer checks. Does nothing when there is no TLS section.
 #[derive(Debug)]
 pub struct SecurityValidationRule;
 
@@ -368,7 +368,6 @@ impl ValidationRule for SecurityValidationRule {
     fn validate(&self, config: &EventFluxConfig) -> ValidationResult {
         let mut result = ValidationResult::new();
 
-        // Check for insecure configurations
         if let Some(ref security) = config.eventflux.security {
             if let Some(ref tls) = security.tls {
                 if !tls.enabled && config.is_distributed_mode() {
@@ -395,7 +394,7 @@ impl ValidationRule for SecurityValidationRule {
     }
 
     fn priority(&self) -> u32 {
-        80 // High priority for security issues
+        80 // Above the application rule
     }
 }
 
