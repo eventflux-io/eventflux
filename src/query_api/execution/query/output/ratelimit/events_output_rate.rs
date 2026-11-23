@@ -15,15 +15,14 @@
  * limitations under the License.
  */
 
-// Corresponds to parts of io.eventflux.query.api.execution.query.output.ratelimit.EventOutputRate
-
-// This struct holds the specific data for event-based rate limiting.
-// The common EventFluxElement context will be in the main OutputRate struct.
-// The OutputRateBehavior (All, First, Last) will also be associated in the OutputRate struct/enum.
-
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// Output rate limit by event count, as in `OUTPUT EVERY 5 EVENTS`.
+///
+/// The query positions and the All, First or Last behaviour live on the wrapping
+/// OutputRate and OutputRateVariant.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct EventsOutputRate {
-    pub event_count: i32, // Corresponds to `value` in Java's EventOutputRate, defaults to 0
+    /// Number of events per output. Defaults to 0.
+    pub event_count: i32,
 }
 
 impl EventsOutputRate {

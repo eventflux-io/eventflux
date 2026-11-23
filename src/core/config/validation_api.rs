@@ -17,9 +17,9 @@
 
 //! Configuration Validation API
 //!
-//! Provides comprehensive validation capabilities for EventFlux configuration,
-//! including custom validation rules, schema validation, and enterprise
-//! validation patterns for production deployments.
+//! Checks an EventFlux configuration against a set of rules and returns a report of
+//! errors, warnings and notes with a score. Comes with built in rules for schema,
+//! performance, security and Kubernetes, and accepts custom rules.
 
 use crate::core::config::{ConfigResult, EventFluxConfig};
 use async_trait::async_trait;
@@ -28,36 +28,36 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-/// Comprehensive validation result with detailed feedback
+/// Result of a validation run
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationReport {
-    /// Overall validation status
+    /// False once any error is added
     pub is_valid: bool,
 
-    /// Validation errors (blocking issues)
+    /// Problems that make the configuration invalid
     pub errors: Vec<ValidationError>,
 
-    /// Validation warnings (non-blocking issues)
+    /// Problems that are reported but do not make it invalid
     pub warnings: Vec<ValidationWarning>,
 
-    /// Validation information (advisory messages)
+    /// Notes and suggestions. They do not affect the score.
     pub info: Vec<ValidationInfo>,
 
-    /// Validation score (0.0 to 1.0)
+    /// Score from 0.0 to 1.0. See `recalculate_score`.
     pub validation_score: f64,
 
-    /// Validation metadata
+    /// Extra details about the run, such as rule counts and duration
     pub metadata: HashMap<String, String>,
 
-    /// Validation duration
+    /// How long the run took
     pub validation_duration: std::time::Duration,
 
-    /// Validation timestamp
+    /// When the report was created, in UTC
     pub validated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl ValidationReport {
-    /// Create a new validation report
+    /// Create an empty, valid report with a score of 1.0
     pub fn new() -> Self {
         Self {
             is_valid: true,
@@ -71,20 +71,20 @@ impl ValidationReport {
         }
     }
 
-    /// Add an error to the report
+    /// Add an error. Marks the report invalid and lowers the score.
     pub fn add_error(&mut self, error: ValidationError) {
         self.is_valid = false;
         self.errors.push(error);
         self.recalculate_score();
     }
 
-    /// Add a warning to the report
+    /// Add a warning. Lowers the score but keeps the report valid.
     pub fn add_warning(&mut self, warning: ValidationWarning) {
         self.warnings.push(warning);
         self.recalculate_score();
     }
 
-    /// Add informational message to the report
+    /// Add a note. Does not change the score.
     pub fn add_info(&mut self, info: ValidationInfo) {
         self.info.push(info);
     }
@@ -99,29 +99,30 @@ impl ValidationReport {
         self.validation_duration = duration;
     }
 
-    /// Recalculate validation score based on errors and warnings
+    /// Work out the score from the errors and warnings.
+    ///
+    /// Each error weighs 2 and each warning 1. The score is `1 - w / (w + 10)` for the
+    /// total weight `w`, so it is 1.0 with no issues and falls toward 0.0 as they add up.
     fn recalculate_score(&mut self) {
         let total_issues = self.errors.len() + self.warnings.len();
         if total_issues == 0 {
             self.validation_score = 1.0;
         } else {
-            // Errors count more heavily than warnings
             let error_weight = 2.0;
             let warning_weight = 1.0;
             let total_weight = (self.errors.len() as f64 * error_weight)
                 + (self.warnings.len() as f64 * warning_weight);
 
-            // Score decreases with more issues
             self.validation_score = (1.0 - (total_weight / (total_weight + 10.0))).max(0.0);
         }
     }
 
-    /// Get total issue count
+    /// Number of errors plus warnings. Notes are not counted.
     pub fn total_issues(&self) -> usize {
         self.errors.len() + self.warnings.len()
     }
 
-    /// Get summary text
+    /// One line summary with the counts, for people to read
     pub fn summary(&self) -> String {
         if self.is_valid {
             if self.warnings.is_empty() && self.info.is_empty() {
@@ -139,7 +140,7 @@ impl ValidationReport {
                 )
             }
         } else {
-            format!("❌ Configuration is invalid with {} error(s), {} warning(s), and {} info message(s)", 
+            format!("❌ Configuration is invalid with {} error(s), {} warning(s), and {} info message(s)",
                    self.errors.len(), self.warnings.len(), self.info.len())
         }
     }
@@ -151,30 +152,30 @@ impl Default for ValidationReport {
     }
 }
 
-/// Validation error with detailed context
+/// One validation error with its context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationError {
-    /// Error code for programmatic handling
+    /// Stable error code that code can match on
     pub code: String,
 
-    /// Human-readable error message
+    /// Error message for people to read
     pub message: String,
 
-    /// Configuration path where the error occurred
+    /// Configuration path where the error was found
     pub path: String,
 
-    /// Severity level of the error
+    /// How serious the error is
     pub severity: ErrorSeverity,
 
-    /// Suggested fix for the error
+    /// Suggested fix
     pub suggestion: Option<String>,
 
-    /// Additional context
+    /// Extra key and value details
     pub context: HashMap<String, String>,
 }
 
 impl ValidationError {
-    /// Create a new validation error
+    /// Create an error with `Error` severity
     pub fn new(code: String, message: String, path: String) -> Self {
         Self {
             code,
@@ -186,7 +187,7 @@ impl ValidationError {
         }
     }
 
-    /// Create a critical validation error
+    /// Create an error with `Critical` severity
     pub fn critical(code: String, message: String, path: String) -> Self {
         Self {
             code,
@@ -221,7 +222,7 @@ impl fmt::Display for ValidationError {
     }
 }
 
-/// Validation warning with advisory information
+/// One validation warning. Strict mode turns warnings into errors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationWarning {
     /// Warning code
@@ -287,7 +288,7 @@ impl fmt::Display for ValidationWarning {
     }
 }
 
-/// Validation informational message
+/// One validation note, such as a suggestion
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationInfo {
     /// Info code
@@ -368,9 +369,9 @@ impl fmt::Display for ErrorSeverity {
 pub enum WarningCategory {
     /// General warnings
     General,
-    /// Performance-related warnings
+    /// Performance warnings
     Performance,
-    /// Security-related warnings
+    /// Security warnings
     Security,
     /// Compatibility warnings
     Compatibility,
@@ -391,7 +392,7 @@ pub enum InfoCategory {
     Statistics,
 }
 
-/// Validation rule trait for custom validation logic
+/// A validation check that can be added to [`ConfigurationValidator`]
 #[async_trait]
 pub trait ValidationRule: Send + Sync + std::fmt::Debug {
     /// Get the rule name
@@ -400,22 +401,25 @@ pub trait ValidationRule: Send + Sync + std::fmt::Debug {
     /// Get the rule description
     fn description(&self) -> &str;
 
-    /// Get the rule priority (higher = runs first)
+    /// Rule priority. A higher number runs first. Defaults to 50.
     fn priority(&self) -> u32 {
         50
     }
 
-    /// Check if the rule applies to the given configuration
+    /// Check if the rule should run for this configuration
     fn applies_to(&self, config: &EventFluxConfig) -> bool;
 
-    /// Validate the configuration
+    /// Check the configuration and add any findings to `report`.
+    ///
+    /// An `Err` is recorded in the report as a `RULE_EXECUTION_FAILED` error and the
+    /// other rules still run.
     async fn validate(
         &self,
         config: &EventFluxConfig,
         report: &mut ValidationReport,
     ) -> ConfigResult<()>;
 
-    /// Get rule category
+    /// Rule category, used to switch groups of rules off. Defaults to `General`.
     fn category(&self) -> ValidationRuleCategory {
         ValidationRuleCategory::General
     }
@@ -438,40 +442,40 @@ pub enum ValidationRuleCategory {
     General,
 }
 
-/// Comprehensive configuration validator
+/// Runs a set of validation rules over a configuration
 pub struct ConfigurationValidator {
-    /// Registered validation rules
+    /// Registered rules, highest priority first
     rules: Vec<Arc<dyn ValidationRule>>,
 
     /// Validation configuration
     config: ValidationConfig,
 }
 
-/// Validation configuration
+/// Settings for a validation run
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationConfig {
-    /// Enable strict validation (treat warnings as errors)
+    /// Treat warnings as errors. Defaults to false.
     pub strict_mode: bool,
 
-    /// Maximum validation time before timeout
+    /// Longest the whole run may take. Defaults to 30 seconds.
     pub timeout: std::time::Duration,
 
-    /// Enable performance validation
+    /// Run performance rules. Defaults to true.
     pub enable_performance_checks: bool,
 
-    /// Enable security validation
+    /// Run security rules. Defaults to true.
     pub enable_security_checks: bool,
 
-    /// Enable compatibility validation
+    /// Run compatibility rules. Defaults to true.
     pub enable_compatibility_checks: bool,
 
-    /// Fail fast on first error
+    /// Stop after the first rule that leaves an error. Defaults to false.
     pub fail_fast: bool,
 
-    /// Minimum validation score to pass (0.0 to 1.0)
+    /// Lowest score that passes, from 0.0 to 1.0. Defaults to 0.7.
     pub minimum_score: f64,
 
-    /// Custom validation parameters
+    /// Free form parameters for rules. Not read by the built in rules.
     pub custom_params: HashMap<String, String>,
 }
 
@@ -491,7 +495,7 @@ impl Default for ValidationConfig {
 }
 
 impl ValidationConfig {
-    /// Create production validation configuration
+    /// Preset for production. Strict, 60 second timeout, minimum score 0.9.
     pub fn production() -> Self {
         Self {
             strict_mode: true,
@@ -505,7 +509,8 @@ impl ValidationConfig {
         }
     }
 
-    /// Create development validation configuration
+    /// Preset for development. Not strict, fails fast, skips performance, security
+    /// and compatibility rules, 10 second timeout, minimum score 0.5.
     pub fn development() -> Self {
         Self {
             strict_mode: false,
@@ -519,7 +524,8 @@ impl ValidationConfig {
         }
     }
 
-    /// Create Kubernetes validation configuration
+    /// Preset for Kubernetes. Strict, 45 second timeout, minimum score 0.8, with the
+    /// `kubernetes_validation` and `resource_limits_required` parameters set.
     pub fn kubernetes() -> Self {
         Self {
             strict_mode: true,
@@ -540,7 +546,7 @@ impl ValidationConfig {
 }
 
 impl ConfigurationValidator {
-    /// Create a new validator
+    /// Create a validator with no rules and the default settings
     pub fn new() -> Self {
         Self {
             rules: Vec::new(),
@@ -548,7 +554,7 @@ impl ConfigurationValidator {
         }
     }
 
-    /// Create a validator with custom configuration
+    /// Create a validator with no rules and the given settings
     pub fn with_config(config: ValidationConfig) -> Self {
         Self {
             rules: Vec::new(),
@@ -556,11 +562,11 @@ impl ConfigurationValidator {
         }
     }
 
-    /// Add a validation rule
+    /// Add a rule and keep the list sorted by priority
     pub fn add_rule(&mut self, rule: Arc<dyn ValidationRule>) {
         self.rules.push(rule);
 
-        // Sort rules by priority (highest first)
+        // Highest priority first
         self.rules.sort_by_key(|b| std::cmp::Reverse(b.priority()));
     }
 
@@ -571,15 +577,18 @@ impl ConfigurationValidator {
         }
     }
 
-    /// Validate configuration
+    /// Run every rule that applies and return the report.
+    ///
+    /// When the run times out, a critical `VALIDATION_TIMEOUT` error is added and the
+    /// findings so far are kept. In strict mode each warning then becomes an error. A
+    /// score below the minimum adds a `VALIDATION_SCORE_TOO_LOW` error. Problems are
+    /// reported in the report, not as an `Err`.
     pub async fn validate(&self, config: &EventFluxConfig) -> ConfigResult<ValidationReport> {
         let start_time = std::time::Instant::now();
         let mut report = ValidationReport::new();
 
-        // Set up timeout
         let timeout_duration = self.config.timeout;
 
-        // Run validation with timeout
         let validation_result = tokio::time::timeout(timeout_duration, async {
             self.run_validation(config, &mut report).await
         })
@@ -598,11 +607,9 @@ impl ConfigurationValidator {
             }
         }
 
-        // Set validation duration
         let duration = start_time.elapsed();
         report.set_duration(duration);
 
-        // Apply strict mode
         if self.config.strict_mode && !report.warnings.is_empty() {
             for warning in report.warnings.clone() {
                 report.add_error(ValidationError::new(
@@ -614,7 +621,7 @@ impl ConfigurationValidator {
             report.warnings.clear();
         }
 
-        // Check minimum score
+        // The score already counts the warnings turned into errors above
         if report.validation_score < self.config.minimum_score {
             report.add_error(ValidationError::new(
                 "VALIDATION_SCORE_TOO_LOW".to_string(),
@@ -626,7 +633,8 @@ impl ConfigurationValidator {
             ));
         }
 
-        // Add metadata
+        // "rules_executed" is the number of registered rules. The number that actually
+        // ran is in "executed_rules".
         report.add_metadata("rules_executed".to_string(), self.rules.len().to_string());
         report.add_metadata(
             "validation_duration_ms".to_string(),
@@ -640,7 +648,8 @@ impl ConfigurationValidator {
         Ok(report)
     }
 
-    /// Run the actual validation
+    /// Run the rules in priority order, skipping rules that do not apply or whose
+    /// category is switched off
     async fn run_validation(
         &self,
         config: &EventFluxConfig,
@@ -649,12 +658,10 @@ impl ConfigurationValidator {
         let mut executed_rules = 0;
 
         for rule in &self.rules {
-            // Check if rule applies
             if !rule.applies_to(config) {
                 continue;
             }
 
-            // Check category filters
             match rule.category() {
                 ValidationRuleCategory::Performance if !self.config.enable_performance_checks => {
                     continue
@@ -668,7 +675,7 @@ impl ConfigurationValidator {
                 _ => {}
             }
 
-            // Run the validation rule
+            // A rule that fails is reported, and the other rules still run
             if let Err(e) = rule.validate(config, report).await {
                 report.add_error(ValidationError::new(
                     "RULE_EXECUTION_FAILED".to_string(),
@@ -679,7 +686,6 @@ impl ConfigurationValidator {
 
             executed_rules += 1;
 
-            // Fail fast if enabled and we have errors
             if self.config.fail_fast && !report.errors.is_empty() {
                 break;
             }
@@ -690,7 +696,7 @@ impl ConfigurationValidator {
         Ok(())
     }
 
-    /// Get registered rules
+    /// Get the registered rules, highest priority first
     pub fn get_rules(&self) -> &[Arc<dyn ValidationRule>] {
         &self.rules
     }
@@ -707,9 +713,10 @@ impl Default for ConfigurationValidator {
     }
 }
 
-// Built-in validation rules
+// Built in validation rules
 
-/// Schema validation rule
+/// Basic schema rule. Errors when the thread pool size or event buffer size is 0.
+/// Priority 100, so it runs first.
 #[derive(Debug)]
 pub struct SchemaValidationRule;
 
@@ -724,7 +731,7 @@ impl ValidationRule for SchemaValidationRule {
     }
 
     fn priority(&self) -> u32 {
-        100 // High priority
+        100 // Highest of the built in rules
     }
 
     fn applies_to(&self, _config: &EventFluxConfig) -> bool {
@@ -736,7 +743,6 @@ impl ValidationRule for SchemaValidationRule {
         config: &EventFluxConfig,
         report: &mut ValidationReport,
     ) -> ConfigResult<()> {
-        // Validate basic schema requirements
         if config.eventflux.runtime.performance.thread_pool_size == 0 {
             report.add_error(
                 ValidationError::new(
@@ -773,7 +779,9 @@ impl ValidationRule for SchemaValidationRule {
     }
 }
 
-/// Performance validation rule
+/// Performance rule. Warns when the thread pool is over 4 times the CPU count or is 1
+/// on a machine with more CPUs, when the event buffer is under 1000 or over 1,000,000,
+/// and when batching is on with a batch size over 10,000.
 #[derive(Debug)]
 pub struct PerformanceValidationRule;
 
@@ -803,7 +811,6 @@ impl ValidationRule for PerformanceValidationRule {
         let thread_pool_size = config.eventflux.runtime.performance.thread_pool_size;
         let cpu_count = num_cpus::get();
 
-        // Check thread pool size vs CPU count
         if thread_pool_size > cpu_count * 4 {
             report.add_warning(
                 ValidationWarning::performance(
@@ -829,7 +836,6 @@ impl ValidationRule for PerformanceValidationRule {
             ).with_recommendation("Consider increasing thread pool size to match CPU count for better parallelism".to_string()));
         }
 
-        // Check event buffer size
         let buffer_size = config.eventflux.runtime.performance.event_buffer_size;
         if buffer_size < 1000 {
             report.add_warning(
@@ -865,7 +871,6 @@ impl ValidationRule for PerformanceValidationRule {
             );
         }
 
-        // Check batch processing configuration
         if config.eventflux.runtime.performance.batch_processing {
             if let Some(batch_size) = config.eventflux.runtime.performance.batch_size {
                 if batch_size > 10000 {
@@ -886,7 +891,8 @@ impl ValidationRule for PerformanceValidationRule {
     }
 }
 
-/// Security validation rule
+/// Security rule. Errors when the mode is `Distributed` with no security section, and
+/// warns whenever there is no monitoring section. Hybrid mode is not checked.
 #[derive(Debug)]
 pub struct SecurityValidationRule;
 
@@ -913,7 +919,6 @@ impl ValidationRule for SecurityValidationRule {
         config: &EventFluxConfig,
         report: &mut ValidationReport,
     ) -> ConfigResult<()> {
-        // Check if security configuration is present in distributed mode
         if matches!(
             config.eventflux.runtime.mode,
             crate::core::config::types::RuntimeMode::Distributed
@@ -926,7 +931,7 @@ impl ValidationRule for SecurityValidationRule {
                 ).with_suggestion("Add security configuration with appropriate authentication and authorization settings".to_string()));
         }
 
-        // Check for monitoring configuration in production
+        // Checked in every environment, not only production
         if config.eventflux.monitoring.is_none() {
             report.add_warning(
                 ValidationWarning::security(
@@ -949,7 +954,8 @@ impl ValidationRule for SecurityValidationRule {
     }
 }
 
-/// Kubernetes validation rule
+/// Kubernetes rule. Runs only inside a pod. Warns when no resource limits are set and
+/// suggests `/healthz` as the health endpoint. Its category is `Compatibility`.
 #[derive(Debug)]
 pub struct KubernetesValidationRule;
 
@@ -968,7 +974,7 @@ impl ValidationRule for KubernetesValidationRule {
     }
 
     fn applies_to(&self, _config: &EventFluxConfig) -> bool {
-        // Check if running in Kubernetes environment
+        // Kubernetes sets this variable in every pod
         std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
     }
 
@@ -977,7 +983,6 @@ impl ValidationRule for KubernetesValidationRule {
         config: &EventFluxConfig,
         report: &mut ValidationReport,
     ) -> ConfigResult<()> {
-        // Check for required resources configuration
         if config.eventflux.runtime.resources.is_none() {
             report.add_warning(
                 ValidationWarning::new(
@@ -992,7 +997,6 @@ impl ValidationRule for KubernetesValidationRule {
             );
         }
 
-        // Check monitoring endpoint configuration
         if let Some(monitoring) = &config.eventflux.monitoring {
             if monitoring.endpoints.health_endpoint != "/healthz" {
                 report.add_info(ValidationInfo::recommendation(
@@ -1011,11 +1015,10 @@ impl ValidationRule for KubernetesValidationRule {
     }
 }
 
-/// Create a default validator with built-in rules
+/// Create a validator with the default settings and all four built in rules
 pub fn create_default_validator() -> ConfigurationValidator {
     let mut validator = ConfigurationValidator::new();
 
-    // Add built-in rules
     validator.add_rule(Arc::new(SchemaValidationRule));
     validator.add_rule(Arc::new(PerformanceValidationRule));
     validator.add_rule(Arc::new(SecurityValidationRule));
@@ -1024,11 +1027,10 @@ pub fn create_default_validator() -> ConfigurationValidator {
     validator
 }
 
-/// Create a production validator with strict settings
+/// Create a validator with [`ValidationConfig::production`] and all four built in rules
 pub fn create_production_validator() -> ConfigurationValidator {
     let mut validator = ConfigurationValidator::with_config(ValidationConfig::production());
 
-    // Add built-in rules
     validator.add_rule(Arc::new(SchemaValidationRule));
     validator.add_rule(Arc::new(PerformanceValidationRule));
     validator.add_rule(Arc::new(SecurityValidationRule));
@@ -1037,11 +1039,10 @@ pub fn create_production_validator() -> ConfigurationValidator {
     validator
 }
 
-/// Create a development validator with lenient settings
+/// Create a validator with [`ValidationConfig::development`] and only the schema rule
 pub fn create_development_validator() -> ConfigurationValidator {
     let mut validator = ConfigurationValidator::with_config(ValidationConfig::development());
 
-    // Add basic rules only
     validator.add_rule(Arc::new(SchemaValidationRule));
 
     validator

@@ -15,18 +15,18 @@
  * limitations under the License.
  */
 
-//! High-Performance Event Processing Pipeline
+//! Event Processing Pipeline
 //!
-//! This module provides a crossbeam-based event processing pipeline optimized for
-//! Rust's strengths: zero-cost abstractions, memory safety, and lock-free concurrency.
+//! An event pipeline built on crossbeam lock free queues, with pooled event holders,
+//! backpressure strategies and metrics.
 //!
 //! ## Design Goals
-//! - **>1M events/second throughput** (beat Java performance)
+//! - **>1M events/second throughput** (faster than the Java version)
 //! - **<1ms p99 latency** for simple operations
-//! - **Zero-copy processing** where possible
-//! - **Lock-free coordination** using crossbeam primitives
-//! - **Adaptive backpressure** handling
-//! - **NUMA-aware** memory allocation patterns
+//! - **No copying** where possible
+//! - **Lock free coordination** with crossbeam primitives
+//! - **Configurable backpressure** (see [`BackpressureStrategy`])
+//! - **NUMA aware** memory allocation, which is a goal only and not done yet
 
 pub mod backpressure;
 pub mod event_pipeline;
@@ -39,7 +39,7 @@ pub use metrics::{MetricsCollector, MetricsSnapshot, PipelineMetrics};
 pub use object_pool::{EventPool, PooledEvent};
 
 pub use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
-/// Re-exports from crossbeam for convenience
+/// Re-exported from crossbeam for convenience
 pub use crossbeam_queue::{ArrayQueue, SegQueue};
 pub use crossbeam_utils::CachePadded;
 
@@ -81,7 +81,7 @@ mod tests {
         let throughput = num_events as f64 / elapsed.as_secs_f64();
 
         println!("Throughput: {:.0} events/sec", throughput);
-        // Relaxed threshold for CI environments (was 500K)
+        // Threshold lowered for CI machines (was 500K)
         assert!(throughput > 200_000.0, "Should handle >200K events/sec");
     }
 }

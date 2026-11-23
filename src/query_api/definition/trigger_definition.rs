@@ -15,24 +15,24 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.definition.TriggerDefinition
 use crate::query_api::annotation::Annotation;
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::constant::{Constant, ConstantValueWithFloat};
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// A trigger that sends events into a stream on a schedule.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TriggerDefinition {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // TriggerDefinition fields
     pub id: String,
-    pub at_every: Option<i64>, // Java Long maps to i64 in Rust
-    pub at: Option<String>,    // For cron expressions or similar string-based time definitions
+    /// Fire period in milliseconds. When set, the runtime uses it and ignores `at`.
+    pub at_every: Option<i64>,
+    /// `"start"` to fire once when the app starts, or else a cron expression.
+    pub at: Option<String>,
     pub annotations: Vec<Annotation>,
 }
 
 impl TriggerDefinition {
-    // Constructor that takes an id, as per Java's `TriggerDefinition.id(id)`
     pub fn new(id: String) -> Self {
         TriggerDefinition {
             eventflux_element: EventFluxElement::default(),
@@ -43,9 +43,8 @@ impl TriggerDefinition {
         }
     }
 
-    // Static factory method `id` from Java
+    /// Start a builder chain with only the id set.
     pub fn id(id: String) -> Self {
-        // This creates a new TriggerDefinition with the given ID and defaults for other fields
         TriggerDefinition {
             id,
             annotations: Vec::new(),
@@ -53,13 +52,16 @@ impl TriggerDefinition {
         }
     }
 
-    // Builder-style methods
     pub fn at_every(mut self, time_in_milliseconds: i64) -> Self {
         self.at_every = Some(time_in_milliseconds);
         self
     }
 
-    // Builder method for TimeConstant
+    /// Set the fire period from a constant holding milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the constant is a Time or Long value.
     pub fn at_every_time_constant(mut self, time_constant: Constant) -> Result<Self, String> {
         match time_constant.value {
             ConstantValueWithFloat::Time(ms) => {
@@ -67,7 +69,6 @@ impl TriggerDefinition {
                 Ok(self)
             }
             ConstantValueWithFloat::Long(ms) => {
-                // Also allow Long for flexibility as in Java
                 self.at_every = Some(ms);
                 Ok(self)
             }
@@ -75,6 +76,7 @@ impl TriggerDefinition {
         }
     }
 
+    /// Set `at`. Pass `"start"` or a cron expression.
     pub fn at(mut self, interval: String) -> Self {
         self.at = Some(interval);
         self
@@ -86,9 +88,7 @@ impl TriggerDefinition {
     }
 }
 
-// Removed: impl From<EventFluxElement> for TriggerDefinition
-
-// For direct field access via Deref, if desired:
+// Possible Deref impls, if callers ever need direct access to the EventFluxElement fields.
 // impl std::ops::Deref for TriggerDefinition {
 //     type Target = EventFluxElement;
 //     fn deref(&self) -> &Self::Target { &self.eventflux_element }

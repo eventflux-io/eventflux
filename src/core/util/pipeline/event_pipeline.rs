@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-//! Crossbeam-based High-Performance Event Pipeline
+//! Event Pipeline built on crossbeam
 //!
-//! This provides a lock-free, high-throughput event processing pipeline using
-//! battle-tested crossbeam primitives optimized for Rust's performance characteristics.
+//! A bounded, lock free event queue between producers and consumers, built on the
+//! crossbeam `ArrayQueue`, with pooled event holders, backpressure handling and metrics.
 
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::CachePadded;
@@ -32,39 +32,38 @@ use crate::core::event::stream::StreamEvent;
 /// Configuration for the event pipeline
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
-    /// Ring buffer capacity (must be power of 2 for optimal performance)
+    /// Queue capacity. Must be a power of 2 and at least 64.
     pub capacity: usize,
-    /// Backpressure handling strategy
+    /// What to do when the queue or the pool is full
     pub backpressure: BackpressureStrategy,
-    /// Enable object pooling for zero-allocation processing
+    /// Meant to turn event holder pooling on or off. Not read by EventPipeline today,
+    /// which always uses the pool.
     pub use_object_pool: bool,
-    /// Number of consumer threads for parallel event consumption
+    /// Number of consumer threads that take events from the pipeline
     ///
-    /// Controls how many concurrent consumers will poll events from the pipeline.
-    /// Multiple consumers enable work-stealing for higher throughput.
+    /// Several consumers share the work for higher throughput.
     ///
-    /// - `1` (default for sync mode): Single-threaded, sequential processing
-    /// - `N` (default for async mode): N parallel consumers competing for events
+    /// - `1` (default for sync mode): one thread, events processed in order
+    /// - `N` (default for async mode): N consumers competing for events
     ///
-    /// **Important**: This setting is read by StreamJunction to spawn N consumer threads.
-    /// All consumers share the same lock-free queue, naturally load-balancing via competition.
+    /// **Important**: StreamJunction reads this to start N consumer threads. They all
+    /// share the same lock free queue, so the load spreads by competition.
     pub consumer_threads: usize,
-    /// Batch size for consumer processing (currently unused — consume() is
-    /// strictly per-event)
+    /// Batch size for consumers. Not used today, since consume() handles one event at
+    /// a time.
     pub batch_size: usize,
-    /// Enable detailed metrics collection.
+    /// Meant to turn on detailed metrics.
     ///
-    /// NOTE: currently unread — counters always record. If this is ever
-    /// honored, events_published/events_consumed MUST keep recording
-    /// unconditionally: the shutdown drain's quiescence predicate
-    /// (`published == consumed`) depends on them.
+    /// NOTE: not read today, so counters always record. If it is ever honored,
+    /// events_published and events_consumed MUST keep recording all the time. The
+    /// shutdown drain decides the pipeline is idle from `published == consumed`.
     pub enable_metrics: bool,
 }
 
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            capacity: 65536, // 64K slots - good balance of memory vs performance
+            capacity: 65536, // 64K slots, a good balance of memory and speed
             backpressure: BackpressureStrategy::Drop,
             use_object_pool: true,
             consumer_threads: num_cpus::get(),
@@ -77,9 +76,9 @@ impl Default for PipelineConfig {
 /// Result of pipeline operations
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineResult {
-    /// Event processed successfully
+    /// Event queued, with its sequence number
     Success { sequence: u64 },
-    /// Pipeline is full - backpressure applied
+    /// Pipeline is full and backpressure was applied
     Full,
     /// Pipeline is shutting down
     Shutdown,
@@ -89,32 +88,33 @@ pub enum PipelineResult {
     Error(String),
 }
 
-/// High-performance event processing pipeline
+/// Bounded event queue between producers and consumers. Safe to share between threads.
 pub struct EventPipeline {
-    /// Core event queue - lock-free bounded queue
+    /// Lock free bounded queue of events
     event_queue: Arc<ArrayQueue<PooledEvent>>,
-    /// Object pool for zero-allocation event processing
+    /// Pool of reusable event holders, twice the queue capacity
     event_pool: Arc<EventPool>,
-    /// Pipeline configuration
     config: PipelineConfig,
-    /// Backpressure handler
     backpressure: Arc<BackpressureHandler>,
-    /// Pipeline metrics
     metrics: Arc<PipelineMetrics>,
-    /// Shutdown coordination: consumers drain the queue, then exit
+    /// Graceful stop. Consumers drain the queue, then exit.
     shutdown: AtomicBool,
-    /// Hard stop: consumers exit at the next iteration WITHOUT draining.
+    /// Hard stop. Consumers exit at the next iteration WITHOUT draining.
     /// Used when a shutdown drain times out and the leftover queue has
     /// already been counted as abandoned.
     halted: AtomicBool,
-    /// Sequence generator for ordering
+    /// Next sequence number. One is taken per publish attempt, so a rejected
+    /// publish leaves a gap.
     sequence: CachePadded<AtomicU64>,
 }
 
 impl EventPipeline {
-    /// Create a new event pipeline with the given configuration
+    /// Creates a pipeline with the given configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `capacity` is not a power of 2 or is below 64.
     pub fn new(config: PipelineConfig) -> Result<Self, String> {
-        // Validate configuration
         if !config.capacity.is_power_of_two() {
             return Err("Capacity must be power of 2 for optimal performance".to_string());
         }
@@ -123,7 +123,7 @@ impl EventPipeline {
         }
 
         let event_queue = Arc::new(ArrayQueue::new(config.capacity));
-        let event_pool = Arc::new(EventPool::new(config.capacity * 2)); // 2x for buffering
+        let event_pool = Arc::new(EventPool::new(config.capacity * 2)); // 2x for headroom
         let backpressure = Arc::new(BackpressureHandler::new(config.backpressure));
         let metrics = Arc::new(PipelineMetrics::new());
 
@@ -139,7 +139,10 @@ impl EventPipeline {
         })
     }
 
-    /// Publish an event to the pipeline (producer side)
+    /// Publishes an event to the pipeline (producer side). Never blocks.
+    ///
+    /// Returns `Shutdown` after shutdown, otherwise `Success` or what the backpressure
+    /// handler decides when the pool or the queue is full.
     pub fn publish(&self, event: StreamEvent) -> PipelineResult {
         if self.shutdown.load(Ordering::Acquire) {
             return PipelineResult::Shutdown;
@@ -148,7 +151,7 @@ impl EventPipeline {
         let start_time = Instant::now();
         let sequence = self.sequence.fetch_add(1, Ordering::AcqRel);
 
-        // Get pooled event holder for zero-allocation processing
+        // Take a pooled holder so the hot path does not allocate
         let pooled_event = match self.event_pool.acquire() {
             Some(mut pooled) => {
                 pooled.set_event(event);
@@ -156,51 +159,51 @@ impl EventPipeline {
                 pooled
             }
             None => {
-                // Pool exhausted - handle based on backpressure strategy
+                // Pool is empty, so the backpressure strategy decides
                 self.metrics.increment_pool_exhausted();
                 return self.backpressure.handle_pool_exhausted(event, sequence);
             }
         };
 
-        // Attempt to enqueue - this is the main bottleneck
+        // Enqueue. This is the main bottleneck.
         match self.event_queue.push(pooled_event) {
             Ok(()) => {
-                // Success - update metrics.
                 // NOTE: the push lands BEFORE events_published increments, so
-                // "queue empty && published == consumed" can be observed while
-                // an event is physically queued. Quiescence detection stays
-                // sound only because every in-system publisher is covered by
-                // another counter the drain reads first (a dispatch's
-                // in_flight guard, or a consumer's withheld consumed
-                // increment) — an uncovered publisher thread parked between
-                // these two lines is invisible to the drain.
+                // "queue empty && published == consumed" can be seen while an
+                // event is still in the queue. Idle detection stays correct only
+                // because every publisher inside the system is covered by another
+                // counter the drain reads first (a dispatch's in_flight guard, or
+                // a consumer's held back consumed increment). A publisher thread
+                // that nothing covers and that pauses between these two lines is
+                // invisible to the drain.
                 let latency = start_time.elapsed();
                 self.metrics.record_publish_success(latency);
                 PipelineResult::Success { sequence }
             }
             Err(pooled_event) => {
-                // Queue full - handle backpressure
-                self.event_pool.release(pooled_event); // Return to pool
+                // Queue is full. Return the holder and let backpressure decide. release()
+                // does not clear the holder, so the event stays in the pool until the
+                // holder is reused.
+                self.event_pool.release(pooled_event);
                 self.metrics.increment_queue_full();
                 self.backpressure.handle_queue_full(sequence)
             }
         }
     }
 
-    /// Try to publish without blocking (non-blocking producer)
+    /// Publishes without blocking. Same as [`publish`](Self::publish), which never
+    /// blocks since the crossbeam ArrayQueue push does not block.
     pub fn try_publish(&self, event: StreamEvent) -> PipelineResult {
-        // For crossbeam ArrayQueue, publish() is already non-blocking
         self.publish(event)
     }
 
-    /// Publish a batch of events for higher throughput.
+    /// Publishes a batch of events, one at a time, and returns one result per event.
     ///
-    /// Every input event gets a result: once shutdown lands mid-batch,
-    /// publish() returns `Shutdown` for each remaining event (a cheap flag
-    /// check), which callers rely on to count rejected events. An early
-    /// `break` here would leave the tail with no result at all — callers
-    /// counting failures from results would report the batch as successful
-    /// while silently losing the unpublished remainder.
+    /// Every input event gets a result. Once shutdown lands mid batch, publish()
+    /// returns `Shutdown` for each remaining event (a cheap flag check), and callers
+    /// rely on that to count rejected events. An early `break` here would leave the
+    /// tail with no result at all, so callers counting failures from the results
+    /// would report the batch as successful while silently losing the rest.
     pub fn publish_batch(&self, events: Vec<StreamEvent>) -> Vec<PipelineResult> {
         let mut results = Vec::with_capacity(events.len());
 
@@ -211,7 +214,16 @@ impl EventPipeline {
         results
     }
 
-    /// Consume events from the pipeline (consumer side)
+    /// Consumes events until shutdown (consumer side). Runs on the calling thread.
+    ///
+    /// Calls `handler` with each event and its sequence number. After shutdown it keeps
+    /// going until the queue is empty. After halt it stops at once. While the queue is
+    /// empty it yields briefly, then sleeps. Returns the number of events handled.
+    ///
+    /// # Errors
+    ///
+    /// Stops and returns an error on the first handler error. That event still counts as
+    /// consumed.
     pub fn consume<F>(&self, mut handler: F) -> Result<u64, String>
     where
         F: FnMut(StreamEvent, u64) -> Result<(), String>,
@@ -221,7 +233,7 @@ impl EventPipeline {
 
         loop {
             if self.halted.load(Ordering::Acquire) {
-                break; // Hard stop: leave remaining events in the queue
+                break; // Hard stop. Leave remaining events in the queue.
             }
             match self.event_queue.pop() {
                 Some(mut pooled_event) => {
@@ -230,7 +242,6 @@ impl EventPipeline {
                     let sequence = pooled_event.sequence();
                     let event = pooled_event.take_event();
 
-                    // Process the event
                     match handler(event, sequence) {
                         Ok(()) => {
                             processed += 1;
@@ -238,22 +249,21 @@ impl EventPipeline {
                             self.metrics.record_consume_success(latency);
                         }
                         Err(e) => {
-                            // The event left the queue: count it consumed (as an
-                            // error) so published == consumed stays reachable for
-                            // shutdown draining, and return its pool slot.
+                            // The event left the queue, so count it as consumed (as an
+                            // error) to keep published == consumed reachable for the
+                            // shutdown drain, and return its pool slot.
                             self.metrics.record_consume_error();
                             self.event_pool.release(pooled_event);
                             return Err(format!("Processing error at sequence {sequence}: {e}"));
                         }
                     }
 
-                    // Return pooled event for reuse
                     self.event_pool.release(pooled_event);
                 }
                 None => {
-                    // No events available - check if we should shutdown
+                    // Queue is empty. Exit only if shutdown was requested.
                     if self.shutdown.load(Ordering::Acquire) {
-                        break; // Exit only when no events and shutdown requested
+                        break;
                     }
                     Self::idle_backoff(&mut idle_spins);
                 }
@@ -263,11 +273,11 @@ impl EventPipeline {
         Ok(processed)
     }
 
-    /// Back off when the queue is empty: spin-yield briefly for low wake-up
-    /// latency under bursty load, then sleep with escalation so idle consumer
-    /// threads neither burn a core nor churn the scheduler with 10k
-    /// wakeups/sec each (consumer threads scale with junction count).
-    /// Worst-case wake-up latency once fully idle: 1ms.
+    /// Backs off while the queue is empty. Yields for the first 64 tries so bursts
+    /// are picked up fast, then sleeps 100 µs, then 1 ms from the 128th try on. That
+    /// way idle consumer threads neither burn a core nor wake the scheduler 10k times
+    /// a second each (there are more consumer threads as junctions are added).
+    /// Once fully idle, a new event waits at most about 1 ms.
     fn idle_backoff(idle_spins: &mut u32) {
         const SPIN_LIMIT: u32 = 64;
         const SHORT_SLEEP_LIMIT: u32 = 128;
@@ -283,45 +293,43 @@ impl EventPipeline {
         }
     }
 
-    /// Get current pipeline capacity utilization (0.0 to 1.0)
+    /// Meant to return the share of capacity in use (0.0 to 1.0). As written it computes
+    /// `(capacity - len) / capacity`, which is the free share.
     pub fn utilization(&self) -> f64 {
         let used = self.config.capacity - self.event_queue.len();
         used as f64 / self.config.capacity as f64
     }
 
-    /// Get remaining capacity in the pipeline
+    /// Free slots left in the queue
     pub fn remaining_capacity(&self) -> usize {
         self.config.capacity - self.event_queue.len()
     }
 
-    /// Check if pipeline is empty
     pub fn is_empty(&self) -> bool {
         self.event_queue.is_empty()
     }
 
-    /// Check if pipeline is full
     pub fn is_full(&self) -> bool {
         self.event_queue.is_full()
     }
 
-    /// Get pipeline metrics
     pub fn metrics(&self) -> &PipelineMetrics {
         &self.metrics
     }
 
-    /// Get pipeline configuration
     pub fn config(&self) -> &PipelineConfig {
         &self.config
     }
 
-    /// Initiate graceful shutdown
+    /// Starts a graceful shutdown. New publishes return `Shutdown`, and consumers
+    /// exit once the queue is empty.
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
     }
 
-    /// Hard stop: consumers exit at their next iteration without draining the
+    /// Hard stop. Consumers exit at their next iteration without draining the
     /// remaining queue. Callers must account for the leftover events (see
-    /// `StreamJunction::abandon_pending`). Implies `shutdown()`.
+    /// `StreamJunction::abandon_pending`). Also does `shutdown()`.
     pub fn halt(&self) {
         self.shutdown.store(true, Ordering::Release);
         self.halted.store(true, Ordering::Release);
@@ -332,18 +340,18 @@ impl EventPipeline {
         self.halted.load(Ordering::Acquire)
     }
 
-    /// Discard every queued event, returning slots to the pool, and count the
-    /// discards as consumed so `published == consumed` holds again (without
-    /// them, every post-restart drain would see a permanent deficit).
-    /// Call only while halted (no live consumers competing for the queue) —
-    /// a restart after a timed-out drain must not replay events that were
-    /// already reported as abandoned/dropped. Returns the number discarded.
+    /// Discards every queued event, returns the slots to the pool, and counts the
+    /// discards as consumed so `published == consumed` holds again. Without that,
+    /// every drain after a restart would see a permanent shortfall.
+    /// Call only while halted, with no live consumers competing for the queue. A
+    /// restart after a timed out drain must not replay events that were already
+    /// reported as abandoned or dropped. Returns the number discarded.
     pub fn purge(&self) -> u64 {
         let mut purged = 0u64;
         while let Some(mut pooled_event) = self.event_queue.pop() {
-            // Drop the payload before returning the slot — a released slot
-            // sits in the pool until reused, and a purged backlog of large
-            // events would otherwise stay resident indefinitely.
+            // Drop the payload before returning the slot. A released slot sits in
+            // the pool until reused, so a purged backlog of large events would
+            // otherwise stay in memory indefinitely.
             drop(pooled_event.take_event());
             self.event_pool.release(pooled_event);
             purged += 1;
@@ -354,75 +362,75 @@ impl EventPipeline {
         purged
     }
 
-    /// Check if pipeline is shutting down
+    /// True after `shutdown()` or `halt()`, until `clear_shutdown()`
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
     }
 
-    /// Clear the shutdown and halt flags so the pipeline can be reused after a
-    /// `shutdown()`/`halt()`. Consumers must be re-spawned by the caller — any
-    /// consumer that already observed the flags has exited.
+    /// Clears the shutdown and halt flags so the pipeline can be reused after
+    /// `shutdown()` or `halt()`. The caller must start new consumers, since any
+    /// consumer that already saw the flags has exited.
     pub fn clear_shutdown(&self) {
         self.halted.store(false, Ordering::Release);
         self.shutdown.store(false, Ordering::Release);
     }
 
-    /// Reset pipeline metrics
     pub fn reset_metrics(&self) {
         self.metrics.reset();
     }
 }
 
-/// Builder for creating event pipelines with fluent API
+/// Builder for event pipelines. Starts from [`PipelineConfig::default`].
 pub struct PipelineBuilder {
     config: PipelineConfig,
 }
 
 impl PipelineBuilder {
-    /// Create a new pipeline builder with default configuration
     pub fn new() -> Self {
         Self {
             config: PipelineConfig::default(),
         }
     }
 
-    /// Set pipeline capacity
+    /// Queue capacity. Must be a power of 2 and at least 64, checked in `build`.
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.config.capacity = capacity;
         self
     }
 
-    /// Set backpressure strategy
     pub fn with_backpressure(mut self, strategy: BackpressureStrategy) -> Self {
         self.config.backpressure = strategy;
         self
     }
 
-    /// Enable or disable object pooling
+    /// Sets `use_object_pool`, which EventPipeline does not read today
     pub fn with_object_pool(mut self, enable: bool) -> Self {
         self.config.use_object_pool = enable;
         self
     }
 
-    /// Set number of consumer threads
     pub fn with_consumer_threads(mut self, threads: usize) -> Self {
         self.config.consumer_threads = threads;
         self
     }
 
-    /// Set batch size for batch processing
+    /// Sets `batch_size`, which is not used today
     pub fn with_batch_size(mut self, size: usize) -> Self {
         self.config.batch_size = size;
         self
     }
 
-    /// Enable or disable metrics collection
+    /// Sets `enable_metrics`, which is not read today
     pub fn with_metrics(mut self, enable: bool) -> Self {
         self.config.enable_metrics = enable;
         self
     }
 
-    /// Build the event pipeline
+    /// Builds the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the capacity is not a power of 2 or is below 64.
     pub fn build(self) -> Result<EventPipeline, String> {
         EventPipeline::new(self.config)
     }
@@ -434,9 +442,9 @@ impl Default for PipelineBuilder {
     }
 }
 
-// Send + Sync are auto-derived from the fields; a manual `unsafe impl` here
-// would silence the compiler if a future field (e.g. a pool optimization
-// using raw pointers) stopped being thread-safe.
+// Send and Sync come from the fields automatically. A hand written `unsafe impl` here
+// would hide the compiler error if a later field (for example a pool optimization
+// with raw pointers) stopped being thread safe. This check fails the build instead.
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<EventPipeline>()
@@ -485,24 +493,23 @@ mod tests {
     #[test]
     fn test_capacity_limits() {
         let pipeline = PipelineBuilder::new()
-            .with_capacity(64) // Use minimum capacity
-            .with_object_pool(false) // Disable object pool to test queue limits directly
+            .with_capacity(64) // The minimum capacity
+            .with_object_pool(false) // Not read by EventPipeline, the pool stays on
             .build()
             .unwrap();
 
-        // Fill pipeline beyond capacity to trigger backpressure
+        // Publish more events than the capacity to trigger backpressure
         let mut full_result_count = 0;
         for i in 0..100 {
-            // Try more events than capacity
             let result = pipeline.publish(create_test_event(i));
             match result {
-                PipelineResult::Success { .. } => {} // Allow some success
+                PipelineResult::Success { .. } => {}
                 PipelineResult::Full => full_result_count += 1,
-                _ => {} // Other results possible
+                _ => {}
             }
         }
 
-        // At least some events should trigger backpressure
+        // At least some events should hit backpressure
         assert!(
             full_result_count > 0,
             "Expected some events to trigger backpressure"
@@ -513,12 +520,11 @@ mod tests {
     fn test_consumer_processing() {
         let pipeline = Arc::new(PipelineBuilder::new().with_capacity(64).build().unwrap());
 
-        // Publish events
         for i in 0..10 {
             let _ = pipeline.publish(create_test_event(i));
         }
 
-        // Consume events in a separate thread with shutdown after processing expected events
+        // Consume on another thread, which shuts down after the expected events
         let processed_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let events_clone = processed_events.clone();
         let pipeline_for_shutdown = Arc::clone(&pipeline);
@@ -531,7 +537,7 @@ mod tests {
                     events_clone.lock().unwrap().push(*value);
                     count += 1;
 
-                    // Signal shutdown after processing all events
+                    // Shut down once all events are processed
                     if count >= 10 {
                         pipeline_for_shutdown.shutdown();
                     }
@@ -541,7 +547,7 @@ mod tests {
             result
         });
 
-        // Wait for completion with timeout
+        // Wait for the consumer. There is no timeout.
         let result = handle.join().expect("Consumer thread panicked");
         assert!(result.is_ok(), "Consumer should complete successfully");
 
@@ -550,9 +556,9 @@ mod tests {
     }
 
     /// A handler error must still count the popped event as consumed (the
-    /// shutdown drain's `published == consumed` predicate depends on it) and
-    /// return its slot to the pool. Reverting to error-without-accounting
-    /// would wedge every later drain at the full timeout and leak a pool slot
+    /// shutdown drain's `published == consumed` check depends on it) and
+    /// return its slot to the pool. Going back to not counting errors would
+    /// stall every later drain until its full timeout and leak a pool slot
     /// per error.
     #[test]
     fn test_consume_error_counts_event_and_releases_slot() {
@@ -579,7 +585,7 @@ mod tests {
         );
         assert!(pipeline.is_empty());
 
-        // The slot must be reusable: publish + consume again succeeds.
+        // The slot must be reusable, so publishing and consuming again succeeds.
         assert!(matches!(
             pipeline.publish(create_test_event(2)),
             PipelineResult::Success { .. }
@@ -589,8 +595,8 @@ mod tests {
         assert_eq!(processed, 1);
     }
 
-    /// Once shutdown lands mid-batch, every remaining event must still get a
-    /// `Shutdown` result — an early exit would leave the tail unreported and
+    /// Once shutdown lands mid batch, every remaining event must still get a
+    /// `Shutdown` result. An early exit would leave the tail unreported and
     /// callers would count the batch as fully successful.
     #[test]
     fn test_publish_batch_reports_shutdown_for_full_tail() {

@@ -40,7 +40,7 @@ fn collection_aggregation_functions_registered_and_work() {
     let app_ctx = test_app_context();
     let ctx = app_ctx.get_eventflux_context();
 
-    // All built-in collection aggregation functions should be present
+    // The built in sum, avg, min, max and count functions must be registered
     let names = ctx.list_collection_aggregation_function_names();
     assert!(names.contains(&"sum".to_string()));
     assert!(names.contains(&"avg".to_string()));
@@ -48,7 +48,7 @@ fn collection_aggregation_functions_registered_and_work() {
     assert!(names.contains(&"max".to_string()));
     assert!(names.contains(&"count".to_string()));
 
-    // Validate basic behavior and return types from registry instances
+    // Instances from the registry compute correctly and report the right return types
     let sum_fn = ctx.get_collection_aggregation_function("sum").unwrap();
     assert_eq!(sum_fn.aggregate(&[1.0, 2.0, 3.0]), Some(6.0));
     assert_eq!(

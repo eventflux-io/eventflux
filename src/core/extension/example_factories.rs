@@ -17,23 +17,25 @@
 
 //! Placeholder Extension Factory Implementations
 //!
-//! This module contains placeholder factories for demonstration purposes:
+//! Placeholder factories that show how to write a source or sink factory. They do no
+//! real work.
 //!
-//! ## Placeholder Factories (NOT production-ready)
-//! - `ExampleSourceFactory` - Fictional source demonstrating the factory pattern
-//! - `ExampleSinkFactory` - Fictional sink demonstrating the factory pattern
+//! ## Placeholder Factories (NOT for production)
+//! - `ExampleSourceFactory`. Made up source that shows the factory pattern.
+//! - `ExampleSinkFactory`. Made up sink that shows the factory pattern.
 //!
-//! ## Production-Ready Factories (in proper modules)
-//! - `KafkaSourceFactory`/`KafkaSinkFactory` in `kafka_source.rs`/`kafka_sink.rs`
+//! ## Real Factories, in their own modules
+//! - `KafkaSourceFactory` and `KafkaSinkFactory` in `kafka_source.rs` and `kafka_sink.rs`
 //! - `RabbitMQSourceFactory` in `src/core/stream/input/source/rabbitmq_source.rs`
 //! - `RabbitMQSinkFactory` in `src/core/stream/output/sink/rabbitmq_sink.rs`
 //! - `TimerSourceFactory` in `src/core/extension/mod.rs`
 //! - `LogSinkFactory` in `src/core/extension/mod.rs`
 //!
 //! ## Mapper Factories
-//! All mapper factories are now in `src/core/stream/mapper/factory.rs`:
+//! All mapper factories are in `src/core/stream/mapper/factory.rs`:
 //! - `JsonSourceMapperFactory`, `JsonSinkMapperFactory`
 //! - `CsvSourceMapperFactory`, `CsvSinkMapperFactory`
+//! - `BytesSourceMapperFactory`, `BytesSinkMapperFactory`
 
 use crate::core::exception::EventFluxError;
 use crate::core::extension::{SinkFactory, SourceFactory};
@@ -45,7 +47,7 @@ use std::collections::HashMap;
 // Example Source Factory (Placeholder)
 // ============================================================================
 
-/// Example validated configuration (INTERNAL to ExampleSourceFactory)
+/// Checked, typed config of ExampleSourceFactory. Private to this module.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct ExampleSourceConfig {
@@ -56,9 +58,13 @@ struct ExampleSourceConfig {
 }
 
 impl ExampleSourceConfig {
-    /// Parse and validate raw config into typed config (PRIVATE helper)
+    /// Check the raw config and turn it into typed values.
+    ///
+    /// `example.servers` and `example.topic` are required. `example.timeout` is in
+    /// milliseconds and defaults to 30000. `example.consumer.group` defaults to
+    /// `eventflux-<topic>`.
     fn parse(raw_config: &HashMap<String, String>) -> Result<Self, EventFluxError> {
-        // 1. Validate required parameters present
+        // 1. Check the required parameters are present
         let brokers_str = raw_config
             .get("example.servers")
             .ok_or_else(|| EventFluxError::missing_parameter("example.servers"))?;
@@ -67,7 +73,7 @@ impl ExampleSourceConfig {
             .get("example.topic")
             .ok_or_else(|| EventFluxError::missing_parameter("example.topic"))?;
 
-        // 2. Parse comma-separated brokers list
+        // 2. Split the comma separated broker list, dropping empty entries
         let bootstrap_servers: Vec<String> = brokers_str
             .split(',')
             .map(|s| s.trim().to_string())
@@ -81,7 +87,7 @@ impl ExampleSourceConfig {
             ));
         }
 
-        // 3. Parse optional integer
+        // 3. Parse the optional timeout
         let timeout_ms = raw_config
             .get("example.timeout")
             .map(|s| s.parse::<u64>())
@@ -95,13 +101,13 @@ impl ExampleSourceConfig {
             })?
             .unwrap_or(30000);
 
-        // 4. Parse consumer group (with default)
+        // 4. Read the consumer group, or build the default
         let consumer_group = raw_config
             .get("example.consumer.group")
             .cloned()
             .unwrap_or_else(|| format!("eventflux-{}", topic));
 
-        // 5. Return typed config
+        // 5. Return the typed config
         Ok(ExampleSourceConfig {
             bootstrap_servers,
             topic: topic.clone(),
@@ -111,7 +117,7 @@ impl ExampleSourceConfig {
     }
 }
 
-/// Placeholder Source demonstrating the trait surface
+/// Placeholder source that shows which trait methods a source has. Does nothing.
 #[derive(Debug)]
 struct ExampleSource {
     _topic: String,
@@ -123,15 +129,15 @@ impl Source for ExampleSource {
         &mut self,
         _callback: std::sync::Arc<dyn crate::core::stream::input::source::SourceCallback>,
     ) {
-        // Placeholder: actual implementation would:
+        // Placeholder. A real source would:
         // 1. Read bytes from the external system
         // 2. Call callback.on_data(bytes)
-        // 3. Callback handles parsing via SourceMapper
+        // 3. Leave parsing to the callback, which uses the SourceMapper
     }
 
     fn stop(&mut self) {
-        // Placeholder: actual implementation would stop the worker
-        // (embed a SourceWorker — see docs/writing_extensions.md)
+        // Placeholder. A real source would stop its worker here. It can embed a
+        // SourceWorker, see docs/writing_extensions.md.
     }
 
     fn clone_box(&self) -> Box<dyn Source> {
@@ -142,11 +148,11 @@ impl Source for ExampleSource {
     }
 }
 
-/// Placeholder source factory demonstrating metadata + validated creation.
+/// Placeholder source factory that shows the factory metadata and how to check the
+/// config before creating the source.
 ///
-/// This is NOT production-ready. For production implementation examples,
-/// see `KafkaSourceFactory` in `kafka_source.rs` or `RabbitMQSourceFactory`
-/// in `rabbitmq_source.rs`.
+/// This is NOT for production. For real examples, see `KafkaSourceFactory` in
+/// `kafka_source.rs` or `RabbitMQSourceFactory` in `rabbitmq_source.rs`.
 #[derive(Debug, Clone)]
 pub struct ExampleSourceFactory;
 
@@ -171,15 +177,15 @@ impl SourceFactory for ExampleSourceFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
-        // 1. Parse and validate configuration
+        // 1. Check and parse the configuration
         let parsed = ExampleSourceConfig::parse(config)?;
 
-        // 2. Create the source. A real implementation would:
-        // - Create the client with parsed config
-        // - Test connectivity (fail-fast)
-        // - Return fully initialized Source
+        // 2. Create the source. A real factory would:
+        // - Create the client from the parsed config
+        // - Test the connection and fail at once if it is down
+        // - Return a source that is ready to start
 
-        // 3. Return fully initialized Source
+        // 3. Return the source
         Ok(Box::new(ExampleSource {
             _topic: parsed.topic,
             _bootstrap_servers: parsed.bootstrap_servers,
@@ -195,7 +201,7 @@ impl SourceFactory for ExampleSourceFactory {
 // Example Sink Factory (Placeholder)
 // ============================================================================
 
-/// Example validated sink configuration
+/// Checked, typed config of ExampleSinkFactory
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct ExampleSinkConfig {
@@ -206,6 +212,9 @@ struct ExampleSinkConfig {
 }
 
 impl ExampleSinkConfig {
+    // `example.url` is required. `example.method` defaults to POST and is upper cased.
+    // `example.timeout` is in seconds and defaults to 30. `example.headers` is not
+    // parsed yet.
     fn parse(raw_config: &HashMap<String, String>) -> Result<Self, EventFluxError> {
         let url = raw_config
             .get("example.url")
@@ -216,7 +225,7 @@ impl ExampleSinkConfig {
             .cloned()
             .unwrap_or_else(|| "POST".to_string());
 
-        // Validate the method against an allowlist
+        // Only these methods are allowed, in any case
         if !["GET", "POST", "PUT", "DELETE", "PATCH"].contains(&method.to_uppercase().as_str()) {
             return Err(EventFluxError::invalid_parameter_with_details(
                 format!("Invalid example.method: {}", method),
@@ -238,8 +247,8 @@ impl ExampleSinkConfig {
             })?
             .unwrap_or(30);
 
-        // Parse headers (simple implementation)
-        let headers = HashMap::new(); // Placeholder for header parsing
+        // Headers are not parsed yet
+        let headers = HashMap::new(); // Always empty for now
 
         Ok(ExampleSinkConfig {
             url: url.clone(),
@@ -250,7 +259,7 @@ impl ExampleSinkConfig {
     }
 }
 
-/// Placeholder Sink demonstrating the trait surface
+/// Placeholder sink that shows which trait methods a sink has. Drops every payload.
 #[derive(Debug)]
 struct ExampleSink {
     _url: String,
@@ -259,9 +268,8 @@ struct ExampleSink {
 
 impl Sink for ExampleSink {
     fn publish(&self, _payload: &[u8]) -> Result<(), EventFluxError> {
-        // Placeholder: actual implementation would send the payload to the
-        // external system — see `HttpSinkFactory` in `http_sink.rs` for a
-        // production example
+        // Placeholder. A real sink would send the payload to the external system.
+        // See `HttpSinkFactory` in `http_sink.rs` for a real example.
         Ok(())
     }
 
@@ -273,11 +281,11 @@ impl Sink for ExampleSink {
     }
 }
 
-/// Placeholder sink factory demonstrating metadata + validated creation.
+/// Placeholder sink factory that shows the factory metadata and how to check the
+/// config before creating the sink.
 ///
-/// This is NOT production-ready. For production implementation examples,
-/// see `HttpSinkFactory` in `http_sink.rs` or `RabbitMQSinkFactory` in
-/// `rabbitmq_sink.rs`.
+/// This is NOT for production. For real examples, see `HttpSinkFactory` in
+/// `http_sink.rs` or `RabbitMQSinkFactory` in `rabbitmq_sink.rs`.
 #[derive(Debug, Clone)]
 pub struct ExampleSinkFactory;
 
@@ -315,8 +323,8 @@ impl SinkFactory for ExampleSinkFactory {
     }
 }
 
-// Note: JSON and CSV mapper factories are now in src/core/stream/mapper/factory.rs
-// and re-exported via crate::core::extension::{JsonSourceMapperFactory, JsonSinkMapperFactory, etc.}
+// Note: the JSON, CSV and bytes mapper factories live in src/core/stream/mapper/factory.rs
+// and are re-exported through crate::core::extension, such as JsonSourceMapperFactory
 
 #[cfg(test)]
 mod tests {

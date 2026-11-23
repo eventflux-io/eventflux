@@ -15,22 +15,23 @@
  * limitations under the License.
  */
 
-// src/query_api/eventflux_app.rs
 use crate::query_api::annotation::Annotation;
 use crate::query_api::definition::{
     AggregationDefinition, FunctionDefinition, StreamDefinition, TableDefinition,
     TriggerDefinition, WindowDefinition,
 };
 use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::execution::ExecutionElement; // This should be the enum
+use crate::query_api::execution::ExecutionElement;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Represents a EventFlux Application, containing stream definitions, queries, etc.
-#[derive(Debug, Clone, Default)] // Added Debug, Clone, Default
+/// A parsed EventFlux app. Holds its definitions, queries, partitions and annotations.
+///
+/// Each definition map is keyed by the definition id.
+#[derive(Debug, Clone, Default)]
 pub struct EventFluxApp {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement (as per current design)
-    pub name: String, // Name for the EventFlux Application, from @info(name='...')
+    pub eventflux_element: EventFluxElement,
+    pub name: String,
 
     pub stream_definition_map: HashMap<String, Arc<StreamDefinition>>,
     pub table_definition_map: HashMap<String, Arc<TableDefinition>>,
@@ -39,15 +40,16 @@ pub struct EventFluxApp {
     pub aggregation_definition_map: HashMap<String, Arc<AggregationDefinition>>,
     pub function_definition_map: HashMap<String, Arc<FunctionDefinition>>,
 
-    pub execution_element_list: Vec<ExecutionElement>, // query_api::execution::ExecutionElement enum
+    /// Queries and partitions in the order they were added.
+    pub execution_element_list: Vec<ExecutionElement>,
     pub annotations: Vec<Annotation>,
-    // execution_element_name_list is not typically stored directly; validated during parsing/adding.
+    // Execution element names are not stored. Duplicate names are not checked here.
 }
 
 impl EventFluxApp {
     pub fn new(name: String) -> Self {
         Self {
-            eventflux_element: EventFluxElement::default(), // Initialize with default start/end context
+            eventflux_element: EventFluxElement::default(),
             name,
             stream_definition_map: HashMap::new(),
             table_definition_map: HashMap::new(),
@@ -60,7 +62,7 @@ impl EventFluxApp {
         }
     }
 
-    // --- Add definition methods ---
+    // --- Add definitions. Each replaces any earlier definition with the same id. ---
     pub fn add_stream_definition(&mut self, stream_def: StreamDefinition) {
         self.stream_definition_map
             .insert(stream_def.get_id().to_string(), Arc::new(stream_def));
@@ -86,16 +88,17 @@ impl EventFluxApp {
             .insert(func_def.id.clone(), Arc::new(func_def));
     }
 
-    // --- Get definition methods ---
+    // --- Read definitions ---
     pub fn get_stream_definition_map(&self) -> &HashMap<String, Arc<StreamDefinition>> {
         &self.stream_definition_map
     }
     pub fn get_stream_definition(&self, stream_id: &str) -> Option<Arc<StreamDefinition>> {
         self.stream_definition_map.get(stream_id).cloned()
     }
-    // TODO: Add similar getters for other definition maps if needed.
+    // TODO: Add getters like these for the other definition maps if needed. Their fields
+    // are public for now.
 
-    // --- ExecutionElement methods ---
+    // --- Execution elements ---
     pub fn add_execution_element(&mut self, exec_element: ExecutionElement) {
         self.execution_element_list.push(exec_element);
     }
@@ -103,7 +106,7 @@ impl EventFluxApp {
         &self.execution_element_list
     }
 
-    // --- Annotation methods ---
+    // --- Annotations ---
     pub fn add_annotation(&mut self, annotation: Annotation) {
         self.annotations.push(annotation);
     }
@@ -112,7 +115,7 @@ impl EventFluxApp {
     }
 }
 
-// Helper method for StreamDefinition to get its ID (assuming it's via AbstractDefinition)
+// Private id getters used by the add_* methods above.
 impl StreamDefinition {
     fn get_id(&self) -> &str {
         &self.abstract_definition.id
@@ -133,4 +136,4 @@ impl AggregationDefinition {
         &self.abstract_definition.id
     }
 }
-// FunctionDefinition and TriggerDefinition have public `id` field.
+// FunctionDefinition and TriggerDefinition need none. Their `id` field is public.

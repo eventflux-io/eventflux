@@ -17,11 +17,10 @@
 
 // src/core/distributed/transport.rs
 
-//! Transport Layer Abstraction
+//! Transport layer.
 //!
-//! This module provides the transport layer abstraction for distributed communication.
-//! It supports multiple transport implementations (TCP, gRPC, RDMA, etc.) while
-//! maintaining a consistent interface.
+//! Defines one trait for sending messages between nodes, with a TCP transport. The
+//! gRPC transport lives in the `grpc` module.
 
 use super::{DistributedError, DistributedResult};
 use async_trait::async_trait;
@@ -32,49 +31,46 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
-/// Transport layer trait for distributed communication
+/// Sends and receives messages between nodes.
 #[async_trait]
 pub trait Transport: Send + Sync {
-    /// Connect to a remote node
+    /// Connect to a remote node.
     async fn connect(&self, endpoint: &str) -> DistributedResult<Connection>;
 
-    /// Listen for incoming connections
+    /// Start listening for incoming connections on `endpoint`.
     async fn listen(&self, endpoint: &str) -> DistributedResult<Listener>;
 
-    /// Send a message to a remote node
     async fn send(&self, connection: &Connection, message: Message) -> DistributedResult<()>;
 
-    /// Receive a message from a remote node
+    /// Wait for the next message on a connection.
     async fn receive(&self, connection: &Connection) -> DistributedResult<Message>;
 
-    /// Close a connection
     async fn close(&self, connection: Connection) -> DistributedResult<()>;
 
-    /// Accept incoming connection from listener
+    /// Wait for the next incoming connection on a listener.
     async fn accept(&self, listener: &Listener) -> DistributedResult<Connection>;
 }
 
-/// Connection to a remote node
+/// Connection to a remote node.
 #[derive(Debug)]
 pub struct Connection {
     pub id: String,
     pub endpoint: String,
     pub state: ConnectionState,
-    /// Internal handle for the actual connection
+    /// The underlying socket or client. Shared with the transport pool.
     pub(crate) handle: Option<Arc<RwLock<ConnectionHandle>>>,
 }
 
-/// Internal connection handle
+/// The underlying connection for each transport.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum ConnectionHandle {
     Tcp(TcpStream),
-    // Placeholder for gRPC - actual implementation in grpc module
+    // Holds only the endpoint. The gRPC client lives in the grpc module.
     Grpc(String),
-    // Future: RDMA, etc.
+    // Other transports such as RDMA may be added later.
 }
 
-/// Connection state
 #[derive(Debug, Clone)]
 pub enum ConnectionState {
     Connected,
@@ -82,15 +78,19 @@ pub enum ConnectionState {
     Error(String),
 }
 
-/// Listener for incoming connections
+/// Listens for incoming connections.
 pub struct Listener {
     pub endpoint: String,
-    /// Internal handle for the actual listener
+    /// The underlying listener.
     pub(crate) handle: Option<Arc<RwLock<ListenerHandle>>>,
 }
 
 impl Listener {
-    /// Get the actual local address the listener bound to (useful for port 0 bindings)
+    /// Returns the address the listener is bound to.
+    ///
+    /// Useful after binding to port 0 to learn the port the OS picked. For gRPC
+    /// this is the endpoint string as given. Returns `None` if there is no handle
+    /// or the TCP address cannot be read.
     pub async fn local_addr(&self) -> Option<String> {
         if let Some(handle) = &self.handle {
             let handle_guard = handle.read().await;
@@ -106,15 +106,15 @@ impl Listener {
     }
 }
 
-/// Internal listener handle
+/// The underlying listener for each transport.
 pub(crate) enum ListenerHandle {
     Tcp(TcpListener),
-    // Placeholder for gRPC - actual implementation in grpc module
+    // Holds only the endpoint. No gRPC server is started.
     Grpc(String),
-    // Future: RDMA, etc.
+    // Other transports such as RDMA may be added later.
 }
 
-/// Message for transport
+/// A message sent between nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -123,7 +123,6 @@ pub struct Message {
     pub message_type: MessageType,
 }
 
-/// Type of message being sent
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MessageType {
     Event,
@@ -135,7 +134,7 @@ pub enum MessageType {
 }
 
 impl Message {
-    /// Create a new message with event payload
+    /// Create an event message with a new random id and no headers.
     pub fn event(payload: Vec<u8>) -> Self {
         Message {
             id: uuid::Uuid::new_v4().to_string(),
@@ -145,7 +144,7 @@ impl Message {
         }
     }
 
-    /// Create a heartbeat message
+    /// Create a heartbeat message with a new random id and an empty payload.
     pub fn heartbeat() -> Self {
         Message {
             id: uuid::Uuid::new_v4().to_string(),
@@ -155,41 +154,45 @@ impl Message {
         }
     }
 
-    /// Add a header to the message
+    /// Add a header, replacing any value already set for `key`.
     pub fn with_header(mut self, key: String, value: String) -> Self {
         self.headers.insert(key, value);
         self
     }
 }
 
-/// TCP transport implementation
+/// TCP transport.
+///
+/// Each message is sent as a 4 byte big endian length followed by the serialized
+/// message.
 pub struct TcpTransport {
-    /// Connection pool for reusing connections
+    /// Open connections, keyed by endpoint, so `connect` can reuse them.
     connection_pool: Arc<RwLock<HashMap<String, Arc<RwLock<ConnectionHandle>>>>>,
-    /// Configuration for TCP transport
     config: TcpTransportConfig,
 }
 
-/// Configuration for TCP transport
+/// TCP transport settings.
 #[derive(Debug, Clone)]
 pub struct TcpTransportConfig {
-    /// Connection timeout in milliseconds
+    /// Connect timeout in milliseconds. Default 5000.
     pub connection_timeout_ms: u64,
-    /// Read timeout in milliseconds
+    /// Timeout for reading one message, in milliseconds. Default 30000.
     pub read_timeout_ms: u64,
-    /// Write timeout in milliseconds
+    /// Timeout for writing one message, in milliseconds. Default 30000.
     pub write_timeout_ms: u64,
-    /// Enable TCP keepalive
+    /// Default true. Not applied to sockets yet.
     pub keepalive_enabled: bool,
-    /// Keepalive interval in seconds
+    /// Keepalive interval in seconds. Default 30. Not applied to sockets yet.
     pub keepalive_interval_secs: u64,
-    /// Enable TCP nodelay (disable Nagle's algorithm)
+    /// Send small packets right away instead of batching them (turns off Nagle's
+    /// algorithm). Default true.
     pub nodelay: bool,
-    /// Send buffer size
+    /// Socket send buffer size in bytes. Default 65536. Not applied yet.
     pub send_buffer_size: Option<usize>,
-    /// Receive buffer size
+    /// Socket receive buffer size in bytes. Default 65536. Not applied yet.
     pub recv_buffer_size: Option<usize>,
-    /// Maximum message size in bytes
+    /// Largest serialized message in bytes, checked on send and receive. Default
+    /// 10 MB.
     pub max_message_size: usize,
 }
 
@@ -216,7 +219,7 @@ impl Default for TcpTransport {
 }
 
 impl TcpTransport {
-    /// Create a new TCP transport with default configuration
+    /// Create a transport with the default settings.
     pub fn new() -> Self {
         TcpTransport {
             connection_pool: Arc::new(RwLock::new(HashMap::new())),
@@ -224,7 +227,7 @@ impl TcpTransport {
         }
     }
 
-    /// Create a new TCP transport with custom configuration
+    /// Create a transport with the given settings.
     pub fn with_config(config: TcpTransportConfig) -> Self {
         TcpTransport {
             connection_pool: Arc::new(RwLock::new(HashMap::new())),
@@ -232,9 +235,8 @@ impl TcpTransport {
         }
     }
 
-    /// Configure TCP stream with transport settings
+    /// Apply socket settings to a stream. Only `nodelay` is applied.
     async fn configure_stream(&self, stream: &TcpStream) -> DistributedResult<()> {
-        // Set TCP nodelay if configured
         if self.config.nodelay {
             stream
                 .set_nodelay(true)
@@ -243,26 +245,29 @@ impl TcpTransport {
                 })?;
         }
 
-        // Set socket options if available
-        // Note: Some options require platform-specific socket2 crate for full control
+        // Keepalive and buffer sizes are not applied. They need the platform
+        // specific socket2 crate.
 
         Ok(())
     }
 
-    /// Write a message to a TCP stream
+    /// Write one length prefixed message and flush.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if serializing fails, the message is larger than
+    /// `max_message_size`, or the write fails.
     async fn write_message(
         &self,
         stream: &mut TcpStream,
         message: &Message,
     ) -> DistributedResult<()> {
-        // Serialize the message
         let serialized = crate::core::util::serialization::to_bytes(message).map_err(|e| {
             DistributedError::TransportError {
                 message: format!("Failed to serialize message: {}", e),
             }
         })?;
 
-        // Check message size
         if serialized.len() > self.config.max_message_size {
             return Err(DistributedError::TransportError {
                 message: format!(
@@ -273,7 +278,7 @@ impl TcpTransport {
             });
         }
 
-        // Write message length (4 bytes)
+        // 4 byte big endian length prefix.
         let len = serialized.len() as u32;
         stream.write_all(&len.to_be_bytes()).await.map_err(|e| {
             DistributedError::TransportError {
@@ -281,7 +286,6 @@ impl TcpTransport {
             }
         })?;
 
-        // Write message data
         stream
             .write_all(&serialized)
             .await
@@ -289,7 +293,6 @@ impl TcpTransport {
                 message: format!("Failed to write message data: {}", e),
             })?;
 
-        // Flush the stream
         stream
             .flush()
             .await
@@ -300,9 +303,13 @@ impl TcpTransport {
         Ok(())
     }
 
-    /// Read a message from a TCP stream
+    /// Read one length prefixed message.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if the read fails, the length is larger than
+    /// `max_message_size`, or the bytes do not deserialize.
     async fn read_message(&self, stream: &mut TcpStream) -> DistributedResult<Message> {
-        // Read message length (4 bytes)
         let mut len_buf = [0u8; 4];
         stream
             .read_exact(&mut len_buf)
@@ -313,7 +320,7 @@ impl TcpTransport {
 
         let len = u32::from_be_bytes(len_buf) as usize;
 
-        // Check message size
+        // Check before allocating so a bad length cannot force a huge buffer.
         if len > self.config.max_message_size {
             return Err(DistributedError::TransportError {
                 message: format!(
@@ -323,7 +330,6 @@ impl TcpTransport {
             });
         }
 
-        // Read message data
         let mut buf = vec![0u8; len];
         stream
             .read_exact(&mut buf)
@@ -332,7 +338,6 @@ impl TcpTransport {
                 message: format!("Failed to read message data: {}", e),
             })?;
 
-        // Deserialize the message
         let message = crate::core::util::serialization::from_bytes(&buf).map_err(|e| {
             DistributedError::TransportError {
                 message: format!("Failed to deserialize message: {}", e),
@@ -345,12 +350,17 @@ impl TcpTransport {
 
 #[async_trait]
 impl Transport for TcpTransport {
+    /// Reuse the pooled stream for `endpoint`, or open a new one and pool it.
+    ///
+    /// A reused stream is shared with every other connection to the same endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if connecting times out or fails.
     async fn connect(&self, endpoint: &str) -> DistributedResult<Connection> {
-        // Check if we have a cached connection
         {
             let pool = self.connection_pool.read().await;
             if pool.contains_key(endpoint) {
-                // Reuse existing connection
                 return Ok(Connection {
                     id: uuid::Uuid::new_v4().to_string(),
                     endpoint: endpoint.to_string(),
@@ -360,7 +370,6 @@ impl Transport for TcpTransport {
             }
         }
 
-        // Create new connection
         let timeout = tokio::time::Duration::from_millis(self.config.connection_timeout_ms);
         let stream = tokio::time::timeout(timeout, TcpStream::connect(endpoint))
             .await
@@ -371,13 +380,10 @@ impl Transport for TcpTransport {
                 message: format!("Failed to connect to {}: {}", endpoint, e),
             })?;
 
-        // Configure the stream
         self.configure_stream(&stream).await?;
 
-        // Create connection handle
         let handle = Arc::new(RwLock::new(ConnectionHandle::Tcp(stream)));
 
-        // Add to connection pool
         {
             let mut pool = self.connection_pool.write().await;
             pool.insert(endpoint.to_string(), handle.clone());
@@ -464,11 +470,11 @@ impl Transport for TcpTransport {
     }
 
     async fn close(&self, connection: Connection) -> DistributedResult<()> {
-        // Remove from connection pool
         let mut pool = self.connection_pool.write().await;
         pool.remove(&connection.endpoint);
 
-        // Connection will be closed when handle is dropped
+        // The socket closes once the last handle to it is dropped. Other
+        // connections sharing it keep it open.
         Ok(())
     }
 
@@ -492,14 +498,12 @@ impl Transport for TcpTransport {
                             message: format!("Failed to accept connection: {}", e),
                         })?;
 
-                // Configure the stream
                 self.configure_stream(&stream).await?;
 
-                // Create connection handle
                 let connection_handle = Arc::new(RwLock::new(ConnectionHandle::Tcp(stream)));
                 let endpoint = addr.to_string();
 
-                // Add to connection pool
+                // Pooled under the peer address.
                 {
                     let mut pool = self.connection_pool.write().await;
                     pool.insert(endpoint.clone(), connection_handle.clone());
@@ -519,29 +523,34 @@ impl Transport for TcpTransport {
     }
 }
 
-/// Transport factory for creating transport instances
+/// Creates transports.
 pub struct TransportFactory;
 
 impl TransportFactory {
-    /// Create a transport instance based on the transport type
+    /// Create a transport by name, ignoring case.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` for `grpc`, which is not available here, and for
+    /// any unknown name. Only `tcp` works.
     pub fn create(transport_type: &str) -> DistributedResult<Arc<dyn Transport>> {
         match transport_type.to_lowercase().as_str() {
             "tcp" => Ok(Arc::new(TcpTransport::new())),
             "grpc" => {
-                // Note: gRPC transport is implemented in the grpc module
-                // For now, return TCP as fallback - full gRPC integration requires more work
+                // Use TransportFactory::create_grpc or GrpcTransport from the grpc
+                // module instead.
                 Err(DistributedError::TransportError {
                     message: "gRPC transport integration with unified interface is pending. Use grpc::transport::GrpcTransport directly.".to_string()
                 })
             }
-            // Future: "rdma" => Ok(Arc::new(RdmaTransport::new())),
+            // Not built yet: "rdma" => Ok(Arc::new(RdmaTransport::new())),
             _ => Err(DistributedError::TransportError {
                 message: format!("Unknown transport type: {}", transport_type),
             }),
         }
     }
 
-    /// Create a TCP transport with custom configuration
+    /// Create a TCP transport with the given settings.
     pub fn create_tcp_with_config(config: TcpTransportConfig) -> Arc<dyn Transport> {
         Arc::new(TcpTransport::with_config(config))
     }
@@ -552,8 +561,8 @@ mod tests {
     use super::*;
 
     fn should_panic_on_socket_skip() -> bool {
-        // In CI we generally expect loopback socket binds to work. If they don't, treat it as a
-        // real failure to avoid silently masking regressions or misconfiguration.
+        // CI should always be able to bind loopback sockets. If it cannot, fail
+        // instead of skipping so a broken setup or regression is not hidden.
         std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok()
     }
 
@@ -571,14 +580,14 @@ mod tests {
     async fn test_tcp_transport_connect_and_send() {
         let transport = TcpTransport::new();
 
-        // Start a listener on a random port
+        // Port 0 lets the OS pick a free port.
         let listener = match transport.listen("127.0.0.1:0").await {
             Ok(listener) => listener,
             Err(DistributedError::TransportError { message })
                 if is_socket_permission_denied_message(&message) =>
             {
-                // Some sandboxed environments disallow binding sockets entirely.
-                // Skip this integration-style test in that case.
+                // Some sandboxes do not allow binding sockets at all. Skip the
+                // test there.
                 if should_panic_on_socket_skip() {
                     panic!(
                         "CI environment cannot bind sockets; failing test_tcp_transport_connect_and_send ({message})"
@@ -593,7 +602,6 @@ mod tests {
             Err(err) => panic!("Failed to start listener: {err:?}"),
         };
 
-        // Get the actual address the listener bound to
         let actual_addr = {
             let handle = listener.handle.as_ref().unwrap();
             let handle_guard = handle.read().await;
@@ -603,7 +611,6 @@ mod tests {
             }
         };
 
-        // Spawn acceptor task
         let transport_clone = Arc::new(transport);
         let transport_acceptor = transport_clone.clone();
         let listener = Arc::new(listener);
@@ -615,7 +622,6 @@ mod tests {
             assert_eq!(message.message_type, MessageType::Event);
             assert_eq!(message.payload, b"test data");
 
-            // Send response
             let response = Message::event(b"response".to_vec());
             transport_acceptor
                 .send(&connection, response)
@@ -623,19 +629,16 @@ mod tests {
                 .unwrap();
         });
 
-        // Give acceptor time to start
+        // Give the acceptor time to start.
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        // Connect and send message
         let connection = transport_clone.connect(&actual_addr).await.unwrap();
         let message = Message::event(b"test data".to_vec());
         transport_clone.send(&connection, message).await.unwrap();
 
-        // Receive response
         let response = transport_clone.receive(&connection).await.unwrap();
         assert_eq!(response.payload, b"response");
 
-        // Clean up
         transport_clone.close(connection).await.unwrap();
         acceptor_task.await.unwrap();
     }
@@ -674,7 +677,6 @@ mod tests {
     #[test]
     fn test_transport_factory() {
         let _transport = TransportFactory::create("tcp").unwrap();
-        // Transport created successfully
 
         let result = TransportFactory::create("unknown");
         assert!(result.is_err());

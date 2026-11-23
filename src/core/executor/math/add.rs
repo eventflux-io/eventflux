@@ -15,21 +15,29 @@
  * limitations under the License.
  */
 
-// src/core/executor/math/add.rs
 use super::common::CoerceNumeric;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum // Use CoerceNumeric from common.rs
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
 
-#[derive(Debug)] // Clone not straightforward due to Box<dyn ExpressionExecutor>
+/// Adds two numbers with `+`.
+///
+/// NULL on either side gives NULL. No value on either side gives `None`. INT and LONG
+/// sums wrap on overflow.
+#[derive(Debug)] // No Clone because of the Box<dyn ExpressionExecutor> fields
 pub struct AddExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
     right_executor: Box<dyn ExpressionExecutor>,
-    return_type: ApiAttributeType, // Determined at construction based on operand types
+    return_type: ApiAttributeType, // Set when built from the operand types
 }
 
 impl AddExpressionExecutor {
+    /// The result type is the widest operand type, in the order INT < LONG < FLOAT < DOUBLE.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either operand is STRING, BOOL or OBJECT.
     pub fn new(
         left: Box<dyn ExpressionExecutor>,
         right: Box<dyn ExpressionExecutor>,
@@ -38,7 +46,7 @@ impl AddExpressionExecutor {
         let right_type = right.get_return_type();
 
         let return_type = match (left_type, right_type) {
-            // Handle error cases first
+            // Unsupported types first
             (ApiAttributeType::STRING, _) | (_, ApiAttributeType::STRING) => {
                 return Err(format!("String concatenation with '+' is not supported. Use concat(). Found input types {left_type:?} and {right_type:?}."));
             }
@@ -48,7 +56,7 @@ impl AddExpressionExecutor {
             (ApiAttributeType::OBJECT, _) | (_, ApiAttributeType::OBJECT) => {
                 return Err(format!("Arithmetic addition not supported for OBJECT types. Found input types {left_type:?} and {right_type:?}."));
             }
-            // Handle numeric types in order of precedence
+            // Then numeric types, widest first
             (ApiAttributeType::DOUBLE, ApiAttributeType::DOUBLE) => ApiAttributeType::DOUBLE,
             (ApiAttributeType::DOUBLE, _) | (_, ApiAttributeType::DOUBLE) => {
                 ApiAttributeType::DOUBLE
@@ -130,7 +138,7 @@ mod tests {
     use super::*;
     use crate::core::event::value::AttributeValue;
     use crate::core::executor::constant_expression_executor::ConstantExpressionExecutor;
-    // ApiAttributeType is imported in the outer scope
+    // ApiAttributeType comes from the parent module through super::*
     use crate::core::config::eventflux_app_context::EventFluxAppContext;
     use crate::core::executor::expression_executor::ExpressionExecutor;
     use std::sync::Arc;
@@ -148,7 +156,7 @@ mod tests {
         let add_exec = AddExpressionExecutor::new(left_exec, right_exec).unwrap();
 
         assert_eq!(add_exec.get_return_type(), ApiAttributeType::INT);
-        let result = add_exec.execute(None); // Event is None for constant operands
+        let result = add_exec.execute(None); // Constant operands need no event
         assert_eq!(result, Some(AttributeValue::Int(15)));
     }
 
@@ -162,7 +170,7 @@ mod tests {
             AttributeValue::Int(10),
             ApiAttributeType::INT,
         ));
-        // Constructor should promote return type to FLOAT
+        // The constructor should widen the return type to FLOAT
         let add_exec = AddExpressionExecutor::new(left_exec, right_exec).unwrap();
 
         assert_eq!(add_exec.get_return_type(), ApiAttributeType::FLOAT);
@@ -183,7 +191,7 @@ mod tests {
         let add_exec = AddExpressionExecutor::new(left_exec, right_exec).unwrap();
 
         let result = add_exec.execute(None);
-        assert_eq!(result, Some(AttributeValue::Null)); // Expect Null result
+        assert_eq!(result, Some(AttributeValue::Null));
     }
 
     #[test]

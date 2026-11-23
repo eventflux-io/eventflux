@@ -17,20 +17,22 @@
 
 //! # Configuration Management
 //!
-//! This module provides comprehensive configuration management for EventFlux applications.
+//! Loading, merging, validating and resolving configuration for EventFlux applications,
+//! plus the runtime context types that carry it.
 //!
 //! ## Configuration Reload Policy
 //!
-//! **Note**: Hot reload functionality is not supported in this implementation.
+//! **Note**: Configuration cannot be reloaded while an application runs.
 //!
 //! To apply configuration changes:
-//! 1. Enable state persistence in your EventFlux application
-//! 2. Gracefully shutdown the current runtime
+//! 1. Turn on state persistence in your EventFlux application
+//! 2. Shut down the current runtime cleanly
 //! 3. Update configuration files or environment variables
-//! 4. Restart the application with new configuration
-//! 5. State will be automatically restored, ensuring continuity
+//! 4. Start the application again with the new configuration
+//! 5. Restore the last persisted revision, for example with
+//!    `EventFluxManager::restore_all_last_state()`. A new runtime does not do this by itself.
 //!
-//! This approach maintains data consistency and reliable state recovery.
+//! Restarting keeps the data consistent and the state recoverable.
 
 // Context modules
 pub mod eventflux_app_context;
@@ -79,29 +81,32 @@ pub use toml_config::{
 };
 pub use types::*;
 
-// Main configuration loading functions for simple usage
+// Shortcuts for the common ways to load configuration
 use std::path::Path;
 
-/// Load configuration from the default locations with automatic environment detection
+/// Load configuration with the default loaders of [`ConfigManager::new`].
+///
+/// Reads YAML from the default search paths, `EVENTFLUX_` environment variables and,
+/// when built with the `kubernetes` feature and running in a pod, a ConfigMap.
 pub async fn load_config() -> ConfigResult<EventFluxConfig> {
     let manager = ConfigManager::new();
     manager.load_unified_config().await
 }
 
-/// Load configuration from a specific YAML file
+/// Load configuration from one YAML file, with `EVENTFLUX_` environment variables
+/// merged on top. See [`ConfigManager::load_from_file`].
 pub async fn load_config_from_file<P: AsRef<Path>>(path: P) -> ConfigResult<EventFluxConfig> {
     let manager = ConfigManager::new();
     manager.load_from_file(path).await
 }
 
-/// Load configuration with custom manager settings
+/// Load configuration with a manager you built yourself
 pub async fn load_config_with_manager(manager: ConfigManager) -> ConfigResult<EventFluxConfig> {
     manager.load_unified_config().await
 }
 
-// Re-exporting placeholders from eventflux_context.rs for now if they are widely used,
-// though ideally they'd be replaced by actual types from their own modules.
-// Example:
+// The placeholder types are not re-exported. Re-export them here only if they end up
+// widely used before real types replace them. For example:
 // pub use self::eventflux_context::{
 //     PersistenceStorePlaceholder,
 //     DataSourcePlaceholder,

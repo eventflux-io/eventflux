@@ -66,19 +66,18 @@ impl InputManager {
         &self,
         stream_id: &str,
     ) -> Result<Arc<Mutex<InputHandler>>, String> {
-        // Lock input_handlers for entire operation to prevent race conditions
-        // This ensures atomic check-and-create behavior preventing:
-        // - Duplicate publisher registration in InputDistributor
-        // - Inconsistent stream_index values
-        // - Concurrent overwrites of the same handler
+        // Hold the input_handlers lock for the whole call so the check and the
+        // create happen as one step. Without it two callers could
+        // - register the same publisher twice in InputDistributor
+        // - get stream_index values that do not match the distributor order
+        // - overwrite each other's handler for the same stream
         let mut handlers = self.input_handlers.lock().unwrap();
 
-        // Check if handler already exists (idempotent operation)
+        // Return the existing handler, so repeat calls are safe
         if let Some(existing_handler) = handlers.get(stream_id) {
             return Ok(Arc::clone(existing_handler));
         }
 
-        // Create junction and publisher while holding lock
         let junction = self
             .stream_junction_map
             .get(stream_id)
@@ -86,14 +85,14 @@ impl InputManager {
             .clone();
         let publisher = StreamJunction::construct_publisher(junction);
 
-        // Add processor to distributor ONLY if creating new handler
-        // Lock ordering: input_handlers → input_distributor (always acquire in this order)
+        // Lock order is always input_handlers, then input_distributor
         self.input_distributor
             .lock()
             .map_err(|_| "distributor mutex".to_string())?
             .add_input_processor(Arc::new(Mutex::new(publisher.clone())));
 
-        // Use current map length as stream index (consistent - lock still held)
+        // The map length matches the distributor slot just added, since the lock
+        // is still held
         let stream_index = handlers.len();
         let handler = Arc::new(Mutex::new(InputHandler::new(
             stream_id.to_string(),
@@ -102,7 +101,6 @@ impl InputManager {
             Arc::clone(&self.eventflux_app_context),
         )));
 
-        // Insert handler and return (lock still held until end of scope)
         handlers.insert(stream_id.to_string(), Arc::clone(&handler));
         Ok(handler)
     }

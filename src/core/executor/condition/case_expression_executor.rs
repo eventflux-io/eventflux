@@ -24,28 +24,32 @@ use crate::query_api::expression::Case;
 use std::fmt;
 use std::sync::Arc;
 
-/// Executor for CASE expressions (both Searched and Simple CASE)
+/// Runs CASE expressions, both Searched and Simple CASE.
 ///
 /// Searched CASE: CASE WHEN condition THEN result ... ELSE default END
 /// Simple CASE: CASE operand WHEN value THEN result ... ELSE default END
 ///
-/// SQL-92 Semantics:
-/// - Type validation at construction time (all results must be same type)
-/// - NULL handling: NULL != NULL (CASE NULL WHEN NULL returns ELSE)
-/// - Short-circuit evaluation: stops at first matching WHEN
-/// - ELSE is mandatory (injected as NULL by parser if missing)
+/// SQL-92 rules:
+/// - Types are checked when built. All results must share one type, with OBJECT
+///   (a NULL literal) allowed anywhere.
+/// - NULL never equals NULL, so CASE NULL WHEN NULL returns the ELSE result
+/// - Stops at the first matching WHEN
+/// - ELSE is always present. The parser adds ELSE NULL when it is missing.
+///
+/// If the operand, a WHEN value or a WHEN condition gives no value, the whole CASE gives
+/// `None`. A Searched CASE condition that is not BOOL or NULL also gives `None`.
 pub struct CaseExpressionExecutor {
-    /// Optional operand for Simple CASE (CASE expr WHEN val...)
-    /// None for Searched CASE (CASE WHEN condition...)
+    /// Operand for Simple CASE (CASE expr WHEN val...).
+    /// None for Searched CASE (CASE WHEN condition...).
     operand_executor: Option<Arc<dyn ExpressionExecutor>>,
 
-    /// WHEN clauses: (condition/value, result)
+    /// WHEN clauses as (condition or value, result)
     when_executors: Vec<WhenClauseExecutor>,
 
-    /// ELSE result (always present - parser injects NULL if missing)
+    /// ELSE result. Always present, since the parser adds NULL if missing.
     else_executor: Arc<dyn ExpressionExecutor>,
 
-    /// Result type (validated at construction)
+    /// Result type, checked when built
     result_type: ApiAttributeType,
 }
 
@@ -55,18 +59,25 @@ struct WhenClauseExecutor {
 }
 
 impl CaseExpressionExecutor {
+    /// Builds the executor and checks the types. `_case` is not used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when there is no WHEN clause, when a WHEN or ELSE result type
+    /// differs from the result type, when a Simple CASE operand cannot be compared with
+    /// a WHEN value, or when a Searched CASE condition is not BOOL.
     pub fn new(
         _case: &Case,
         operand_executor: Option<Arc<dyn ExpressionExecutor>>,
         when_executors: Vec<(Arc<dyn ExpressionExecutor>, Arc<dyn ExpressionExecutor>)>,
         else_executor: Arc<dyn ExpressionExecutor>,
     ) -> Result<Self, String> {
-        // Validate that we have at least one WHEN clause
         if when_executors.is_empty() {
             return Err("CASE expression must have at least one WHEN clause".to_string());
         }
 
-        // Find first non-NULL result type from WHEN clauses or ELSE
+        // The result type is the first type that is not OBJECT (NULL), from the WHEN
+        // results and then ELSE. It stays OBJECT if all are NULL.
         let mut result_type = ApiAttributeType::OBJECT;
         for (_, result_exec) in &when_executors {
             let when_type = result_exec.get_return_type();
@@ -75,7 +86,6 @@ impl CaseExpressionExecutor {
                 break;
             }
         }
-        // If all WHENs are NULL, check ELSE
         if result_type == ApiAttributeType::OBJECT {
             let else_type = else_executor.get_return_type();
             if else_type != ApiAttributeType::OBJECT {
@@ -83,7 +93,7 @@ impl CaseExpressionExecutor {
             }
         }
 
-        // Validate all WHEN results have same type (allow NULL/OBJECT)
+        // Every WHEN result must match the result type, or be OBJECT (NULL)
         for (idx, (_, result_exec)) in when_executors.iter().enumerate() {
             let when_type = result_exec.get_return_type();
             if when_type != result_type && when_type != ApiAttributeType::OBJECT {
@@ -96,7 +106,7 @@ impl CaseExpressionExecutor {
             }
         }
 
-        // Validate ELSE result has same type (allow OBJECT for implicit ELSE NULL)
+        // Same for ELSE. OBJECT covers the ELSE NULL the parser adds.
         let else_type = else_executor.get_return_type();
         if else_type != result_type && else_type != ApiAttributeType::OBJECT {
             return Err(format!(
@@ -105,8 +115,8 @@ impl CaseExpressionExecutor {
             ));
         }
 
-        // For Simple CASE, validate that operand and WHEN values have compatible types
-        // For Searched CASE, validate that WHEN conditions are boolean
+        // Simple CASE needs WHEN values comparable with the operand. Searched CASE needs
+        // BOOL conditions.
         if let Some(ref operand_exec) = operand_executor {
             let operand_type = operand_exec.get_return_type();
             for (idx, (when_exec, _)) in when_executors.iter().enumerate() {
@@ -121,7 +131,6 @@ impl CaseExpressionExecutor {
                 }
             }
         } else {
-            // Searched CASE: WHEN conditions must be boolean
             for (idx, (condition_exec, _)) in when_executors.iter().enumerate() {
                 let condition_type = condition_exec.get_return_type();
                 if condition_type != ApiAttributeType::BOOL {
@@ -148,19 +157,18 @@ impl CaseExpressionExecutor {
         })
     }
 
-    /// Check if two types are comparable for Simple CASE
+    /// True when a Simple CASE operand of one type can be compared with a WHEN value of the
+    /// other. Same types, any pair with OBJECT, and any two numeric types are comparable.
     fn are_comparable_types(type1: &ApiAttributeType, type2: &ApiAttributeType) -> bool {
-        // Same types are always comparable
         if type1 == type2 {
             return true;
         }
 
-        // NULL/OBJECT is comparable with any type (will never match at runtime)
+        // OBJECT (NULL) is allowed with any type. A NULL never matches at runtime.
         if *type1 == ApiAttributeType::OBJECT || *type2 == ApiAttributeType::OBJECT {
             return true;
         }
 
-        // Numeric types are comparable with each other
         let numeric_types = [
             ApiAttributeType::INT,
             ApiAttributeType::LONG,
@@ -174,15 +182,16 @@ impl CaseExpressionExecutor {
         is_type1_numeric && is_type2_numeric
     }
 
-    /// Compare two AttributeValues for equality (SQL semantics: NULL != NULL)
-    /// Supports cross-type numeric comparison (Int/Long/Float/Double)
+    /// Compares two values for equality the SQL way, so NULL never equals anything, NULL
+    /// included.
+    ///
+    /// Numbers of different types (Int, Long, Float, Double) compare by value. Int and
+    /// Long against Float are compared as f32, so large values can lose precision.
     fn sql_equals(left: &AttributeValue, right: &AttributeValue) -> bool {
-        // NULL is not equal to anything, including NULL
         if matches!(left, AttributeValue::Null) || matches!(right, AttributeValue::Null) {
             return false;
         }
 
-        // Cross-type numeric comparison
         match (left, right) {
             // Same type comparisons
             (AttributeValue::Int(a), AttributeValue::Int(b)) => a == b,
@@ -208,7 +217,7 @@ impl CaseExpressionExecutor {
             (AttributeValue::Long(a), AttributeValue::Double(b)) => (*a as f64) == *b,
             (AttributeValue::Double(a), AttributeValue::Long(b)) => *a == (*b as f64),
 
-            // Non-numeric types use standard equality
+            // Other types use plain equality
             _ => left == right,
         }
     }
@@ -220,40 +229,35 @@ impl ExpressionExecutor for CaseExpressionExecutor {
             // Simple CASE: CASE operand WHEN value1 THEN result1...
             let operand_value = operand_exec.execute(event)?;
 
-            // Short-circuit evaluation: return first matching WHEN
+            // Return the result of the first matching WHEN
             for when_clause in &self.when_executors {
                 let when_value = when_clause.condition_executor.execute(event)?;
 
-                // SQL semantics: NULL != NULL
                 if Self::sql_equals(&operand_value, &when_value) {
                     return when_clause.result_executor.execute(event);
                 }
             }
 
-            // No WHEN matched, return ELSE
             self.else_executor.execute(event)
         } else {
             // Searched CASE: CASE WHEN condition1 THEN result1...
             for when_clause in &self.when_executors {
                 let condition_value = when_clause.condition_executor.execute(event)?;
 
-                // WHEN condition must evaluate to boolean
                 match condition_value {
                     AttributeValue::Bool(true) => {
                         return when_clause.result_executor.execute(event);
                     }
                     AttributeValue::Bool(false) | AttributeValue::Null => {
-                        // Continue to next WHEN
                         continue;
                     }
                     _ => {
-                        // Invalid condition type - return None
+                        // Condition is not BOOL or NULL
                         return None;
                     }
                 }
             }
 
-            // No WHEN matched, return ELSE
             self.else_executor.execute(event)
         }
     }
@@ -303,4 +307,4 @@ impl fmt::Debug for CaseExpressionExecutor {
     }
 }
 
-// Unit tests are covered by comprehensive integration tests in tests/app_runner_case_expression.rs
+// Tests live in the integration tests at tests/app_runner_case_expression.rs

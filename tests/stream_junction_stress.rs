@@ -159,11 +159,11 @@ fn stress_async_concurrent_publish() {
     for h in handles {
         h.join().unwrap();
     }
-    // Give the async executor sufficient time to process all events.
+    // Give the async executor 2 seconds to process all events.
     thread::sleep(Duration::from_millis(2000));
     let data = rec.lock().unwrap();
     assert_eq!(data.len(), 2000);
-    // metrics
+    // The junction metrics must count every event too
     let count = junction.lock().unwrap().total_events().unwrap_or(0);
     assert_eq!(count, 2000);
 }

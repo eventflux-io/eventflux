@@ -15,17 +15,20 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.condition.IsNull
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// An IS NULL test. Tests either an expression or whether a pattern stream event exists.
+///
+/// Exactly one of `expression` and `stream_id` is set, depending on the constructor.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct IsNull {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // IsNull specific fields
+    /// Set by `new_with_expression`.
     pub expression: Option<Box<Expression>>,
 
+    // This and the fields below are set by new_with_stream_details.
     pub stream_id: Option<String>,
     pub stream_index: Option<i32>,
     pub is_inner_stream: bool,
@@ -33,19 +36,20 @@ pub struct IsNull {
 }
 
 impl IsNull {
-    // Constructor for `isNull(Expression expression)`
+    /// Test whether `expression` is null. The stream fields stay unset.
     pub fn new_with_expression(expression: Expression) -> Self {
         IsNull {
             eventflux_element: EventFluxElement::default(),
             expression: Some(Box::new(expression)),
             stream_id: None,
             stream_index: None,
-            is_inner_stream: false, // Default for this path
-            is_fault_stream: false, // Default for this path
+            is_inner_stream: false,
+            is_fault_stream: false,
         }
     }
 
-    // Constructor for `isNullStream(String streamId, Integer streamIndex, boolean isInnerStream, boolean isFaultStream)`
+    /// Test whether the event for a stream is missing, as in `e1 is null` in a pattern.
+    /// `stream_index` picks one event when the stream matched more than once.
     pub fn new_with_stream_details(
         stream_id: String,
         stream_index: Option<i32>,

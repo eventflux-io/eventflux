@@ -15,12 +15,13 @@
  * limitations under the License.
  */
 //
-// Reference Compatibility Tests
-// These tests are ported from the reference CEP implementation to ensure
-// feature parity and behavioral compatibility.
+// Reference compatibility tests
+// Many of these tests are ported from the reference CEP implementation to check
+// that EventFlux has the same features and behaves the same way.
 //
-// Test naming convention: {category}_{feature}_{test_number}
-// Each test documents its reference source in comments.
+// Tests are named by category, test number and feature, for example
+// filter_test1_basic_greater_than.
+// Ported tests name their reference source in a "Reference:" doc line.
 
 #[path = "../common/mod.rs"]
 pub mod common;

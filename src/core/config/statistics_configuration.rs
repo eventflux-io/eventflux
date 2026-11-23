@@ -17,22 +17,21 @@
 
 // Corresponds to io.eventflux.core.config.StatisticsConfiguration
 
-// Placeholder for StatisticsTrackerFactory
-// This would be a trait or struct related to metrics.
+// Stand in for the Java StatisticsTrackerFactory until metrics are ported
 #[derive(Clone, Debug, Default)]
 pub struct StatisticsTrackerFactoryPlaceholder {
     _dummy: String,
 }
 
-#[derive(Clone, Debug)] // Default can be custom
+#[derive(Clone, Debug)] // Default is written by hand below
 pub struct StatisticsConfiguration {
-    // StatisticsConfiguration in Java is not a EventFluxElement, so no eventflux_element field.
+    // Not an EventFluxElement in Java, so there is no eventflux_element field
     pub metric_prefix: String,
-    pub factory: StatisticsTrackerFactoryPlaceholder, // Placeholder for actual factory type
+    pub factory: StatisticsTrackerFactoryPlaceholder, // Stand in for the real factory type
 }
 
 impl StatisticsConfiguration {
-    // Constructor takes the factory, metric_prefix has a default in Java.
+    // Takes the factory. The metric prefix starts at "io.eventflux", as in Java.
     pub fn new(factory: StatisticsTrackerFactoryPlaceholder) -> Self {
         Self {
             metric_prefix: "io.eventflux".to_string(), // Default from Java

@@ -15,5 +15,5 @@
  * limitations under the License.
  */
 
-// Re-export data source types from the parent module
+// Re-exports the data source types from crate::core::data_source.
 pub use crate::core::data_source::*;

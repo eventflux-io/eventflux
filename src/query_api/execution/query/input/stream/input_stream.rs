@@ -15,31 +15,31 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.stream.InputStream (abstract class)
 use crate::query_api::eventflux_element::EventFluxElement;
 
-// Import specific stream types that will be variants of the InputStream enum
 use super::join_input_stream::{
     EventTrigger as JoinEventTrigger, JoinInputStream, Type as JoinType,
 };
 use super::single_input_stream::SingleInputStream;
 use super::state_input_stream::StateInputStream;
-// BasicSingleInputStream and AnonymousInputStream were removed and functionality moved into SingleInputStream.
-// Factory methods will now directly use SingleInputStream::new_basic... or SingleInputStream::new_anonymous...
+// Basic and anonymous streams are both kinds of SingleInputStream. There are no separate
+// BasicSingleInputStream or AnonymousInputStream types.
 
-// For factory methods that need these:
 use crate::query_api::aggregation::Within;
 use crate::query_api::execution::query::input::state::StateElement;
 use crate::query_api::expression::constant::Constant as ExpressionConstant;
-use crate::query_api::expression::Expression; // Actual Within struct
+use crate::query_api::expression::Expression;
 
-// Trait for common methods of InputStream (from Java's InputStream abstract class)
+/// Methods shared by all input streams.
 pub trait InputStreamTrait {
-    // Removed : EventFluxElement as EventFluxElement is directly implemented by the enum
+    /// Every stream id read, in order, with repeats.
     fn get_all_stream_ids(&self) -> Vec<String>;
+    /// Every stream id read, each once. Order depends on the stream type.
     fn get_unique_stream_ids(&self) -> Vec<String>;
 }
 
+/// The FROM part of a query. A single stream, a join of two streams, or a pattern or
+/// sequence.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputStream {
     Single(SingleInputStream),
@@ -47,10 +47,8 @@ pub enum InputStream {
     State(Box<StateInputStream>),
 }
 
-// EventFluxElement implementation for the InputStream enum
 impl InputStream {
-    // These helpers assume that SingleInputStream, JoinInputStream, StateInputStream
-    // will be refactored to compose `eventflux_element: EventFluxElement`.
+    // The EventFluxElement of whichever variant this is. Unused for now.
     #[allow(dead_code)]
     fn eventflux_element_ref(&self) -> &EventFluxElement {
         match self {
@@ -70,14 +68,12 @@ impl InputStream {
     }
 }
 
-// `impl EventFluxElement for InputStream` removed.
-
 impl InputStreamTrait for InputStream {
     fn get_all_stream_ids(&self) -> Vec<String> {
         match self {
-            InputStream::Single(s) => s.get_all_stream_ids(), // Assumes SingleInputStream impls InputStreamTrait
-            InputStream::Join(j) => j.get_all_stream_ids(), // Assumes JoinInputStream impls InputStreamTrait
-            InputStream::State(st) => st.get_all_stream_ids(), // Assumes StateInputStream impls InputStreamTrait
+            InputStream::Single(s) => s.get_all_stream_ids(),
+            InputStream::Join(j) => j.get_all_stream_ids(),
+            InputStream::State(st) => st.get_all_stream_ids(),
         }
     }
 
@@ -90,9 +86,8 @@ impl InputStreamTrait for InputStream {
     }
 }
 
-// Factory methods from Java's InputStream abstract class
+// Factory functions.
 impl InputStream {
-    // Basic streams
     pub fn stream(stream_id: String) -> Self {
         InputStream::Single(SingleInputStream::new_basic_from_id(stream_id))
     }
@@ -102,23 +97,25 @@ impl InputStream {
             stream_id,
         ))
     }
+    /// An inner stream, one local to a partition (`#` prefix in the query).
     pub fn inner_stream(stream_id: String) -> Self {
         InputStream::Single(SingleInputStream::new_basic_inner_from_id(stream_id))
     }
-    // TODO: Add other BasicSingleInputStream factories (inner_with_ref, fault_stream, etc.)
+    // TODO: Add the other basic stream factories, such as an inner stream with an alias
+    // and a fault stream.
 
-    // Anonymous stream from Query
+    /// An anonymous stream fed by the output of `query`. Gets a generated id.
     pub fn stream_from_query(query: crate::query_api::execution::query::Query) -> Self {
         InputStream::Single(SingleInputStream::new_anonymous_from_query(query))
     }
 
-    // Join streams
+    /// Join two streams. A `None` trigger means `JoinEventTrigger::All`.
     pub fn join_stream(
         left_stream: SingleInputStream,
         join_type: JoinType,
         right_stream: SingleInputStream,
         on_compare: Option<Expression>,
-        trigger: Option<JoinEventTrigger>, // Made Option, Java defaults to ALL
+        trigger: Option<JoinEventTrigger>,
         within: Option<Within>,
         per: Option<Expression>,
     ) -> Self {
@@ -127,14 +124,13 @@ impl InputStream {
             join_type,
             right_stream,
             on_compare,
-            trigger.unwrap_or(JoinEventTrigger::All), // Default from Java
+            trigger.unwrap_or(JoinEventTrigger::All),
             within,
             per,
         )))
     }
-    // TODO: Add other overloaded JoinInputStream factories from Java
+    // TODO: Add shorter join factories that fill in the optional arguments.
 
-    // Pattern streams
     pub fn pattern_stream(
         pattern_element: StateElement,
         within_time: Option<ExpressionConstant>,
@@ -145,7 +141,6 @@ impl InputStream {
         )))
     }
 
-    // Sequence streams
     pub fn sequence_stream(
         sequence_element: StateElement,
         within_time: Option<ExpressionConstant>,

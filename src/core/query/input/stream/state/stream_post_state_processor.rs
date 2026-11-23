@@ -16,7 +16,7 @@
  */
 
 // src/core/query/input/stream/state/stream_post_state_processor.rs
-// StreamPostStateProcessor implementation for handling successful pattern matches
+// StreamPostStateProcessor, the default handler for a pattern step's matches
 
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
@@ -26,30 +26,30 @@ use crate::core::query::input::stream::state::shared_processor_state::ProcessorS
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// StreamPostStateProcessor handles successful pattern matches from StreamPreStateProcessor.
+/// Default PostStateProcessor. Handles the matches of one pattern step.
 ///
-/// **Pattern Processing Flow**:
-/// When a PreStateProcessor matches an event (via condition check), it forwards the
-/// matched StateEvent to its associated PostStateProcessor. The PostStateProcessor then:
+/// When a PreStateProcessor matches an event, it sends the matched StateEvent here.
+/// This processor then:
 ///
-/// 1. **Sets Timestamp**: Updates StateEvent timestamp from the matched StreamEvent
-/// 2. **Notifies Pre**: Calls `thisStatePreProcessor.state_changed()` to mark state modification
-/// 3. **Chains Forward**: Forwards StateEvent to configured processors:
-///    - `nextStatePreProcessor`: Next state in sequence (A -> B -> C)
-///    - `nextEveryStatePreProcessor`: Loop back for 'every' patterns
-///    - `callbackPreStateProcessor`: Count quantifier callback (A{2,5})
-///    - `nextProcessor`: Output to query selector
+/// 1. **Sets the timestamp** of the StateEvent from the matched StreamEvent
+/// 2. **Marks the state changed** through the ProcessorSharedState it shares with the
+///    pre processor, without locking the pre processor
+/// 3. **Passes the StateEvent on** to whichever of these are set:
+///    - `next_state_pre_processor`: the next step (A -> B -> C)
+///    - `next_every_state_pre_processor`: the loop back for 'every' patterns
+///    - `callback_pre_state_processor`: only told that its state changed
+///    - `next_processor`: the way to the query output
 ///
 /// **Example Pattern: A -> B -> C**
 /// ```text
 /// Event arrives at PreA
 /// PreA matches condition
-/// PreA.processAndReturn() creates StateEvent
+/// PreA.process_and_return() creates StateEvent
 /// PreA forwards to PostA
 /// PostA.process():
 ///   - Set timestamp from StreamEvent
-///   - Call PreA.stateChanged()
-///   - Forward StateEvent to PreB via nextStatePreProcessor
+///   - Mark PreA's shared state changed
+///   - Forward StateEvent to PreB via next_state_pre_processor
 /// PreB receives StateEvent and continues matching...
 /// ```
 ///
@@ -59,52 +59,48 @@ use std::sync::{Arc, Mutex};
 /// PreA matches condition
 /// PreA forwards to PostA
 /// PostA.process():
-///   - Forward to nextEveryStatePreProcessor (loops back to PreA)
-///   - Forward to nextProcessor (output)
+///   - Forward to next_every_state_pre_processor (loops back to PreA)
+///   - Forward to next_processor (output)
 /// PreA receives same StateEvent and continues matching next A...
 /// ```
 ///
-/// **Key Design Decisions**:
-/// - Uses Arc<Mutex<>> for shared ownership of processors (thread-safe)
-/// - Defensive cloning to avoid borrow conflicts
-/// - isEventReturned tracks if event was sent to output (optimization)
+/// **Design notes**:
+/// - Linked processors are held as Arc<Mutex<>> so several owners can share them
+///   across threads
+/// - The StateEvent is cloned only when a next or every target needs it
+/// - `is_event_returned` records whether a match went toward the output
 pub struct StreamPostStateProcessor {
-    /// State ID this PostStateProcessor is associated with
+    /// StateEvent position this processor handles
     state_id: usize,
 
-    /// Shared state with PreStateProcessor (lock-free communication)
-    /// This replaces direct calls to PreStateProcessor.state_changed()
-    /// preventing deadlock by avoiding need to lock PreStateProcessor
+    /// State shared with the pre processor. Marking it changed here replaces a call to
+    /// PreStateProcessor::state_changed(), so the pre processor is never locked from
+    /// here and cannot deadlock.
     shared_state: Option<Arc<ProcessorSharedState>>,
 
-    /// Reference to the PreStateProcessor this PostStateProcessor belongs to
-    /// Used to notify PreStateProcessor when state changes
-    /// Made public for LogicalPostStateProcessor access
+    /// The PreStateProcessor that sends matches here.
+    /// Public so LogicalPostStateProcessor can reach it.
     pub this_state_pre_processor: Option<Arc<Mutex<dyn PreStateProcessor>>>,
 
-    /// Next PreStateProcessor in sequence chain (A -> B -> C)
+    /// Next step's pre processor (A -> B -> C)
     next_state_pre_processor: Option<Arc<Mutex<dyn PreStateProcessor>>>,
 
-    /// Next PreStateProcessor for 'every' semantics (loops back)
+    /// Pre processor that 'every' loops back to
     next_every_state_pre_processor: Option<Arc<Mutex<dyn PreStateProcessor>>>,
 
-    /// Callback PreStateProcessor for count quantifiers (A{2,5})
+    /// Callback pre processor, meant for count quantifiers (A{2,5})
     callback_pre_state_processor: Option<Arc<Mutex<dyn PreStateProcessor>>>,
 
-    /// Next processor in the overall processor chain (usually output processor)
+    /// Next processor in the chain, usually the one that leads to the output
     next_processor: Option<Arc<Mutex<dyn PostStateProcessor>>>,
 
-    /// Flag indicating if event was returned to output
-    /// Used for optimization to skip unnecessary processing
-    /// Made public for LogicalPostStateProcessor access
+    /// Set when a match is handled while `next_processor` is set.
+    /// Public so LogicalPostStateProcessor can set it on its partner.
     pub is_event_returned: bool,
 }
 
 impl StreamPostStateProcessor {
-    /// Create a new StreamPostStateProcessor
-    ///
-    /// # Arguments
-    /// * `state_id` - The state ID this processor is associated with
+    /// Create a post processor for StateEvent position `state_id`
     pub fn new(state_id: usize) -> Self {
         Self {
             state_id,
@@ -118,75 +114,68 @@ impl StreamPostStateProcessor {
         }
     }
 
-    /// Set the associated PreStateProcessor
-    /// This is the PreStateProcessor that forwards matches to this PostStateProcessor
+    /// Set the PreStateProcessor that sends matches here.
     ///
-    /// **IMPORTANT**: Automatically retrieves and stores shared state for lock-free communication
+    /// Also stores that processor's shared state, so later state changes can be marked
+    /// without locking it. Locks `pre_processor` once to read it.
     pub fn set_this_state_pre_processor(
         &mut self,
         pre_processor: Arc<Mutex<dyn PreStateProcessor>>,
     ) {
-        // Automatically get shared state from PreStateProcessor
-        // This ensures lock-free state_changed notifications work correctly
         let shared_state = pre_processor.lock().unwrap().get_shared_state();
         self.shared_state = Some(shared_state);
 
         self.this_state_pre_processor = Some(pre_processor);
     }
 
-    /// Get reference to next state PreStateProcessor
     pub fn get_next_state_pre_processor(&self) -> Option<Arc<Mutex<dyn PreStateProcessor>>> {
         self.next_state_pre_processor.clone()
     }
 
-    /// Get reference to next every state PreStateProcessor (public for trait)
     pub fn get_next_every_state_pre_processor(&self) -> Option<Arc<Mutex<dyn PreStateProcessor>>> {
         self.next_every_state_pre_processor.clone()
     }
 
-    /// Get reference to callback PreStateProcessor
     pub fn get_callback_pre_state_processor(&self) -> Option<Arc<Mutex<dyn PreStateProcessor>>> {
         self.callback_pre_state_processor.clone()
     }
 
-    /// Process a matched StateEvent
+    /// Handle a matched StateEvent.
     ///
-    /// This is the core logic for handling successful pattern matches:
-    /// 1. Extract StreamEvent from StateEvent at this state_id
-    /// 2. Set StateEvent timestamp from StreamEvent
-    /// 3. Notify thisStatePreProcessor that state changed
-    /// 4. Forward StateEvent to next/every/callback processors
-    /// 5. Mark event as returned if output processor exists
+    /// Does nothing when the StateEvent has no StreamEvent at this `state_id`.
+    /// Otherwise:
+    /// 1. Marks the shared state changed
+    /// 2. Sets `is_event_returned` when a next processor is set
+    /// 3. Sends a copy, with its timestamp set from the StreamEvent, to the next and
+    ///    every pre processors
+    /// 4. Calls `state_changed()` on the callback pre processor
+    /// 5. Sends the original StateEvent to the next processor
     ///
-    /// Made public for LogicalPostStateProcessor to call
+    /// Public so LogicalPostStateProcessor can call it.
     pub fn process_state_event(&mut self, state_event: &StateEvent) {
-        // Get the StreamEvent at this state position
         if let Some(stream_event) = state_event.get_stream_event(self.state_id) {
-            // Notify PreStateProcessor that state changed using shared atomic state
-            // This is LOCK-FREE and prevents deadlock!
+            // Uses the shared atomic state, so the pre processor is not locked and
+            // cannot deadlock
             if let Some(ref shared) = self.shared_state {
                 shared.mark_state_changed();
             }
 
-            // Mark event as returned if output processor exists
             if self.next_processor.is_some() {
                 self.is_event_returned = true;
             }
 
-            // Optimize cloning: Only clone if we need to forward
+            // Clone only when some pre processor needs the event
             let needs_next = self.next_state_pre_processor.is_some();
             let needs_every = self.next_every_state_pre_processor.is_some();
 
             if needs_next || needs_every {
-                // Create a mutable copy to set timestamp
                 let mut state_event_copy = state_event.clone();
                 state_event_copy.set_timestamp(stream_event.timestamp);
 
-                // Forward to next state PreStateProcessor (A -> B)
-                // CRITICAL: Expand StateEvent to have enough positions for next processor
-                // If next processor has state_id=N, it needs N+1 positions (0..N)
+                // Grow the StateEvent so the target has a slot. A target with
+                // state_id N needs N+1 positions (0..N).
                 if needs_next && needs_every {
-                    // Both need it - expand and clone for both
+                    // Both need it, so clone once more for the next step
                     if let Some(ref next_pre) = self.next_state_pre_processor {
                         let mut expanded = state_event_copy.clone();
                         let next_state_id = next_pre.lock().unwrap().state_id();
@@ -199,14 +188,14 @@ impl StreamPostStateProcessor {
                         next_every.lock().unwrap().add_every_state(state_event_copy);
                     }
                 } else if needs_next {
-                    // Only next needs it - expand and move directly
+                    // Only one target, so move the copy without cloning again
                     if let Some(ref next_pre) = self.next_state_pre_processor {
                         let next_state_id = next_pre.lock().unwrap().state_id();
                         state_event_copy.expand_to_size(next_state_id + 1);
                         next_pre.lock().unwrap().add_state(state_event_copy);
                     }
                 } else {
-                    // Only every needs it - expand and move directly
+                    // Only the every target needs it, so move the copy without cloning
                     if let Some(ref next_every) = self.next_every_state_pre_processor {
                         let next_every_state_id = next_every.lock().unwrap().state_id();
                         state_event_copy.expand_to_size(next_every_state_id + 1);
@@ -215,17 +204,15 @@ impl StreamPostStateProcessor {
                 }
             }
 
-            // Notify callback PreStateProcessor (count quantifiers)
+            // The callback is only marked changed. Count quantifier restarts are handled
+            // inside CountPreStateProcessor.
             if let Some(ref callback) = self.callback_pre_state_processor {
-                // For count quantifiers, callback needs to reset start state
-                // This is handled by CountPreStateProcessor in Phase 2
-                // For now, just mark state changed
                 callback.lock().unwrap().state_changed();
             }
 
-            // Forward to next_processor in chain (e.g., TerminalPostStateProcessor)
-            // This is used for N-element patterns where the last PostStateProcessor
-            // needs to forward to a terminal that bridges to the Processor chain
+            // In multi step patterns, the last post processor's next processor is a
+            // terminal (for example TerminalPostStateProcessor) that hands matches to the
+            // regular Processor chain
             if let Some(ref next) = self.next_processor {
                 next.lock()
                     .unwrap()
@@ -235,7 +222,7 @@ impl StreamPostStateProcessor {
     }
 }
 
-// Manual Debug implementation (needed for trait object compatibility)
+// Written by hand because the linked trait objects do not implement Debug
 impl Debug for StreamPostStateProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamPostStateProcessor")
@@ -265,27 +252,25 @@ impl Debug for StreamPostStateProcessor {
 impl PostStateProcessor for StreamPostStateProcessor {
     fn process(&mut self, chunk: Option<Box<dyn ComplexEvent>>) -> Option<Box<dyn ComplexEvent>> {
         if let Some(mut event) = chunk {
-            // Try to downcast to StateEvent (immutable first for checking)
             if let Some(state_event) = event.as_any().downcast_ref::<StateEvent>() {
-                // CRITICAL: Set timestamp on terminal patterns before forwarding to output
-                // Terminal patterns (with only next_processor, no next_state_pre_processor)
-                // need timestamp set here, otherwise they'd be emitted with timestamp=-1
+                // Set the timestamp here for the last step, which has only a
+                // next_processor and no next_state_pre_processor. Otherwise its matches
+                // would be emitted with timestamp -1.
                 if let Some(stream_event) = state_event.get_stream_event(self.state_id) {
                     let timestamp = stream_event.timestamp;
 
-                    // Now downcast mutably to set the timestamp in-place (zero-cost, we own the Box)
+                    // We own the Box, so set the timestamp in place without a copy
                     if let Some(state_event_mut) = event.as_any_mut().downcast_mut::<StateEvent>() {
                         state_event_mut.set_timestamp(timestamp);
                     }
                 }
 
-                // Process the matched StateEvent (still needs to forward to next states)
-                // Note: we borrow immutably again since process_state_event doesn't need mut
                 if let Some(state_event) = event.as_any().downcast_ref::<StateEvent>() {
                     self.process_state_event(state_event);
                 }
 
-                // If we have a next processor in the chain, forward the event
+                // process_state_event already sent the event to next_processor. It is
+                // also returned here when next_processor is set.
                 if self.next_processor.is_some() {
                     return Some(event);
                 }

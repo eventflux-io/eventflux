@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Utility Function Compatibility Tests
+// Utility function compatibility tests
 // Reference: query/function/FunctionTestCase.java, CoalesceFunctionTestCase.java,
 //            UUIDFunctionTestCase.java
 
@@ -54,7 +54,7 @@ async fn function_test_coalesce() {
     assert_eq!(out[1][0], AttributeValue::String("IBM".to_string()));
 }
 
-/// Coalesce with filter condition
+/// coalesce in both the SELECT list and the WHERE filter
 /// Reference: FunctionTestCase.java testFunctionQuery3
 #[tokio::test]
 async fn function_test_coalesce_in_filter() {
@@ -87,13 +87,13 @@ async fn function_test_coalesce_in_filter() {
         ],
     );
     let out = runner.shutdown();
-    // Both events pass (coalesce returns non-null positive values)
+    // Both events pass because coalesce gives a positive value for each
     assert!(out.len() >= 2);
     assert_eq!(out[0][1], AttributeValue::Float(50.0));
     assert_eq!(out[1][1], AttributeValue::Float(70.0));
 }
 
-/// Coalesce with multiple arguments
+/// coalesce with three arguments returns the first one that is not NULL
 #[tokio::test]
 async fn function_test_coalesce_multiple() {
     let app = "\
@@ -124,7 +124,7 @@ async fn function_test_coalesce_multiple() {
     assert_eq!(out[1][0], AttributeValue::String("second".to_string()));
 }
 
-/// Coalesce with all non-null (returns first)
+/// coalesce returns the first argument when none are NULL
 #[tokio::test]
 async fn function_test_coalesce_all_non_null() {
     let app = "\
@@ -160,7 +160,7 @@ async fn function_test_coalesce_null_first() {
     assert_eq!(out[0][0], AttributeValue::Int(10));
 }
 
-/// coalesce with non-NULL first
+/// coalesce when the first argument is not NULL
 #[tokio::test]
 async fn function_test_coalesce_non_null_first() {
     let app = "\
@@ -219,7 +219,7 @@ async fn function_test_uuid() {
     runner.send("inputStream", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 2);
-    // Each UUID should be different
+    // Each event gets a different UUID
     assert_ne!(out[0][0], out[1][0]);
 }
 
@@ -238,7 +238,6 @@ async fn function_test_uuid_uniqueness() {
     }
     let out = runner.shutdown();
     assert_eq!(out.len(), 10);
-    // Check all UUIDs are unique
     let mut seen = std::collections::HashSet::new();
     for row in &out {
         if let AttributeValue::String(uuid) = &row[0] {
@@ -261,7 +260,6 @@ async fn function_test_uuid_multi_event_uniqueness() {
     runner.send("inputStream", vec![AttributeValue::Int(3)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 3);
-    // All UUIDs should be unique
     assert_ne!(out[0][0], out[1][0]);
     assert_ne!(out[1][0], out[2][0]);
     assert_ne!(out[0][0], out[2][0]);
@@ -271,7 +269,7 @@ async fn function_test_uuid_multi_event_uniqueness() {
 // EVENT TIMESTAMP FUNCTIONS
 // ============================================================================
 
-/// Test current timestamp function
+/// Test eventTimestamp() returns the timestamp the event was sent with
 /// Reference: FunctionTestCase.java:testFunctionQuery7_1
 #[tokio::test]
 async fn function_test_current_timestamp() {
@@ -296,10 +294,10 @@ async fn function_test_current_timestamp() {
 }
 
 // ============================================================================
-// IFNULL / NULLIF FUNCTIONS
+// IFNULL AND NULLIF FUNCTIONS
 // ============================================================================
 
-/// ifnull function - returns first non-null value
+/// ifnull returns the fallback when the first value is NULL
 /// Reference: Function tests
 #[tokio::test]
 async fn function_test_ifnull() {
@@ -323,7 +321,7 @@ async fn function_test_ifnull() {
     assert_eq!(out[1][0], AttributeValue::Float(50.0));
 }
 
-/// nullif function - returns NULL if values are equal
+/// nullif returns NULL when both values are equal, else the first value
 /// Reference: Function tests
 #[tokio::test]
 async fn function_test_nullif() {
@@ -348,10 +346,10 @@ async fn function_test_nullif() {
 }
 
 // ============================================================================
-// NOW() FUNCTION - Current timestamp in milliseconds
+// NOW() FUNCTION, the current time in milliseconds
 // ============================================================================
 
-/// now() function (replaces currentTimeMillis)
+/// now(), which replaces currentTimeMillis
 #[tokio::test]
 async fn function_test_current_time_millis() {
     let app = "\
@@ -363,13 +361,13 @@ async fn function_test_current_time_millis() {
     runner.send("inputStream", vec![AttributeValue::Int(1)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // Should be a reasonable timestamp
+    // A sane wall clock time in milliseconds
     if let AttributeValue::Long(ts) = out[0][0] {
-        assert!(ts > 1600000000000); // After 2020
+        assert!(ts > 1600000000000); // after September 2020
     }
 }
 
-/// now() increases over time
+/// now() never goes backward between two events
 #[tokio::test]
 async fn function_test_current_time_increases() {
     let app = "\
@@ -388,7 +386,7 @@ async fn function_test_current_time_increases() {
     }
 }
 
-/// Test now() function returns current timestamp
+/// Test now() returns the wall clock time while the event is processed
 #[tokio::test]
 async fn function_test_now_basic() {
     let app = "\
@@ -421,7 +419,7 @@ async fn function_test_now_basic() {
     }
 }
 
-/// Test now() returns different values for different events
+/// Test now() for a later event is not earlier than for the first event
 #[tokio::test]
 async fn function_test_now_multiple_events() {
     let app = "\
@@ -431,12 +429,12 @@ async fn function_test_now_multiple_events() {
         SELECT now() AS ts FROM inputStream;\n";
     let runner = AppRunner::new(app, "outputStream").await;
     runner.send("inputStream", vec![AttributeValue::Int(1)]);
-    // Small delay to ensure different timestamps
+    // Short delay so the second timestamp is likely later
     std::thread::sleep(std::time::Duration::from_millis(2));
     runner.send("inputStream", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 2);
-    // Both should be Long values (timestamps increase or stay same)
+    // Timestamps may stay the same but must never go backward
     if let (AttributeValue::Long(ts1), AttributeValue::Long(ts2)) = (&out[0][0], &out[1][0]) {
         assert!(*ts2 >= *ts1, "Second timestamp should be >= first");
     }
@@ -446,7 +444,7 @@ async fn function_test_now_multiple_events() {
 // DEFAULT FUNCTION
 // ============================================================================
 
-/// Test default function - returns value when not null
+/// Test default returns the value when it is not NULL
 #[tokio::test]
 async fn function_test_default_non_null() {
     let app = "\
@@ -458,10 +456,10 @@ async fn function_test_default_non_null() {
     runner.send("inputStream", vec![AttributeValue::Long(42)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][0], AttributeValue::Long(42)); // Returns actual value
+    assert_eq!(out[0][0], AttributeValue::Long(42)); // the value, not the default
 }
 
-/// Test default function - returns default when null
+/// Test default returns the default when the value is NULL
 #[tokio::test]
 async fn function_test_default_null_value() {
     let app = "\
@@ -473,10 +471,10 @@ async fn function_test_default_null_value() {
     runner.send("inputStream", vec![AttributeValue::Null]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][0], AttributeValue::Long(99)); // Returns default
+    assert_eq!(out[0][0], AttributeValue::Long(99)); // the default
 }
 
-/// Test default function with strings
+/// Test default with a NULL string
 #[tokio::test]
 async fn function_test_default_string() {
     let app = "\
@@ -491,7 +489,7 @@ async fn function_test_default_string() {
     assert_eq!(out[0][0], AttributeValue::String("Unknown".to_string()));
 }
 
-/// Test default with non-null string
+/// Test default with a string that is not NULL
 #[tokio::test]
 async fn function_test_default_string_non_null() {
     let app = "\
@@ -509,7 +507,7 @@ async fn function_test_default_string_non_null() {
     assert_eq!(out[0][0], AttributeValue::String("John".to_string()));
 }
 
-/// Test ifnull alias (same as default)
+/// Test ifnull, an alias for default
 #[tokio::test]
 async fn function_test_ifnull_alias() {
     let app = "\
@@ -524,7 +522,7 @@ async fn function_test_ifnull_alias() {
     assert_eq!(out[0][0], AttributeValue::Double(0.0));
 }
 
-/// Test default in combination with other functions
+/// Test default inside an arithmetic expression
 #[tokio::test]
 async fn function_test_default_with_arithmetic() {
     let app = "\
@@ -540,10 +538,10 @@ async fn function_test_default_with_arithmetic() {
 }
 
 // ============================================================================
-// DEFAULT FUNCTION - TYPE WIDENING TESTS
+// DEFAULT FUNCTION TYPE WIDENING
 // ============================================================================
 
-/// Test default with INT value and LONG default (type widening)
+/// Test default with an INT value and a LONG default widens the result to LONG
 #[tokio::test]
 async fn function_test_default_int_to_long() {
     let app = "\
@@ -558,7 +556,7 @@ async fn function_test_default_int_to_long() {
     assert_eq!(out[0][0], AttributeValue::Long(999999999999));
 }
 
-/// Test default with INT value returns INT when not null (widened context)
+/// Test default with an INT value that is not NULL, written to a BIGINT column
 #[tokio::test]
 async fn function_test_default_int_value_in_long_context() {
     let app = "\
@@ -570,7 +568,7 @@ async fn function_test_default_int_value_in_long_context() {
     runner.send("inputStream", vec![AttributeValue::Int(42)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // Should return the value (42), possibly widened to LONG context
+    // Returns 42, either as INT or widened to LONG
     match &out[0][0] {
         AttributeValue::Int(v) => assert_eq!(*v, 42),
         AttributeValue::Long(v) => assert_eq!(*v, 42),
@@ -578,7 +576,7 @@ async fn function_test_default_int_value_in_long_context() {
     }
 }
 
-/// Test default with FLOAT and DOUBLE widening
+/// Test default with a FLOAT value and a DOUBLE default widens to DOUBLE
 #[tokio::test]
 async fn function_test_default_float_to_double() {
     let app = "\
@@ -597,7 +595,7 @@ async fn function_test_default_float_to_double() {
     }
 }
 
-/// Test default with INT and DOUBLE widening
+/// Test default with an INT value and a DOUBLE default widens to DOUBLE
 #[tokio::test]
 #[allow(clippy::approx_constant)]
 async fn function_test_default_int_to_double() {
@@ -617,7 +615,7 @@ async fn function_test_default_int_to_double() {
     }
 }
 
-/// Coalesce with function
+/// coalesce nested inside upper
 #[tokio::test]
 async fn function_test_coalesce_with_function() {
     let app = "\

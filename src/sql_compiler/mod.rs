@@ -15,19 +15,20 @@
  * limitations under the License.
  */
 
-//! SQL Compiler Module
+//! SQL compiler.
 //!
-//! This module provides SQL parsing and compilation capabilities for EventFlux Rust.
-//! It converts SQL syntax into EventFlux's query_api structures for execution.
+//! Parses EventFlux SQL and turns it into query_api structures the runtime can run.
 //!
 //! # Architecture
 //!
-//! The SQL compiler follows a multi-stage pipeline:
-//! 1. **SQL Parsing** - Forked sqlparser-rs with native WINDOW() support
-//! 2. **DDL Parsing** - Parse CREATE STREAM statements
-//! 3. **Type Mapping** - Convert SQL types to AttributeType
-//! 4. **SELECT Expansion** - Expand SELECT * using schema
-//! 5. **Conversion** - Convert to query_api::Query structures
+//! An application goes through these stages:
+//! 1. **Normalization** - Rewrite `CREATE STREAM` as `CREATE TABLE`
+//! 2. **SQL Parsing** - A vendored fork of sqlparser-rs with native WINDOW() support
+//! 3. **DDL** - Register each CREATE STREAM or CREATE TABLE in the catalog
+//! 4. **Type Mapping** - Turn SQL column types into AttributeType
+//! 5. **SELECT Expansion** - Expand SELECT * from the catalog schema
+//! 6. **Conversion** - Build query_api::Query and Partition structures
+//! 7. **Type Checking** - Check expression types in each query
 //!
 //! # Example
 //!
@@ -56,7 +57,6 @@ pub mod type_inference;
 pub mod type_mapping;
 pub mod with_clause;
 
-// Re-export main types for convenient access
 pub use application::parse_sql_application;
 pub use catalog::{CreateStreamInfo, SqlApplication, SqlCatalog};
 pub use converter::SqlConverter;
@@ -70,15 +70,17 @@ pub use type_inference::{TypeContext, TypeInferenceEngine};
 pub use type_mapping::{attribute_type_to_sql_type, sql_type_to_attribute_type};
 pub use with_clause::{extract_with_options, validate_with_clause};
 
-/// Parse a complete SQL application with multiple statements
+/// Parse a full SQL application of one or more statements.
+///
+/// Same as `parse_sql_application`, with the error wrapped in `SqlCompilerError`.
 pub fn parse(sql: &str) -> Result<SqlApplication, SqlCompilerError> {
     parse_sql_application(sql).map_err(SqlCompilerError::from)
 }
 
-/// Level 1 API: Compile a single SQL query with a given catalog
+/// Compile one SQL query against a catalog you built yourself.
 ///
-/// This is the low-level API for converting a single SQL query to a query_api::Query.
-/// Use this when you manually manage the catalog and need fine-grained control.
+/// The lower level entry point. Use it when you manage the catalog by hand. It does not
+/// run the type checks that `parse_sql_application` runs.
 ///
 /// # Example
 /// ```rust,ignore
@@ -103,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_module_exports() {
-        // Verify all types are accessible
+        // Compiles only if the re-exports resolve.
         let _catalog = SqlCatalog::new();
     }
 }

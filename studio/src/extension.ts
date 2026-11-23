@@ -7,12 +7,11 @@ export function activate(context: vscode.ExtensionContext) {
   // Register the custom editor provider for .eventflux.studio files
   context.subscriptions.push(StudioEditorProvider.register(context));
 
-  // Register command to open studio for existing .eventflux files
+  // Command that opens the active .eventflux file in the studio
   context.subscriptions.push(
     vscode.commands.registerCommand('eventflux.openStudio', async () => {
       const editor = vscode.window.activeTextEditor;
       if (editor && editor.document.fileName.endsWith('.eventflux')) {
-        // Read the SQL content and create a new studio file
         const sqlContent = editor.document.getText();
         await createStudioFromSQL(sqlContent, editor.document.uri);
       } else {
@@ -23,7 +22,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Register command to create a new studio project
+  // Command that creates an empty studio project at a path the user picks
   context.subscriptions.push(
     vscode.commands.registerCommand('eventflux.newStudioProject', async () => {
       const uri = await vscode.window.showSaveDialog({
@@ -50,7 +49,8 @@ export function deactivate() {
 }
 
 async function createStudioFromSQL(sqlContent: string, sourceUri: vscode.Uri): Promise<void> {
-  // Create a new studio file with the imported SQL
+  // Write <name>.eventflux.studio next to the source file and store the raw SQL
+  // in importedSQL. The SQL is not parsed here. An existing file is overwritten.
   const baseName = sourceUri.path.replace('.eventflux', '');
   const studioUri = vscode.Uri.file(`${baseName}.eventflux.studio`);
 

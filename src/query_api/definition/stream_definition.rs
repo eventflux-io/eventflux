@@ -15,17 +15,16 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.definition.StreamDefinition
 use crate::query_api::annotation::Annotation;
 use crate::query_api::definition::abstract_definition::AbstractDefinition;
-use crate::query_api::definition::attribute::{Attribute, Type as AttributeType}; // Assuming Annotation is defined
+use crate::query_api::definition::attribute::{Attribute, Type as AttributeType};
 
-/// Defines a stream with a unique ID and a list of attributes.
+/// A stream with a unique id and a list of attributes.
 ///
 /// # Configuration Storage
 ///
-/// StreamDefinition stores configuration properties extracted from SQL WITH clauses.
-/// This enables end-to-end flow: SQL parsing → Runtime creation → Factory initialization.
+/// Also holds the properties from the SQL WITH clause, so they travel from parsing to
+/// runtime creation and on to the source or sink factory.
 ///
 /// # Example
 ///
@@ -38,30 +37,27 @@ use crate::query_api::definition::attribute::{Attribute, Type as AttributeType};
 /// );
 /// ```
 ///
-/// The WITH properties are stored in `with_config` and later merged with TOML configuration
-/// before being passed to factory.create_initialized().
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// The WITH properties are stored in `with_config`. The runtime later merges them with the
+/// YAML config before passing the result to the factory's create_initialized().
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct StreamDefinition {
-    // Composition for inheritance from AbstractDefinition
     pub abstract_definition: AbstractDefinition,
 
-    /// Configuration properties from SQL WITH clause
+    /// Properties from the SQL WITH clause, collected during parsing.
     ///
-    /// Stores the FlatConfig extracted during SQL parsing. These properties have
-    /// the highest priority in the 4-layer configuration merge:
+    /// These win over every other config source when the runtime merges them.
     ///
     /// Priority (highest to lowest):
     /// 1. SQL WITH (this field)
-    /// 2. TOML stream-specific
-    /// 3. TOML application-wide
-    /// 4. Rust defaults
+    /// 2. CLI `--set` overrides, already applied to the YAML config
+    /// 3. YAML config file
+    /// 4. Code defaults
     ///
-    /// None if no WITH clause was specified in SQL.
+    /// `None` when the SQL has no WITH clause.
     pub with_config: Option<crate::core::config::stream_config::FlatConfig>,
 }
 
 impl StreamDefinition {
-    // Constructor that takes an id, as per Java's `StreamDefinition.id(streamId)`
     pub fn new(id: String) -> Self {
         StreamDefinition {
             abstract_definition: AbstractDefinition::new(id),
@@ -69,14 +65,15 @@ impl StreamDefinition {
         }
     }
 
-    // Static factory method `id` from Java
+    /// Same as `new`. Starts a builder chain.
     pub fn id(stream_id: String) -> Self {
         Self::new(stream_id)
     }
 
-    // Builder-style methods, specific to StreamDefinition
+    /// Add an attribute.
+    ///
+    /// A duplicate name is still added. It only prints a warning to stderr.
     pub fn attribute(mut self, attribute_name: String, attribute_type: AttributeType) -> Self {
-        // Check for duplicate attribute names and warn
         if self
             .abstract_definition
             .attribute_list
@@ -100,10 +97,9 @@ impl StreamDefinition {
         self
     }
 
-    /// Set configuration properties from SQL WITH clause
+    /// Set the SQL WITH clause properties, replacing any set before.
     ///
-    /// This is typically called during SQL parsing to store the extracted
-    /// configuration for later use during runtime creation.
+    /// SQL parsing calls this so the runtime can use the properties later.
     ///
     /// # Example
     ///
@@ -125,28 +121,26 @@ impl StreamDefinition {
         self
     }
 
-    /// Get reference to WITH configuration if present
+    /// The WITH clause properties, or `None` if there are none.
     pub fn get_with_config(&self) -> Option<&crate::core::config::stream_config::FlatConfig> {
         self.with_config.as_ref()
     }
 
-    /// Get mutable reference to WITH configuration if present
+    /// Mutable access to the WITH clause properties, or `None` if there are none.
     pub fn get_with_config_mut(
         &mut self,
     ) -> Option<&mut crate::core::config::stream_config::FlatConfig> {
         self.with_config.as_mut()
     }
 
-    /// Take ownership of WITH configuration, leaving None
+    /// Move the WITH clause properties out and leave `None` behind.
     pub fn take_with_config(&mut self) -> Option<crate::core::config::stream_config::FlatConfig> {
         self.with_config.take()
     }
-
-    // The `clone()` method from Java is handled by `#[derive(Clone)]`.
 }
 
-// Provide access to AbstractDefinition fields and EventFluxElement fields
-// These are useful for treating StreamDefinition polymorphically if needed.
+// Access to the shared definition fields and the query positions, for code that works on
+// any definition.
 impl AsRef<AbstractDefinition> for StreamDefinition {
     fn as_ref(&self) -> &AbstractDefinition {
         &self.abstract_definition
@@ -159,11 +153,10 @@ impl AsMut<AbstractDefinition> for StreamDefinition {
     }
 }
 
-// Through AbstractDefinition, can access EventFluxElement
+// The EventFluxElement lives inside AbstractDefinition.
 use crate::query_api::eventflux_element::EventFluxElement;
 impl AsRef<EventFluxElement> for StreamDefinition {
     fn as_ref(&self) -> &EventFluxElement {
-        // Accessing EventFluxElement composed within AbstractDefinition
         self.abstract_definition.as_ref()
     }
 }
@@ -196,7 +189,7 @@ mod tests {
         assert_eq!(attributes[1].get_name(), "value");
         assert_eq!(attributes[1].get_type(), &AttributeType::INT);
 
-        // Also check default EventFluxElement from composed AbstractDefinition
+        // The query positions start unset.
         assert_eq!(
             stream_def
                 .abstract_definition
@@ -214,18 +207,13 @@ mod tests {
 
     #[test]
     fn test_stream_definition_annotations() {
-        use crate::query_api::annotation::Annotation; // Assuming Annotation is defined
+        use crate::query_api::annotation::Annotation;
         let annotation = Annotation::new("TestAnnotation".to_string());
         let stream_def =
-            StreamDefinition::new("AnnotatedStream".to_string()).annotation(annotation.clone()); // Assuming Annotation has clone
+            StreamDefinition::new("AnnotatedStream".to_string()).annotation(annotation.clone());
 
         assert_eq!(stream_def.abstract_definition.annotations.len(), 1);
         if let Some(ann) = stream_def.abstract_definition.annotations.first() {
-            // Assuming Annotation has a get_name() or public name field
-            // Let's assume Annotation has a name field for now or a getter
-            // For this test, I'll need to check annotation.rs to confirm.
-            // If Annotation::name is private, this test would need adjustment or Annotation would need a getter.
-            // Based on previous work, Annotation has a public 'name' field.
             assert_eq!(ann.name, "TestAnnotation");
         } else {
             panic!("Annotation not found");
@@ -336,7 +324,7 @@ mod tests {
         config.set("type", "source", PropertySource::SqlWith);
         config.set("extension", "timer", PropertySource::SqlWith);
 
-        // Test builder pattern works in any order
+        // with_config can sit anywhere in the builder chain
         let stream_def = StreamDefinition::new("TestStream".to_string())
             .attribute("tick".to_string(), AttributeType::LONG)
             .with_config(config.clone())

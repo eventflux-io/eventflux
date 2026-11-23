@@ -15,15 +15,16 @@
  * limitations under the License.
  */
 
-//! Schema Generator Binary
+//! Schema generator binary.
 //!
-//! Generates a JSON schema file containing metadata about all registered
-//! EventFlux extensions (sources, sinks, functions, windows, aggregators, etc.)
+//! Writes a JSON file that lists every extension registered in a default
+//! `EventFluxContext`. That covers sources, sinks, source mappers, windows,
+//! aggregators, scalar functions, collection aggregators and tables.
 //!
-//! This schema is used by EventFlux Studio for:
-//! - Dynamic form generation for connector configuration
-//! - Function autocomplete and documentation
-//! - Window type selection and parameter validation
+//! EventFlux Studio reads this file to:
+//! - build connector config forms
+//! - offer function autocomplete and docs
+//! - list window types and check their parameters
 //!
 //! # Usage
 //!
@@ -31,7 +32,8 @@
 //! cargo run --bin generate_schema
 //! ```
 //!
-//! Output is written to: `studio/webview/src/schemas/eventflux-schema.json`
+//! The output goes to `studio/webview/src/schemas/eventflux-schema.json`, relative to the
+//! current directory, so run it from the repo root.
 
 use eventflux::core::config::eventflux_context::EventFluxContext;
 use serde::Serialize;
@@ -39,33 +41,33 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-/// Root schema structure
+/// Top level of the schema file. Each map is keyed by the registered extension name.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EventFluxSchema {
-    /// Schema version (matches EventFlux version)
+    /// Crate version from `CARGO_PKG_VERSION`.
     version: String,
-    /// Generation timestamp
+    /// UTC time the file was generated, in RFC 3339 format.
     generated: String,
-    /// Source connector definitions
+    /// Source connectors.
     sources: BTreeMap<String, ConnectorSchema>,
-    /// Sink connector definitions
+    /// Sink connectors.
     sinks: BTreeMap<String, ConnectorSchema>,
-    /// Data format mappers (json, csv, bytes)
+    /// Data format mappers such as json, csv and bytes. Only source mappers are listed.
     mappers: BTreeMap<String, MapperSchema>,
-    /// Window processor definitions
+    /// Window processors.
     windows: BTreeMap<String, WindowSchema>,
-    /// Aggregation function definitions
+    /// Aggregation functions.
     aggregators: BTreeMap<String, AggregatorSchema>,
-    /// Scalar function definitions
+    /// Scalar functions.
     functions: BTreeMap<String, FunctionSchema>,
-    /// Collection aggregation functions (for patterns)
+    /// Collection aggregation functions used in patterns.
     collection_aggregators: BTreeMap<String, CollectionAggregatorSchema>,
-    /// Table extension definitions
+    /// Table extensions.
     tables: BTreeMap<String, TableSchema>,
 }
 
-/// Schema for source/sink connectors
+/// One source or sink connector.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ConnectorSchema {
@@ -78,7 +80,7 @@ struct ConnectorSchema {
     optional_parameters: Vec<String>,
 }
 
-/// Schema for mappers (json, csv, bytes)
+/// One data format mapper such as json, csv or bytes.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MapperSchema {
@@ -89,7 +91,7 @@ struct MapperSchema {
     optional_parameters: Vec<String>,
 }
 
-/// Schema for window processors
+/// One window processor.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowSchema {
@@ -98,7 +100,7 @@ struct WindowSchema {
     description: Option<String>,
 }
 
-/// Schema for aggregation functions
+/// One aggregation function. The description is left out when the factory gives an empty one.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AggregatorSchema {
@@ -108,14 +110,14 @@ struct AggregatorSchema {
     description: Option<String>,
 }
 
-/// Schema for scalar functions
+/// One scalar function.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FunctionSchema {
     name: String,
 }
 
-/// Schema for collection aggregation functions
+/// One collection aggregation function. The description is left out when empty.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CollectionAggregatorSchema {
@@ -125,7 +127,7 @@ struct CollectionAggregatorSchema {
     description: Option<String>,
 }
 
-/// Schema for table extensions
+/// One table extension.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TableSchema {
@@ -136,24 +138,20 @@ fn main() {
     println!("EventFlux Schema Generator");
     println!("==========================\n");
 
-    // Create context with all default extensions registered
+    // A new context comes with all default extensions registered.
     let ctx = EventFluxContext::new();
 
-    // Build the schema
     let schema = generate_schema(&ctx);
 
-    // Serialize to JSON
     let json = serde_json::to_string_pretty(&schema).expect("Failed to serialize schema");
 
-    // Determine output path
+    // Relative to the current directory, so run from the repo root.
     let output_path = Path::new("studio/webview/src/schemas/eventflux-schema.json");
 
-    // Create directory if it doesn't exist
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).expect("Failed to create schemas directory");
     }
 
-    // Write the schema file
     fs::write(output_path, &json).expect("Failed to write schema file");
 
     println!("Schema generated successfully!");
@@ -254,7 +252,7 @@ fn generate_sinks(ctx: &EventFluxContext) -> BTreeMap<String, ConnectorSchema> {
 fn generate_mappers(ctx: &EventFluxContext) -> BTreeMap<String, MapperSchema> {
     let mut mappers = BTreeMap::new();
 
-    // Source mappers
+    // Only source mappers are listed. Sink mappers are not included.
     for name in ctx.list_source_mapper_factory_names() {
         if let Some(factory) = ctx.get_source_mapper_factory(&name) {
             mappers.insert(
@@ -288,7 +286,7 @@ fn generate_windows(ctx: &EventFluxContext) -> BTreeMap<String, WindowSchema> {
                 name.clone(),
                 WindowSchema {
                     name: factory.name().to_string(),
-                    description: None, // WindowProcessorFactory doesn't have description
+                    description: None, // WindowProcessorFactory has no description method
                 },
             );
         }

@@ -14,10 +14,10 @@ export function SQLEditor() {
   const handleEditorDidMount: OnMount = useCallback((editor, monaco) => {
     editorRef.current = editor;
 
-    // Register EventFlux SQL language (based on SQL)
+    // Monaco language for EventFlux SQL, which is SQL plus streaming keywords
     monaco.languages.register({ id: 'eventflux-sql' });
 
-    // Define syntax highlighting
+    // Syntax highlighting rules
     monaco.languages.setMonarchTokensProvider('eventflux-sql', {
       defaultToken: '',
       tokenPostfix: '.sql',
@@ -33,7 +33,7 @@ export function SQLEditor() {
         'WINDOW', 'PARTITION', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER', 'ON',
         'AS', 'DISTINCT', 'ALL', 'AND', 'OR', 'NOT', 'IN', 'IS', 'NULL', 'BETWEEN', 'LIKE',
         'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'CAST',
-        // EventFlux specific
+        // EventFlux extensions
         'PATTERN', 'SEQUENCE', 'EVERY', 'WITHIN', 'FOR', 'AT', 'START', 'CRON',
         'CURRENT', 'EXPIRED', 'EVENTS', 'OUTPUT', 'PRIMARY', 'KEY', 'WITH',
         // Time units
@@ -76,7 +76,7 @@ export function SQLEditor() {
           [/\d*\.\d+([eE][\-+]?\d+)?/, 'number.float'],
           [/\d+/, 'number'],
 
-          // Keywords
+          // Words. Keywords and type names get their own color, the rest are identifiers.
           [/[a-zA-Z_]\w*/, {
             cases: {
               '@keywords': 'keyword',
@@ -120,7 +120,7 @@ export function SQLEditor() {
       },
     });
 
-    // Configure autocomplete
+    // Autocomplete. The list is static and does not depend on the cursor context.
     monaco.languages.registerCompletionItemProvider('eventflux-sql', {
       provideCompletionItems: (model: editor.ITextModel, position: Position) => {
         const word = model.getWordUntilPosition(position);
@@ -184,7 +184,6 @@ export function SQLEditor() {
       },
     });
 
-    // Set editor options
     editor.updateOptions({
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace",
@@ -204,7 +203,7 @@ export function SQLEditor() {
       setIsEdited(true);
       setImportStatus('idle');
 
-      // Validate on change
+      // Validate on every edit so errors show while typing
       const { valid, errors } = getSQLValidation(value);
       setValidationErrors(valid ? [] : errors);
     }
@@ -216,7 +215,7 @@ export function SQLEditor() {
       setImportStatus('success');
       setIsEdited(false);
       setValidationErrors([]);
-      // Reset status after 2 seconds
+      // Clear the success badge after 2 seconds
       setTimeout(() => setImportStatus('idle'), 2000);
     } else {
       setImportStatus('error');
@@ -231,7 +230,7 @@ export function SQLEditor() {
     setImportStatus('idle');
   }, [regenerateSQL]);
 
-  // Only show if in SQL or split view mode
+  // Hidden in visual mode
   if (viewMode === 'visual') {
     return null;
   }

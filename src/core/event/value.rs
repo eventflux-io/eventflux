@@ -15,15 +15,13 @@
  * limitations under the License.
  */
 
-// src/core/event/value.rs
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any::Any;
 use std::fmt;
 
-// This enum will represent the possible types of attribute values in a EventFlux event.
-// Java Event uses Object[], allowing any type. Rust needs to be more explicit.
-// query_api::definition::attribute::Type enum has STRING, INT, LONG, FLOAT, DOUBLE, BOOL, OBJECT.
-// This enum should reflect those types for data carrying.
+// One attribute value in an event. The Java Event uses Object[] and allows any type.
+// Here each type in query_api::definition::attribute::Type (STRING, INT, LONG, FLOAT,
+// DOUBLE, BOOL, OBJECT) gets its own variant, plus Bytes and Null.
 
 #[derive(Default)]
 pub enum AttributeValue {
@@ -33,15 +31,15 @@ pub enum AttributeValue {
     Float(f32),
     Double(f64),
     Bool(bool),
-    /// Raw binary data for passthrough scenarios (protobuf, msgpack, etc.)
-    /// Unlike Object, this variant can be cloned and serialized.
+    /// Raw bytes passed through as is, such as protobuf or msgpack payloads.
+    /// Unlike Object, this variant keeps its data when cloned or serialized.
     Bytes(Vec<u8>),
-    Object(Option<Box<dyn Any + Send + Sync>>), // For OBJECT type, ensure thread safety
+    Object(Option<Box<dyn Any + Send + Sync>>), // OBJECT type, Send + Sync to cross threads
     #[default]
-    Null,                         // To represent null values explicitly
+    Null,                         // explicit null, also the default
 }
 
-// Manual implementation of Debug to handle Box<dyn Any>
+// Written by hand because Box<dyn Any> has no Debug.
 impl fmt::Debug for AttributeValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -52,30 +50,28 @@ impl fmt::Debug for AttributeValue {
             AttributeValue::Double(d) => write!(f, "Double({d:?})"),
             AttributeValue::Bool(b) => write!(f, "Bool({b:?})"),
             AttributeValue::Bytes(bytes) => write!(f, "Bytes({} bytes)", bytes.len()),
-            AttributeValue::Object(_) => write!(f, "Object(<opaque>)"), // Cannot inspect Box<dyn Any> easily
+            AttributeValue::Object(_) => write!(f, "Object(<opaque>)"), // dyn Any cannot be printed
             AttributeValue::Null => write!(f, "Null"),
         }
     }
 }
 
-// Manual implementation of PartialEq
+// Written by hand because Box<dyn Any> has no PartialEq.
 impl PartialEq for AttributeValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (AttributeValue::String(a), AttributeValue::String(b)) => a == b,
             (AttributeValue::Int(a), AttributeValue::Int(b)) => a == b,
             (AttributeValue::Long(a), AttributeValue::Long(b)) => a == b,
-            (AttributeValue::Float(a), AttributeValue::Float(b)) => a == b, // Note: float comparison issues
-            (AttributeValue::Double(a), AttributeValue::Double(b)) => a == b, // Note: float comparison issues
+            (AttributeValue::Float(a), AttributeValue::Float(b)) => a == b, // exact, NaN != NaN
+            (AttributeValue::Double(a), AttributeValue::Double(b)) => a == b, // exact, NaN != NaN
             (AttributeValue::Bool(a), AttributeValue::Bool(b)) => a == b,
             (AttributeValue::Bytes(a), AttributeValue::Bytes(b)) => a == b,
             (AttributeValue::Null, AttributeValue::Null) => true,
-            // Comparing Box<dyn Any> is problematic.
-            // Typically, objects are compared by reference or specific methods, not direct equality.
-            // For now, objects are not equal unless they are the same instance (which this comparison doesn't check)
-            // or if we had a way to downcast and compare known types.
+            // A Box<dyn Any> cannot be compared, so two objects are never equal,
+            // not even the same instance.
             (AttributeValue::Object(_), AttributeValue::Object(_)) => false,
-            _ => false, // Different enum variants
+            _ => false, // different variants
         }
     }
 }
@@ -90,13 +86,13 @@ impl Clone for AttributeValue {
             AttributeValue::Double(d) => AttributeValue::Double(*d),
             AttributeValue::Bool(b) => AttributeValue::Bool(*b),
             AttributeValue::Bytes(bytes) => AttributeValue::Bytes(bytes.clone()),
-            AttributeValue::Object(_) => AttributeValue::Object(None),
+            AttributeValue::Object(_) => AttributeValue::Object(None), // payload is dropped
             AttributeValue::Null => AttributeValue::Null,
         }
     }
 }
 
-// --- serde support ---
+// --- serde support. Object values are written as Null. ---
 #[derive(Serialize, Deserialize)]
 pub(crate) enum AttrSer {
     String(String),
@@ -148,7 +144,7 @@ impl<'de> Deserialize<'de> for AttributeValue {
 }
 
 impl AttributeValue {
-    /// Get string representation for debugging and display
+    /// Returns the inner string for a `String` value, `None` for any other variant.
     pub fn as_string(&self) -> Option<&String> {
         match self {
             AttributeValue::String(s) => Some(s),
@@ -191,12 +187,11 @@ impl AttributeValue {
         }
     }
 
-    /// Check if this value is null
     pub fn is_null(&self) -> bool {
         matches!(self, AttributeValue::Null)
     }
 
-    /// Get the type of this value
+    /// Returns the attribute type of this value. Bytes, Object and Null map to OBJECT.
     pub fn get_type(&self) -> crate::query_api::definition::attribute::Type {
         use crate::query_api::definition::attribute::Type;
         match self {
@@ -206,13 +201,16 @@ impl AttributeValue {
             AttributeValue::Float(_) => Type::FLOAT,
             AttributeValue::Double(_) => Type::DOUBLE,
             AttributeValue::Bool(_) => Type::BOOL,
-            AttributeValue::Bytes(_) => Type::OBJECT, // Bytes stored as OBJECT type
+            AttributeValue::Bytes(_) => Type::OBJECT,
             AttributeValue::Object(_) => Type::OBJECT,
-            AttributeValue::Null => Type::OBJECT, // Null can be any type
+            AttributeValue::Null => Type::OBJECT, // null has no type of its own
         }
     }
 
-    /// Convert to numeric value as f64 (for arithmetic operations)
+    /// Converts the value to f64 for arithmetic.
+    ///
+    /// Bool gives 1.0 or 0.0. A String is parsed and gives `None` if it is not a
+    /// number. Bytes, Object and Null give `None`.
     pub fn to_number(&self) -> Option<f64> {
         match self {
             AttributeValue::Int(i) => Some(*i as f64),
@@ -225,7 +223,10 @@ impl AttributeValue {
         }
     }
 
-    /// Convert to boolean following Java EventFlux rules
+    /// Converts the value to bool, following the Java engine rules.
+    ///
+    /// Numbers are true only when equal to 1 and false otherwise. Strings must be
+    /// "true" or "false", in any case, else `None`. Bytes, Object and Null give `None`.
     pub fn to_boolean(&self) -> Option<bool> {
         match self {
             AttributeValue::Bool(b) => Some(*b),
@@ -240,14 +241,14 @@ impl AttributeValue {
                 } else if lower == "false" {
                     Some(false)
                 } else {
-                    None // Invalid string
+                    None
                 }
             }
             _ => None,
         }
     }
 
-    /// Convert value to string representation (Java toString() equivalent)
+    /// Converts the value to a string, like Java toString(). Null gives "null".
     pub fn to_string_value(&self) -> String {
         match self {
             AttributeValue::String(s) => s.clone(),
@@ -262,7 +263,11 @@ impl AttributeValue {
         }
     }
 
-    /// Check if this value can be converted to target type
+    /// Returns true if this value can be converted to `target_type`.
+    ///
+    /// Anything converts to OBJECT or STRING, and Null converts to any type. Strings
+    /// must parse as the target. Numbers convert to wider number types or BOOL, never
+    /// narrower ones. Bool converts to any number type.
     pub fn is_convertible_to(
         &self,
         target_type: crate::query_api::definition::attribute::Type,
@@ -270,9 +275,9 @@ impl AttributeValue {
         use crate::query_api::definition::attribute::Type;
 
         match (self, target_type) {
-            (AttributeValue::Null, _) => true, // Null can convert to any type
-            (_, Type::OBJECT) => true,         // Any value can become object
-            (_, Type::STRING) => true,         // Any value can become string
+            (AttributeValue::Null, _) => true,
+            (_, Type::OBJECT) => true,
+            (_, Type::STRING) => true,
             (AttributeValue::String(s), Type::INT) => s.parse::<i32>().is_ok(),
             (AttributeValue::String(s), Type::LONG) => s.parse::<i64>().is_ok(),
             (AttributeValue::String(s), Type::FLOAT) => s.parse::<f32>().is_ok(),
@@ -281,13 +286,13 @@ impl AttributeValue {
                 let lower = s.to_lowercase();
                 lower == "true" || lower == "false"
             }
-            // Numeric type widening
+            // Numeric widening
             (AttributeValue::Int(_), Type::LONG | Type::FLOAT | Type::DOUBLE) => true,
             (AttributeValue::Long(_), Type::FLOAT | Type::DOUBLE) => true,
             (AttributeValue::Float(_), Type::DOUBLE) => true,
             // Boolean to numeric
             (AttributeValue::Bool(_), Type::INT | Type::LONG | Type::FLOAT | Type::DOUBLE) => true,
-            // Numeric to boolean (always valid)
+            // Numeric to boolean, always allowed
             (
                 AttributeValue::Int(_)
                 | AttributeValue::Long(_)

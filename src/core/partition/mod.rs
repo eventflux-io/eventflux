@@ -19,7 +19,10 @@ use std::sync::Arc;
 
 use crate::core::query::query_runtime::{QueryRuntime, QueryRuntimeTrait};
 
-/// Runtime representation of a Partition.
+/// Runtime for one partition. Holds the partition's query runtimes.
+///
+/// `start` and `shutdown` only print a line per query. The queries themselves are
+/// also registered on the app runtime, which runs them.
 #[derive(Debug, Default)]
 pub struct PartitionRuntime {
     pub query_runtimes: Vec<Arc<QueryRuntime>>,

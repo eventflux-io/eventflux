@@ -15,11 +15,9 @@
  * limitations under the License.
  */
 
-// src/core/util/parser/expression_parser.rs
-
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::eventflux_query_context::EventFluxQueryContext;
-use crate::core::event::complex_event::ComplexEvent; // Added this import
+use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::meta_state_event::MetaStateEvent;
 use crate::core::event::stream::meta_stream_event::MetaStreamEvent;
 use crate::core::event::value::AttributeValue as CoreAttributeValue;
@@ -39,7 +37,7 @@ use crate::core::executor::{
 use crate::core::query::processor::ProcessingMode;
 use crate::core::query::selector::attribute::aggregator::AttributeAggregatorExpressionExecutor;
 use crate::query_api::{
-    definition::attribute::Type as ApiAttributeType, // Import Type enum
+    definition::attribute::Type as ApiAttributeType,
     expression::{
         constant::ConstantValueWithFloat as ApiConstantValue, Expression as ApiExpression,
     },
@@ -49,6 +47,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+/// Error from parsing an expression, with its position in the query when known.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpressionParseError {
     pub message: String,
@@ -93,7 +92,8 @@ impl std::error::Error for ExpressionParseError {}
 
 pub type ExpressionParseResult<T> = Result<T, ExpressionParseError>;
 
-// Wrapper executor for calling ScalarFunctionExecutor (UDFs and complex built-ins)
+// Wraps a ScalarFunctionExecutor (a UDF or a more complex built in) so it runs as an
+// expression. It calls `init` when built and `destroy` when dropped.
 #[derive(Debug)]
 pub struct AttributeFunctionExpressionExecutor {
     scalar_function_executor: Box<dyn ScalarFunctionExecutor>,
@@ -120,15 +120,11 @@ impl AttributeFunctionExpressionExecutor {
 
 impl ExpressionExecutor for AttributeFunctionExpressionExecutor {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<CoreAttributeValue> {
-        // ComplexEvent should now be in scope
-        // This simplified model assumes that the ScalarFunctionExecutor's `execute` method,
-        // inherited from ExpressionExecutor, will correctly use its initialized state
-        // (which might include information about its arguments derived from their executors during `init`)
-        // to compute its value based on the incoming event.
-        // A more complex model might involve this AttributeFunctionExpressionExecutor first
-        // executing its `argument_executors` to get `AttributeValue`s and then passing those
-        // values to a different method on `ScalarFunctionExecutor`, e.g., `eval(args: Vec<AttributeValue>)`.
-        // For now, we stick to the ExpressionExecutor::execute signature for the UDF.
+        // The function computes its own value from the event, using whatever it kept in
+        // `init`, such as its argument executors. This wrapper does not run
+        // `argument_executors` itself. Another design would run them here and pass the
+        // values to a method like `eval(args: Vec<AttributeValue>)`, but the UDF keeps the
+        // plain ExpressionExecutor::execute signature.
         self.scalar_function_executor.execute(event)
     }
 
@@ -146,7 +142,7 @@ impl ExpressionExecutor for AttributeFunctionExpressionExecutor {
             .map(|e| e.clone_executor(eventflux_app_context))
             .collect();
         let cloned_scalar_fn = self.scalar_function_executor.clone_scalar_function();
-        // Re-initialize the cloned scalar function
+        // `new` runs `init` again on the fresh function copy
         match AttributeFunctionExpressionExecutor::new(
             cloned_scalar_fn,
             cloned_args,
@@ -154,7 +150,8 @@ impl ExpressionExecutor for AttributeFunctionExpressionExecutor {
         ) {
             Ok(exec) => Box::new(exec),
             Err(e) => {
-                // If cloning fails log the error and fall back to a constant NULL executor
+                // If `init` fails, print the error to stderr and fall back to a constant
+                // NULL executor
                 eprintln!("Failed to clone AttributeFunctionExpressionExecutor: {e}");
                 Box::new(ConstantExpressionExecutor::new(
                     CoreAttributeValue::Null,
@@ -171,13 +168,11 @@ impl Drop for AttributeFunctionExpressionExecutor {
     }
 }
 
-// Simplified context for initial ExpressionParser focusing on single input stream scenarios.
-/// Context for `ExpressionParser`, providing necessary metadata for variable
-/// resolution.
+/// Context for `ExpressionParser`. Holds the metadata used to resolve variables.
 ///
-/// The `stream_meta_map` contains `MetaStreamEvent` instances keyed by the
-/// stream/table/window/aggregation identifier.  `default_source` indicates which
-/// entry should be used when a variable does not explicitly specify a source.
+/// The meta maps hold a `MetaStreamEvent` per stream, table, window and aggregation id,
+/// and a `MetaStateEvent` per pattern state id. `default_source` names the entry to try
+/// first when a variable does not name its source.
 pub struct ExpressionParserContext<'a> {
     pub eventflux_app_context: Arc<EventFluxAppContext>,
     pub eventflux_query_context: Arc<EventFluxQueryContext>,
@@ -186,21 +181,28 @@ pub struct ExpressionParserContext<'a> {
     pub window_meta_map: HashMap<String, Arc<MetaStreamEvent>>,
     pub aggregation_meta_map: HashMap<String, Arc<MetaStreamEvent>>,
     pub state_meta_map: HashMap<String, Arc<MetaStateEvent>>,
-    /// Map of source id (stream/table) to its position within a StateEvent chain.
-    /// Single stream queries map their input id to position 0 while joins and
-    /// patterns map each participating id to the appropriate index.
+    /// Position of each source id (stream or table) in a StateEvent chain.
+    /// Single stream queries map their input id to position 0, while joins and
+    /// patterns map each source id to its own index. A missing id counts as 0.
     pub stream_positions: HashMap<String, i32>,
     pub default_source: String,
     pub query_name: &'a str,
-    /// When true, indicates this is a mutation context (UPDATE/DELETE/UPSERT)
-    /// where unqualified columns should resolve to the target table without
-    /// raising ambiguity errors even if the column exists in the source stream.
+    /// True for a mutation (UPDATE/DELETE/UPSERT). Unqualified columns then resolve
+    /// to the target table without an ambiguity error, even if the source stream
+    /// has a column with the same name.
     pub is_mutation_context: bool,
 }
 
-/// Parses query_api::Expression into core::ExpressionExecutor instances.
-/// Current limitations: Variable resolution is simplified for single input streams.
-/// Does not handle full complexity of all expression types or contexts (e.g., aggregations within HAVING).
+/// Parses a query_api::Expression into a core::ExpressionExecutor.
+///
+/// Variable resolution is basic. Variables always point at before window data, and some
+/// expression kinds or contexts are not fully handled, such as aggregations within
+/// HAVING.
+///
+/// # Errors
+///
+/// Returns an error when a variable is not found or is found in more than one source,
+/// or when a sub expression, function or operator cannot be built.
 pub fn parse_expression(
     api_expr: &ApiExpression,
     context: &ExpressionParserContext<'_>,
@@ -220,7 +222,8 @@ pub fn parse_expression(
             let mut found: Option<([i32; 4], ApiAttributeType)> = None;
             let mut _found_id: Option<String> = None;
 
-            // Helper closure to search a meta and record result
+            // Looks the attribute up in one source and records it. Errors if a different
+            // source already matched.
             let mut check_meta = |id: &str, meta: &MetaStreamEvent| {
                 if let Some((idx, t)) = meta.find_attribute_info(attribute_name) {
                     if found.is_some() && _found_id.as_deref() != Some(id) {
@@ -274,13 +277,13 @@ pub fn parse_expression(
                     }
                 }
             } else {
-                // For unqualified columns, check default_source first, but still verify
-                // the column isn't ambiguous (exists in multiple sources)
+                // Unqualified column. Try default_source first, but still check the name
+                // is not in more than one source.
                 let default_id = &context.default_source;
                 let mut found_in_default = false;
                 let mut also_found_elsewhere = false;
 
-                // First pass: check if column exists in default_source
+                // First pass. Is the column in default_source?
                 if !default_id.is_empty() {
                     if let Some(meta) = context.stream_meta_map.get(default_id) {
                         if meta.find_attribute_info(attribute_name).is_some() {
@@ -296,7 +299,7 @@ pub fn parse_expression(
                     }
                 }
 
-                // Second pass: check if column also exists in OTHER sources (ambiguity check)
+                // Second pass. Is it also in another stream or table?
                 if found_in_default {
                     for (id, meta) in &context.stream_meta_map {
                         if id != default_id && meta.find_attribute_info(attribute_name).is_some() {
@@ -316,11 +319,10 @@ pub fn parse_expression(
                     }
                 }
 
-                // If found in default_source AND elsewhere, raise ambiguity error
-                // (unless this is a mutation context where table is intentionally the default)
+                // Found in default_source AND elsewhere is ambiguous, except in a mutation
                 if found_in_default && also_found_elsewhere {
-                    // In mutation contexts (UPDATE/DELETE/UPSERT), default_source is the target table.
-                    // Unqualified columns should resolve to the table without ambiguity error.
+                    // In a mutation (UPDATE/DELETE/UPSERT), default_source is the target table
+                    // on purpose, so the column resolves to the table.
                     if !context.is_mutation_context {
                         return Err(ExpressionParseError::new(
                             format!("Attribute '{attribute_name}' found in multiple sources"),
@@ -328,8 +330,8 @@ pub fn parse_expression(
                             context.query_name,
                         ));
                     }
-                    // Log warning for debugging: ambiguity silently resolved to table column
-                    // This helps users identify when they might have intended the stream column
+                    // Debug log for the silent choice, so users can spot when they meant the
+                    // stream column
                     log::debug!(
                         "Mutation context: ambiguous column '{}' resolved to table '{}'. \
                          Use explicit qualifier (e.g., '{}.{}') if stream column was intended.",
@@ -340,16 +342,16 @@ pub fn parse_expression(
                     );
                 }
 
-                // Now actually resolve the column
+                // Now resolve the column
                 if found_in_default {
-                    // Bind to default_source
                     if let Some(meta) = context.stream_meta_map.get(default_id) {
                         check_meta(default_id, meta)?;
                     } else if let Some(meta) = context.table_meta_map.get(default_id) {
                         check_meta(default_id, meta)?;
                     }
                 } else {
-                    // Not in default_source, search all sources (will error if ambiguous)
+                    // Not in default_source, so search every stream and table. check_meta
+                    // errors if more than one has it.
                     for (id, meta) in &context.stream_meta_map {
                         check_meta(id, meta)?;
                     }
@@ -479,14 +481,13 @@ pub fn parse_expression(
             )))
         }
         ApiExpression::Case(api_case) => {
-            // Parse operand (for Simple CASE)
+            // Only Simple CASE has an operand
             let operand_exec = if let Some(ref operand) = api_case.operand {
                 Some(Arc::from(parse_expression(operand, context)?))
             } else {
                 None
             };
 
-            // Parse all WHEN clauses
             let mut when_executors = Vec::new();
             for when_clause in &api_case.when_clauses {
                 let condition_exec = Arc::from(parse_expression(&when_clause.condition, context)?);
@@ -494,10 +495,9 @@ pub fn parse_expression(
                 when_executors.push((condition_exec, result_exec));
             }
 
-            // Parse ELSE expression
             let else_exec = Arc::from(parse_expression(&api_case.else_result, context)?);
 
-            // Create CaseExpressionExecutor
+            // The executor checks the CASE types and can fail here
             Ok(Box::new(
                 CaseExpressionExecutor::new(api_case, operand_exec, when_executors, else_exec)
                     .map_err(|e| {
@@ -532,7 +532,8 @@ pub fn parse_expression(
                 api_func.function_name.clone()
             };
 
-            // Handle special variable functions not implemented via factories
+            // Functions built here directly instead of through a registered factory. Note
+            // that `event` and `allEvents` ignore their argument and always read position 0.
             match (
                 api_func.extension_namespace.as_deref(),
                 api_func.function_name.as_str(),
@@ -637,7 +638,8 @@ pub fn parse_expression(
                         )?,
                     ))
                 }
-                // All other functions (aggregators, scalar functions, scripts) are looked up from registry
+                // Every other function is looked up by name, in this order: attribute
+                // aggregators, scalar functions, then script functions
                 _ => {
                     if let Some(factory) = context
                         .eventflux_app_context
@@ -726,7 +728,7 @@ pub fn parse_expression(
                 .as_deref()
                 .or(Some(&context.default_source));
 
-            // Resolve stream position
+            // The source defaults to default_source and must have a pattern position
             let stream_id = stream_id_opt.ok_or_else(|| {
                 ExpressionParseError::new(
                     "Indexed variable requires a stream identifier".to_string(),
@@ -753,7 +755,7 @@ pub fn parse_expression(
                 )
             })?;
 
-            // Find attribute meta to get position and type
+            // Look up the attribute index and type. The first match wins.
             let mut found: Option<([i32; 2], ApiAttributeType)> = None;
 
             let mut check_meta = |meta: &MetaStreamEvent| -> Result<bool, ExpressionParseError> {
@@ -821,7 +823,7 @@ pub fn parse_expression(
 fn convert_api_constant_to_core_attribute_value(
     api_val: &ApiConstantValue,
 ) -> (CoreAttributeValue, ApiAttributeType) {
-    // Changed to ApiAttributeType
+    // A Time constant becomes a LONG and NULL is typed as OBJECT
     match api_val {
         ApiConstantValue::String(s) => (
             CoreAttributeValue::String(s.clone()),

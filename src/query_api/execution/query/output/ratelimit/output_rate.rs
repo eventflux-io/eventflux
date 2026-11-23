@@ -19,9 +19,10 @@ use super::events_output_rate::EventsOutputRate;
 use super::snapshot_output_rate::SnapshotOutputRate;
 use super::time_output_rate::TimeOutputRate;
 use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::expression::constant::{Constant, ConstantValueWithFloat as ConstantValue}; // Use renamed ConstantValue
+use crate::query_api::expression::constant::{Constant, ConstantValueWithFloat as ConstantValue};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)] // Added Eq, Hash, Copy
+/// Which events to emit from each batch. Defaults to `All`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum OutputRateBehavior {
     #[default]
     All,
@@ -29,35 +30,31 @@ pub enum OutputRateBehavior {
     Last,
 }
 
+/// The kind of output rate limit with its settings.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutputRateVariant {
     Events(EventsOutputRate, OutputRateBehavior),
     Time(TimeOutputRate, OutputRateBehavior),
-    Snapshot(SnapshotOutputRate), // Snapshot implies 'All' behavior for its interval
+    // Takes no behaviour. A snapshot always emits the whole state.
+    Snapshot(SnapshotOutputRate),
 }
 
+// Emit every event, with All behaviour. A query with no rate limit at all uses
+// `output_rate: None` instead.
 impl Default for OutputRateVariant {
     fn default() -> Self {
-        // Default to "output every event" which is EventOutputRate with ALL behavior and a count of 1 (or similar)
-        // Or, more simply, just "ALL events" without specific count/time, if that's a valid standalone concept in EventFlux.
-        // Java's default Query has no OutputRate. If one is added, `output every events` is common.
-        // Let's default to a conceptual "all events without specific rate control"
-        // which could be represented by EventsOutputRate(count=some_very_high_number or special_value, OutputRateBehavior::All)
-        // Or, if OutputRate itself is Option in Query, None implies no rate limiting.
-        // For a concrete default here, let's pick "every event".
         OutputRateVariant::Events(EventsOutputRate::new(1), OutputRateBehavior::All)
-        // Default: output every 1 event
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Default)] // Added Default
+/// Output rate limit of a query, as in the OUTPUT clause.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct OutputRate {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
     pub variant: OutputRateVariant,
 }
 
 impl OutputRate {
-    // Constructor for specific variant
     pub fn new(variant: OutputRateVariant) -> Self {
         OutputRate {
             eventflux_element: EventFluxElement::default(),
@@ -65,7 +62,12 @@ impl OutputRate {
         }
     }
 
-    // Factory methods based on Java static methods in OutputRate.java
+    /// Limit by event count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the constant is an Int or Long. A Long is cast to i32
+    /// without a range check, so a value above `i32::MAX` wraps.
     pub fn per_events(
         events_constant: Constant,
         behavior: OutputRateBehavior,
@@ -85,6 +87,11 @@ impl OutputRate {
         )))
     }
 
+    /// Limit by time. The constant holds milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the constant is a Time or Long.
     pub fn per_time_period(
         time_constant: Constant,
         behavior: OutputRateBehavior,
@@ -103,6 +110,11 @@ impl OutputRate {
         )))
     }
 
+    /// Snapshot output every period. The constant holds milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the constant is a Time or Long.
     pub fn per_snapshot(time_constant: Constant) -> Result<Self, String> {
         let time_millis = match time_constant.value {
             ConstantValue::Time(ms) | ConstantValue::Long(ms) => ms,

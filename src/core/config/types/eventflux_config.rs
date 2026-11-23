@@ -17,40 +17,41 @@
 
 //! Main EventFlux Configuration Type
 //!
-//! Defines the top-level configuration structure that combines all configuration components.
+//! The top level configuration type that holds every other configuration part.
 
 use super::{ApplicationConfig, ConfigMetadata, EventFluxGlobalConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Top-level EventFlux configuration structure
+/// Top level EventFlux configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventFluxConfig {
-    /// API version for configuration compatibility
+    /// API version of the config format. Written as `apiVersion`. Defaults to
+    /// "eventflux.io/v1".
     #[serde(rename = "apiVersion")]
     pub api_version: String,
 
-    /// Kind of configuration object
+    /// Kind of configuration object. Defaults to "EventFluxConfig".
     pub kind: String,
 
-    /// Configuration metadata following Kubernetes API conventions
+    /// Metadata in the style of Kubernetes objects
     pub metadata: ConfigMetadata,
 
     /// Global EventFlux runtime configuration
     pub eventflux: EventFluxGlobalConfig,
 
-    /// Application-specific configurations
+    /// Configuration of each application, keyed by application name
     #[serde(default)]
     pub applications: HashMap<String, ApplicationConfig>,
 }
 
 impl EventFluxConfig {
-    /// Create a new EventFlux configuration with default values
+    /// Create a configuration with default values
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a new EventFlux configuration with a specific name
+    /// Create a default configuration with the given metadata name
     pub fn with_name(name: impl Into<String>) -> Self {
         Self {
             api_version: "eventflux.io/v1".to_string(),
@@ -107,7 +108,7 @@ impl EventFluxConfig {
         self.applications.get_mut(name)
     }
 
-    /// Add or update an application configuration
+    /// Add an application configuration, replacing any with the same name
     pub fn set_application(&mut self, name: impl Into<String>, config: ApplicationConfig) {
         self.applications.insert(name.into(), config);
     }
@@ -122,7 +123,7 @@ impl EventFluxConfig {
         self.applications.keys().collect()
     }
 
-    /// Check if configuration is valid for single-node mode
+    /// Check if the runtime mode is single node
     pub fn is_single_node_mode(&self) -> bool {
         matches!(
             self.eventflux.runtime.mode,
@@ -130,7 +131,7 @@ impl EventFluxConfig {
         )
     }
 
-    /// Check if configuration is for distributed mode
+    /// Check if the runtime mode is distributed or hybrid
     pub fn is_distributed_mode(&self) -> bool {
         matches!(
             self.eventflux.runtime.mode,
@@ -139,7 +140,7 @@ impl EventFluxConfig {
         )
     }
 
-    /// Get the effective environment name
+    /// Get the environment name, or "default" when none is set
     pub fn effective_environment(&self) -> String {
         self.metadata
             .environment
@@ -148,7 +149,7 @@ impl EventFluxConfig {
             .clone()
     }
 
-    /// Get the effective namespace
+    /// Get the namespace, or "default" when none is set
     pub fn effective_namespace(&self) -> String {
         self.metadata
             .namespace
@@ -157,12 +158,13 @@ impl EventFluxConfig {
             .clone()
     }
 
-    /// Merge another configuration into this one
+    /// Merge `other` into this config. Values from `other` win.
     ///
-    /// This performs a deep merge where the other configuration takes precedence
-    /// for conflicting values.
+    /// Metadata fields are replaced only when set in `other`. Labels and annotations
+    /// are added key by key. The `eventflux` section is merged deeply. Applications
+    /// are replaced whole by name, not merged field by field. `api_version` and
+    /// `kind` are not changed. Never returns an error today.
     pub fn merge(&mut self, other: EventFluxConfig) -> Result<(), String> {
-        // Merge metadata (other takes precedence for non-None values)
         if let Some(name) = other.metadata.name {
             self.metadata.name = Some(name);
         }
@@ -176,26 +178,25 @@ impl EventFluxConfig {
             self.metadata.version = Some(version);
         }
 
-        // Merge labels and annotations
         self.metadata.labels.extend(other.metadata.labels);
         self.metadata.annotations.extend(other.metadata.annotations);
 
-        // Deep merge the eventflux global configuration
         self.eventflux.merge(other.eventflux);
 
-        // Merge applications
+        // An application with the same name is replaced whole
         self.applications.extend(other.applications);
 
         Ok(())
     }
 
-    /// Create a copy with sensitive information redacted
+    /// Return a copy with sensitive metadata annotations removed.
+    ///
+    /// Drops every annotation whose key contains "password", "secret", "token" or
+    /// "key", in any case. Nothing else is redacted yet.
     pub fn redact_sensitive(&self) -> Self {
-        // Implementation pending: Comprehensive secret redaction by walking configuration tree
-        // and redacting fields that contain sensitive information
+        // Not done yet: walking the whole config tree and redacting secret fields
         let mut redacted = self.clone();
 
-        // For now, just clear potentially sensitive annotations
         redacted.metadata.annotations.retain(|key, _| {
             !key.to_lowercase().contains("password")
                 && !key.to_lowercase().contains("secret")
@@ -206,21 +207,22 @@ impl EventFluxConfig {
         redacted
     }
 
-    /// Validate the configuration structure
+    /// Check the configuration and return every problem found.
+    ///
+    /// Checks the metadata, that distributed or hybrid mode has a `distributed`
+    /// section, and that each application name is not empty and has only letters,
+    /// digits, `-` and `_`.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
-        // Validate metadata
         if let Err(e) = self.metadata.validate() {
             errors.push(format!("Metadata validation failed: {}", e));
         }
 
-        // Validate that distributed mode has required configuration
         if self.is_distributed_mode() && self.eventflux.distributed.is_none() {
             errors.push("Distributed mode requires distributed configuration".to_string());
         }
 
-        // Validate application names are not empty
         for name in self.applications.keys() {
             if name.is_empty() {
                 errors.push("Application name cannot be empty".to_string());
@@ -240,7 +242,7 @@ impl EventFluxConfig {
         }
     }
 
-    /// Get configuration summary for logging
+    /// One line summary with name, mode, application count and environment, for logs
     pub fn summary(&self) -> String {
         let app_count = self.applications.len();
         let mode = match self.eventflux.runtime.mode {
@@ -271,7 +273,7 @@ impl EventFluxConfig {
         serde_yaml::from_str(yaml)
     }
 
-    /// Convert to JSON string
+    /// Convert to a pretty printed JSON string
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
@@ -281,12 +283,12 @@ impl EventFluxConfig {
         serde_json::from_str(json)
     }
 
-    /// Update timestamp
+    /// Set the metadata updated time to now
     pub fn touch(&mut self) {
         self.metadata.touch();
     }
 
-    /// Generate unique configuration ID
+    /// Build an id of the form `<api_version>/<metadata id>`
     pub fn generate_id(&self) -> String {
         let metadata_id = self.metadata.generate_id();
         format!("{}/{}", self.api_version, metadata_id)

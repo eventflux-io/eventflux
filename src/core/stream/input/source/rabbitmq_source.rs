@@ -17,11 +17,12 @@
 
 //! # RabbitMQ Source
 //!
-//! Consumes messages from RabbitMQ queues and delivers them to the EventFlux pipeline.
+//! Reads messages from a RabbitMQ queue and delivers them to the EventFlux pipeline.
 //!
 //! ## Architecture
 //!
-//! Uses synchronous Source trait with internal tokio runtime for lapin async operations:
+//! The Source trait is blocking, so the worker thread runs its own tokio
+//! runtime for the async lapin client.
 //! ```text
 //! RabbitMQ Queue → lapin consumer → bytes → SourceCallback → SourceMapper → Events
 //! ```
@@ -54,28 +55,27 @@ use std::time::Duration;
 /// Configuration for RabbitMQ source
 #[derive(Debug, Clone)]
 pub struct RabbitMQSourceConfig {
-    /// RabbitMQ broker hostname
+    /// RabbitMQ broker host name
     pub host: String,
-    /// RabbitMQ broker port (default: 5672)
+    /// RabbitMQ broker port. Default 5672.
     pub port: u16,
-    /// Virtual host (default: "/")
+    /// Virtual host. Default "/".
     pub vhost: String,
-    /// Queue name to consume from
+    /// Queue to read from
     pub queue: String,
-    /// Username for authentication (default: "guest")
+    /// User name for login. Default "guest".
     pub username: String,
-    /// Password for authentication (default: "guest"); redacted in Debug
-    /// output — call `.expose()` at the point of use
+    /// Password for login. Default "guest". Hidden in Debug output. Call
+    /// `.expose()` only where it is used.
     pub password: crate::core::stream::connector_util::Redacted,
-    /// Prefetch count for consumer (default: 10)
+    /// Most unacked messages the broker sends at once. Default 10.
     pub prefetch_count: u16,
-    /// Consumer tag (auto-generated if not specified)
+    /// Consumer tag. When not set, `eventflux-<uuid>` is used.
     pub consumer_tag: Option<String>,
-    /// Whether to auto-acknowledge messages (default: true)
+    /// Let the broker treat messages as acked on delivery. Default true.
     pub auto_ack: bool,
-    /// Whether to declare the queue if it doesn't exist (default: true)
-    /// When true, the source will create the queue during start() if missing.
-    /// When false, the queue must already exist or an error occurs.
+    /// Create the queue in start() if it is missing. Default true.
+    /// When false, the queue must already exist or start() reports an error.
     pub declare_queue: bool,
 }
 
@@ -91,15 +91,15 @@ impl Default for RabbitMQSourceConfig {
             prefetch_count: 10,
             consumer_tag: None,
             auto_ack: true,
-            declare_queue: true, // Default: auto-create queue if missing
+            declare_queue: true, // create the queue if it is missing
         }
     }
 }
 
 impl RabbitMQSourceConfig {
-    /// Build AMQP URI from configuration
+    /// Builds the AMQP URI. The result holds the raw password, so never log it.
     pub fn amqp_uri(&self) -> String {
-        // The default vhost "/" must be URL-encoded as "%2f"
+        // The default vhost "/" must be URL encoded, which gives "%2F"
         let encoded_vhost = urlencoding::encode(&self.vhost);
         format!(
             "amqp://{}:{}@{}:{}/{}",
@@ -111,24 +111,26 @@ impl RabbitMQSourceConfig {
         )
     }
 
-    /// Parse configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `rabbitmq.host` or `rabbitmq.queue` is missing,
+    /// or a port, prefetch, or bool value does not parse.
     #[allow(clippy::field_reassign_with_default)]
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
 
-        // Required: host
         config.host = properties
             .get("rabbitmq.host")
             .ok_or("Missing required property: rabbitmq.host")?
             .clone();
 
-        // Required: queue
         config.queue = properties
             .get("rabbitmq.queue")
             .ok_or("Missing required property: rabbitmq.queue")?
             .clone();
 
-        // Optional properties
         if let Some(port) = properties.get("rabbitmq.port") {
             config.port = port
                 .parse()
@@ -173,24 +175,22 @@ impl RabbitMQSourceConfig {
     }
 }
 
-/// RabbitMQ source that consumes messages from a queue
+/// RabbitMQ source that reads messages from one queue.
 ///
-/// This implementation:
-/// - Uses sync Source trait with internal tokio runtime for lapin async operations
-/// - Supports graceful shutdown via AtomicBool flag
-/// - Integrates with M5 error handling context
+/// - Runs its own tokio runtime on the worker thread for the async lapin client
+/// - Shuts down cleanly when the worker's running flag is cleared
+/// - Uses the `error.*` handling strategies
 #[derive(Debug)]
 pub struct RabbitMQSource {
-    /// Configuration
     config: RabbitMQSourceConfig,
-    /// Worker thread lifecycle (spawn, signal, join on stop)
+    /// Runs the worker thread. Starts it, signals it, and joins it on stop.
     worker: SourceWorker,
-    /// Optional error handling context (M5 integration)
+    /// Optional error handling context
     error_ctx: Option<SourceErrorContext>,
 }
 
 impl RabbitMQSource {
-    /// Create a new RabbitMQ source without error handling
+    /// Creates a RabbitMQ source with no error handling
     pub fn new(config: RabbitMQSourceConfig) -> Self {
         Self {
             config,
@@ -199,21 +199,26 @@ impl RabbitMQSource {
         }
     }
 
-    /// Create a RabbitMQ source from properties
+    /// Creates a RabbitMQ source from properties.
     ///
     /// # Required Properties
-    /// - `rabbitmq.host`: Broker hostname
-    /// - `rabbitmq.queue`: Queue name to consume from
+    /// - `rabbitmq.host`: broker host name
+    /// - `rabbitmq.queue`: queue to read from
     ///
     /// # Optional Properties
-    /// - `rabbitmq.port`: Broker port (default: 5672)
-    /// - `rabbitmq.vhost`: Virtual host (default: "/")
-    /// - `rabbitmq.username`: Username (default: "guest")
-    /// - `rabbitmq.password`: Password (default: "guest")
-    /// - `rabbitmq.prefetch`: Prefetch count (default: 10)
-    /// - `rabbitmq.consumer.tag`: Consumer tag (auto-generated if not specified)
-    /// - `rabbitmq.auto.ack`: Auto-acknowledge messages (default: true)
-    /// - `error.*`: Error handling properties (see SourceErrorContext)
+    /// - `rabbitmq.port`: broker port (default 5672)
+    /// - `rabbitmq.vhost`: virtual host (default "/")
+    /// - `rabbitmq.username`: user name (default "guest")
+    /// - `rabbitmq.password`: password (default "guest")
+    /// - `rabbitmq.prefetch`: prefetch count (default 10)
+    /// - `rabbitmq.consumer.tag`: consumer tag (default `eventflux-<uuid>`)
+    /// - `rabbitmq.auto.ack`: let the broker ack on delivery (default true)
+    /// - `rabbitmq.declare.queue`: create the queue if missing (default true)
+    /// - `error.*`: error handling properties (see SourceErrorContext)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the RabbitMQ config or the error config is invalid.
     pub fn from_properties(
         properties: &HashMap<String, String>,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
@@ -221,7 +226,7 @@ impl RabbitMQSource {
     ) -> Result<Self, String> {
         let config = RabbitMQSourceConfig::from_properties(properties)?;
 
-        // Parse error handling configuration (optional)
+        // Error handling is optional. Only `error.*` keys are passed on.
         let error_config_builder = ErrorConfigBuilder::from_properties(properties);
         let error_ctx = if error_config_builder.is_configured() {
             use crate::core::config::{FlatConfig, PropertySource};
@@ -253,8 +258,8 @@ impl Clone for RabbitMQSource {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            worker: self.worker.clone(), // the clone is a new worker that has not started
+            // New context with the same strategy and DLQ, and runtime counters reset
             error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
@@ -264,14 +269,13 @@ impl Source for RabbitMQSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
         let config = self.config.clone();
 
-        // Move error_ctx into the thread
+        // The thread gets a new copy, so self keeps its config for a later restart
         let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         self.worker.start(move |running| {
             if let Some(ctx) = &mut error_ctx {
                 ctx.bind_cancellation(Arc::clone(&running));
             }
-            // Create a tokio runtime for lapin async operations
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(e) => {
@@ -281,7 +285,6 @@ impl Source for RabbitMQSource {
             };
 
             rt.block_on(async move {
-                // Connect to RabbitMQ
                 let uri = config.amqp_uri();
                 log::info!("[RabbitMQSource] Connecting to {}", config.host);
 
@@ -306,7 +309,6 @@ impl Source for RabbitMQSource {
                     }
                 };
 
-                // Create channel
                 let channel = match connection.create_channel().await {
                     Ok(ch) => ch,
                     Err(e) => {
@@ -323,7 +325,7 @@ impl Source for RabbitMQSource {
                     }
                 };
 
-                // Set QoS (prefetch count)
+                // QoS sets the prefetch count. A failure is only a warning.
                 if let Err(e) = channel
                     .basic_qos(config.prefetch_count, lapin::options::BasicQosOptions::default())
                     .await
@@ -331,26 +333,29 @@ impl Source for RabbitMQSource {
                     log::warn!("[RabbitMQSource] Failed to set QoS: {}", e);
                 }
 
-                // Handle queue declaration based on declare_queue setting
+                // Check the queue, and create it when declare_queue allows
                 let channel = if config.declare_queue {
-                    // Check if queue exists using passive declare
-                    // Note: Passive declare may fail with PRECONDITION_FAILED if queue exists
-                    // with different properties (e.g., durable=true vs our durable=false default).
-                    // This is still a success case - the queue exists and we can consume from it.
+                    // A passive declare only checks that the queue exists. It
+                    // is treated as possibly failing with PRECONDITION_FAILED
+                    // when the queue exists with other properties, such as
+                    // durable=true against our durable=false default. That
+                    // still counts as success, since the queue exists and can
+                    // be read.
                     match channel
                         .queue_declare(
                             &config.queue,
                             lapin::options::QueueDeclareOptions {
-                                passive: true, // First check if exists
+                                passive: true, // only check that it exists
                                 ..Default::default()
                             },
                             lapin::types::FieldTable::default(),
                         )
                         .await
                     {
-                        Ok(_) => channel, // Queue exists with matching properties, reuse channel
+                        Ok(_) => channel, // the queue exists, so keep using this channel
                         Err(e) => {
-                            // Channel is closed after failed passive declare - need new channel
+                            // The broker closes the channel after a failed
+                            // passive declare, so open a new one
                             let new_channel = match connection.create_channel().await {
                                 Ok(ch) => ch,
                                 Err(e) => {
@@ -367,20 +372,21 @@ impl Source for RabbitMQSource {
                                 }
                             };
 
-                            // Check error type to determine if queue exists with different properties
-                            // AMQP reply code 406 = PRECONDITION_FAILED (queue exists, properties differ)
-                            // AMQP reply code 404 = NOT_FOUND (queue doesn't exist)
+                            // Tell the error kinds apart by the error text.
+                            // AMQP 406 is PRECONDITION_FAILED (queue exists,
+                            // properties differ). AMQP 404 is NOT_FOUND (no
+                            // such queue). Anything that is not 406 is taken
+                            // to mean the queue is missing.
                             let is_precondition_failed = e.to_string().contains("PRECONDITION_FAILED")
                                 || e.to_string().contains("406");
 
                             if is_precondition_failed {
-                                // Queue exists but with different properties (e.g., durable)
-                                // This is fine - we can still consume from it
+                                // The queue exists with other properties, such
+                                // as durable. It can still be read.
                                 log::debug!(
                                     "[RabbitMQSource] Queue '{}' exists with different properties, using as-is",
                                     config.queue
                                 );
-                                // Set QoS on new channel
                                 if let Err(e) = new_channel
                                     .basic_qos(
                                         config.prefetch_count,
@@ -395,14 +401,13 @@ impl Source for RabbitMQSource {
                                 }
                                 new_channel
                             } else {
-                                // Queue doesn't exist - create it
+                                // The queue does not exist, so create it
                                 log::info!(
                                     "[RabbitMQSource] Queue '{}' does not exist, creating it: {}",
                                     config.queue,
                                     e
                                 );
 
-                                // Set QoS on new channel
                                 if let Err(e) = new_channel
                                     .basic_qos(
                                         config.prefetch_count,
@@ -416,7 +421,6 @@ impl Source for RabbitMQSource {
                                     );
                                 }
 
-                                // Declare the queue on the new channel
                                 if let Err(e) = new_channel
                                     .queue_declare(
                                         &config.queue,
@@ -441,36 +445,36 @@ impl Source for RabbitMQSource {
                         }
                     }
                 } else {
-                    // declare_queue=false: Queue must exist, don't create
-                    // Note: Passive declare may fail with PRECONDITION_FAILED if queue exists
-                    // with different properties - this is still a success case.
+                    // declare_queue=false, so the queue must exist and is never
+                    // created. PRECONDITION_FAILED still counts as success, as
+                    // in the branch above.
                     match channel
                         .queue_declare(
                             &config.queue,
                             lapin::options::QueueDeclareOptions {
-                                passive: true, // Just check existence
+                                passive: true, // only check that it exists
                                 ..Default::default()
                             },
                             lapin::types::FieldTable::default(),
                         )
                         .await
                     {
-                        Ok(_) => channel, // Queue exists with matching properties
+                        Ok(_) => channel, // the queue exists
                         Err(e) => {
-                            // Check if it's PRECONDITION_FAILED (queue exists, properties differ)
+                            // PRECONDITION_FAILED means it exists with other properties
                             let is_precondition_failed = e.to_string().contains("PRECONDITION_FAILED")
                                 || e.to_string().contains("406");
 
                             if is_precondition_failed {
-                                // Queue exists but with different properties - this is fine
+                                // The queue exists with other properties, which is fine
                                 log::debug!(
                                     "[RabbitMQSource] Queue '{}' exists with different properties, using as-is",
                                     config.queue
                                 );
-                                // Channel is closed after failed passive declare - need new channel
+                                // The broker closes the channel after a failed
+                                // passive declare, so open a new one
                                 match connection.create_channel().await {
                                     Ok(ch) => {
-                                        // Set QoS on new channel
                                         if let Err(e) = ch
                                             .basic_qos(
                                                 config.prefetch_count,
@@ -499,7 +503,7 @@ impl Source for RabbitMQSource {
                                     }
                                 }
                             } else {
-                                // Queue truly doesn't exist
+                                // The queue does not exist
                                 let err = EventFluxError::configuration(format!(
                                     "Queue '{}' does not exist and declare_queue=false: {}",
                                     config.queue, e
@@ -515,7 +519,6 @@ impl Source for RabbitMQSource {
                     }
                 };
 
-                // Start consumer
                 let consumer_tag = config
                     .consumer_tag
                     .clone()
@@ -553,10 +556,9 @@ impl Source for RabbitMQSource {
                     config.queue
                 );
 
-                // Consume messages
                 use futures::StreamExt;
                 while running.load(Ordering::SeqCst) {
-                    // Use timeout to periodically check running flag
+                    // Wait at most 100 ms so the running flag is checked often
                     let delivery = tokio::time::timeout(
                         Duration::from_millis(100),
                         consumer.next(),
@@ -565,17 +567,18 @@ impl Source for RabbitMQSource {
 
                     match delivery {
                         Ok(Some(Ok(delivery))) => {
-                            // Got a message - deliver to callback with retry loop
                             let data = delivery.data.as_slice();
                             let mut should_stop = false;
-                            // None = success, Some(action) = error occurred
+                            // None means success. Some(action) means an error
+                            // and what to do about it.
                             let mut final_action: Option<ErrorAction> = None;
 
-                            // Retry loop - keep trying until success or non-retry action
+                            // Keep calling the callback until it succeeds or the
+                            // error strategy picks something other than Retry
                             loop {
                                 match callback.on_data(data) {
                                     Ok(()) => {
-                                        // Success - acknowledge if not auto-ack
+                                        // Ack by hand unless the broker auto acks
                                         if !config.auto_ack {
                                             if let Err(e) = delivery
                                                 .ack(lapin::options::BasicAckOptions::default())
@@ -588,16 +591,14 @@ impl Source for RabbitMQSource {
                                             }
                                         }
 
-                                        // Reset error counter on success
                                         if let Some(ctx) = &mut error_ctx {
                                             ctx.reset_errors();
                                         }
-                                        // final_action stays None (success)
                                         break;
                                     }
                                     Err(e) => {
-                                        // Callback failed - handle error and get action
-                                        // Create fallback event from raw bytes for DLQ support
+                                        // Wrap the raw bytes in an event so the
+                                        // DLQ has something to carry
                                         let fallback_event = Event::new_with_data(
                                             std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
@@ -613,18 +614,18 @@ impl Source for RabbitMQSource {
                                                 "[RabbitMQSource] Callback error: {}",
                                                 e
                                             );
-                                            // No error context - default to drop behavior
+                                            // With no error context, drop the message
                                             ErrorAction::Drop
                                         };
 
                                         match action {
                                             ErrorAction::Retry { .. } => {
-                                                // Retry action - delay already applied by handle_error_with_action
-                                                // Loop back to retry the callback
+                                                // handle_error_with_action has
+                                                // already waited, so try again
                                                 continue;
                                             }
                                             _ => {
-                                                // Non-retry action (Drop, DLQ, Fail) - exit loop
+                                                // Drop, DLQ, Fail, or Cancelled ends the loop
                                                 final_action = Some(action);
                                                 break;
                                             }
@@ -633,14 +634,14 @@ impl Source for RabbitMQSource {
                                 }
                             }
 
-                            // Handle final action after retry loop exits (only for errors)
+                            // Act on the error outcome once the retry loop ends
                             if let Some(action) = final_action {
                                 match action {
                                     ErrorAction::Retry { .. } => {
-                                        // Should not reach here - Retry loops back
+                                        // Not reached, since Retry loops back above
                                     }
                                     ErrorAction::Fail => {
-                                        // Reject message permanently - don't requeue
+                                        // Reject the message for good, without requeue
                                         if !config.auto_ack {
                                             if let Err(e) = delivery
                                                 .nack(lapin::options::BasicNackOptions {
@@ -661,9 +662,9 @@ impl Source for RabbitMQSource {
                                         should_stop = true;
                                     }
                                     ErrorAction::Cancelled => {
-                                        // Ordinary shutdown mid-retry: the
-                                        // message is innocent — requeue it
-                                        // for redelivery after restart
+                                        // Normal shutdown during a retry. The
+                                        // message did nothing wrong, so requeue
+                                        // it to be delivered again after restart
                                         if !config.auto_ack {
                                             if let Err(e) = delivery
                                                 .nack(lapin::options::BasicNackOptions {
@@ -681,8 +682,9 @@ impl Source for RabbitMQSource {
                                         should_stop = true;
                                     }
                                     ErrorAction::Drop | ErrorAction::SendToDlq => {
-                                        // Error was handled (dropped or sent to DLQ)
-                                        // ACK the message to remove it from the queue
+                                        // The error was handled by dropping it or
+                                        // sending it to the DLQ. ACK the message
+                                        // to remove it from the queue.
                                         if !config.auto_ack {
                                             if let Err(e) = delivery
                                                 .ack(lapin::options::BasicAckOptions::default())
@@ -717,12 +719,11 @@ impl Source for RabbitMQSource {
                             }
                         }
                         Ok(None) => {
-                            // Consumer stream ended
                             log::info!("[RabbitMQSource] Consumer stream ended");
                             break;
                         }
                         Err(_) => {
-                            // Timeout - continue loop to check running flag
+                            // Timed out, so loop to check the running flag
                             continue;
                         }
                     }
@@ -730,7 +731,6 @@ impl Source for RabbitMQSource {
 
                 log::info!("[RabbitMQSource] Stopped consuming");
 
-                // Clean up
                 if let Err(e) = channel.close(200, "Normal shutdown").await {
                     log::warn!("[RabbitMQSource] Error closing channel: {}", e);
                 }
@@ -755,7 +755,8 @@ impl Source for RabbitMQSource {
         stream_name: &str,
         junction: Arc<Mutex<InputHandler>>,
     ) -> Result<(), EventFluxError> {
-        // Without error.strategy the source drops failures; no DLQ to wire
+        // With no error.strategy the source drops failures, so there is no DLQ
+        // to connect
         if let Some(ref mut ctx) = self.error_ctx {
             ctx.set_dlq_junction(stream_name, junction);
         }
@@ -765,11 +766,10 @@ impl Source for RabbitMQSource {
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
         let config = self.config.clone();
 
-        // Create the async validation logic
         let validate_future = async move {
             let uri = config.amqp_uri();
 
-            // Try to connect with a timeout to avoid hanging on unreachable brokers
+            // Give up after 10 s so a broker that cannot be reached does not hang startup
             let connection = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 lapin::Connection::connect(&uri, lapin::ConnectionProperties::default()),
@@ -790,7 +790,6 @@ impl Source for RabbitMQSource {
                 source: Some(Box::new(e)),
             })?;
 
-            // Create channel and check queue exists
             let channel = connection.create_channel().await.map_err(|e| {
                 EventFluxError::ConnectionUnavailable {
                     message: format!("Failed to create channel: {}", e),
@@ -798,18 +797,19 @@ impl Source for RabbitMQSource {
                 }
             })?;
 
-            // Validate queue access using passive-then-create logic (mirrors start())
-            // This avoids PRECONDITION_FAILED errors when queue exists with different flags.
+            // Check the queue the same way start() does. Try a passive declare
+            // first, so a queue that exists with other flags does not fail with
+            // PRECONDITION_FAILED.
             //
-            // 1. First try passive declare to check if queue exists
-            // 2. If exists: validation passes (queue is accessible)
-            // 3. If not exists and declare_queue=true: try to create it
-            // 4. If not exists and declare_queue=false: fail with clear error
+            // 1. A passive declare checks whether the queue exists
+            // 2. If it exists, the check passes
+            // 3. If it does not exist and declare_queue=true, try to create it
+            // 4. If it does not exist and declare_queue=false, fail with a clear error
             let passive_result = channel
                 .queue_declare(
                     &config.queue,
                     lapin::options::QueueDeclareOptions {
-                        passive: true, // Just check existence, don't create
+                        passive: true, // only check that it exists, do not create
                         ..Default::default()
                     },
                     lapin::types::FieldTable::default(),
@@ -818,23 +818,24 @@ impl Source for RabbitMQSource {
 
             match passive_result {
                 Ok(_) => {
-                    // Queue exists and is accessible - validation passes
+                    // The queue exists and can be used, so the check passes
                 }
                 Err(e) => {
-                    // Check if PRECONDITION_FAILED (queue exists with different properties)
+                    // PRECONDITION_FAILED means it exists with other properties
                     let is_precondition_failed = e.to_string().contains("PRECONDITION_FAILED")
                         || e.to_string().contains("406");
 
                     if is_precondition_failed {
-                        // Queue exists but with different properties (e.g., durable)
-                        // This is fine - validation passes
+                        // The queue exists with other properties, such as
+                        // durable. The check still passes.
                         log::debug!(
                             "[RabbitMQSource] Queue '{}' exists with different properties, validation passes",
                             config.queue
                         );
                     } else if config.declare_queue {
-                        // Queue doesn't exist - try to create it
-                        // Channel is closed after failed passive declare, need new channel
+                        // The queue does not exist, so try to create it. The
+                        // broker closed the channel after the failed passive
+                        // declare, so open a new one.
                         let new_channel = connection.create_channel().await.map_err(|e| {
                             EventFluxError::ConnectionUnavailable {
                                 message: format!(
@@ -860,10 +861,9 @@ impl Source for RabbitMQSource {
                                 ))
                             })?;
 
-                        // Clean up new channel
                         let _ = new_channel.close(200, "Validation complete").await;
                     } else {
-                        // declare_queue=false and queue doesn't exist
+                        // declare_queue=false and the queue does not exist
                         return Err(EventFluxError::configuration(format!(
                             "Queue '{}' does not exist and declare_queue=false: {}",
                             config.queue, e
@@ -872,19 +872,19 @@ impl Source for RabbitMQSource {
                 }
             }
 
-            // Clean up
             let _ = channel.close(200, "Validation complete").await;
             let _ = connection.close(200, "Validation complete").await;
 
             Ok::<(), EventFluxError>(())
         };
 
-        // Check if we're already inside a tokio runtime
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // Use block_in_place to avoid nested runtime panic
+            // Already inside a tokio runtime. block_in_place avoids the panic
+            // from starting a runtime inside a runtime. It needs the multi
+            // thread runtime.
             tokio::task::block_in_place(|| handle.block_on(validate_future))
         } else {
-            // Not inside a runtime - create a temporary one
+            // Not inside a runtime, so make a short lived one
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 EventFluxError::configuration(format!("Failed to create tokio runtime: {}", e))
             })?;
@@ -897,10 +897,10 @@ impl Source for RabbitMQSource {
 // RabbitMQ Source Factory
 // ============================================================================
 
-/// Factory for creating RabbitMQ source instances.
+/// Factory for RabbitMQ sources.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// RabbitMQ sources from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build RabbitMQ sources from
+/// the SQL WITH clause config.
 #[derive(Debug, Clone)]
 pub struct RabbitMQSourceFactory;
 
@@ -918,8 +918,8 @@ impl SourceFactory for RabbitMQSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        // Connector keys + the shared error-handling keys (owned by
-        // SourceErrorContext) — concatenated once, on first use
+        // RabbitMQ keys plus the shared error handling keys owned by
+        // SourceErrorContext. Joined once, on first use.
         static PARAMS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
             [
                 &[
@@ -943,14 +943,13 @@ impl SourceFactory for RabbitMQSourceFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
-        // Use from_properties to parse both RabbitMQ config and error handling config
-        // DLQ junction will be None initially - the runtime calls
-        // set_error_dlq_junction() on attachment to wire the DLQ stream and
-        // set the stream name.
+        // from_properties reads both the RabbitMQ config and the error config.
+        // The DLQ junction starts as None. The runtime calls
+        // set_error_dlq_junction() when it attaches the source, which connects
+        // the DLQ stream and sets the stream name.
         //
-        // Until then, use the queue name as the stream identifier for error context.
-        // This uniquely identifies each RabbitMQ source stream and is more useful
-        // for debugging than a generic placeholder.
+        // Until then the queue name names the stream in error messages. It
+        // tells sources apart better than a fixed placeholder.
         let queue_name = config
             .get("rabbitmq.queue")
             .cloned()
@@ -1053,7 +1052,7 @@ mod tests {
             ..Default::default()
         };
 
-        // Default vhost "/" is URL-encoded as "%2f"
+        // The default vhost "/" is URL encoded as "%2F"
         assert_eq!(config.amqp_uri(), "amqp://guest:guest@localhost:5672/%2F");
     }
 
@@ -1116,7 +1115,7 @@ mod tests {
 
         assert_eq!(cloned.config.host, "localhost");
         assert_eq!(cloned.config.queue, "test");
-        assert!(cloned.error_ctx.is_none()); // Error ctx not cloned
+        assert!(cloned.error_ctx.is_none()); // the source had none to clone
     }
 
     // =========================================================================
@@ -1174,12 +1173,11 @@ mod tests {
 
     #[test]
     fn test_factory_create_with_error_handling_config() {
-        // Verify that factory properly wires error handling config
+        // The factory must accept error handling config
         let factory = RabbitMQSourceFactory;
         let mut config = HashMap::new();
         config.insert("rabbitmq.host".to_string(), "localhost".to_string());
         config.insert("rabbitmq.queue".to_string(), "test-queue".to_string());
-        // Add error handling config
         config.insert("error.strategy".to_string(), "retry".to_string());
         config.insert("error.retry.max-attempts".to_string(), "3".to_string());
         config.insert("error.retry.initial-delay".to_string(), "100ms".to_string());
@@ -1190,7 +1188,8 @@ mod tests {
 
     #[test]
     fn test_factory_accepts_dlq_strategy() {
-        // DLQ strategy is accepted by factory - the runtime wires the junction on attachment
+        // The factory accepts the DLQ strategy. The runtime connects the junction
+        // when it attaches the source.
         let factory = RabbitMQSourceFactory;
         let mut config = HashMap::new();
         config.insert("rabbitmq.host".to_string(), "localhost".to_string());
@@ -1208,8 +1207,8 @@ mod tests {
     // =========================================================================
     // Shutdown Lifecycle Tests (no broker required)
     // =========================================================================
-    // Idempotency and stop-without-start are covered by the SourceWorker
-    // tests in source/mod.rs; this test adds the connect-failure join path.
+    // Repeat stops and stop before start are covered by the SourceWorker tests
+    // in source/mod.rs. This test adds the join after a failed connect.
 
     #[test]
     fn test_start_stop_joins_worker() {
@@ -1221,8 +1220,8 @@ mod tests {
             }
         }
 
-        // Port 1 refuses connections immediately — the worker fails to connect
-        // and exits; stop() must join it without hanging.
+        // Port 1 refuses connections at once. The worker fails to connect and
+        // exits, and stop() must join it without hanging.
         let config = RabbitMQSourceConfig {
             host: "127.0.0.1".to_string(),
             port: 1,
@@ -1232,6 +1231,6 @@ mod tests {
         let mut source = RabbitMQSource::new(config);
         source.start(Arc::new(NoopCallback));
         source.stop();
-        source.stop(); // Second stop: handle already taken, must be a no-op
+        source.stop(); // handle already taken, so this must do nothing
     }
 }

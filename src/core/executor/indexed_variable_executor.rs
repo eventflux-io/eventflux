@@ -15,13 +15,14 @@
  * limitations under the License.
  */
 
-//! Executor for indexed variable access in pattern event collections: e[0].attr, e[last].attr
+//! Executor for indexed variable access in pattern event collections, e[0].attr and
+//! e[last].attr
 //!
-//! This executor enables accessing specific events within an event collection matched by
-//! count quantifiers in pattern queries. For example, with `e1=FailedLogin{3,5}`, you can:
-//! - Access `e1[0].userId` - first failed login's userId
-//! - Access `e1[last].timestamp` - last failed login's timestamp
-//! - Access `e1[2].ipAddress` - third failed login's IP address
+//! Reads one event out of the collection that a count quantifier matched in a pattern
+//! query. For example, with `e1=FailedLogin{3,5}`:
+//! - `e1[0].userId` is the userId of the first failed login
+//! - `e1[last].timestamp` is the timestamp of the last failed login
+//! - `e1[2].ipAddress` is the IP address of the third failed login
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
@@ -36,14 +37,16 @@ use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use crate::query_api::expression::indexed_variable::EventIndex;
 use std::sync::Arc;
 
-/// Executor for indexed variable access: e[0].attr, e[last].attr
+/// Executor for indexed variable access, e[0].attr and e[last].attr
 ///
 /// # Architecture
 ///
-/// This executor requires a `StateEvent` (not just `StreamEvent`) to function, because:
-/// 1. Pattern queries build StateEvents that contain multiple stream positions
-/// 2. Each position can have a collection of events (from count quantifiers)
-/// 3. IndexedVariableExecutor accesses a specific event from a specific collection
+/// This executor needs a `StateEvent`, not a plain `StreamEvent`, because:
+/// 1. Pattern queries build StateEvents that hold several stream positions
+/// 2. Each position can hold a collection of events (from count quantifiers)
+/// 3. IndexedVariableExecutor reads one event from one of those collections
+///
+/// Any other event, or no event, gives `None`.
 ///
 /// # Execution Flow
 ///
@@ -86,27 +89,26 @@ pub struct IndexedVariableExecutor {
     /// Index into the event chain (0, 1, 2, ... or "last")
     pub index: EventIndex,
 
-    /// Attribute position within event's data arrays
-    /// [0] = data_type_index (BEFORE_WINDOW_DATA_INDEX, OUTPUT_DATA_INDEX, etc.)
+    /// Where the attribute sits in the event data arrays
+    /// [0] = data_type_index (BEFORE_WINDOW_DATA_INDEX, OUTPUT_DATA_INDEX, and so on)
     /// [1] = attribute_index (index within that data array)
     pub attribute_position: [i32; 2],
 
-    /// Return type of the attribute
     pub return_type: ApiAttributeType,
 
-    /// Attribute name for debugging purposes
+    /// Attribute name, kept only for debugging
     pub attribute_name_for_debug: String,
 }
 
 impl IndexedVariableExecutor {
-    /// Create new indexed variable executor
+    /// Create a new indexed variable executor
     ///
     /// # Arguments
     /// * `state_position` - Position in StateEvent (e1=0, e2=1, ...)
-    /// * `index` - Event index in collection (0, 1, 2, ... or Last)
+    /// * `index` - Event index in the collection (0, 1, 2, ... or Last)
     /// * `attribute_position` - [data_type_index, attribute_index]
-    /// * `return_type` - Type of attribute
-    /// * `attribute_name_for_debug` - Attribute name for debugging
+    /// * `return_type` - Type of the attribute
+    /// * `attribute_name_for_debug` - Attribute name, kept only for debugging
     pub fn new(
         state_position: usize,
         index: EventIndex,
@@ -143,34 +145,30 @@ impl ExpressionExecutor for IndexedVariableExecutor {
     fn execute(&self, event_opt: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
         let complex_event = event_opt?;
 
-        // CRITICAL: Must be StateEvent for indexed array access
-        // Pattern queries build StateEvents, while simple stream queries use StreamEvents
+        // Must be a StateEvent. Pattern queries build StateEvents, while simple stream
+        // queries pass StreamEvents, which have no event chains to index.
         let state_event = complex_event.as_any().downcast_ref::<StateEvent>()?;
 
-        // Get event chain at the specified position (e1=0, e2=1, ...)
         let event_chain = state_event.get_event_chain(self.state_position);
 
         if event_chain.is_empty() {
-            // No events at this position - count quantifier min not reached,
-            // or this stream position has no events yet
+            // No events at this position yet, for example the count quantifier minimum
+            // has not been reached
             return None;
         }
 
-        // Resolve index: numeric (0, 1, 2, ...) or "last"
         let resolved_index = match &self.index {
             EventIndex::Numeric(idx) => *idx,
             EventIndex::Last => {
-                // "last" dynamically resolves to the last event in the chain
+                // "last" is the last event in the chain as it is now
                 event_chain.len().saturating_sub(1)
             }
         };
 
-        // Get event at resolved index
-        // Returns None if index is out of bounds (e.g., e[100] with only 3 events)
+        // None if the index is out of bounds, for example e[100] with only 3 events
         let stream_event = event_chain.get(resolved_index)?;
 
-        // Extract attribute from the stream event
-        // Use the same logic as VariableExpressionExecutor for consistency
+        // Read the attribute the same way VariableExpressionExecutor does
         let attr_idx = self.attribute_position[1] as usize;
         let attr = match self.attribute_position[0] as usize {
             BEFORE_WINDOW_DATA_INDEX => stream_event.before_window_data.get(attr_idx),
@@ -187,8 +185,7 @@ impl ExpressionExecutor for IndexedVariableExecutor {
             return attr;
         }
 
-        // Fallback to output_data if attribute not found in specified section
-        // This mirrors VariableExpressionExecutor behavior for consistency
+        // Not found in the given array, so try output_data
         stream_event
             .output_data
             .as_ref()
@@ -258,7 +255,7 @@ mod tests {
     fn test_indexed_access_second_event() {
         let executor = IndexedVariableExecutor::new(
             0,
-            EventIndex::Numeric(1), // e[1] - second event
+            EventIndex::Numeric(1), // e[1], the second event
             [BEFORE_WINDOW_DATA_INDEX as i32, 0],
             ApiAttributeType::STRING,
             "userId".to_string(),

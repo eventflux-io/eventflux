@@ -15,9 +15,10 @@
  * limitations under the License.
  */
 
-//! SELECT Expansion - Expand SELECT * using Schema
+//! SELECT expansion.
 //!
-//! Expands wildcard SELECT items using schema information from the catalog.
+//! Builds the Selector from SQL SELECT items. Expands `*` and `alias.*` from the catalog
+//! schema.
 
 use std::collections::HashSet;
 
@@ -31,16 +32,26 @@ use super::catalog::SqlCatalog;
 use super::converter::SqlConverter;
 use super::error::ExpansionError;
 
-/// SELECT Item Expander
+/// Turns SQL SELECT items into a Selector. Holds no data.
 pub struct SelectExpander;
 
 impl SelectExpander {
-    /// Expand SELECT items using catalog schema
+    /// Build a Selector from the SELECT items, checking columns against `from_stream`.
     ///
-    /// For pattern queries (when pattern_aliases is non-empty):
-    /// - SELECT * is not supported
-    /// - Unqualified column references require explicit alias
-    /// - Duplicate output column names are rejected (require AS alias)
+    /// Output names: a plain column keeps its name, `alias.col` becomes `col`, and an
+    /// expression with no AS name becomes `expr_N`, where N is the number of output
+    /// columns before it, counting columns added by wildcards.
+    ///
+    /// For pattern queries (when `pattern_aliases` is not empty):
+    /// - SELECT * is rejected. `alias.*` is allowed.
+    /// - A column without a pattern alias is rejected, even with an AS name
+    /// - Duplicate output column names are rejected. Use AS to rename them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExpansionError` for an unknown stream or column, an unqualified column in
+    /// a pattern query, a duplicate pattern output name, an unsupported wildcard, or an
+    /// expression the converter cannot handle.
     pub fn expand_select_items(
         items: &[SelectItem],
         from_stream: &str,
@@ -50,13 +61,12 @@ impl SelectExpander {
         let mut selector = Selector::new();
         let is_pattern_query = !pattern_aliases.is_empty();
 
-        // Track output column names to detect duplicates
+        // Every output name, for the duplicate check on pattern queries below.
         let mut output_column_names: Vec<String> = Vec::new();
 
         for item in items {
             match item {
                 SelectItem::Wildcard(_) => {
-                    // SELECT * not supported in pattern queries
                     if is_pattern_query {
                         return Err(ExpansionError::UnsupportedFeature(
                             "SELECT * is not supported in pattern queries. \
@@ -65,7 +75,6 @@ impl SelectExpander {
                         ));
                     }
 
-                    // Expand SELECT * using schema
                     let columns = catalog
                         .get_all_columns(from_stream)
                         .map_err(|_| ExpansionError::UnknownStream(from_stream.to_string()))?;
@@ -78,7 +87,7 @@ impl SelectExpander {
                 }
 
                 SelectItem::QualifiedWildcard(kind, _) => {
-                    // Handle qualified wildcard: stream.* or alias.*
+                    // stream.* or alias.*. The columns are added unqualified.
                     let object_name = match kind {
                         sqlparser::ast::SelectItemQualifiedWildcardKind::ObjectName(name) => name,
                         sqlparser::ast::SelectItemQualifiedWildcardKind::Expr(_) => {
@@ -99,7 +108,8 @@ impl SelectExpander {
                             )
                         })?;
 
-                    // For pattern queries, resolve alias to stream name
+                    // In a pattern query, map the alias to its stream. An unknown name is
+                    // used as a stream name as is.
                     let stream_name = if is_pattern_query {
                         pattern_aliases
                             .iter()
@@ -122,14 +132,12 @@ impl SelectExpander {
                 }
 
                 SelectItem::UnnamedExpr(expr) => {
-                    // Single expression without alias
                     if let SqlExpr::Identifier(ident) = expr {
-                        // Simple unqualified column reference
                         let column_name = ident.value.clone();
 
-                        // In pattern queries, unqualified columns are ambiguous
+                        // In a pattern query a bare column is always rejected. The error
+                        // lists the qualified names to use when the column exists.
                         if is_pattern_query {
-                            // Check if this column exists in any pattern stream
                             let matching_streams: Vec<&str> = pattern_aliases
                                 .iter()
                                 .filter(|(_, stream)| catalog.has_column(stream, &column_name))
@@ -142,7 +150,6 @@ impl SelectExpander {
                                     column_name,
                                 ));
                             } else {
-                                // Column exists but needs qualification
                                 return Err(ExpansionError::AmbiguousColumn(format!(
                                     "Column '{}' must be qualified with pattern alias. \
                                      Use {} instead",
@@ -156,7 +163,6 @@ impl SelectExpander {
                             }
                         }
 
-                        // Validate column exists (non-pattern query)
                         if !catalog.has_column(from_stream, &column_name) {
                             return Err(ExpansionError::UnknownColumn(
                                 from_stream.to_string(),
@@ -167,21 +173,19 @@ impl SelectExpander {
                         output_column_names.push(column_name.clone());
                         selector = selector.select_variable(Variable::new(column_name));
                     } else if let SqlExpr::CompoundIdentifier(parts) = expr {
-                        // Qualified column reference (e.g., e1.price)
+                        // Qualified column such as e1.price. Output name drops the qualifier.
                         if parts.len() == 2 {
                             let column_name = parts[1].value.clone();
 
-                            // Track output column name for duplicate detection
                             output_column_names.push(column_name.clone());
 
-                            // Convert using SqlConverter (handles alias resolution)
+                            // SqlConverter resolves the alias.
                             let converted_expr = SqlConverter::convert_expression(expr, catalog)
                                 .map_err(|e| ExpansionError::InvalidSelectItem(e.to_string()))?;
 
-                            // Use column name as output name (without qualifier)
                             selector = selector.select(column_name, converted_expr);
                         } else {
-                            // More complex qualified identifier
+                            // Three or more parts. Gets an expr_N name.
                             let converted_expr = SqlConverter::convert_expression(expr, catalog)
                                 .map_err(|e| ExpansionError::InvalidSelectItem(e.to_string()))?;
                             let auto_alias =
@@ -190,11 +194,10 @@ impl SelectExpander {
                             selector = selector.select(auto_alias, converted_expr);
                         }
                     } else {
-                        // Complex expression - convert using SqlConverter
+                        // Any other expression. Gets an expr_N name.
                         let converted_expr = SqlConverter::convert_expression(expr, catalog)
                             .map_err(|e| ExpansionError::InvalidSelectItem(e.to_string()))?;
 
-                        // Generate automatic alias for complex expression
                         let auto_alias = format!("expr_{}", selector.get_selection_list().len());
                         output_column_names.push(auto_alias.clone());
                         selector = selector.select(auto_alias, converted_expr);
@@ -202,15 +205,13 @@ impl SelectExpander {
                 }
 
                 SelectItem::ExprWithAlias { expr, alias } => {
-                    // Expression with explicit alias - always allowed
                     let alias_name = alias.value.clone();
                     output_column_names.push(alias_name.clone());
 
                     if let SqlExpr::Identifier(ident) = expr {
-                        // Simple column with alias
                         let column_name = ident.value.clone();
 
-                        // In pattern queries, unqualified columns need qualification
+                        // A bare column is rejected in a pattern query even with AS.
                         if is_pattern_query {
                             let matching_streams: Vec<&str> = pattern_aliases
                                 .iter()
@@ -238,7 +239,6 @@ impl SelectExpander {
                             }
                         }
 
-                        // Validate column exists (non-pattern query)
                         if !catalog.has_column(from_stream, &column_name) {
                             return Err(ExpansionError::UnknownColumn(
                                 from_stream.to_string(),
@@ -248,7 +248,6 @@ impl SelectExpander {
 
                         selector = selector.select(alias_name, Expression::variable(column_name));
                     } else {
-                        // Complex expression with alias - convert using SqlConverter
                         let converted_expr = SqlConverter::convert_expression(expr, catalog)
                             .map_err(|e| ExpansionError::InvalidSelectItem(e.to_string()))?;
 
@@ -258,7 +257,8 @@ impl SelectExpander {
             }
         }
 
-        // Check for duplicate output column names (especially important for pattern queries)
+        // Only pattern queries reject duplicate output names. Other queries let the
+        // Selector add them with a warning.
         if is_pattern_query {
             let mut seen: HashSet<&str> = HashSet::new();
             for name in &output_column_names {
@@ -276,7 +276,11 @@ impl SelectExpander {
         Ok(selector)
     }
 
-    /// Get explicit column list from SELECT items (for schema validation)
+    /// Names of the explicitly listed columns, for schema checks.
+    ///
+    /// A bare column gives its name. `col AS x` gives `col`, and any other expression with
+    /// AS gives the AS name. Wildcards, qualified columns and unnamed expressions are
+    /// skipped.
     pub fn get_explicit_columns(items: &[SelectItem]) -> Vec<String> {
         let mut columns = Vec::new();
 
@@ -299,7 +303,7 @@ impl SelectExpander {
         columns
     }
 
-    /// Check if SELECT contains wildcard
+    /// Whether the SELECT list has `*` or `alias.*`.
     pub fn has_wildcard(items: &[SelectItem]) -> bool {
         items.iter().any(|item| {
             matches!(

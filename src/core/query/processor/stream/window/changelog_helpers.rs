@@ -17,28 +17,32 @@
 
 // src/core/query/processor/stream/window/changelog_helpers.rs
 
-//! Common helpers for applying changelog operations to window state holders
-//!
-//! This module provides shared functionality for applying state operations
-//! across different window types, reducing code duplication.
+//! Shared helpers that replay changelog operations onto window state holders, so each
+//! window type does not repeat the same code.
 
 use crate::core::event::stream::stream_event::StreamEvent;
 use crate::core::persistence::state_holder::{StateError, StateOperation};
 use std::sync::Arc;
 
-/// Check if two stream events match based on timestamp and data
+/// True when both events have the same timestamp and before_window_data.
 ///
-/// This is the standard matching logic used across all window types
-/// to identify events during delete and update operations.
+/// Used to find the event a delete or update refers to.
 #[inline]
 fn events_match(event: &StreamEvent, target: &StreamEvent) -> bool {
     event.timestamp == target.timestamp && event.before_window_data == target.before_window_data
 }
 
-/// Apply a StateOperation to a simple window with a VecDeque buffer
+/// Apply one changelog operation to a window that keeps a single
+/// VecDeque<Arc<StreamEvent>> buffer, such as length, time and external time windows.
 ///
-/// This is a complete implementation for simple windows (length, time, external_time)
-/// that use a single VecDeque<Arc<StreamEvent>> buffer.
+/// - Insert pushes the event to the back
+/// - Delete removes every matching event
+/// - Update removes every match of the old event, then pushes the new one
+/// - Clear empties the buffer
+///
+/// # Errors
+/// Returns the deserialize error only for Insert. For Delete and Update, an event that
+/// fails to deserialize is skipped and the call still returns Ok.
 pub fn apply_operation_to_simple_window(
     buffer: &mut std::collections::VecDeque<Arc<StreamEvent>>,
     operation: &StateOperation,
@@ -46,7 +50,7 @@ pub fn apply_operation_to_simple_window(
 ) -> Result<(), StateError> {
     match operation {
         StateOperation::Insert { key: _, value } => {
-            // We need to clone the closure context, so use a wrapper
+            // Unlike Delete and Update, a bad event here fails the whole replay
             match deserialize_event(value) {
                 Ok(event) => {
                     buffer.push_back(Arc::new(event));
@@ -74,12 +78,10 @@ pub fn apply_operation_to_simple_window(
             old_value,
             new_value,
         } => {
-            // Remove old event
             if let Ok(old_event) = deserialize_event(old_value) {
                 buffer.retain(|e| !events_match(e, &old_event));
             }
 
-            // Insert new event
             if let Ok(new_event) = deserialize_event(new_value) {
                 buffer.push_back(Arc::new(new_event));
             }

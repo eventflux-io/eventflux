@@ -15,9 +15,10 @@
  * limitations under the License.
  */
 
-//! Application Parser - Parse Complete SQL Applications
+//! Application parser.
 //!
-//! Parses multi-statement SQL applications with DDL and queries.
+//! Parses a full SQL application of many statements. DDL, queries, partitions, triggers
+//! and the table mutations UPDATE, DELETE and UPSERT.
 
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -40,7 +41,10 @@ use super::type_inference::TypeInferenceEngine;
 use super::type_mapping::sql_type_to_attribute_type;
 use super::with_clause::{extract_with_options, validate_with_clause};
 
-/// Convert a parsed EventFlux streaming trigger to a TriggerDefinition
+/// Build a TriggerDefinition from a parsed CREATE TRIGGER.
+///
+/// START becomes `at("start")`, EVERY becomes `at_every` in milliseconds, and a cron
+/// expression becomes `at(expr)`. Never fails today.
 fn convert_stream_trigger(
     trigger: &CreateStreamTrigger,
 ) -> Result<TriggerDefinition, ApplicationError> {
@@ -49,14 +53,15 @@ fn convert_stream_trigger(
     match &trigger.timing {
         StreamTriggerTiming::Start => Ok(TriggerDefinition::new(name).at("start".to_string())),
         StreamTriggerTiming::Every { interval_ms } => {
-            // interval_ms is pre-computed at parse time using parse_streaming_time_duration_ms()
+            // The parser already turned the interval into milliseconds with
+            // parse_streaming_time_duration_ms().
             Ok(TriggerDefinition::new(name).at_every(*interval_ms as i64))
         }
         StreamTriggerTiming::Cron(expr) => Ok(TriggerDefinition::new(name).at(expr.clone())),
     }
 }
 
-/// Validate expression types in a query using the type inference engine
+/// Check the expression types in a query with the type inference engine.
 fn validate_query_types(
     query: &crate::query_api::execution::Query,
     catalog: &SqlCatalog,
@@ -67,11 +72,16 @@ fn validate_query_types(
         .map_err(ApplicationError::Type)
 }
 
-/// Extract the table/stream name from a TableFactor, ignoring any alias.
+/// The table or stream name of a TableFactor, without its alias.
 ///
-/// When SQL uses aliases like `UPDATE stockTable AS s ... FROM updateStream AS u`,
-/// calling `.to_string()` on the TableFactor returns "stockTable AS s" which fails
-/// catalog lookups. This function extracts just the base name ("stockTable").
+/// With aliases, as in `UPDATE stockTable AS s ... FROM updateStream AS u`, calling
+/// `.to_string()` on the TableFactor gives "stockTable AS s", which no catalog lookup
+/// matches. This returns just "stockTable".
+///
+/// # Errors
+///
+/// Returns `ConverterError::UnsupportedFeature` for anything other than a plain table
+/// reference.
 fn extract_table_name(table_factor: &TableFactor) -> Result<String, ApplicationError> {
     match table_factor {
         TableFactor::Table { name, .. } => Ok(name.to_string()),
@@ -84,9 +94,8 @@ fn extract_table_name(table_factor: &TableFactor) -> Result<String, ApplicationE
     }
 }
 
-/// Extract the alias from a TableFactor, if present.
-///
-/// Returns the alias name (e.g., "s" from "stockTable AS s") or None if no alias.
+/// The alias of a TableFactor, such as "s" from "stockTable AS s". `None` when there is
+/// no alias or it is not a plain table reference.
 fn extract_table_alias(table_factor: &TableFactor) -> Option<String> {
     match table_factor {
         TableFactor::Table { alias, .. } => alias.as_ref().map(|a| a.name.value.clone()),
@@ -94,12 +103,12 @@ fn extract_table_alias(table_factor: &TableFactor) -> Option<String> {
     }
 }
 
-/// Extract the source stream alias from a SELECT query's FROM clause.
+/// The alias of the first FROM item in a SELECT, such as "alias" in
+/// `SELECT ... FROM streamName AS alias`.
 ///
-/// For queries like `SELECT ... FROM streamName AS alias`, returns the alias ("alias").
-/// Returns None if no alias is present or if the FROM clause is not a simple table reference.
+/// Returns `None` when there is no alias, the query body is not a plain SELECT, or the
+/// first FROM item is not a simple table reference.
 fn extract_query_source_alias(query: &sqlparser::ast::Query) -> Option<String> {
-    // Navigate: Query -> body -> Select -> from -> first table -> relation -> alias
     if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
         if let Some(first_from) = select.from.first() {
             return extract_table_alias(&first_from.relation);
@@ -108,15 +117,24 @@ fn extract_query_source_alias(query: &sqlparser::ast::Query) -> Option<String> {
     None
 }
 
-/// Parse a complete SQL application with multiple statements
+/// Parse a full SQL application of one or more statements.
+///
+/// Statements run in order, so a query can only use streams and tables declared above
+/// it. Queries, INSERT, UPDATE, DELETE and UPSERT are type checked. Partition bodies are
+/// not.
+///
+/// # Errors
+///
+/// Returns `ApplicationError::EmptyApplication` when there are no statements. Returns a
+/// converter, catalog or type error for a parse failure, an unsupported statement, a
+/// duplicate stream, a bad WITH clause, or a failed type check.
 pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationError> {
     let mut catalog = SqlCatalog::new();
     let mut execution_elements = Vec::new();
 
-    // Normalize EventFlux-specific syntax for standard SQL parsing
+    // CREATE STREAM becomes CREATE TABLE so the SQL parser accepts it.
     let normalized_sql = normalize_stream_syntax(sql);
 
-    // Parse all statements at once using sqlparser
     let parsed_statements = Parser::parse_sql(&GenericDialect, &normalized_sql).map_err(|e| {
         ApplicationError::Converter(super::error::ConverterError::ConversionFailed(format!(
             "SQL parse error: {}",
@@ -128,28 +146,27 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
         return Err(ApplicationError::EmptyApplication);
     }
 
-    // Process each parsed statement
     for stmt in parsed_statements {
         match stmt {
             sqlparser::ast::Statement::CreateTable(create) => {
                 let name = create.name.to_string();
 
-                // Extract and validate WITH clause options
                 let with_config = extract_with_options(&create.table_options)?;
 
-                // Distinguish between TABLE and STREAM:
-                // - STREAM: has 'type' property (source/sink/internal)
-                // - TABLE: no 'type' but has 'extension' (e.g., cache/jdbc)
-                // - STREAM: no 'type' and no 'extension' (pure internal stream)
+                // CREATE STREAM was normalized to CREATE TABLE above, so the WITH options
+                // decide which one this is:
+                // - STREAM: has a 'type' (source, sink or internal)
+                // - TABLE: no 'type' but an 'extension', such as cache or jdbc
+                // - STREAM: no 'type' and no 'extension', a plain internal stream
+                // A CREATE TABLE with neither option is therefore registered as a stream.
                 let is_table =
                     with_config.get("type").is_none() && with_config.get("extension").is_some();
 
                 if is_table {
-                    // This is a TABLE (e.g., CREATE TABLE T (...) WITH ('extension' = 'cache'))
+                    // For example CREATE TABLE T (...) WITH ('extension' = 'cache')
                     let mut table_def =
                         crate::query_api::definition::TableDefinition::new(name.clone());
 
-                    // Extract column definitions
                     for col in &create.columns {
                         let attr_type = sql_type_to_attribute_type(&col.data_type)?;
                         table_def = table_def.attribute(col.name.value.clone(), attr_type);
@@ -162,11 +179,11 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
 
                     catalog.register_table(name, table_def);
                 } else {
-                    // This is a STREAM (e.g., CREATE STREAM S (...) or CREATE STREAM S (...) WITH ('type' = 'source'))
+                    // For example CREATE STREAM S (...), with or without
+                    // WITH ('type' = 'source')
                     let mut stream_def =
                         crate::query_api::definition::StreamDefinition::new(name.clone());
 
-                    // Extract column definitions
                     for col in &create.columns {
                         let attr_type = sql_type_to_attribute_type(&col.data_type)?;
                         stream_def = stream_def.attribute(col.name.value.clone(), attr_type);
@@ -181,16 +198,15 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                 }
             }
             sqlparser::ast::Statement::Query(query) => {
-                // Convert query AST directly (no re-parsing!)
+                // Convert the parsed AST as is, without parsing the text again.
                 let q = SqlConverter::convert_query_ast(&query, &catalog, None)?;
 
-                // Type validation: validate expression types in the query
                 validate_query_types(&q, &catalog)?;
 
                 execution_elements.push(crate::query_api::execution::ExecutionElement::Query(q));
             }
             sqlparser::ast::Statement::Insert(insert) => {
-                // Convert INSERT AST directly (no re-parsing!)
+                // INSERT INTO target SELECT ..., converted from the parsed AST as is.
                 let target_stream = match &insert.table {
                     sqlparser::ast::TableObject::TableName(name) => name.to_string(),
                     sqlparser::ast::TableObject::TableFunction(_) => {
@@ -210,7 +226,6 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
 
                 let q = SqlConverter::convert_query_ast(source, &catalog, Some(target_stream))?;
 
-                // Type validation: validate expression types in the query
                 validate_query_types(&q, &catalog)?;
 
                 execution_elements.push(crate::query_api::execution::ExecutionElement::Query(q));
@@ -219,14 +234,13 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                 partition_keys,
                 body,
             } => {
-                // Handle partition directly without re-parsing
+                // Converted from the parsed AST. The queries inside are not type checked.
                 let partition = SqlConverter::convert_partition(&partition_keys, &body, &catalog)?;
                 execution_elements.push(crate::query_api::execution::ExecutionElement::Partition(
                     partition,
                 ));
             }
             sqlparser::ast::Statement::CreateStreamTrigger(stream_trigger) => {
-                // Convert EventFlux streaming trigger to TriggerDefinition
                 let trigger_def = convert_stream_trigger(&stream_trigger)?;
                 catalog.register_trigger(trigger_def);
             }
@@ -237,12 +251,12 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                 selection,
                 ..
             } => {
-                // Stream-triggered UPDATE: UPDATE table SET ... FROM stream WHERE ...
-                // Extract target table name and alias
+                // UPDATE table SET ... FROM stream WHERE ...
+                // Each event on the source stream updates the matching table rows.
                 let target_table = extract_table_name(&table.relation)?;
                 let target_alias = extract_table_alias(&table.relation);
 
-                // Extract source stream from FROM clause (name and alias)
+                // The source must be exactly one stream, with no JOIN and no WINDOW.
                 let (source_stream, source_alias) = match from {
                     Some(UpdateTableFromKind::AfterSet(tables))
                     | Some(UpdateTableFromKind::BeforeSet(tables)) => {
@@ -267,7 +281,6 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                                 ),
                             ));
                         }
-                        // Check for streaming WINDOW on the source
                         if let TableFactor::Table {
                             window: Some(_), ..
                         } = &tables[0].relation
@@ -292,7 +305,7 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                     }
                 };
 
-                // Convert WHERE condition to Expression
+                // The WHERE clause is required. It picks the rows to update.
                 let on_update_expression = match selection {
                     Some(expr) => SqlConverter::convert_expression(&expr, &catalog)?,
                     None => {
@@ -304,10 +317,9 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                     }
                 };
 
-                // Convert SET assignments to UpdateSet
                 let mut update_set = UpdateSet::new();
                 for assignment in &assignments {
-                    // Extract column name and validate any qualifier matches target table
+                    // A qualified SET target must name the target table or its alias.
                     let column_name = match &assignment.target {
                         sqlparser::ast::AssignmentTarget::ColumnName(obj_name) => {
                             let parts: Vec<_> = obj_name
@@ -318,7 +330,6 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                                 .collect();
 
                             if parts.len() > 1 {
-                                // Has qualifier - validate it matches target table or alias
                                 let qualifier = &parts[0];
                                 let is_valid_qualifier = qualifier == &target_table
                                     || (target_alias.as_ref() == Some(qualifier));
@@ -338,7 +349,8 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                                 }
                             }
 
-                            // Use the last part as the column name
+                            // The last part is the column. If no part is a plain
+                            // identifier, fall back to the whole target text.
                             parts
                                 .last()
                                 .cloned()
@@ -359,7 +371,6 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                         update_set.add_set_attribute(Variable::new(column_name), value_expr);
                 }
 
-                // Build query with UPDATE output action
                 let q = SqlConverter::convert_mutation_query(
                     &source_stream,
                     &catalog,
@@ -376,8 +387,8 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                 execution_elements.push(crate::query_api::execution::ExecutionElement::Query(q));
             }
             sqlparser::ast::Statement::Delete(delete) => {
-                // Stream-triggered DELETE: DELETE FROM table USING stream WHERE ...
-                // Extract target table from first FROM clause (name and alias)
+                // DELETE FROM table USING stream WHERE ...
+                // Each event on the source stream deletes the matching table rows.
                 let (target_table, target_alias) = match &delete.from {
                     FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables) => {
                         if tables.is_empty() {
@@ -401,7 +412,7 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                     }
                 };
 
-                // Extract source stream from USING clause (name and alias)
+                // The USING source must be exactly one stream, with no JOIN and no WINDOW.
                 let (source_stream, source_alias) = match &delete.using {
                     Some(tables) => {
                         if tables.is_empty() {
@@ -425,7 +436,6 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                                 ),
                             ));
                         }
-                        // Check for streaming WINDOW on the source
                         if let TableFactor::Table {
                             window: Some(_), ..
                         } = &tables[0].relation
@@ -450,7 +460,7 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                     }
                 };
 
-                // Convert WHERE condition to Expression
+                // The WHERE clause is required. It picks the rows to delete.
                 let on_delete_expression = match &delete.selection {
                     Some(expr) => SqlConverter::convert_expression(expr, &catalog)?,
                     None => {
@@ -462,7 +472,6 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                     }
                 };
 
-                // Build query with DELETE output action
                 let q = SqlConverter::convert_mutation_query(
                     &source_stream,
                     &catalog,
@@ -482,28 +491,26 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                 source,
                 on_condition,
             } => {
-                // UPSERT: UPSERT INTO table SELECT ... FROM stream AS alias ON condition
-                // Note: Current UPSERT syntax doesn't support table alias (UPSERT INTO table AS t)
+                // UPSERT INTO table SELECT ... FROM stream AS alias ON condition
+                // There is no syntax for a table alias such as UPSERT INTO table AS t.
                 let target_table = table.to_string();
 
-                // Extract source stream alias from SELECT ... FROM stream AS alias
                 let source_alias = extract_query_source_alias(&source);
 
-                // Convert ON condition to Expression
+                // The ON condition picks the rows to update. No match means insert.
                 let on_update_expression =
                     SqlConverter::convert_expression(&on_condition, &catalog)?;
 
-                // Build query from source (SELECT ... FROM stream)
-                // The source query provides the input stream and values
+                // The SELECT gives the input stream and the values to write.
                 let q = SqlConverter::convert_upsert_query(
                     &source,
                     &catalog,
                     OutputStreamAction::UpdateOrInsert(UpdateOrInsertStreamAction {
                         target_id: target_table,
                         on_update_expression,
-                        update_set_clause: None, // All columns from SELECT are used
-                        target_alias: None,      // UPSERT syntax doesn't support table alias
-                        source_alias,            // Alias from SELECT ... FROM stream AS alias
+                        update_set_clause: None, // every SELECT column is written
+                        target_alias: None,      // UPSERT has no table alias syntax
+                        source_alias,            // from SELECT ... FROM stream AS alias
                     }),
                 )?;
 
@@ -602,7 +609,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Integration Tests for WITH Clause (M1 Milestone)
+    // Integration Tests for WITH Clause
     // ========================================================================
 
     #[test]
@@ -699,7 +706,7 @@ mod tests {
 
     #[test]
     fn test_create_stream_without_format_allowed() {
-        // Format is now optional at SQL level (some sources like timer use binary passthrough)
+        // 'format' is optional in SQL. Some sources, such as timer, pass data through as is.
         let sql = r#"
             CREATE STREAM TimerStream (tick STRING)
             WITH (
@@ -714,8 +721,8 @@ mod tests {
             "Should allow missing format for sources like timer"
         );
 
-        // Note: Sources that require format (like Kafka) will fail at initialization time,
-        // not at SQL parsing time. This allows binary passthrough sources (timer) to work.
+        // A source that needs a format, such as Kafka, fails when it starts up, not when
+        // the SQL is parsed. That is what lets pass through sources like timer work.
     }
 
     #[test]
@@ -815,9 +822,8 @@ mod tests {
 
     #[test]
     fn test_integration_merge_rust_defaults_with_sql_with() {
-        // This test demonstrates the multi-layer configuration concept
-        // In a real application, Rust defaults and TOML configs would be merged
-        // with SQL WITH clause options (highest priority)
+        // Only checks that parsing succeeds. The merge itself happens later in the
+        // runtime, where SQL WITH options win over the YAML config and code defaults.
 
         let sql = r#"
             CREATE STREAM DataStream (id INT, value DOUBLE)
@@ -831,9 +837,8 @@ mod tests {
         let app = parse_sql_application(sql);
         assert!(app.is_ok(), "Multi-layer config test should succeed");
 
-        // Note: In production, the FlatConfig would be stored and merged with
-        // application-level and stream-level TOML configurations before being
-        // used to initialize the actual source/sink extensions.
+        // At runtime the stored FlatConfig is merged with the YAML config before the
+        // source or sink is created.
     }
 
     // ========================================================================
@@ -1072,7 +1077,7 @@ mod tests {
         use sqlparser::dialect::GenericDialect;
         use sqlparser::parser::Parser;
 
-        // Test UPSERT (our custom syntax)
+        // UPSERT is EventFlux syntax, not standard SQL
         let upsert_sql = "UPSERT INTO stockTable SELECT symbol, price, volume FROM stockStream ON stockTable.symbol = stockStream.symbol";
         let result = Parser::parse_sql(&GenericDialect, upsert_sql);
         assert!(result.is_ok(), "UPSERT should parse: {:?}", result);
@@ -1172,8 +1177,7 @@ mod tests {
 
     #[test]
     fn test_parse_upsert_with_source_alias() {
-        // Test that UPSERT with source stream alias parses correctly
-        // The alias should be preserved for ON condition parsing
+        // The source alias must be kept so the ON condition can use it
         let sql = r#"
             CREATE STREAM stockStream (symbol VARCHAR, price DOUBLE, volume INT);
             CREATE TABLE stockTable (symbol VARCHAR PRIMARY KEY, price DOUBLE, volume INT);
@@ -1199,8 +1203,7 @@ mod tests {
 
     #[test]
     fn test_parse_update_with_aliases() {
-        // Test that UPDATE with aliases parses correctly
-        // The alias should be ignored for catalog lookups
+        // Catalog lookups must use the names without the aliases
         let sql = r#"
             CREATE STREAM updateStream (symbol VARCHAR, newPrice DOUBLE);
             CREATE TABLE stockTable (symbol VARCHAR PRIMARY KEY, price DOUBLE, volume INT);
@@ -1226,8 +1229,7 @@ mod tests {
 
     #[test]
     fn test_parse_delete_with_aliases() {
-        // Test that DELETE with aliases parses correctly
-        // The alias should be ignored for catalog lookups
+        // Catalog lookups must use the names without the aliases
         let sql = r#"
             CREATE STREAM deleteStream (symbol VARCHAR);
             CREATE TABLE stockTable (symbol VARCHAR PRIMARY KEY, price DOUBLE, volume INT);

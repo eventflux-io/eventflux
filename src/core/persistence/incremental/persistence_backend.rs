@@ -17,11 +17,12 @@
 
 // src/core/persistence/incremental/persistence_backend.rs
 
-//! Persistence Backend Implementation
+//! Persistence backends.
 //!
-//! Pluggable persistence backends for storing checkpoints with support for local file system,
-//! distributed storage, and cloud providers. Implements atomic operations, backup strategies,
-//! and efficient cleanup with enterprise-grade reliability.
+//! Places to store full and incremental checkpoints. The file backend writes
+//! each checkpoint atomically through a temporary file and keeps a JSON metadata
+//! index. The memory backend is for tests. The distributed backend is a stand in
+//! that stores nothing, and the cloud backend does not exist yet.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -34,133 +35,125 @@ use super::{IncrementalCheckpoint, PersistenceBackend, PersistenceBackendConfig}
 use crate::core::persistence::state_holder::{CheckpointId, StateError, StateSnapshot};
 use crate::core::util::{from_bytes, to_bytes};
 
-/// File-based persistence backend with atomic operations
+/// Stores each checkpoint as `checkpoint_<id>.ckpt` in one folder.
+///
+/// Files are written to a `.tmp` file and then renamed, so a reader never sees a
+/// half written checkpoint. An index of checkpoint metadata is kept in
+/// `checkpoint_metadata.json` and rewritten after every store or cleanup.
 pub struct FilePersistenceBackend {
-    /// Base directory for checkpoints
     base_path: PathBuf,
 
-    /// Enable synchronous writes
+    /// fsync checkpoint and metadata files after writing.
     sync_writes: bool,
 
-    /// Checkpoint metadata cache
+    /// In memory copy of the metadata index.
     metadata_cache: Arc<RwLock<HashMap<CheckpointId, CheckpointMetadata>>>,
 
-    /// File locks for atomic operations
+    /// One lock per checkpoint id, so two writes of the same id cannot overlap.
+    /// Entries are never removed.
     file_locks: Arc<Mutex<HashMap<CheckpointId, Arc<Mutex<()>>>>>,
 
-    /// Backend statistics
     stats: Arc<Mutex<BackendStatistics>>,
 }
 
-/// In-memory persistence backend for testing
+/// In memory backend, for tests. `cleanup_checkpoints` removes nothing.
 pub struct MemoryPersistenceBackend {
-    /// In-memory storage for full checkpoints
     full_checkpoints: Arc<RwLock<HashMap<CheckpointId, StateSnapshot>>>,
 
-    /// In-memory storage for incremental checkpoints
     incremental_checkpoints: Arc<RwLock<HashMap<CheckpointId, IncrementalCheckpoint>>>,
 
-    /// Backend statistics
     stats: Arc<Mutex<BackendStatistics>>,
 }
 
-/// Distributed persistence backend (placeholder for etcd/Consul integration)
+/// Stand in for an etcd or Consul backend.
+///
+/// Stores nothing. A store only prints a message and returns a location, a load
+/// always returns `CheckpointNotFound`, and the list is always empty.
 #[allow(dead_code)]
 pub struct DistributedPersistenceBackend {
-    /// Cluster endpoints
+    /// Cluster endpoints. The first one is used in returned locations.
     endpoints: Vec<String>,
 
-    /// Key prefix for checkpoints
+    /// Key prefix for checkpoints.
     prefix: String,
 
-    /// Replication factor
     replication_factor: usize,
 
-    /// Connection pool (simplified)
+    /// Copy of the endpoints. No real connections are made.
     _connection_pool: Vec<String>,
 
-    /// Backend statistics
     stats: Arc<Mutex<BackendStatistics>>,
 }
 
-/// Checkpoint metadata for indexing
+/// Index entry for one stored checkpoint.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CheckpointMetadata {
-    /// Checkpoint identifier
     checkpoint_id: CheckpointId,
 
-    /// Checkpoint type
     checkpoint_type: CheckpointType,
 
-    /// Creation timestamp
+    /// When it was stored, in seconds since the Unix epoch.
     created_at: u64,
 
-    /// File size in bytes
+    /// Snapshot data size, or the incremental `total_size`, in bytes.
     size_bytes: usize,
 
-    /// Storage location
+    /// File path.
     storage_location: String,
 
-    /// Checksum for integrity
+    /// Snapshot checksum. Always 0 for incremental checkpoints.
     checksum: u64,
 
-    /// Dependencies (for incremental checkpoints)
+    /// Checkpoints this one builds on. Empty for full checkpoints.
     dependencies: Vec<CheckpointId>,
 }
 
-/// Type of checkpoint
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum CheckpointType {
     Full,
     Incremental { base: CheckpointId },
 }
 
-/// Backend performance statistics
+/// Backend counters.
+///
+/// `failed_operations` and `cache_hit_rate` are never updated. The memory
+/// backend does not track latency.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 struct BackendStatistics {
-    /// Total checkpoints stored
     pub total_stored: u64,
 
-    /// Total checkpoints loaded
     pub total_loaded: u64,
 
-    /// Total bytes written
     pub bytes_written: u64,
 
-    /// Total bytes read
     pub bytes_read: u64,
 
-    /// Average write latency
     pub avg_write_latency_ms: f64,
 
-    /// Average read latency
     pub avg_read_latency_ms: f64,
 
-    /// Failed operations
     pub failed_operations: u64,
 
-    /// Cache hit rate
     pub cache_hit_rate: f64,
 }
 
-/// Serialized checkpoint file format
+/// What a checkpoint file holds.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CheckpointFile {
-    /// File format version
+    /// File format version, `CHECKPOINT_FILE_VERSION`.
     version: u32,
 
-    /// Checkpoint metadata
     metadata: CheckpointMetadata,
 
-    /// Checkpoint payload
     payload: CheckpointPayload,
 
-    /// File integrity checksum
+    /// Always the fixed value `0x12345678`, checked on read. Not a real checksum,
+    /// so it does not catch corruption.
     file_checksum: u64,
 }
 
-/// Checkpoint payload variants
+/// A full snapshot or an incremental checkpoint.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum CheckpointPayload {
     Full(StateSnapshot),
@@ -171,11 +164,16 @@ const CHECKPOINT_FILE_VERSION: u32 = 1;
 const METADATA_FILE_NAME: &str = "checkpoint_metadata.json";
 
 impl FilePersistenceBackend {
-    /// Create a new file-based persistence backend
+    /// Create a backend in `base_path`, creating the folder if needed, and load
+    /// any existing metadata index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the folder cannot be created or the index
+    /// cannot be read, and `DeserializationError` if the index is not valid JSON.
     pub fn new<P: AsRef<Path>>(base_path: P, sync_writes: bool) -> Result<Self, StateError> {
         let base_path = base_path.as_ref().to_path_buf();
 
-        // Create base directory
         std::fs::create_dir_all(&base_path).map_err(|e| StateError::InvalidStateData {
             message: format!("Failed to create checkpoint directory: {e}"),
         })?;
@@ -188,13 +186,13 @@ impl FilePersistenceBackend {
             stats: Arc::new(Mutex::new(BackendStatistics::default())),
         };
 
-        // Load existing metadata
         backend.load_metadata_cache()?;
 
         Ok(backend)
     }
 
-    /// Load metadata cache from disk
+    /// Load the metadata index from disk. A missing or empty file leaves the
+    /// cache empty.
     fn load_metadata_cache(&self) -> Result<(), StateError> {
         let metadata_path = self.base_path.join(METADATA_FILE_NAME);
 
@@ -227,7 +225,10 @@ impl FilePersistenceBackend {
         Ok(())
     }
 
-    /// Save metadata cache to disk
+    /// Write the metadata index to disk as pretty JSON.
+    ///
+    /// Overwrites the file in place, not through a temporary file, so a crash
+    /// mid write can leave it truncated.
     fn save_metadata_cache(&self) -> Result<(), StateError> {
         let metadata_path = self.base_path.join(METADATA_FILE_NAME);
 
@@ -260,19 +261,20 @@ impl FilePersistenceBackend {
         Ok(())
     }
 
-    /// Get file path for checkpoint
     fn checkpoint_file_path(&self, checkpoint_id: CheckpointId) -> PathBuf {
         self.base_path
             .join(format!("checkpoint_{checkpoint_id}.ckpt"))
     }
 
-    /// Write checkpoint file atomically
+    /// Write a checkpoint file atomically.
+    ///
+    /// Writes to a `.tmp` file next to it, flushes, fsyncs when `sync_writes` is
+    /// set, then renames it over the target.
     fn write_checkpoint_file(
         &self,
         file_path: &Path,
         checkpoint_file: &CheckpointFile,
     ) -> Result<(), StateError> {
-        // Write to temporary file first
         let temp_path = file_path.with_extension("tmp");
 
         let file = OpenOptions::new()
@@ -311,7 +313,7 @@ impl FilePersistenceBackend {
 
         drop(writer);
 
-        // Atomically rename temporary file
+        // The rename is atomic, so readers see the old file or the whole new one.
         std::fs::rename(&temp_path, file_path).map_err(|e| StateError::InvalidStateData {
             message: format!("Failed to rename checkpoint file: {e}"),
         })?;
@@ -319,7 +321,13 @@ impl FilePersistenceBackend {
         Ok(())
     }
 
-    /// Read checkpoint file
+    /// Read and deserialize a checkpoint file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the file cannot be read,
+    /// `DeserializationError` if it does not parse, and `ChecksumMismatch` if
+    /// `file_checksum` is not the fixed value.
     fn read_checkpoint_file(&self, file_path: &Path) -> Result<CheckpointFile, StateError> {
         let file = File::open(file_path).map_err(|e| StateError::InvalidStateData {
             message: format!("Failed to open checkpoint file: {e}"),
@@ -339,7 +347,7 @@ impl FilePersistenceBackend {
                 message: format!("Failed to deserialize checkpoint: {e}"),
             })?;
 
-        // Verify file integrity (simplified for testing)
+        // Only checks the fixed marker value. This is not a real integrity check.
         if checkpoint_file.file_checksum != 0x12345678 {
             return Err(StateError::ChecksumMismatch);
         }
@@ -347,7 +355,7 @@ impl FilePersistenceBackend {
         Ok(checkpoint_file)
     }
 
-    /// Calculate file checksum
+    /// Returns a `DefaultHasher` hash of `data`. Not used yet.
     #[allow(dead_code)]
     fn calculate_file_checksum(&self, data: &[u8]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
@@ -358,7 +366,7 @@ impl FilePersistenceBackend {
         hasher.finish()
     }
 
-    /// Get or create file lock for checkpoint
+    /// Returns the lock for a checkpoint id, creating it on first use.
     fn get_file_lock(&self, checkpoint_id: CheckpointId) -> Arc<Mutex<()>> {
         let mut locks = self.file_locks.lock().unwrap();
         locks
@@ -397,28 +405,24 @@ impl PersistenceBackend for FilePersistenceBackend {
             version: CHECKPOINT_FILE_VERSION,
             metadata: metadata.clone(),
             payload: CheckpointPayload::Full(snapshot.clone()),
-            file_checksum: 0, // Will be calculated
+            file_checksum: 0, // replaced below
         };
 
-        // For simplicity, let's set file_checksum to a simple hash of the content
+        // A fixed marker stands in for a real checksum of the content.
         let final_checkpoint_file = CheckpointFile {
-            file_checksum: 0x12345678, // Fixed checksum for testing
+            file_checksum: 0x12345678, // fixed marker, not a checksum
             ..checkpoint_file
         };
 
-        // Write checkpoint file
         self.write_checkpoint_file(&file_path, &final_checkpoint_file)?;
 
-        // Update metadata cache
         {
             let mut cache = self.metadata_cache.write().unwrap();
             cache.insert(checkpoint_id, metadata);
         }
 
-        // Save metadata to disk
         self.save_metadata_cache()?;
 
-        // Update statistics
         {
             let mut stats = self.stats.lock().unwrap();
             stats.total_stored += 1;
@@ -453,7 +457,7 @@ impl PersistenceBackend for FilePersistenceBackend {
                 .as_secs(),
             size_bytes: checkpoint.total_size,
             storage_location: file_path.to_string_lossy().to_string(),
-            checksum: 0, // Simplified
+            checksum: 0, // not computed for incremental checkpoints
             dependencies: vec![checkpoint.base_checkpoint_id],
         };
 
@@ -464,25 +468,21 @@ impl PersistenceBackend for FilePersistenceBackend {
             file_checksum: 0,
         };
 
-        // For simplicity, let's set file_checksum to a simple hash of the content
+        // A fixed marker stands in for a real checksum of the content.
         let final_checkpoint_file = CheckpointFile {
-            file_checksum: 0x12345678, // Fixed checksum for testing
+            file_checksum: 0x12345678, // fixed marker, not a checksum
             ..checkpoint_file
         };
 
-        // Write checkpoint file
         self.write_checkpoint_file(&file_path, &final_checkpoint_file)?;
 
-        // Update metadata cache
         {
             let mut cache = self.metadata_cache.write().unwrap();
             cache.insert(checkpoint.checkpoint_id, metadata);
         }
 
-        // Save metadata to disk
         self.save_metadata_cache()?;
 
-        // Update statistics
         {
             let mut stats = self.stats.lock().unwrap();
             stats.total_stored += 1;
@@ -507,7 +507,6 @@ impl PersistenceBackend for FilePersistenceBackend {
 
         match checkpoint_file.payload {
             CheckpointPayload::Full(snapshot) => {
-                // Update statistics
                 {
                     let mut stats = self.stats.lock().unwrap();
                     stats.total_loaded += 1;
@@ -537,7 +536,6 @@ impl PersistenceBackend for FilePersistenceBackend {
 
         match checkpoint_file.payload {
             CheckpointPayload::Incremental(checkpoint) => {
-                // Update statistics
                 {
                     let mut stats = self.stats.lock().unwrap();
                     stats.total_loaded += 1;
@@ -563,8 +561,19 @@ impl PersistenceBackend for FilePersistenceBackend {
         Ok(checkpoint_ids)
     }
 
+    /// Delete checkpoints stored at or before `before` and return how many files
+    /// were deleted.
+    ///
+    /// Compares in whole seconds, so a checkpoint stored in the same second as
+    /// the cutoff is also deleted. Does not check whether other checkpoints still
+    /// build on a deleted one.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if a file cannot be deleted, which stops the
+    /// cleanup part way, or the index cannot be saved.
     fn cleanup_checkpoints(&self, before: Instant) -> Result<usize, StateError> {
-        // Convert Instant → epoch seconds so we can compare with metadata.created_at (u64).
+        // Turn the Instant into epoch seconds to compare with metadata.created_at.
         let now = Instant::now();
         let now_epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -579,19 +588,18 @@ impl PersistenceBackend for FilePersistenceBackend {
 
         let mut to_remove = Vec::new();
 
-        // Find checkpoints to remove
         {
             let cache = self.metadata_cache.read().unwrap();
             for (checkpoint_id, metadata) in cache.iter() {
-                // Use <= because created_at has second granularity; a sub-second
-                // delta between creation and the cutoff would otherwise be missed.
+                // Use <= because created_at is in whole seconds. With < a
+                // checkpoint stored less than a second before the cutoff would be
+                // missed.
                 if metadata.created_at <= before_timestamp {
                     to_remove.push(*checkpoint_id);
                 }
             }
         }
 
-        // Remove checkpoints
         for checkpoint_id in to_remove {
             let file_path = self.checkpoint_file_path(checkpoint_id);
 
@@ -602,12 +610,13 @@ impl PersistenceBackend for FilePersistenceBackend {
                 removed_count += 1;
             }
 
-            // Remove from cache
+            // Dropped from the index even when the file was already gone.
             let mut cache = self.metadata_cache.write().unwrap();
             cache.remove(&checkpoint_id);
         }
 
-        // Save updated metadata
+        // Only saved when a file was deleted, so index entries for files that
+        // were already gone are dropped from memory but stay on disk.
         if removed_count > 0 {
             self.save_metadata_cache()?;
         }
@@ -623,7 +632,6 @@ impl Default for MemoryPersistenceBackend {
 }
 
 impl MemoryPersistenceBackend {
-    /// Create a new memory-based persistence backend
     pub fn new() -> Self {
         Self {
             full_checkpoints: Arc::new(RwLock::new(HashMap::new())),
@@ -642,7 +650,6 @@ impl PersistenceBackend for MemoryPersistenceBackend {
         let mut checkpoints = self.full_checkpoints.write().unwrap();
         checkpoints.insert(checkpoint_id, snapshot.clone());
 
-        // Update statistics
         {
             let mut stats = self.stats.lock().unwrap();
             stats.total_stored += 1;
@@ -659,7 +666,6 @@ impl PersistenceBackend for MemoryPersistenceBackend {
         let mut checkpoints = self.incremental_checkpoints.write().unwrap();
         checkpoints.insert(checkpoint.checkpoint_id, checkpoint.clone());
 
-        // Update statistics
         {
             let mut stats = self.stats.lock().unwrap();
             stats.total_stored += 1;
@@ -677,7 +683,6 @@ impl PersistenceBackend for MemoryPersistenceBackend {
 
         match checkpoints.get(&checkpoint_id) {
             Some(snapshot) => {
-                // Update statistics
                 {
                     let mut stats = self.stats.lock().unwrap();
                     stats.total_loaded += 1;
@@ -698,7 +703,6 @@ impl PersistenceBackend for MemoryPersistenceBackend {
 
         match checkpoints.get(&checkpoint_id) {
             Some(checkpoint) => {
-                // Update statistics
                 {
                     let mut stats = self.stats.lock().unwrap();
                     stats.total_loaded += 1;
@@ -725,33 +729,34 @@ impl PersistenceBackend for MemoryPersistenceBackend {
     }
 
     fn cleanup_checkpoints(&self, _before: Instant) -> Result<usize, StateError> {
-        // For memory backend, we could implement LRU eviction or size-based cleanup
-        // For now, just return 0 (no cleanup performed)
+        // No cleanup yet. Could evict by age, least recent use, or total size.
         Ok(0)
     }
 }
 
 impl DistributedPersistenceBackend {
-    /// Create a new distributed persistence backend
+    /// Create the stand in backend. No connection is made.
     pub fn new(endpoints: Vec<String>, prefix: String, replication_factor: usize) -> Self {
         Self {
             endpoints: endpoints.clone(),
             prefix,
             replication_factor,
-            _connection_pool: endpoints, // Simplified
+            _connection_pool: endpoints, // no real pool yet
             stats: Arc::new(Mutex::new(BackendStatistics::default())),
         }
     }
 }
 
+// Every method is a stand in. A real version would talk to etcd, Consul or
+// similar. The store methods index `endpoints[0]` and panic if no endpoints
+// were given.
 impl PersistenceBackend for DistributedPersistenceBackend {
     fn store_full_checkpoint(
         &self,
         checkpoint_id: CheckpointId,
         _snapshot: &StateSnapshot,
     ) -> Result<String, StateError> {
-        // Placeholder implementation for distributed storage
-        // In practice, this would integrate with etcd, Consul, or similar
+        // Nothing is stored.
         println!("Storing full checkpoint {checkpoint_id} to distributed backend");
 
         Ok(format!(
@@ -764,7 +769,7 @@ impl PersistenceBackend for DistributedPersistenceBackend {
         &self,
         checkpoint: &IncrementalCheckpoint,
     ) -> Result<String, StateError> {
-        // Placeholder implementation
+        // Nothing is stored.
         println!(
             "Storing incremental checkpoint {} to distributed backend",
             checkpoint.checkpoint_id
@@ -780,7 +785,6 @@ impl PersistenceBackend for DistributedPersistenceBackend {
         &self,
         checkpoint_id: CheckpointId,
     ) -> Result<StateSnapshot, StateError> {
-        // Placeholder implementation
         Err(StateError::CheckpointNotFound { checkpoint_id })
     }
 
@@ -788,22 +792,24 @@ impl PersistenceBackend for DistributedPersistenceBackend {
         &self,
         checkpoint_id: CheckpointId,
     ) -> Result<IncrementalCheckpoint, StateError> {
-        // Placeholder implementation
         Err(StateError::CheckpointNotFound { checkpoint_id })
     }
 
     fn list_checkpoints(&self) -> Result<Vec<CheckpointId>, StateError> {
-        // Placeholder implementation
         Ok(Vec::new())
     }
 
     fn cleanup_checkpoints(&self, _before: Instant) -> Result<usize, StateError> {
-        // Placeholder implementation
         Ok(0)
     }
 }
 
-/// Create persistence backend from configuration
+/// Create a backend from settings.
+///
+/// # Errors
+///
+/// Returns `InvalidStateData` for `Cloud`, which is not built yet. Also returns
+/// any error from creating the file backend.
 pub fn create_backend(
     config: &PersistenceBackendConfig,
 ) -> Result<Box<dyn PersistenceBackend>, StateError> {
@@ -824,12 +830,9 @@ pub fn create_backend(
             prefix.clone(),
             *replication_factor,
         ))),
-        PersistenceBackendConfig::Cloud { .. } => {
-            // Cloud backend not yet implemented
-            Err(StateError::InvalidStateData {
-                message: "Cloud persistence backend not yet implemented".to_string(),
-            })
-        }
+        PersistenceBackendConfig::Cloud { .. } => Err(StateError::InvalidStateData {
+            message: "Cloud persistence backend not yet implemented".to_string(),
+        }),
         PersistenceBackendConfig::Memory => Ok(Box::new(MemoryPersistenceBackend::new())),
     }
 }
@@ -972,11 +975,12 @@ mod tests {
             backend.store_full_checkpoint(i, &snapshot).unwrap();
         }
 
-        // Wait a bit to ensure timestamps differ
+        // Put the cutoff a little after the stores. Times are in whole seconds,
+        // so this relies on the <= comparison in cleanup.
         std::thread::sleep(std::time::Duration::from_millis(10));
         let cutoff = Instant::now();
 
-        // Cleanup should remove all checkpoints created before cutoff
+        // Every checkpoint was stored before the cutoff, so all are removed.
         let removed = backend.cleanup_checkpoints(cutoff).unwrap();
         assert_eq!(removed, 3);
 

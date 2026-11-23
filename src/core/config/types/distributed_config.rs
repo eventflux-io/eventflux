@@ -17,7 +17,7 @@
 
 //! Distributed Processing Configuration Types
 //!
-//! Defines configuration structures for distributed EventFlux deployments.
+//! Configuration for EventFlux deployments that run across several nodes.
 
 use super::{duration_serde, optional_duration_serde};
 use serde::{Deserialize, Serialize};
@@ -50,24 +50,25 @@ pub struct DistributedConfig {
 }
 
 impl DistributedConfig {
-    /// Merge another distributed configuration into this one
+    /// Merge `other` into this config.
+    ///
+    /// Node, cluster and message broker are replaced only when `other` has them.
+    /// Transport, state backend and coordination are always replaced as a whole, with
+    /// no field by field merge.
     pub fn merge(&mut self, other: DistributedConfig) {
-        // Merge optional node configuration
         if other.node.is_some() {
             self.node = other.node;
         }
 
-        // Merge optional cluster configuration
         if other.cluster.is_some() {
             self.cluster = other.cluster;
         }
 
-        // Other configurations take precedence (basic merge)
+        // Required sections, so `other` always has them and simply wins
         self.transport = other.transport;
         self.state_backend = other.state_backend;
         self.coordination = other.coordination;
 
-        // Merge optional message broker configuration
         if other.message_broker.is_some() {
             self.message_broker = other.message_broker;
         }
@@ -80,7 +81,7 @@ pub struct NodeConfig {
     /// Unique node identifier
     pub node_id: String,
 
-    /// Node endpoints for communication
+    /// Addresses other nodes use to reach this node
     pub endpoints: Vec<String>,
 
     /// Node capabilities
@@ -93,23 +94,23 @@ pub struct NodeConfig {
 /// Node capabilities declaration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeCapabilities {
-    /// Can this node act as coordinator
+    /// Whether this node can act as coordinator. Defaults to true.
     #[serde(default = "default_true")]
     pub can_coordinate: bool,
 
-    /// Can this node process queries
+    /// Whether this node can process queries. Defaults to true.
     #[serde(default = "default_true")]
     pub can_process: bool,
 
-    /// Can this node store state
+    /// Whether this node can store state. Defaults to true.
     #[serde(default = "default_true")]
     pub can_store_state: bool,
 
-    /// Supported transport protocols
+    /// Supported transport protocols. Defaults to `["tcp"]`.
     #[serde(default = "default_transport_protocols")]
     pub transport_protocols: Vec<String>,
 
-    /// Custom capabilities (extensible)
+    /// Any extra capabilities, as free form key and value pairs
     #[serde(default)]
     pub custom: HashMap<String, String>,
 }
@@ -135,7 +136,7 @@ pub struct ResourceLimits {
     /// Maximum CPU cores
     pub max_cpu_cores: usize,
 
-    /// Maximum network bandwidth in bytes/sec
+    /// Maximum network bandwidth in bytes per second
     pub max_network_bandwidth: usize,
 
     /// Maximum storage capacity in bytes
@@ -162,23 +163,23 @@ pub struct ClusterConfig {
     /// Seed nodes for discovery
     pub seed_nodes: Vec<String>,
 
-    /// Minimum nodes required for operation
+    /// Fewest nodes the cluster needs to run. Defaults to 1.
     #[serde(default = "default_min_nodes")]
     pub min_nodes: usize,
 
-    /// Expected cluster size
+    /// Expected cluster size. Defaults to 3.
     #[serde(default = "default_expected_size")]
     pub expected_size: usize,
 
-    /// Heartbeat interval
+    /// Time between heartbeats. Defaults to 1 second.
     #[serde(with = "duration_serde", default = "default_heartbeat_interval")]
     pub heartbeat_interval: Duration,
 
-    /// Failure detection timeout
+    /// Silence after which a node is treated as failed. Defaults to 10 seconds.
     #[serde(with = "duration_serde", default = "default_failure_timeout")]
     pub failure_timeout: Duration,
 
-    /// Partition handling strategy
+    /// What to do when the network splits the cluster. Defaults to `RequireMajority`.
     #[serde(default)]
     pub partition_handling: PartitionHandling,
 
@@ -202,20 +203,20 @@ impl Default for ClusterConfig {
     }
 }
 
-/// Partition handling strategy
+/// What to do when the network splits the cluster into groups that cannot see each other
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PartitionHandling {
-    /// Allow minority partition to continue (AP mode)
+    /// Let a smaller group keep running. Stays available but may diverge (AP mode).
     AllowMinority,
 
-    /// Require majority for operations (CP mode)
+    /// Only a group with a majority of nodes keeps running. Stays consistent (CP mode).
     RequireMajority,
 
-    /// Custom quorum size
+    /// Only a group with at least `size` nodes keeps running
     CustomQuorum { size: usize },
 
-    /// Shut down on partition
+    /// Shut down when the cluster splits
     ShutdownOnPartition,
 }
 
@@ -231,7 +232,7 @@ pub struct ServiceDiscoveryConfig {
     /// Discovery method
     pub method: ServiceDiscoveryMethod,
 
-    /// Method-specific configuration
+    /// Settings for the chosen method. Holds every other key at the same YAML level.
     #[serde(flatten)]
     pub config: serde_yaml::Value,
 }
@@ -249,7 +250,7 @@ pub enum ServiceDiscoveryMethod {
     /// Etcd service discovery
     Etcd,
 
-    /// DNS-based service discovery
+    /// Service discovery through DNS
     Dns,
 
     /// Static configuration
@@ -262,23 +263,23 @@ pub struct TransportConfig {
     /// Transport implementation
     pub implementation: TransportImplementation,
 
-    /// Connection pool size
+    /// Connection pool size. Defaults to 10.
     #[serde(default = "default_pool_size")]
     pub pool_size: usize,
 
-    /// Request timeout
+    /// Request timeout. Defaults to 30 seconds.
     #[serde(with = "duration_serde", default = "default_request_timeout")]
     pub request_timeout: Duration,
 
-    /// Enable compression
+    /// Compress traffic. Defaults to true.
     #[serde(default = "default_true")]
     pub compression: bool,
 
-    /// Enable encryption
+    /// Encrypt traffic. Defaults to false.
     #[serde(default)]
     pub encryption: bool,
 
-    /// Transport-specific configuration
+    /// Extra settings for the chosen transport
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_yaml::Value>,
 }
@@ -306,7 +307,7 @@ pub enum TransportImplementation {
     /// gRPC
     Grpc,
 
-    /// RDMA (for high-performance networks)
+    /// RDMA, for very fast networks
     Rdma,
 
     /// InfiniBand
@@ -323,26 +324,26 @@ pub struct StateBackendConfig {
     /// Backend implementation
     pub implementation: StateBackendImplementation,
 
-    /// Checkpoint interval
+    /// Time between checkpoints. Defaults to 60 seconds.
     #[serde(with = "duration_serde", default = "default_checkpoint_interval")]
     pub checkpoint_interval: Duration,
 
-    /// State TTL
+    /// How long state is kept before it expires. None keeps it forever.
     #[serde(
         with = "optional_duration_serde",
         skip_serializing_if = "Option::is_none"
     )]
     pub state_ttl: Option<Duration>,
 
-    /// Enable incremental checkpoints
+    /// Save only what changed since the last checkpoint. Defaults to true.
     #[serde(default = "default_true")]
     pub incremental_checkpoints: bool,
 
-    /// Compression for state
+    /// Compression for state. Defaults to `Lz4`.
     #[serde(default)]
     pub compression: CompressionType,
 
-    /// Backend-specific configuration
+    /// Extra settings for the chosen backend
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_yaml::Value>,
 }
@@ -364,7 +365,7 @@ impl Default for StateBackendConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum StateBackendImplementation {
-    /// In-memory state (single-node)
+    /// State held in memory on one node
     InMemory,
 
     /// Redis
@@ -387,7 +388,7 @@ pub enum StateBackendImplementation {
     Custom { name: String, config: String },
 }
 
-/// Compression type for state
+/// Compression type for state. Defaults to `Lz4`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CompressionType {
@@ -409,19 +410,19 @@ pub struct CoordinationConfig {
     /// Coordination implementation
     pub implementation: CoordinationImplementation,
 
-    /// Leader election timeout
+    /// Leader election timeout. Defaults to 5 seconds.
     #[serde(with = "duration_serde", default = "default_election_timeout")]
     pub election_timeout: Duration,
 
-    /// Session timeout
+    /// Session timeout. Defaults to 30 seconds.
     #[serde(with = "duration_serde", default = "default_session_timeout")]
     pub session_timeout: Duration,
 
-    /// Consensus level
+    /// How many nodes must agree. Defaults to `Majority`.
     #[serde(default)]
     pub consensus_level: ConsensusLevel,
 
-    /// Coordination-specific configuration
+    /// Extra settings for the chosen coordination service
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_yaml::Value>,
 }
@@ -442,7 +443,7 @@ impl Default for CoordinationConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum CoordinationImplementation {
-    /// Built-in Raft implementation
+    /// Built in Raft implementation
     Raft,
 
     /// Etcd
@@ -462,16 +463,16 @@ pub enum CoordinationImplementation {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConsensusLevel {
-    /// Single node acknowledgment
+    /// One node must acknowledge
     One,
 
-    /// Majority of nodes
+    /// A majority of nodes must acknowledge
     Majority,
 
     /// All nodes must acknowledge
     All,
 
-    /// Custom quorum
+    /// At least `size` nodes must acknowledge
     Quorum { size: usize },
 }
 
@@ -517,19 +518,19 @@ pub enum MessageBrokerImplementation {
 /// Producer configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProducerConfig {
-    /// Batch size for sending
+    /// Batch size for sending. Defaults to 1000.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
 
-    /// Linger time before sending
+    /// Time in milliseconds to wait for more events before sending. Defaults to 10.
     #[serde(default = "default_linger_ms")]
     pub linger_ms: u64,
 
-    /// Compression type
+    /// Compression type. Defaults to `Lz4`.
     #[serde(default)]
     pub compression: CompressionType,
 
-    /// Acknowledgment level
+    /// Acknowledgment level. Defaults to `Leader`.
     #[serde(default)]
     pub acks: AcknowledgmentLevel,
 }
@@ -551,15 +552,15 @@ pub struct ConsumerConfig {
     /// Consumer group ID
     pub group_id: String,
 
-    /// Auto-commit interval
+    /// Time between automatic offset commits. Defaults to 5 seconds.
     #[serde(with = "duration_serde", default = "default_auto_commit_interval")]
     pub auto_commit_interval: Duration,
 
-    /// Max poll records
+    /// Most records returned by one poll. Defaults to 500.
     #[serde(default = "default_max_poll_records")]
     pub max_poll_records: usize,
 
-    /// Session timeout
+    /// Session timeout. Defaults to 30 seconds.
     #[serde(with = "duration_serde", default = "default_consumer_session_timeout")]
     pub session_timeout: Duration,
 }
@@ -585,7 +586,7 @@ pub enum AcknowledgmentLevel {
     /// Leader acknowledgment only
     Leader,
 
-    /// All in-sync replicas
+    /// All replicas that are in sync must acknowledge
     All,
 }
 
@@ -595,7 +596,7 @@ impl Default for AcknowledgmentLevel {
     }
 }
 
-// Helper functions for defaults
+// Default values used by the serde attributes above
 fn default_true() -> bool {
     true
 }

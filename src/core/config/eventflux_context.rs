@@ -17,18 +17,17 @@
 
 // Corresponds to io.eventflux.core.config.EventFluxContext
 use std::collections::HashMap;
-use std::sync::{Arc, RwLockReadGuard}; // For shared, thread-safe components, Added RwLockReadGuard
+use std::sync::{Arc, RwLockReadGuard}; // Shared state and the attributes read guard
 
 use super::statistics_configuration::StatisticsConfiguration;
 use crate::core::util::executor_service::ExecutorService;
 
-// --- Placeholders for complex types/trait objects ---
-// These would be defined in their respective modules (e.g., util::persistence, extension, etc.)
-// For now, using simple struct placeholders or type aliases.
+// --- Stand ins for Java types that are not ported yet ---
+// Plain String aliases until the real types exist in their own modules.
 
 // pub trait Extension {} // Example
 // pub type ExtensionType = Box<dyn Extension + Send + Sync>; // Example for dynamic dispatch
-pub type ExtensionClassPlaceholder = String; // Simplified: Class name as String
+pub type ExtensionClassPlaceholder = String; // Class name as a String
 
 // pub trait DataSource {} // Example
 // pub type DataSourceType = Arc<dyn DataSource + Send + Sync>; // Example
@@ -61,24 +60,24 @@ pub type RecordTableHandlerManagerPlaceholder = String; // Simplified
 // pub type AbstractExtensionHolderType = Arc<dyn AbstractExtensionHolder + Send + Sync>;
 pub type AbstractExtensionHolderPlaceholder = String; // Simplified
 
-// Using String for attributes for now, could be an enum or serde_json::Value
+// Attribute values are plain strings for now. An enum or serde_json::Value may replace them.
 pub type AttributeValuePlaceholder = String;
 
-// Placeholder for Disruptor's ExceptionHandler<Object>
+// Stand in for the Java Disruptor ExceptionHandler<Object>
 pub type DisruptorExceptionHandlerPlaceholder = String;
 
-use crate::core::executor::function::ScalarFunctionExecutor; // Added
+use crate::core::executor::function::ScalarFunctionExecutor;
 use crate::core::table::Table;
-use std::sync::RwLock; // Added for scalar_function_factories and attributes, data_sources
+use std::sync::RwLock; // Guards the shared registries, attributes and data sources
 
-/// Shared context for all EventFlux Apps in a EventFluxManager instance.
-// Custom Debug is implemented to avoid requiring Debug on trait objects.
+/// Context shared by all EventFlux Apps in one EventFluxManager instance.
+// Debug is written by hand because the trait object fields do not implement it.
 #[repr(C)]
 pub struct EventFluxContext {
     pub statistics_configuration: StatisticsConfiguration,
     attributes: Arc<RwLock<HashMap<String, AttributeValuePlaceholder>>>,
 
-    // --- Placeholders mirroring Java fields ---
+    // --- Fields that mirror Java. Some are still String stand ins ---
     eventflux_extensions: HashMap<String, ExtensionClassPlaceholder>,
     persistence_store: Arc<RwLock<Option<Arc<dyn PersistenceStore>>>>,
     incremental_persistence_store: Arc<RwLock<Option<Arc<dyn IncrementalPersistenceStore>>>>,
@@ -90,16 +89,18 @@ pub struct EventFluxContext {
     record_table_handler_manager: Option<RecordTableHandlerManagerPlaceholder>,
     default_disrupter_exception_handler: DisruptorExceptionHandlerPlaceholder,
 
-    /// Default buffer size for StreamJunctions created when parsing EventFlux apps.
+    /// Buffer size for StreamJunctions created when parsing EventFlux apps.
+    /// Defaults to 4096.
     default_junction_buffer_size: usize,
-    /// Whether StreamJunctions should run asynchronously by default when no
-    /// annotation overrides the mode. Atomic so YAML/TOML `async_default` can
-    /// be applied through the shared `Arc<EventFluxContext>` once the manager
-    /// loads its configuration.
+    /// Whether StreamJunctions run asynchronously when no annotation sets the mode.
+    /// Defaults to false. Atomic so the manager can apply the YAML or TOML
+    /// `async_default` through the shared `Arc<EventFluxContext>` after it loads
+    /// its configuration.
     default_junction_async: std::sync::atomic::AtomicBool,
 
-    // Actual fields for extensions and data sources
-    /// Stores factories for User-Defined Scalar Functions. Key: "namespace:name" or "name", Value: cloneable factory instance.
+    // Extension registries and data sources
+    /// Factories for user defined scalar functions, keyed by "namespace:name" or "name".
+    /// Lookups return a clone of the stored factory.
     scalar_function_factories: Arc<RwLock<HashMap<String, Box<dyn ScalarFunctionExecutor>>>>,
     /// Window processor factories
     window_factories:
@@ -119,15 +120,15 @@ pub struct EventFluxContext {
     /// Sink mapper factories
     sink_mapper_factories:
         Arc<RwLock<HashMap<String, Box<dyn crate::core::extension::SinkMapperFactory>>>>,
-    /// Table factories for creating table implementations
+    /// Table factories
     table_factories: Arc<RwLock<HashMap<String, Box<dyn crate::core::extension::TableFactory>>>>,
-    /// Collection aggregation functions (for pattern queries)
+    /// Collection aggregation functions used by pattern queries
     collection_aggregation_functions: Arc<
         RwLock<HashMap<String, Box<dyn crate::core::extension::CollectionAggregationFunction>>>,
     >,
     /// Configurations for data sources keyed by name
     data_source_configs: Arc<RwLock<HashMap<String, DataSourceConfig>>>,
-    /// Stores registered data sources. Key: data source name.
+    /// Registered data sources keyed by name.
     data_sources: Arc<RwLock<HashMap<String, Arc<dyn DataSource>>>>,
     /// Registered tables available for queries.
     tables: Arc<RwLock<HashMap<String, Arc<dyn Table>>>>,
@@ -139,6 +140,11 @@ pub struct EventFluxContext {
 }
 
 impl EventFluxContext {
+    /// Build a context with the built in extensions registered.
+    ///
+    /// Also registers two executor services. "default" gets one thread per CPU and
+    /// "partition" gets 2 threads. `EVENTFLUX_POOL_DEFAULT_THREADS` and
+    /// `EVENTFLUX_POOL_PARTITION_THREADS` override these counts.
     pub fn new() -> Self {
         let mut ctx = Self {
             statistics_configuration: StatisticsConfiguration::default(),
@@ -169,7 +175,7 @@ impl EventFluxContext {
             source_handler_manager: None,
             record_table_handler_manager: None,
             default_disrupter_exception_handler: "DefaultDisruptorExceptionHandler".to_string(),
-            // Increased default async buffer to handle high throughput tests
+            // Large enough for the high throughput tests in async mode
             default_junction_buffer_size: 4096,
             default_junction_async: std::sync::atomic::AtomicBool::new(false),
             dummy_field_eventflux_context_extensions: String::new(),
@@ -197,7 +203,6 @@ impl EventFluxContext {
         ctx
     }
 
-    // Example methods translated (simplified)
     pub fn get_eventflux_extensions(&self) -> &HashMap<String, String> {
         &self.eventflux_extensions
     }
@@ -210,7 +215,7 @@ impl EventFluxContext {
         &self,
         persistence_store: Arc<dyn PersistenceStore>,
     ) -> Result<(), crate::core::exception::error::EventFluxError> {
-        // Mirroring Java logic: only one persistence store allowed
+        // As in Java, only one kind of persistence store may be set
         if self.incremental_persistence_store.read().unwrap().is_some() {
             return Err(crate::core::exception::error::EventFluxError::configuration(
                 "Only one type of persistence store can exist. Incremental persistence store already registered!"
@@ -247,12 +252,19 @@ impl EventFluxContext {
         self.error_store = Some(store);
     }
 
-    // ... other getters and setters for various managers and stores ...
-
     pub fn get_data_source(&self, name: &str) -> Option<Arc<dyn DataSource>> {
         self.data_sources.read().unwrap().get(name).cloned()
     }
 
+    /// Register a data source under `name`.
+    ///
+    /// If a config was set for `name` through `set_data_source_config`, the data
+    /// source is initialized with it first, using a throwaway app context. When the
+    /// `Arc` is shared, a clone of the data source is initialized and stored instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from the data source `init`. Nothing is registered then.
     pub fn add_data_source(
         &self,
         name: String,
@@ -356,10 +368,12 @@ impl EventFluxContext {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// NOTE: `EventFluxManager` re-resolves this from its configuration
-    /// (`eventflux.application.async_default`, defaulting to false) at every
-    /// app creation, overwriting manual calls. To make streams async, set the
-    /// YAML key or per-stream SQL `WITH ('async.enabled' = 'true')` instead.
+    /// Set whether StreamJunctions run asynchronously by default.
+    ///
+    /// `EventFluxManager` sets this again from `eventflux.application.async_default`
+    /// (false when unset) every time it creates an app, so manual calls are
+    /// overwritten. To make streams async, set that YAML key or use
+    /// `WITH ('async.enabled' = 'true')` on the stream in SQL.
     pub fn set_default_async_mode(&self, mode: bool) {
         self.default_junction_async
             .store(mode, std::sync::atomic::Ordering::Relaxed);
@@ -368,16 +382,16 @@ impl EventFluxContext {
     pub fn get_attributes(
         &self,
     ) -> RwLockReadGuard<'_, HashMap<String, AttributeValuePlaceholder>> {
-        // Return guard
+        // The read lock is held until the caller drops the guard
         self.attributes.read().unwrap()
     }
 
     pub fn set_attribute(&self, key: String, value: AttributeValuePlaceholder) {
-        // Takes &self due to RwLock
+        // Takes &self because the map is behind a RwLock
         self.attributes.write().unwrap().insert(key, value);
     }
 
-    /// Register a new executor service under the given name.
+    /// Register an executor service under the given name.
     pub fn add_executor_service(&self, name: String, exec: Arc<ExecutorService>) {
         self.executor_services.register_named(name, exec);
     }
@@ -403,7 +417,7 @@ impl EventFluxContext {
         &self,
         name: &str,
     ) -> Option<Box<dyn ScalarFunctionExecutor>> {
-        // .clone() on Box<dyn ScalarFunctionExecutor> calls the trait's clone_scalar_function()
+        // Cloning the Box calls the trait's clone_scalar_function()
         self.scalar_function_factories
             .read()
             .unwrap()
@@ -570,7 +584,7 @@ impl EventFluxContext {
         #[cfg(feature = "websocket")]
         self.add_sink_factory("websocket".to_string(), Box::new(WebSocketSinkFactory));
 
-        // Mapper factories for format = 'json' / 'csv' / 'bytes'
+        // Mapper factories for format = 'json', 'csv' and 'bytes'
         use crate::core::extension::{
             BytesSinkMapperFactory, BytesSourceMapperFactory, CsvSinkMapperFactory,
             CsvSourceMapperFactory, JsonSinkMapperFactory, JsonSourceMapperFactory,
@@ -582,7 +596,7 @@ impl EventFluxContext {
         self.add_source_mapper_factory("bytes".to_string(), Box::new(BytesSourceMapperFactory));
         self.add_sink_mapper_factory("bytes".to_string(), Box::new(BytesSinkMapperFactory));
 
-        // Collection aggregation functions (for pattern queries)
+        // Collection aggregation functions used by pattern queries
         self.add_collection_aggregation_function(
             "count".to_string(),
             Box::new(CollectionCountFunction),
@@ -776,7 +790,7 @@ impl EventFluxContext {
 
     // --- Collection Aggregation Function Methods ---
 
-    /// Add a collection aggregation function (for pattern queries)
+    /// Add a collection aggregation function for pattern queries. Replaces any with the same name.
     pub fn add_collection_aggregation_function(
         &self,
         name: String,
@@ -877,7 +891,9 @@ impl Default for EventFluxContext {
     }
 }
 
-// Clone implementation for EventFluxContext needs to handle Arc fields by cloning the Arc, not the underlying data.
+// A clone shares the registries, stores and attributes with the original because it
+// clones the Arcs, not the data behind them. The async default flag is copied, so
+// changing it on one does not change the other.
 impl Clone for EventFluxContext {
     fn clone(&self) -> Self {
         Self {
@@ -947,12 +963,11 @@ mod tests {
     fn test_cannot_set_persistence_store_when_incremental_exists() {
         let ctx = EventFluxContext::default();
 
-        // Manually set incremental store (simulating the conflict scenario)
-        // Note: We can't easily create a test IncrementalPersistenceStore here,
-        // but this test validates the error path works correctly
-        // The actual enforcement is tested through integration tests
+        // There is no easy test IncrementalPersistenceStore here, so this test does
+        // not set one and does not reach the error path. Integration tests cover the
+        // conflict.
 
-        // For now, just verify the method returns Ok when no conflict
+        // Only checks that the call succeeds when there is no conflict
         let store = Arc::new(InMemoryPersistenceStore::new());
         assert!(ctx.set_persistence_store(store).is_ok());
     }

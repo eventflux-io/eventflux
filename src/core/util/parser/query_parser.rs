@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/util/parser/query_parser.rs
 use super::expression_parser::{parse_expression, ExpressionParserContext};
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::eventflux_query_context::EventFluxQueryContext;
@@ -24,18 +23,18 @@ use crate::core::query::input::stream::join::{JoinProcessor, JoinSide, TableJoin
 use crate::core::query::output::insert_into_stream_processor::InsertIntoStreamProcessor;
 use crate::core::query::processor::stream::filter::FilterProcessor;
 use crate::core::query::processor::stream::window::create_window_processor;
-use crate::core::query::processor::Processor; // Trait
+use crate::core::query::processor::Processor;
 use crate::core::query::query_runtime::QueryRuntime;
-use crate::core::query::selector::attribute::OutputAttributeProcessor; // OAP
+use crate::core::query::selector::attribute::OutputAttributeProcessor;
 use crate::core::query::selector::select_processor::{OutputRateLimiter, SelectProcessor};
 use crate::core::query::selector::{GroupByKeyGenerator, OrderByEventComparator};
 use crate::core::stream::stream_junction::StreamJunction;
 use crate::query_api::{
-    definition::Attribute as ApiAttribute, // For constructing output attributes
+    definition::Attribute as ApiAttribute, // For building output attributes
     definition::StreamDefinition as ApiStreamDefinition,
     execution::query::input::InputStream as ApiInputStream,
     execution::query::Query as ApiQuery,
-    expression::Expression as ApiExpression, // Added this import
+    expression::Expression as ApiExpression,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -45,12 +44,12 @@ use crate::core::event::complex_event::ComplexEvent;
 use crate::core::query::input::stream::state::PostStateProcessor;
 use crate::core::query::input::stream::state::PreStateProcessor;
 
-/// TerminalPostStateProcessor - bridges PostStateProcessor chain to Processor chain
+/// TerminalPostStateProcessor connects the PostStateProcessor chain to the Processor chain
 ///
-/// This processor sits at the end of a pattern chain and:
-/// 1. Receives completed StateEvent from the last pattern PostStateProcessor
-/// 2. Flattens all StreamEvents into a single StreamEvent
-/// 3. Forwards the flattened event to the Processor chain (SelectProcessor, etc.)
+/// It sits at the end of a pattern chain and:
+/// 1. Receives the completed StateEvent from the last pattern PostStateProcessor
+/// 2. Flattens all its StreamEvents into a single StreamEvent
+/// 3. Passes the flattened event to the Processor chain (SelectProcessor, and so on)
 #[derive(Debug)]
 struct TerminalPostStateProcessor {
     state_id: usize,
@@ -75,8 +74,11 @@ impl TerminalPostStateProcessor {
         self.output_processor = Some(processor);
     }
 
-    /// Flatten StateEvent into a single StreamEvent
-    /// Copies all attributes from each position's StreamEvent
+    /// Flattens a StateEvent into one StreamEvent.
+    ///
+    /// Joins the before window data of each position's StreamEvent, in position order. An
+    /// empty position adds nothing, so later attributes shift left. The timestamp is the
+    /// StateEvent's, or the first non negative event timestamp if that is negative.
     fn flatten_state_event(
         &self,
         state_event: &crate::core::event::state::state_event::StateEvent,
@@ -84,24 +86,20 @@ impl TerminalPostStateProcessor {
         use crate::core::event::stream::stream_event::StreamEvent;
         use crate::core::event::value::AttributeValue;
 
-        // Create flattened before_window_data by concatenating all positions
         let mut flattened_data: Vec<AttributeValue> = Vec::with_capacity(self.total_attr_count);
         let mut timestamp = state_event.timestamp;
 
         for i in 0..state_event.stream_event_count() {
             if let Some(stream_event) = state_event.get_stream_event(i) {
-                // Copy attributes from this position's StreamEvent
                 for attr in &stream_event.before_window_data {
                     flattened_data.push(attr.clone());
                 }
-                // Use first valid timestamp if not set
                 if timestamp < 0 && stream_event.timestamp >= 0 {
                     timestamp = stream_event.timestamp;
                 }
             }
         }
 
-        // Create the flattened StreamEvent
         let mut result = StreamEvent::new_with_data(timestamp, flattened_data);
         result.event_type = state_event.event_type;
         result
@@ -115,17 +113,16 @@ impl PostStateProcessor for TerminalPostStateProcessor {
                 .as_any()
                 .downcast_ref::<crate::core::event::state::state_event::StateEvent>(
             ) {
-                // Flatten the StateEvent to a StreamEvent
                 let flattened = self.flatten_state_event(state_event);
 
-                // Forward to the output processor (Processor chain)
+                // Hand it to the Processor chain. Dropped if no output is set.
                 if let Some(ref output) = self.output_processor {
                     self.is_event_returned = true;
                     output.lock().unwrap().process(Some(Box::new(flattened)));
                 }
             }
         }
-        None // Terminal - doesn't return events via PostStateProcessor chain
+        None // Last in the chain, so nothing goes back up the PostStateProcessor chain
     }
 
     fn set_next_processor(&mut self, processor: Arc<Mutex<dyn PostStateProcessor>>) {
@@ -141,15 +138,15 @@ impl PostStateProcessor for TerminalPostStateProcessor {
     }
 
     fn set_next_state_pre_processor(&mut self, _next: Arc<Mutex<dyn PreStateProcessor>>) {
-        // Terminal processor - no next state
+        // Last processor, so there is no next state
     }
 
     fn set_next_every_state_pre_processor(&mut self, _next: Arc<Mutex<dyn PreStateProcessor>>) {
-        // Terminal processor - doesn't loop back
+        // Last processor, so it never loops back
     }
 
     fn set_callback_pre_state_processor(&mut self, _callback: Arc<Mutex<dyn PreStateProcessor>>) {
-        // Terminal processor - no callback
+        // Last processor, so there is no callback
     }
 
     fn get_next_every_state_pre_processor(&self) -> Option<Arc<Mutex<dyn PreStateProcessor>>> {
@@ -169,12 +166,13 @@ impl PostStateProcessor for TerminalPostStateProcessor {
     }
 }
 
+/// Builds a QueryRuntime from a parsed query.
 pub struct QueryParser;
 
 impl QueryParser {
     /// Test helper that calls parse_query with query_index = 0
     ///
-    /// This is available in both library and integration tests.
+    /// Public so both library and integration tests can use it.
     #[doc(hidden)]
     pub fn parse_query_test(
         api_query: &ApiQuery,
@@ -195,6 +193,15 @@ impl QueryParser {
         )
     }
 
+    /// Builds the runtime for one query, wiring its input, selector and output processors.
+    ///
+    /// `query_index` is used for the default query name. `partition_id` is set when the
+    /// query is inside a partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an input stream, table or target is missing, or when an
+    /// expression, window or processor cannot be built.
     pub fn parse_query(
         api_query: &ApiQuery,
         eventflux_app_context: &Arc<EventFluxAppContext>,
@@ -204,11 +211,11 @@ impl QueryParser {
         partition_id: Option<String>,
         query_index: usize,
     ) -> Result<QueryRuntime, String> {
-        // 1. Determine Query Name (from @info(name='foo') or generate)
-        // Use deterministic index-based naming for state recovery compatibility
-        // Include partition_id in default name to prevent collisions between
-        // top-level queries (query_0) and partition queries (partition_0_query_0, partition_1_query_0)
-        // Each partition receives a unique partition_id (e.g., "partition_0", "partition_1", or custom @info name)
+        // 1. Query name, from @info(name='foo') or built from the index.
+        // The built name must be the same on every run so state can be recovered.
+        // It includes partition_id so top level queries (query_0) and partition queries
+        // (partition_0_query_0, partition_1_query_0) do not collide. Each partition gets
+        // its own partition_id, such as "partition_0", "partition_1", or its @info name.
         let query_name = api_query
             .annotations
             .iter()
@@ -233,7 +240,7 @@ impl QueryParser {
         }
         let eventflux_query_context = Arc::new(eventflux_query_context);
 
-        // 2. Identify input stream & get its junction
+        // 2. Find the input stream and its junction
         let input_stream_api = api_query
             .input_stream
             .as_ref()
@@ -242,15 +249,15 @@ impl QueryParser {
         let mut processor_chain_head: Option<Arc<Mutex<dyn Processor>>> = None;
         let mut last_processor_in_chain: Option<Arc<Mutex<dyn Processor>>> = None;
 
-        // For N-element patterns, we need to connect the terminal to the selector chain later
-        // This is set in the N-element pattern block and used after selector chain is built
+        // N element patterns connect their terminal to the selector chain later. Set in the
+        // N element pattern block and used once the selector chain is built.
         let mut n_element_terminal: Option<Arc<Mutex<TerminalPostStateProcessor>>> = None;
 
-        // Flag to track if we're handling a logical pattern (AND/OR)
-        // Logical patterns subscribe their processors directly to junctions, so we skip final subscription
+        // True for a logical pattern (AND/OR). Those subscribe their processors to the
+        // junctions directly, so the final subscription is skipped.
         let mut is_logical_pattern = false;
 
-        // Helper closure to link processors
+        // Appends a processor to the chain and records the head on first use
         let mut link_processor = |new_processor_arc: Arc<Mutex<dyn Processor>>| {
             if processor_chain_head.is_none() {
                 processor_chain_head = Some(new_processor_arc.clone());
@@ -264,7 +271,7 @@ impl QueryParser {
             last_processor_in_chain = Some(new_processor_arc);
         };
 
-        // Build metadata and input processors depending on stream type
+        // Build metadata and input processors for the kind of input stream
         let expr_parser_context: ExpressionParserContext = match input_stream_api {
             ApiInputStream::Single(single_in_stream) => {
                 let input_stream_id = single_in_stream.get_stream_id_str().to_string();
@@ -285,9 +292,9 @@ impl QueryParser {
                 ));
                 let mut stream_meta_map = HashMap::new();
                 stream_meta_map.insert(input_stream_id.clone(), Arc::clone(&meta_input_event));
-                // Table metadata is only required when a table participates as an
-                // input source. Since table queries are not yet supported, avoid
-                // registering tables here to prevent variable lookup ambiguity.
+                // Table metadata is only needed when a table is an input source. Table
+                // queries are not supported yet, so tables are left out here to avoid
+                // ambiguous variable lookups.
                 let table_meta_map = HashMap::new();
                 let ctx = ExpressionParserContext {
                     eventflux_app_context: Arc::clone(eventflux_app_context),
@@ -343,7 +350,7 @@ impl QueryParser {
                     .right_input_stream
                     .get_stream_id_str()
                     .to_string();
-                // Extract aliases for JOIN expressions (e.g., "FROM Stream1 AS a JOIN Stream2 AS b")
+                // Aliases used in JOIN expressions, as in "FROM Stream1 AS a JOIN Stream2 AS b"
                 let left_alias = join_stream
                     .left_input_stream
                     .get_stream_reference_id_str()
@@ -356,7 +363,8 @@ impl QueryParser {
                 let right_is_table = table_def_map.contains_key(&right_id);
 
                 if left_is_table ^ right_is_table {
-                    // stream-table join
+                    // Stream to table join. The table attributes are offset after the stream
+                    // attributes, or the other way round when the table is on the left.
                     let (stream_id, table_id, stream_on_left) = if left_is_table {
                         (right_id.clone(), left_id.clone(), false)
                     } else {
@@ -383,7 +391,7 @@ impl QueryParser {
                     let table_stream_def = Arc::new(
                         crate::query_api::definition::stream_definition::StreamDefinition {
                             abstract_definition: table_def.abstract_definition.clone(),
-                            with_config: None, // Tables don't use SQL WITH config
+                            with_config: None, // Not needed for this metadata view of the table
                         },
                     );
                     let mut table_meta = MetaStreamEvent::new_for_single_input(table_stream_def);
@@ -498,7 +506,7 @@ impl QueryParser {
                     let mut stream_meta_map = HashMap::new();
                     stream_meta_map.insert(left_id.clone(), Arc::clone(&left_meta_arc));
                     stream_meta_map.insert(right_id.clone(), Arc::clone(&right_meta_arc));
-                    // Add aliases to stream_meta_map so expressions like "a.symbol" resolve correctly
+                    // Also register the aliases so expressions like "a.symbol" resolve
                     if let Some(ref alias) = left_alias {
                         stream_meta_map.insert(alias.clone(), Arc::clone(&left_meta_arc));
                     }
@@ -507,12 +515,11 @@ impl QueryParser {
                     }
                     let table_meta_map = HashMap::new();
 
-                    // Build stream_positions map with both stream IDs and aliases
+                    // Positions for both stream ids and their aliases. Left is 0, right is 1.
                     let stream_positions = {
                         let mut m = HashMap::new();
                         m.insert(left_id.clone(), 0);
                         m.insert(right_id.clone(), 1);
-                        // Add aliases to stream_positions for expression parsing
                         if let Some(ref alias) = left_alias {
                             m.insert(alias.clone(), 0);
                         }
@@ -588,8 +595,8 @@ impl QueryParser {
                 use crate::query_api::execution::query::input::state::logical_state_element::Type as ApiLogicalType;
                 use crate::query_api::execution::query::input::state::state_element::StateElement;
 
-                /// Adapter that wraps a PreStateProcessor to implement the Processor trait
-                /// This allows PreStateProcessors to be subscribed to StreamJunctions
+                /// Wraps a PreStateProcessor as a Processor so it can subscribe to a
+                /// StreamJunction. Only StreamEvents are passed on, others are dropped.
                 #[derive(Debug)]
                 struct PreStateProcessorAdapter {
                     pre_processor:
@@ -624,20 +631,18 @@ impl QueryParser {
 
                 impl Processor for PreStateProcessorAdapter {
                     fn process(&self, chunk: Option<Box<dyn ComplexEvent>>) {
-                        // Convert ComplexEvent to StreamEvent and process
                         if let Some(event) = chunk {
                             if let Some(stream_event) = event.as_any().downcast_ref::<crate::core::event::stream::stream_event::StreamEvent>() {
-                                // Clone the stream event since we need owned data
+                                // The PreStateProcessor needs an owned event
                                 let se_clone = stream_event.clone();
 
-                                // Process through the PreStateProcessor
                                 let mut pre = self.pre_processor.lock().unwrap();
 
-                                // CRITICAL: Update state FIRST to move new events (from add_state) to pending
-                                // This allows events forwarded from previous processors to be matched
+                                // Update state FIRST. This moves states added through add_state
+                                // to pending, so states forwarded by earlier processors can match.
                                 pre.update_state();
 
-                                // Now process the incoming event against pending states
+                                // Then match the incoming event against the pending states
                                 let _result = pre.process_and_return(Some(Box::new(se_clone)));
                             }
                         }
@@ -688,23 +693,19 @@ impl QueryParser {
                     }
                 }
 
-                // TerminalPostStateProcessor is now defined at module level
+                // TerminalPostStateProcessor is defined at module level
 
-                /// Adapter for N-element same-stream patterns
+                /// Adapter for N element patterns where every element reads the same stream
                 ///
-                /// For same-stream patterns (e.g., e1=Trades -> e2=Trades -> e3=Trades),
-                /// events must be processed carefully to ensure each event matches at
-                /// exactly one position in the pattern.
+                /// In a pattern like e1=Trades -> e2=Trades -> e3=Trades, each event must
+                /// match at exactly one position. The trick is:
+                /// 1. Call update_state() on ALL processors FIRST, which moves forwarded
+                ///    states from new_list to pending_list
+                /// 2. Then process the event. Only processors with pending states can match.
+                /// 3. A match forwards state to the next processor's new_list, which only
+                ///    becomes pending at the NEXT event's update_state()
                 ///
-                /// The key insight is:
-                /// 1. Call update_state() on ALL processors FIRST to move forwarded states
-                ///    from new_list to pending_list
-                /// 2. Then process the event - only processors with pending states will match
-                /// 3. When a processor matches, it forwards state to the next processor's
-                ///    new_list, which won't be available until the NEXT event's update_state()
-                ///
-                /// This ensures that each event can only match one position, because forwarded
-                /// states don't become "pending" until after the current event is processed.
+                /// So a state forwarded by this event cannot be matched by this same event.
                 #[derive(Debug)]
                 struct NElementSameStreamAdapter {
                     pre_processors: Vec<
@@ -742,21 +743,20 @@ impl QueryParser {
 
                 impl Processor for NElementSameStreamAdapter {
                     fn process(&self, chunk: Option<Box<dyn ComplexEvent>>) {
-                        // Step 1: Update state on ALL processors FIRST
-                        // This moves any forwarded states from new_list to pending_list
-                        // BEFORE we process the current event
+                        // Step 1. Update state on ALL processors FIRST, moving forwarded states
+                        // from new_list to pending_list BEFORE this event is processed
                         for pre in &self.pre_processors {
                             pre.lock().unwrap().update_state();
                         }
 
-                        // Step 2: Process the event through each processor
-                        // Only processors with pending states will actually match
+                        // Step 2. Pass the event to each processor. Only those with pending
+                        // states can match.
                         if let Some(event) = chunk {
                             if let Some(stream_event) = event.as_any().downcast_ref::<crate::core::event::stream::stream_event::StreamEvent>() {
                                 for pre in &self.pre_processors {
                                     let se_clone = stream_event.clone();
                                     let mut pre_guard = pre.lock().unwrap();
-                                    // Note: We don't call update_state() here - it was done above
+                                    // No update_state() here, it already ran above
                                     let _result = pre_guard.process_and_return(Some(Box::new(se_clone)));
                                 }
                             }
@@ -764,11 +764,11 @@ impl QueryParser {
                     }
 
                     fn next_processor(&self) -> Option<Arc<Mutex<dyn Processor>>> {
-                        None // Terminal adapter - output goes through PostStateProcessor chain
+                        None // Output goes through the PostStateProcessor chain instead
                     }
 
                     fn set_next_processor(&mut self, _next: Option<Arc<Mutex<dyn Processor>>>) {
-                        // No-op - wiring is done through PostStateProcessor chain
+                        // Does nothing. Wiring goes through the PostStateProcessor chain.
                     }
 
                     fn clone_processor(
@@ -807,7 +807,7 @@ impl QueryParser {
                     }
                 }
 
-                /// Holds information about a pattern element
+                /// One element of a pattern. Plain elements have min and max count 1.
                 struct PatternElementInfo {
                     stream_id: String,
                     alias: Option<String>,
@@ -815,7 +815,8 @@ impl QueryParser {
                     max_count: i32,
                 }
 
-                /// Extract pattern element info from a StateElement
+                /// Reads the element info from a Stream, Count, or Every around one of
+                /// those. Returns None for any other StateElement.
                 fn extract_element_info(se: &StateElement) -> Option<PatternElementInfo> {
                     match se {
                         StateElement::Stream(s) => {
@@ -855,9 +856,9 @@ impl QueryParser {
                     }
                 }
 
-                /// Recursively extract all pattern elements from a nested Next structure
-                /// For pattern A -> B -> C -> D (represented as Next(A, Next(B, Next(C, D))))
-                /// Returns [A, B, C, D] in order
+                /// Flattens a nested Next structure into its elements, in order.
+                /// Pattern A -> B -> C -> D is stored as Next(A, Next(B, Next(C, D))) and
+                /// gives [A, B, C, D]. Returns None if it holds a logical element.
                 fn extract_all_sequence_elements(
                     se: &StateElement,
                 ) -> Option<Vec<PatternElementInfo>> {
@@ -874,11 +875,11 @@ impl QueryParser {
                             elements.extend(next_elements);
                             Some(elements)
                         }
-                        _ => None, // Logical handled separately
+                        _ => None, // Logical elements are handled separately
                     }
                 }
 
-                /// Represents a pattern type for unified handling
+                /// The two kinds of pattern this parser supports
                 enum PatternType {
                     /// Sequence pattern (A -> B, A -> B -> C, etc.)
                     Sequence(Vec<PatternElementInfo>),
@@ -890,14 +891,15 @@ impl QueryParser {
                     },
                 }
 
-                /// Parse the state element into a unified PatternType
+                /// Turns the state element into a PatternType. Returns None for shapes that
+                /// are not supported, such as a logical element inside a sequence.
                 fn parse_pattern_type(se: &StateElement) -> Option<PatternType> {
                     match se {
                         StateElement::Next(_) => {
                             extract_all_sequence_elements(se).map(PatternType::Sequence)
                         }
                         StateElement::Stream(_) | StateElement::Count(_) => {
-                            // Single element pattern (unusual but valid)
+                            // Single element pattern, unusual but valid
                             extract_element_info(se).map(|info| PatternType::Sequence(vec![info]))
                         }
                         StateElement::Every(ev) => parse_pattern_type(&ev.state_element),
@@ -915,19 +917,20 @@ impl QueryParser {
                     }
                 }
 
-                // Parse the pattern type
                 let pattern_type = parse_pattern_type(state_stream.state_element.as_ref())
                     .ok_or_else(|| {
                         format!("Query '{query_name}': Unsupported pattern structure")
                     })?;
 
-                // Collect all elements for metadata building
                 let all_elements: Vec<&PatternElementInfo> = match &pattern_type {
                     PatternType::Sequence(elements) => elements.iter().collect(),
                     PatternType::Logical { left, right, .. } => vec![left, right],
                 };
 
-                // Build metadata maps for all elements
+                // Metadata for every element. Each element's attributes are offset after the
+                // ones before it, matching the flattened event the terminal builds. When two
+                // elements read the same stream, the later one wins under the stream name, so
+                // aliases are needed to tell them apart.
                 let mut stream_meta_map = HashMap::new();
                 let mut stream_positions_map: HashMap<String, i32> = HashMap::new();
                 let mut total_attr_count = 0;
@@ -947,11 +950,9 @@ impl QueryParser {
                     }
                     let meta = Arc::new(meta);
 
-                    // Register by stream name
                     stream_meta_map.insert(elem.stream_id.clone(), Arc::clone(&meta));
                     stream_positions_map.insert(elem.stream_id.clone(), idx as i32);
 
-                    // Register by alias if present
                     if let Some(ref alias) = elem.alias {
                         stream_meta_map.insert(alias.clone(), Arc::clone(&meta));
                         stream_positions_map.insert(alias.clone(), idx as i32);
@@ -964,10 +965,9 @@ impl QueryParser {
                 let table_meta_map: HashMap<String, Arc<MetaStreamEvent>> = HashMap::new();
                 let default_source = all_elements[0].stream_id.clone();
 
-                // Handle patterns based on type
                 match &pattern_type {
                     PatternType::Sequence(elements) => {
-                        // Sequence patterns use PatternChainBuilder
+                        // Sequence patterns are built with PatternChainBuilder
                         let state_type = match state_stream.state_type {
                             crate::query_api::execution::query::input::stream::state_input_stream::Type::Pattern => StateType::Pattern,
                             crate::query_api::execution::query::input::stream::state_input_stream::Type::Sequence => StateType::Sequence,
@@ -984,7 +984,8 @@ impl QueryParser {
                             ));
                         }
 
-                        // Set WITHIN if present
+                        // WITHIN, if given as a time, LONG or INT constant. Other constant
+                        // kinds are ignored.
                         if let Some(within_time) = state_stream.within_time.as_ref().and_then(|c| match c.get_value() {
                             crate::query_api::expression::constant::ConstantValueWithFloat::Time(t) => Some(*t),
                             crate::query_api::expression::constant::ConstantValueWithFloat::Long(l) => Some(*l),
@@ -994,12 +995,11 @@ impl QueryParser {
                             builder.set_within(within_time);
                         }
 
-                        // Set EVERY if the top-level StateElement is Every
+                        // EVERY only counts when it wraps the whole pattern
                         if matches!(state_stream.state_element.as_ref(), StateElement::Every(_)) {
                             builder.set_every(true);
                         }
 
-                        // Build the processor chain
                         let mut chain = builder
                             .build(
                                 Arc::clone(eventflux_app_context),
@@ -1011,7 +1011,7 @@ impl QueryParser {
 
                         chain.init();
 
-                        // Collect stream definitions for cloner setup
+                        // Stream definitions, one per element, for the event cloners
                         let mut stream_defs = Vec::new();
                         for elem in elements.iter() {
                             let junction = stream_junction_map.get(&elem.stream_id).unwrap();
@@ -1020,20 +1020,19 @@ impl QueryParser {
                         }
                         chain.setup_cloners(stream_defs);
 
-                        // Create TerminalPostStateProcessor
                         let terminal = Arc::new(Mutex::new(TerminalPostStateProcessor::new(
                             elements.len() - 1,
                             total_attr_count,
                         )));
 
-                        // Wire the last post processor to the terminal
+                        // The last post processor feeds the terminal
                         if let Some(last_post) = chain.post_processors.last() {
                             last_post.lock().unwrap().set_next_processor(
                                 terminal.clone() as Arc<Mutex<dyn crate::core::query::input::stream::state::PostStateProcessor>>
                             );
                         }
 
-                        // Group elements by stream_id
+                        // Group the pre processors by the stream they read
                         let mut stream_to_processors: HashMap<String, Vec<Arc<Mutex<dyn crate::core::query::input::stream::state::PreStateProcessor>>>> = HashMap::new();
                         for (idx, elem) in elements.iter().enumerate() {
                             if idx < chain.pre_processors.len() {
@@ -1045,7 +1044,8 @@ impl QueryParser {
                             }
                         }
 
-                        // Subscribe adapters to junctions
+                        // One adapter per stream. A stream used by several elements gets the
+                        // N element adapter so each event matches only one position.
                         for (stream_id, processors) in stream_to_processors {
                             let junction = stream_junction_map.get(&stream_id).unwrap().clone();
                             if processors.len() == 1 {
@@ -1073,16 +1073,15 @@ impl QueryParser {
                         right,
                         is_and,
                     } => {
-                        // Mark this as a logical pattern - subscription is handled below
+                        // Logical patterns subscribe their own processors below
                         is_logical_pattern = true;
 
-                        // Logical patterns use a simple shared-buffer processor
+                        // Logical patterns use a simple processor with a shared buffer
                         use crate::core::event::stream::stream_event::StreamEvent;
                         use crate::core::event::stream::stream_event_cloner::StreamEventCloner;
                         use crate::core::event::stream::stream_event_factory::StreamEventFactory;
                         use crate::core::event::value::AttributeValue;
 
-                        // Get junctions
                         let first_junction = stream_junction_map
                             .get(&left.stream_id)
                             .ok_or_else(|| format!("Input stream '{}' not found", left.stream_id))?
@@ -1097,7 +1096,11 @@ impl QueryParser {
                         let first_len = first_def.abstract_definition.attribute_list.len();
                         let second_len = second_def.abstract_definition.attribute_list.len();
 
-                        // Shared state for logical pattern
+                        // State shared by both sides of a logical pattern. AND pairs the
+                        // oldest buffered event of each side, first in first out. OR emits
+                        // every event at once with NULLs for the other side. The output joins
+                        // the first side's attributes, then the second side's, and takes the
+                        // second side's timestamp when it has one.
                         struct SharedLogicalState {
                             is_and: bool,
                             first_buffer: Vec<StreamEvent>,
@@ -1170,7 +1173,8 @@ impl QueryParser {
                             next_processor: None,
                         }));
 
-                        // Side processors
+                        // One processor per side. It buffers incoming StreamEvents in the
+                        // shared state and tries to produce output.
                         struct LogicalSideProcessor {
                             shared: Arc<Mutex<SharedLogicalState>>,
                             is_first: bool,
@@ -1283,9 +1287,10 @@ impl QueryParser {
                                 query_ctx: Arc::clone(&eventflux_query_context),
                             }));
 
-                        // Subscribe to junctions
                         if left.stream_id == right.stream_id {
-                            // Same-stream logical pattern
+                            // Both sides read the same stream. The very first event goes to
+                            // the first side only. Every later event goes to the second side,
+                            // then a copy to the first side.
                             use std::sync::atomic::{AtomicBool, Ordering};
                             struct SameStreamLogicalAdapter {
                                 first: Arc<Mutex<dyn Processor>>,
@@ -1367,7 +1372,6 @@ impl QueryParser {
                     }
                 }
 
-                // Return expr_parser_context
                 ExpressionParserContext {
                     eventflux_app_context: Arc::clone(eventflux_app_context),
                     eventflux_query_context: Arc::clone(&eventflux_query_context),
@@ -1386,21 +1390,19 @@ impl QueryParser {
             }
         };
 
-        // 5. Selector (Projections)
-        let api_selector = &api_query.selector; // Selector is not Option in query_api::Query
+        // 5. Selector (projections)
+        let api_selector = &api_query.selector; // Always present on query_api::Query
         let mut oaps = Vec::new();
         let mut output_attributes_for_def = Vec::new();
 
         for (idx, api_out_attr) in api_selector.selection_list.iter().enumerate() {
             let expr_exec = parse_expression(&api_out_attr.expression, &expr_parser_context)
                 .map_err(|e| e.to_string())?;
-            // OutputAttributeProcessor needs the output position.
             let oap = OutputAttributeProcessor::new(expr_exec);
 
             let attr_name = api_out_attr.rename.clone().unwrap_or_else(|| {
-                // Try to infer name from expression, or generate. Very simplified.
-                // Java's OutputAttribute(Variable) uses variable.getAttributeName().
-                // If expression is a Variable, use its name.
+                // No AS name. A plain variable keeps its attribute name, as Java's
+                // OutputAttribute(Variable) does. Anything else becomes "_col_<index>".
                 if let ApiExpression::Variable(v) = &api_out_attr.expression {
                     v.attribute_name.clone()
                 } else {
@@ -1411,10 +1413,10 @@ impl QueryParser {
             oaps.push(oap);
         }
 
-        // Determine the ID for the stream produced by this SelectProcessor
+        // Only checks that the query has a target. The value itself is not used.
         let _output_stream_id_from_query = api_query
             .output_stream
-            .get_target_id() // output_stream is not Option
+            .get_target_id() // output_stream is always present
             .ok_or_else(|| {
                 format!("Query '{query_name}' must have a target output stream for INSERT INTO")
             })?;
@@ -1486,12 +1488,12 @@ impl QueryParser {
             }
         }
 
-        // 6. Output Processor (e.g., InsertIntoStreamProcessor)
-        // This needs to match on api_query.output_stream.action
+        // 6. Output processor, chosen by the output action (for example
+        // InsertIntoStreamProcessor)
         match &api_query.output_stream.action {
             crate::query_api::execution::query::output::output_stream::OutputStreamAction::InsertInto(insert_action) => {
-                // Priority order: TABLE → STREAM → AGGREGATION
-                // This ensures INSERT INTO uses the correct processor based on target type
+                // Look the target up as a TABLE, then a STREAM, then an AGGREGATION, so
+                // INSERT INTO uses the processor for the target's real kind
                 if let Some(table) = eventflux_app_context.get_eventflux_context().get_table(&insert_action.target_id) {
                     let insert_processor = Arc::new(Mutex::new(
                         crate::core::query::output::InsertIntoTableProcessor::new(
@@ -1526,13 +1528,12 @@ impl QueryParser {
             }
             crate::query_api::execution::query::output::output_stream::OutputStreamAction::Update(update_action) => {
                 if let Some(table) = eventflux_app_context.get_eventflux_context().get_table(&update_action.target_id) {
-                    // Get table definition to create table metadata for expression parsing
+                    // Table definition, used to build table metadata for expression parsing
                     let table_def = table_def_map
                         .get(&update_action.target_id)
                         .ok_or_else(|| format!("Table definition '{}' not found", update_action.target_id))?
                         .clone();
 
-                    // Create MetaStreamEvent for the table
                     let table_stream_def = Arc::new(
                         crate::query_api::definition::stream_definition::StreamDefinition {
                             abstract_definition: table_def.abstract_definition.clone(),
@@ -1541,39 +1542,38 @@ impl QueryParser {
                     );
                     let table_meta = MetaStreamEvent::new_for_single_input(table_stream_def);
 
-                    // Create mutation context with both stream and table metadata
+                    // Mutation context with both stream and table metadata. The source stream
+                    // is position 0 and the target table is position 1.
                     let mut mutation_table_meta_map = expr_parser_context.table_meta_map.clone();
                     let table_meta_arc = Arc::new(table_meta);
                     mutation_table_meta_map.insert(update_action.target_id.clone(), Arc::clone(&table_meta_arc));
                     let mut mutation_stream_positions = expr_parser_context.stream_positions.clone();
                     mutation_stream_positions.insert(update_action.target_id.clone(), 1);
 
-                    // Register target alias if present (e.g., "s" in "UPDATE stockTable AS s")
+                    // Target alias, if any, such as "s" in "UPDATE stockTable AS s"
                     if let Some(ref target_alias) = update_action.target_alias {
                         mutation_table_meta_map.insert(target_alias.clone(), Arc::clone(&table_meta_arc));
                         mutation_stream_positions.insert(target_alias.clone(), 1);
                     }
 
-                    // Clone stream_meta_map for mutation context, replacing original name with alias if present
                     let mut mutation_stream_meta_map = HashMap::new();
 
-                    // Register source stream - use alias if present, otherwise use original name
-                    // When aliased, standard SQL requires using the alias, so we replace rather than add
+                    // Register the source stream under its alias if it has one, otherwise
+                    // under its name. Standard SQL requires the alias once one is given, so
+                    // the alias replaces the name rather than adding to it. Only the first
+                    // entry of stream_meta_map is used, so this assumes a single source.
                     if let Some((original_name, source_meta)) = expr_parser_context.stream_meta_map.iter().next() {
                         if let Some(ref source_alias) = update_action.source_alias {
-                            // Use alias instead of original name to avoid duplicate entries
                             mutation_stream_meta_map.insert(source_alias.clone(), Arc::clone(source_meta));
                             mutation_stream_positions.insert(source_alias.clone(), 0);
                         } else {
-                            // No alias - use original name
                             mutation_stream_meta_map.insert(original_name.clone(), Arc::clone(source_meta));
                         }
                     }
 
-                    // For UPDATE mutations, default unqualified columns to the target table
-                    // This matches standard SQL semantics where unqualified columns in UPDATE
-                    // statements refer to the target table (e.g., SET price = newPrice means
-                    // SET stockTable.price = updateStream.newPrice)
+                    // Unqualified columns default to the target table, as in standard SQL
+                    // UPDATE. For example SET price = newPrice means
+                    // SET stockTable.price = updateStream.newPrice.
                     let mutation_ctx = ExpressionParserContext {
                         eventflux_app_context: Arc::clone(eventflux_app_context),
                         eventflux_query_context: Arc::clone(&eventflux_query_context),
@@ -1588,11 +1588,12 @@ impl QueryParser {
                         is_mutation_context: true,
                     };
 
-                    // Parse condition expression for stream-triggered update
+                    // Condition that picks the rows each stream event updates
                     let condition_executor = parse_expression(&update_action.on_update_expression, &mutation_ctx)
                         .map_err(|e| format!("Failed to parse UPDATE condition: {}", e))?;
 
-                    // Parse SET clause value expressions and compute column indices
+                    // SET value expressions and their table column indexes. Empty when there
+                    // is no SET clause.
                     let (set_value_executors, set_column_indices): (Vec<Box<dyn crate::core::executor::expression_executor::ExpressionExecutor>>, Vec<usize>) =
                         if let Some(ref update_set) = update_action.update_set_clause {
                             let mut executors = Vec::new();
@@ -1603,7 +1604,6 @@ impl QueryParser {
                                     .map_err(|e| format!("Failed to parse SET value: {}", e))?;
                                 executors.push(exec);
 
-                                // Look up column index by name
                                 let col_name = set_attr.table_column.get_attribute_name();
                                 if let Some(col_idx) = table_attrs.iter().position(|a| a.get_name() == col_name) {
                                     indices.push(col_idx);
@@ -1639,13 +1639,12 @@ impl QueryParser {
             }
             crate::query_api::execution::query::output::output_stream::OutputStreamAction::Delete(delete_action) => {
                 if let Some(table) = eventflux_app_context.get_eventflux_context().get_table(&delete_action.target_id) {
-                    // Get table definition to create table metadata for expression parsing
+                    // Table definition, used to build table metadata for expression parsing
                     let table_def = table_def_map
                         .get(&delete_action.target_id)
                         .ok_or_else(|| format!("Table definition '{}' not found", delete_action.target_id))?
                         .clone();
 
-                    // Create MetaStreamEvent for the table
                     let table_stream_def = Arc::new(
                         crate::query_api::definition::stream_definition::StreamDefinition {
                             abstract_definition: table_def.abstract_definition.clone(),
@@ -1654,38 +1653,37 @@ impl QueryParser {
                     );
                     let table_meta = MetaStreamEvent::new_for_single_input(table_stream_def);
 
-                    // Create mutation context with both stream and table metadata
+                    // Mutation context with both stream and table metadata. The source stream
+                    // is position 0 and the target table is position 1.
                     let mut mutation_table_meta_map = expr_parser_context.table_meta_map.clone();
                     let table_meta_arc = Arc::new(table_meta);
                     mutation_table_meta_map.insert(delete_action.target_id.clone(), Arc::clone(&table_meta_arc));
                     let mut mutation_stream_positions = expr_parser_context.stream_positions.clone();
                     mutation_stream_positions.insert(delete_action.target_id.clone(), 1);
 
-                    // Register target alias if present (e.g., "s" in "DELETE FROM stockTable AS s")
+                    // Target alias, if any, such as "s" in "DELETE FROM stockTable AS s"
                     if let Some(ref target_alias) = delete_action.target_alias {
                         mutation_table_meta_map.insert(target_alias.clone(), Arc::clone(&table_meta_arc));
                         mutation_stream_positions.insert(target_alias.clone(), 1);
                     }
 
-                    // Clone stream_meta_map for mutation context, replacing original name with alias if present
                     let mut mutation_stream_meta_map = HashMap::new();
 
-                    // Register source stream - use alias if present, otherwise use original name
-                    // When aliased, standard SQL requires using the alias, so we replace rather than add
+                    // Register the source stream under its alias if it has one, otherwise
+                    // under its name. Standard SQL requires the alias once one is given, so
+                    // the alias replaces the name rather than adding to it. Only the first
+                    // entry of stream_meta_map is used, so this assumes a single source.
                     if let Some((original_name, source_meta)) = expr_parser_context.stream_meta_map.iter().next() {
                         if let Some(ref source_alias) = delete_action.source_alias {
-                            // Use alias instead of original name to avoid duplicate entries
                             mutation_stream_meta_map.insert(source_alias.clone(), Arc::clone(source_meta));
                             mutation_stream_positions.insert(source_alias.clone(), 0);
                         } else {
-                            // No alias - use original name
                             mutation_stream_meta_map.insert(original_name.clone(), Arc::clone(source_meta));
                         }
                     }
 
-                    // For DELETE mutations, default unqualified columns to the target table
-                    // This matches standard SQL semantics where unqualified columns in DELETE
-                    // statements refer to the target table
+                    // Unqualified columns default to the target table, as in standard SQL
+                    // DELETE
                     let mutation_ctx = ExpressionParserContext {
                         eventflux_app_context: Arc::clone(eventflux_app_context),
                         eventflux_query_context: Arc::clone(&eventflux_query_context),
@@ -1700,7 +1698,7 @@ impl QueryParser {
                         is_mutation_context: true,
                     };
 
-                    // Parse condition expression for stream-triggered delete
+                    // Condition that picks the rows each stream event deletes
                     let condition_executor = parse_expression(&delete_action.on_delete_expression, &mutation_ctx)
                         .map_err(|e| format!("Failed to parse DELETE condition: {}", e))?;
 
@@ -1722,13 +1720,12 @@ impl QueryParser {
             }
             crate::query_api::execution::query::output::output_stream::OutputStreamAction::UpdateOrInsert(upsert_action) => {
                 if let Some(table) = eventflux_app_context.get_eventflux_context().get_table(&upsert_action.target_id) {
-                    // Get table definition to create table metadata for expression parsing
+                    // Table definition, used to build table metadata for expression parsing
                     let table_def = table_def_map
                         .get(&upsert_action.target_id)
                         .ok_or_else(|| format!("Table definition '{}' not found", upsert_action.target_id))?
                         .clone();
 
-                    // Create MetaStreamEvent for the table
                     let table_stream_def = Arc::new(
                         crate::query_api::definition::stream_definition::StreamDefinition {
                             abstract_definition: table_def.abstract_definition.clone(),
@@ -1737,38 +1734,37 @@ impl QueryParser {
                     );
                     let table_meta = MetaStreamEvent::new_for_single_input(table_stream_def);
 
-                    // Create mutation context with both stream and table metadata
+                    // Mutation context with both stream and table metadata. The source stream
+                    // is position 0 and the target table is position 1.
                     let mut mutation_table_meta_map = expr_parser_context.table_meta_map.clone();
                     let table_meta_arc = Arc::new(table_meta);
                     mutation_table_meta_map.insert(upsert_action.target_id.clone(), Arc::clone(&table_meta_arc));
                     let mut mutation_stream_positions = expr_parser_context.stream_positions.clone();
                     mutation_stream_positions.insert(upsert_action.target_id.clone(), 1);
 
-                    // Register target alias if present (future support for "UPSERT INTO table AS t")
+                    // Target alias, if any. Kept for a future "UPSERT INTO table AS t".
                     if let Some(ref target_alias) = upsert_action.target_alias {
                         mutation_table_meta_map.insert(target_alias.clone(), Arc::clone(&table_meta_arc));
                         mutation_stream_positions.insert(target_alias.clone(), 1);
                     }
 
-                    // Clone stream_meta_map for mutation context, replacing original name with alias if present
                     let mut mutation_stream_meta_map = HashMap::new();
 
-                    // Register source stream - use alias if present, otherwise use original name
-                    // When aliased, standard SQL requires using the alias, so we replace rather than add
+                    // Register the source stream under its alias if it has one, otherwise
+                    // under its name. Standard SQL requires the alias once one is given, so
+                    // the alias replaces the name rather than adding to it. Only the first
+                    // entry of stream_meta_map is used, so this assumes a single source.
                     if let Some((original_name, source_meta)) = expr_parser_context.stream_meta_map.iter().next() {
                         if let Some(ref source_alias) = upsert_action.source_alias {
-                            // Use alias instead of original name to avoid duplicate entries
                             mutation_stream_meta_map.insert(source_alias.clone(), Arc::clone(source_meta));
                             mutation_stream_positions.insert(source_alias.clone(), 0);
                         } else {
-                            // No alias - use original name
                             mutation_stream_meta_map.insert(original_name.clone(), Arc::clone(source_meta));
                         }
                     }
 
-                    // For UPSERT mutations, default unqualified columns to the target table
-                    // This matches standard SQL semantics where unqualified columns in UPSERT
-                    // statements refer to the target table
+                    // Unqualified columns default to the target table, as in standard SQL
+                    // UPSERT
                     let mutation_ctx = ExpressionParserContext {
                         eventflux_app_context: Arc::clone(eventflux_app_context),
                         eventflux_query_context: Arc::clone(&eventflux_query_context),
@@ -1783,11 +1779,12 @@ impl QueryParser {
                         is_mutation_context: true,
                     };
 
-                    // Parse ON condition expression for upsert
+                    // ON condition that decides between update and insert
                     let condition_executor = parse_expression(&upsert_action.on_update_expression, &mutation_ctx)
                         .map_err(|e| format!("Failed to parse UPSERT ON condition: {}", e))?;
 
-                    // Parse SET clause value expressions and compute column indices (if partial update specified)
+                    // SET value expressions and their table column indexes, for a partial
+                    // update. Empty when there is no SET clause.
                     let (set_value_executors, set_column_indices): (Vec<Box<dyn crate::core::executor::expression_executor::ExpressionExecutor>>, Vec<usize>) =
                         if let Some(ref update_set) = upsert_action.update_set_clause {
                             let mut executors = Vec::new();
@@ -1798,7 +1795,6 @@ impl QueryParser {
                                     .map_err(|e| format!("Failed to parse SET value: {}", e))?;
                                 executors.push(exec);
 
-                                // Look up column index by name
                                 let col_name = set_attr.table_column.get_attribute_name();
                                 if let Some(col_idx) = table_attrs.iter().position(|a| a.get_name() == col_name) {
                                     indices.push(col_idx);
@@ -1835,8 +1831,8 @@ impl QueryParser {
             _ => return Err(format!("Query '{query_name}': Only INSERT INTO, UPDATE, DELETE, UPSERT outputs supported for now.")),
         }
 
-        // For N-element patterns, connect the terminal's output to the processor chain head
-        // This bridges the PostStateProcessor chain to the Processor chain
+        // For N element patterns, the terminal feeds the processor chain head. This is the
+        // link from the PostStateProcessor chain to the Processor chain.
         if let Some(ref terminal) = n_element_terminal {
             if let Some(ref head) = processor_chain_head {
                 terminal
@@ -1846,7 +1842,7 @@ impl QueryParser {
             }
         }
 
-        // 7. Create QueryRuntime
+        // 7. QueryRuntime
         let mut query_runtime = QueryRuntime::new_with_context(
             query_name.clone(),
             Arc::new(api_query.clone()),
@@ -1854,9 +1850,9 @@ impl QueryParser {
         );
         query_runtime.processor_chain_head = processor_chain_head;
 
-        // 8. Register the entry processor with the input stream junction if applicable
-        // NOTE: For N-element patterns, skip this - the terminal bridges to the processor chain
-        // NOTE: For logical patterns, skip this - they subscribe their processors directly to junctions
+        // 8. Subscribe the chain head to the default source junction.
+        // Skipped for N element patterns, where the terminal feeds the chain, and for logical
+        // patterns, which subscribe their own processors to the junctions.
         if n_element_terminal.is_none() && !is_logical_pattern {
             if let Some(head_proc_arc) = &query_runtime.processor_chain_head {
                 if let Some(junction) = stream_junction_map.get(&expr_parser_context.default_source)

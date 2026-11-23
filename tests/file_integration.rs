@@ -20,8 +20,8 @@
 //! Requires building with the `file` feature:
 //! `cargo test --features file --test file_integration`
 //!
-//! Fully self-hosting: every test works against temp files — nothing is
-//! `#[ignore]`d and no external service is needed.
+//! The tests host themselves. Every test uses temp files, so nothing is
+//! `#[ignore]`d and no outside service is needed.
 
 #![cfg(feature = "file")]
 
@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 fn source_props(path: &Path) -> HashMap<String, String> {
     let mut props = HashMap::new();
     props.insert("file.path".to_string(), path.display().to_string());
-    // Fast tests: tight polling
+    // Poll every 20 ms so the tests stay fast
     props.insert("file.poll.interval.ms".to_string(), "20".to_string());
     props
 }
@@ -72,7 +72,7 @@ fn started_source(props: &HashMap<String, String>) -> (FileSource, CollectingCal
 }
 
 // ============================================================================
-// Source: replay-then-follow (the default contract)
+// Source. Replay the file, then follow it (the default behaviour)
 // ============================================================================
 
 #[test]
@@ -90,8 +90,8 @@ fn test_source_delivers_existing_content_from_beginning() {
 
 #[test]
 fn test_source_eof_then_external_append_is_delivered() {
-    // The review scenario: existing content is consumed, EOF is not
-    // completion — another application appends and the line must arrive
+    // The case raised in review. Existing content is read, and reaching EOF does
+    // not mean done. When another application appends, the new lines must arrive.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("in.jsonl");
     fs::write(&path, "{\"n\":1}\n").unwrap();
@@ -99,7 +99,7 @@ fn test_source_eof_then_external_append_is_delivered() {
     let (mut source, callback) = started_source(&source_props(&path));
     assert_eq!(callback.wait_for(1, Duration::from_secs(10)).len(), 1);
 
-    // "Another application" appends after EOF was reached
+    // Stand in for another application appending after EOF was reached
     append(&path, "{\"n\":2}\n{\"n\":3}\n");
 
     let payloads = callback.wait_for(3, Duration::from_secs(10));
@@ -184,7 +184,7 @@ fn test_source_holds_partial_line_until_terminated() {
 }
 
 // ============================================================================
-// Source: rotation / truncation / missing-file (tail -F contract)
+// Source. Rotation, truncation and missing files (the tail -F behaviour)
 // ============================================================================
 
 #[test]
@@ -196,7 +196,7 @@ fn test_source_reopens_after_truncation() {
     let (mut source, callback) = started_source(&source_props(&path));
     assert_eq!(callback.wait_for(1, Duration::from_secs(10)).len(), 1);
 
-    // Truncate-and-rewrite (logrotate copytruncate style)
+    // Truncate and rewrite, like logrotate copytruncate
     fs::write(&path, "after\n").unwrap();
 
     let payloads = callback.wait_for(2, Duration::from_secs(10));
@@ -214,7 +214,7 @@ fn test_source_reopens_after_rename_rotation() {
     let (mut source, callback) = started_source(&source_props(&path));
     assert_eq!(callback.wait_for(1, Duration::from_secs(10)).len(), 1);
 
-    // Classic rotation: rename away, create fresh at the same path
+    // Classic rotation. Rename the file away, then create a new one at the same path.
     fs::rename(&path, dir.path().join("in.log.1")).unwrap();
     fs::write(&path, "in-new-file\n").unwrap();
 
@@ -229,20 +229,20 @@ fn test_source_reopens_after_rename_rotation() {
 
 #[test]
 fn test_source_delivers_rotated_file_tail() {
-    // Lines appended to the old file just before rotation must be salvaged
-    // through the still-open handle (the tail -F contract), not lost
+    // Lines appended to the old file just before rotation must still be read
+    // through the handle that is still open, as tail -F does, not lost
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("in.log");
     fs::write(&path, "one\n").unwrap();
 
     let mut props = source_props(&path);
-    // Wide poll gap so the append+rename below lands between polls
+    // A wide 300 ms poll gap so the append and rename below land between polls
     props.insert("file.poll.interval.ms".to_string(), "300".to_string());
 
     let (mut source, callback) = started_source(&props);
     assert_eq!(callback.wait_for(1, Duration::from_secs(10)).len(), 1);
 
-    // Within one poll window: tail grows, then the file is rotated away
+    // Within one poll window the tail grows, then the file is rotated away
     append(&path, "two\n");
     fs::rename(&path, dir.path().join("in.log.1")).unwrap();
     fs::write(&path, "three\n").unwrap();
@@ -259,11 +259,11 @@ fn test_source_delivers_rotated_file_tail() {
 
 #[test]
 fn test_source_drops_oversized_line_and_resyncs() {
-    // A delimiter-less blob past the safety cap must be dropped (no OOM)
-    // and reading must resync on the next real line
+    // A blob with no line break that is over the safety limit must be dropped, so
+    // memory does not run out, and reading must pick up again at the next real line
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("in.log");
-    let mut blob = vec![b'x'; 9 * 1024 * 1024]; // > 8 MiB cap, no newline
+    let mut blob = vec![b'x'; 9 * 1024 * 1024]; // over the 8 MiB limit, no newline
     blob.push(b'\n');
     blob.extend_from_slice(b"ok\n");
     fs::write(&path, &blob).unwrap();
@@ -284,7 +284,7 @@ fn test_source_awaits_missing_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("late.jsonl");
 
-    // File does not exist yet — the source must wait, not error
+    // The file does not exist yet. The source must wait, not fail.
     let (mut source, callback) = started_source(&source_props(&path));
     std::thread::sleep(Duration::from_millis(100));
     fs::write(&path, "{\"late\":true}\n").unwrap();
@@ -357,7 +357,7 @@ fn test_sink_flush_per_event_is_immediately_readable() {
     sink.start();
     sink.publish(b"{\"n\":1}").unwrap();
 
-    // Default policy flushes every event — visible before stop()
+    // The default policy flushes every event, so it is visible before stop()
     assert_eq!(fs::read_to_string(&path).unwrap(), "{\"n\":1}\n");
     sink.stop();
 }
@@ -421,9 +421,9 @@ fn test_sink_time_rotation() {
 
 #[test]
 fn test_sink_same_second_zstd_rolls_do_not_overwrite() {
-    // Two rolls inside one second resolve to the same timestamp; the
-    // collision check must see the compressed name of the first roll, or
-    // the second roll silently destroys it
+    // Two rolls within one second get the same timestamp. The name clash check
+    // must see the compressed name of the first roll, or the second roll quietly
+    // overwrites it.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.log");
 
@@ -433,7 +433,7 @@ fn test_sink_same_second_zstd_rolls_do_not_overwrite() {
     let sink = FileSink::from_properties(&props).unwrap();
     sink.start();
 
-    sink.publish(b"first-roll").unwrap(); // rolls + compresses
+    sink.publish(b"first-roll").unwrap(); // rolls and compresses
     sink.publish(b"second-roll").unwrap(); // rolls again, same second
     sink.stop();
 
@@ -454,8 +454,8 @@ fn test_sink_same_second_zstd_rolls_do_not_overwrite() {
 
 #[test]
 fn test_sink_truncate_mode_reopen_does_not_wipe() {
-    // file.append=false truncates ONLY at start(); a recovery/late reopen
-    // (publish after stop) must append, not wipe the data already written
+    // file.append=false truncates ONLY in start(). A later reopen, for recovery or
+    // a publish after stop, must append and not wipe the data already written.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.jsonl");
 
@@ -473,8 +473,8 @@ fn test_sink_truncate_mode_reopen_does_not_wipe() {
         "the reopen must not reapply startup truncation"
     );
 
-    // A real (re)start DOES apply the startup contract — deterministically,
-    // even though the stray publish above already reopened the file
+    // A real start or restart DOES truncate, every time, even though the stray
+    // publish above already reopened the file
     sink.start();
     sink.publish(b"after-restart").unwrap();
     sink.stop();
@@ -496,7 +496,7 @@ fn test_sink_zstd_compressed_roll_decodes_to_content() {
     let sink = FileSink::from_properties(&props).unwrap();
     sink.start();
 
-    sink.publish(b"0123456789").unwrap(); // rolls + compresses
+    sink.publish(b"0123456789").unwrap(); // rolls and compresses
     sink.publish(b"next").unwrap();
     sink.stop();
 
@@ -516,7 +516,7 @@ fn test_sink_zstd_compressed_roll_decodes_to_content() {
 }
 
 // ============================================================================
-// Round trip: file sink → file source (self-hosting analogue of HTTP's)
+// Round trip, file sink → file source, the file version of the HTTP round trip
 // ============================================================================
 
 #[test]
@@ -547,10 +547,10 @@ fn test_sink_to_source_round_trip() {
 }
 
 // ============================================================================
-// E2E: SQL app — replay a JSONL file, filter, write JSONL out
+// End to end SQL app. Replay a JSONL file, filter, write JSONL out
 // ============================================================================
 
-/// Poll until `path` holds at least `min_lines` lines (or a 10s deadline)
+/// Polls until `path` holds at least `min_lines` lines or 10 s have passed.
 fn await_jsonl_lines(path: &Path, min_lines: usize) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -612,7 +612,7 @@ async fn test_e2e_sql_file_to_file() {
         .expect("runtime");
     runtime.start().expect("start");
 
-    // Wait until both passing events are durably in the output file
+    // Wait until both events that pass the filter are written to the output file
     await_jsonl_lines(&output, 2);
     runtime.shutdown();
 
@@ -625,13 +625,13 @@ async fn test_e2e_sql_file_to_file() {
 }
 
 // ============================================================================
-// E2E: SQL app — JSON fields map by name, not position (#201)
+// End to end SQL app. JSON fields map by name, not position (#201)
 // ============================================================================
 
-/// Regression test for https://github.com/eventflux-io/eventflux/issues/201:
-/// the stream schema declares (price, symbol, volume) while the JSON lines
-/// carry keys in a different order (symbol, price, volume). The mapper must
-/// match fields by name — previously it mapped positionally, producing
+/// Regression test for https://github.com/eventflux-io/eventflux/issues/201.
+/// The stream schema declares (price, symbol, volume) while the JSON lines
+/// carry the keys in a different order (symbol, price, volume). The mapper must
+/// match fields by name. It used to map them by position, which gave
 /// {"price":"AAPL","symbol":185.5,...}.
 #[tokio::test]
 async fn test_e2e_sql_json_fields_map_by_name_not_position() {
@@ -688,8 +688,8 @@ async fn test_e2e_sql_json_fields_map_by_name_not_position() {
     assert_eq!(lines[1]["volume"], 800);
 }
 
-/// Case-insensitive name matching (documented behavior): JSON keys with
-/// different casing still map to the right stream fields.
+/// Name matching ignores case, as documented. JSON keys in a different case
+/// still map to the right stream fields.
 #[tokio::test]
 async fn test_e2e_sql_json_fields_map_case_insensitive() {
     use eventflux::core::eventflux_manager::EventFluxManager;
@@ -781,7 +781,7 @@ async fn test_e2e_sql_json_source_duplicate_field_names_fail_at_creation() {
 }
 
 // ============================================================================
-// E2E: SQL app — DLQ error strategy (#207)
+// End to end SQL app. DLQ error strategy (#207)
 // ============================================================================
 
 /// Columns every DLQ stream must declare, exactly
@@ -823,7 +823,7 @@ fn write_orders_with_malformed_record(input: &Path) {
     .unwrap();
 }
 
-/// Assert `dlq_rows` holds exactly the dead-lettered malformed record
+/// Asserts that `dlq_rows` holds exactly the one malformed record sent to the DLQ.
 fn assert_single_dlq_row_for_malformed_record(dlq_rows: &[serde_json::Value]) {
     assert_eq!(
         dlq_rows.len(),
@@ -854,9 +854,9 @@ fn assert_single_dlq_row_for_malformed_record(dlq_rows: &[serde_json::Value]) {
     );
 }
 
-/// Regression test for https://github.com/eventflux-io/eventflux/issues/207:
-/// a record the mapper rejects must land in the DLQ stream (here a file
-/// sink) instead of being logged and dropped, while valid records flow on.
+/// Regression test for https://github.com/eventflux-io/eventflux/issues/207.
+/// A record the mapper rejects must land in the DLQ stream, here a file sink,
+/// instead of being logged and dropped, while valid records carry on.
 #[tokio::test]
 async fn test_e2e_sql_dlq_receives_malformed_record() {
     use eventflux::core::eventflux_manager::EventFluxManager;
@@ -904,8 +904,8 @@ async fn test_e2e_sql_dlq_receives_malformed_record() {
     assert_single_dlq_row_for_malformed_record(&read_jsonl(&dlq));
 }
 
-/// The DLQ stream may be a plain internal stream processed by queries
-/// (documented "internal DLQ" pattern): dead-lettered events flow through it.
+/// The DLQ stream may be a plain internal stream that queries read from. This is
+/// the documented "internal DLQ" pattern. Events sent to the DLQ flow through it.
 #[tokio::test]
 async fn test_e2e_sql_dlq_internal_stream_feeds_queries() {
     use eventflux::core::eventflux_manager::EventFluxManager;
@@ -942,9 +942,9 @@ async fn test_e2e_sql_dlq_internal_stream_feeds_queries() {
     assert_single_dlq_row_for_malformed_record(&read_jsonl(&dlq_out));
 }
 
-/// strategy=retry with a DLQ stream: once retries are exhausted (here at
-/// once, since a mapping error is not retriable) the record is dead-lettered
-/// instead of dropped (documented "retry, then DLQ" pattern).
+/// strategy=retry with a DLQ stream. Once retries run out the record goes to the
+/// DLQ instead of being dropped. Here that happens at once, because a mapping
+/// error cannot be retried. This is the documented "retry, then DLQ" pattern.
 #[tokio::test]
 async fn test_e2e_sql_retry_then_dlq_receives_malformed_record() {
     use eventflux::core::eventflux_manager::EventFluxManager;
@@ -988,8 +988,8 @@ async fn test_e2e_sql_retry_then_dlq_receives_malformed_record() {
     assert_single_dlq_row_for_malformed_record(&read_jsonl(&dlq));
 }
 
-/// Create an app that must be rejected at creation (not at start) and
-/// return the creation error
+/// Creates an app that must be rejected at creation, not at start, and
+/// returns the creation error.
 async fn creation_error(sql: &str) -> String {
     use eventflux::core::eventflux_manager::EventFluxManager;
 
@@ -1060,8 +1060,8 @@ async fn test_e2e_sql_dlq_reordered_fields_fail_at_creation() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("orders.jsonl");
 
-    // The right fields, wrong order: DLQ values are positional and would
-    // land under the wrong attributes
+    // The right fields in the wrong order. DLQ values go by position, so they
+    // would land under the wrong attributes.
     let sql = format!(
         r#"{source}
         CREATE STREAM OrderErrors (streamName STRING, originalEvent STRING,

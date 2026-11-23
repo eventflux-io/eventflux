@@ -17,35 +17,35 @@
 
 // src/core/distributed/runtime_mode.rs
 
-//! Runtime Mode Selection and Management
+//! Runtime mode selection.
 //!
-//! This module implements the runtime mode selection mechanism that allows
-//! EventFlux to operate in single-node or distributed mode without code changes.
-//! Mode selection happens at initialization based on configuration.
+//! Lets EventFlux run in single node, distributed or hybrid mode with no code
+//! changes. The mode is picked from the settings when the manager is created.
 
 use super::{DistributedConfig, DistributedError, DistributedResult, RuntimeMode};
 use std::sync::Arc;
 
-/// Runtime mode manager that handles mode-specific initialization
+/// Sets up, checks and shuts down the current runtime mode.
 #[allow(dead_code)]
 pub struct RuntimeModeManager {
-    /// Current runtime mode
     mode: RuntimeMode,
 
-    /// Configuration
     config: Arc<DistributedConfig>,
 
-    /// Mode-specific implementation
     implementation: Box<dyn RuntimeModeImpl>,
 }
 
 impl RuntimeModeManager {
-    /// Create a new runtime mode manager based on configuration
+    /// Create a manager for the mode in `config`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` if single node or hybrid mode has cluster
+    /// settings, or if distributed mode is missing cluster or node settings.
     pub fn new(config: DistributedConfig) -> DistributedResult<Self> {
         let mode = config.mode;
         let config = Arc::new(config);
 
-        // Select implementation based on mode
         let implementation: Box<dyn RuntimeModeImpl> = match mode {
             RuntimeMode::SingleNode => Box::new(SingleNodeMode::new(Arc::clone(&config))?),
             RuntimeMode::Distributed => Box::new(DistributedMode::new(Arc::clone(&config))?),
@@ -59,75 +59,71 @@ impl RuntimeModeManager {
         })
     }
 
-    /// Get the current runtime mode
     pub fn mode(&self) -> RuntimeMode {
         self.mode
     }
 
-    /// Check if running in distributed mode
+    /// Returns true in distributed or hybrid mode.
     pub fn is_distributed(&self) -> bool {
         matches!(self.mode, RuntimeMode::Distributed | RuntimeMode::Hybrid)
     }
 
-    /// Initialize the runtime mode
     pub async fn initialize(&mut self) -> DistributedResult<()> {
         self.implementation.initialize().await
     }
 
-    /// Shutdown the runtime mode
     pub async fn shutdown(&mut self) -> DistributedResult<()> {
         self.implementation.shutdown().await
     }
 
-    /// Get mode-specific capabilities
+    /// Returns what the current mode says it supports.
     pub fn capabilities(&self) -> ModeCapabilities {
         self.implementation.capabilities()
     }
 
-    /// Perform mode-specific health check
     pub async fn health_check(&self) -> DistributedResult<HealthStatus> {
         self.implementation.health_check().await
     }
 }
 
-/// Trait for runtime mode implementations
+/// One runtime mode behind [`RuntimeModeManager`].
 #[async_trait::async_trait]
 pub trait RuntimeModeImpl: Send + Sync {
-    /// Initialize the mode
     async fn initialize(&mut self) -> DistributedResult<()>;
 
-    /// Shutdown the mode
     async fn shutdown(&mut self) -> DistributedResult<()>;
 
-    /// Get mode capabilities
+    /// Returns what this mode says it supports.
     fn capabilities(&self) -> ModeCapabilities;
 
-    /// Health check
     async fn health_check(&self) -> DistributedResult<HealthStatus>;
 }
 
-/// Capabilities provided by a runtime mode
+/// What a runtime mode says it supports.
+///
+/// The default describes one node with no distributed features and no exactly
+/// once processing.
 #[derive(Debug, Clone)]
 pub struct ModeCapabilities {
-    /// Supports distributed queries
+    /// Queries can run across nodes.
     pub distributed_queries: bool,
 
-    /// Supports distributed state
+    /// State can be shared across nodes.
     pub distributed_state: bool,
 
-    /// Supports failover
+    /// Work can move to another node when one fails.
     pub failover: bool,
 
-    /// Supports dynamic scaling
+    /// Nodes can be added or removed while running.
     pub dynamic_scaling: bool,
 
-    /// Maximum nodes supported
+    /// Most nodes supported. `None` means no limit.
     pub max_nodes: Option<usize>,
 
-    /// Supports exactly-once processing
+    /// Each event is processed exactly once.
     pub exactly_once: bool,
 
-    /// Supports distributed transactions
+    /// Transactions can span nodes.
     pub distributed_transactions: bool,
 }
 
@@ -145,33 +141,28 @@ impl Default for ModeCapabilities {
     }
 }
 
-/// Health status of the runtime mode
+/// Health of the runtime mode.
 #[derive(Debug, Clone)]
 pub struct HealthStatus {
-    /// Overall health
+    /// Overall health.
     pub healthy: bool,
 
-    /// Mode-specific status
     pub mode_status: ModeStatus,
 
-    /// Component health
     pub components: Vec<ComponentHealth>,
 
-    /// Warnings
     pub warnings: Vec<String>,
 }
 
-/// Mode-specific status information
+/// Status details for each mode.
 #[derive(Debug, Clone)]
 pub enum ModeStatus {
-    /// Single-node status
     SingleNode {
         uptime: std::time::Duration,
         memory_usage: usize,
         cpu_usage: f64,
     },
 
-    /// Distributed mode status
     Distributed {
         cluster_size: usize,
         healthy_nodes: usize,
@@ -179,30 +170,27 @@ pub enum ModeStatus {
         partition_status: String,
     },
 
-    /// Hybrid mode status
     Hybrid {
         local_status: Box<ModeStatus>,
         remote_status: Box<ModeStatus>,
     },
 }
 
-/// Component health information
+/// Health of one component.
 #[derive(Debug, Clone)]
 pub struct ComponentHealth {
-    /// Component name
     pub name: String,
 
-    /// Is healthy
     pub healthy: bool,
 
-    /// Status message
+    /// Short status text.
     pub status: String,
 
-    /// Last check time
+    /// When the component was last checked.
     pub last_check: std::time::Instant,
 }
 
-/// Single-node mode implementation
+/// Single node mode.
 #[allow(dead_code)]
 struct SingleNodeMode {
     config: Arc<DistributedConfig>,
@@ -210,8 +198,10 @@ struct SingleNodeMode {
 }
 
 impl SingleNodeMode {
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` if cluster settings are present.
     fn new(config: Arc<DistributedConfig>) -> DistributedResult<Self> {
-        // Validate single-node configuration
         if config.cluster.is_some() {
             return Err(DistributedError::ConfigurationError {
                 message: "Cluster configuration not allowed in single-node mode".to_string(),
@@ -228,7 +218,7 @@ impl SingleNodeMode {
 #[async_trait::async_trait]
 impl RuntimeModeImpl for SingleNodeMode {
     async fn initialize(&mut self) -> DistributedResult<()> {
-        // Single-node has minimal initialization
+        // Nothing to set up beyond logging.
         println!("Initializing single-node mode");
         Ok(())
     }
@@ -250,13 +240,14 @@ impl RuntimeModeImpl for SingleNodeMode {
         }
     }
 
+    /// Always reports healthy with fixed component statuses. Only uptime is real.
     async fn health_check(&self) -> DistributedResult<HealthStatus> {
         Ok(HealthStatus {
             healthy: true,
             mode_status: ModeStatus::SingleNode {
                 uptime: self.start_time.elapsed(),
-                memory_usage: 0, // Would get from system
-                cpu_usage: 0.0,  // Would get from system
+                memory_usage: 0, // not measured yet
+                cpu_usage: 0.0,  // not measured yet
             },
             components: vec![
                 ComponentHealth {
@@ -277,17 +268,22 @@ impl RuntimeModeImpl for SingleNodeMode {
     }
 }
 
-/// Distributed mode implementation
+/// Distributed mode.
+///
+/// No coordinator is created and the node does not join a cluster yet.
 #[allow(dead_code)]
 struct DistributedMode {
     config: Arc<DistributedConfig>,
+    /// Always `None` for now.
     coordinator: Option<Arc<dyn super::coordinator::DistributedCoordinator>>,
     start_time: std::time::Instant,
 }
 
 impl DistributedMode {
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` if cluster or node settings are missing.
     fn new(config: Arc<DistributedConfig>) -> DistributedResult<Self> {
-        // Validate distributed configuration
         if config.cluster.is_none() {
             return Err(DistributedError::ConfigurationError {
                 message: "Cluster configuration required for distributed mode".to_string(),
@@ -313,11 +309,9 @@ impl RuntimeModeImpl for DistributedMode {
     async fn initialize(&mut self) -> DistributedResult<()> {
         println!("Initializing distributed mode");
 
-        // Initialize coordinator based on configuration
-        // This would create the actual coordinator implementation
+        // TODO: create the coordinator from the settings and join the cluster.
         // self.coordinator = Some(create_coordinator(&self.config)?);
 
-        // Join cluster
         // self.coordinator.join_cluster().await?;
 
         Ok(())
@@ -326,7 +320,7 @@ impl RuntimeModeImpl for DistributedMode {
     async fn shutdown(&mut self) -> DistributedResult<()> {
         println!("Shutting down distributed mode");
 
-        // Leave cluster gracefully
+        // TODO: leave the cluster cleanly once a coordinator exists.
         // if let Some(coordinator) = &self.coordinator {
         //     coordinator.leave_cluster().await?;
         // }
@@ -346,6 +340,9 @@ impl RuntimeModeImpl for DistributedMode {
         }
     }
 
+    /// Always reports healthy with fixed component statuses. Cluster size comes
+    /// from `expected_size` in the settings, every node counts as healthy, and this
+    /// node is reported as leader.
     async fn health_check(&self) -> DistributedResult<HealthStatus> {
         let cluster_size = self
             .config
@@ -358,7 +355,7 @@ impl RuntimeModeImpl for DistributedMode {
             healthy: true,
             mode_status: ModeStatus::Distributed {
                 cluster_size,
-                healthy_nodes: cluster_size, // Would get from coordinator
+                healthy_nodes: cluster_size, // not read from a coordinator yet
                 leader_node: self.config.node.as_ref().map(|n| n.node_id.clone()),
                 partition_status: "Healthy".to_string(),
             },
@@ -387,15 +384,22 @@ impl RuntimeModeImpl for DistributedMode {
     }
 }
 
-/// Hybrid mode implementation (local processing with distributed state)
+/// Hybrid mode, meant for local processing with shared state.
+///
+/// Wraps single node mode. No shared state backend is created yet.
 #[allow(dead_code)]
 struct HybridMode {
     config: Arc<DistributedConfig>,
     single_node: SingleNodeMode,
+    /// Always `None` for now.
     distributed_state: Option<Arc<dyn super::state_backend::StateBackend>>,
 }
 
 impl HybridMode {
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` if cluster settings are present, because the
+    /// inner single node mode rejects them.
     fn new(config: Arc<DistributedConfig>) -> DistributedResult<Self> {
         let single_node = SingleNodeMode::new(Arc::clone(&config))?;
 
@@ -412,10 +416,9 @@ impl RuntimeModeImpl for HybridMode {
     async fn initialize(&mut self) -> DistributedResult<()> {
         println!("Initializing hybrid mode");
 
-        // Initialize single-node processing
         self.single_node.initialize().await?;
 
-        // Initialize distributed state backend
+        // TODO: create the shared state backend from the settings.
         // self.distributed_state = Some(create_state_backend(&self.config)?);
 
         Ok(())
@@ -424,12 +427,11 @@ impl RuntimeModeImpl for HybridMode {
     async fn shutdown(&mut self) -> DistributedResult<()> {
         println!("Shutting down hybrid mode");
 
-        // Shutdown state backend
+        // TODO: shut down the shared state backend once it exists.
         // if let Some(state) = &self.distributed_state {
         //     state.shutdown().await?;
         // }
 
-        // Shutdown single-node
         self.single_node.shutdown().await?;
 
         Ok(())
@@ -447,6 +449,8 @@ impl RuntimeModeImpl for HybridMode {
         }
     }
 
+    /// Reports the local single node health. The remote status is a zeroed
+    /// placeholder.
     async fn health_check(&self) -> DistributedResult<HealthStatus> {
         let single_health = self.single_node.health_check().await?;
 
@@ -499,11 +503,10 @@ mod tests {
             ..Default::default()
         };
 
-        // Should fail without cluster config
+        // Fails without cluster settings.
         let result = RuntimeModeManager::new(config.clone());
         assert!(result.is_err());
 
-        // Add required configuration
         config.cluster = Some(ClusterConfig::default());
         config.node = Some(NodeConfig {
             node_id: "test-node".to_string(),

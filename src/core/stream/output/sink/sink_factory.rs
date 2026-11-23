@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-//! Sink Factory Implementation
+//! Sink Factory
 //!
-//! Provides automatic sink creation from configuration
+//! Builds sinks from the application config.
 
 use crate::core::config::{types::application_config::SinkConfig, ProcessorConfigReader};
 use crate::core::stream::output::mapper::PassthroughMapper;
@@ -26,7 +26,7 @@ use crate::core::stream::output::stream_callback::StreamCallback;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// Registry for sink factories
+/// Registry of sink factories, keyed by sink type
 pub struct SinkFactoryRegistry {
     factories: HashMap<String, Box<dyn SinkFactoryTrait>>,
 }
@@ -38,26 +38,28 @@ impl Default for SinkFactoryRegistry {
 }
 
 impl SinkFactoryRegistry {
-    /// Create a new sink factory registry with default factories
+    /// Creates a registry with the built in factories, which today is only "log"
     pub fn new() -> Self {
         let mut registry = Self {
             factories: HashMap::new(),
         };
 
-        // Register default sink factories. Connector sinks (http, kafka,
-        // rabbitmq, websocket) are registered on EventFluxContext via
-        // register_default_extensions(), not through this registry.
+        // Connector sinks (file, http, kafka, rabbitmq, websocket) are
+        // registered on EventFluxContext by register_default_extensions(), not
+        // through this registry.
         registry.register("log", Box::new(LogSinkFactory));
 
         registry
     }
 
-    /// Register a new sink factory
+    /// Registers a sink factory. Replaces any factory already registered for
+    /// that type.
     pub fn register(&mut self, sink_type: &str, factory: Box<dyn SinkFactoryTrait>) {
         self.factories.insert(sink_type.to_string(), factory);
     }
 
-    /// Create a sink from configuration
+    /// Builds a sink from config. Fails for an unknown sink type or when the
+    /// factory fails.
     pub fn create_sink(
         &self,
         sink_config: &SinkConfig,
@@ -73,9 +75,9 @@ impl SinkFactoryRegistry {
     }
 }
 
-/// Trait for sink factories
+/// Builds a sink for one sink type
 pub trait SinkFactoryTrait: Send + Sync {
-    /// Create a sink from configuration
+    /// Builds a sink from config and returns it as a stream callback
     fn create_from_config(
         &self,
         sink_config: &SinkConfig,
@@ -94,10 +96,9 @@ impl SinkFactoryTrait for LogSinkFactory {
         config_reader: Option<Arc<ProcessorConfigReader>>,
         sink_name: &str,
     ) -> Result<Box<dyn StreamCallback>, String> {
-        // Create LogSink with configuration support
         let log_sink = LogSink::new_with_config(config_reader, sink_name.to_string());
 
-        // Wrap in adapter with PassthroughMapper for binary serialization
+        // Wrap it with the PassthroughMapper, which encodes events as binary
         let adapter = SinkCallbackAdapter {
             sink: Arc::new(Mutex::new(Box::new(log_sink))),
             mapper: Arc::new(Mutex::new(Box::new(PassthroughMapper::new()))),
@@ -107,13 +108,14 @@ impl SinkFactoryTrait for LogSinkFactory {
     }
 }
 
-/// Helper function to create a sink from a stream configuration
+/// Builds a sink from a stream config. `stream_name` is used as the sink name.
 pub fn create_sink_from_stream_config(
     stream_name: &str,
     sink_config: &SinkConfig,
     config_reader: Option<Arc<ProcessorConfigReader>>,
 ) -> Result<Box<dyn StreamCallback>, String> {
-    // Use the global registry (in a real implementation, this would be passed in)
+    // Builds a new default registry on each call, so only built in sink types
+    // work here. Passing a registry in would allow custom ones.
     let registry = SinkFactoryRegistry::new();
     registry.create_sink(sink_config, config_reader, stream_name)
 }

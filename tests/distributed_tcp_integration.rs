@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Integration test for TCP transport in distributed mode
+// Integration tests for the TCP transport used in distributed mode
 
 use eventflux::core::distributed::transport::{
     Message, MessageType, TcpTransport, Transport, TransportFactory,
@@ -246,7 +246,7 @@ async fn test_tcp_transport_with_heartbeat() {
     };
     let addr = listener.local_addr().await.unwrap();
 
-    // Server task - accepts connection and responds to heartbeats
+    // Server task. Accepts one connection and answers 3 heartbeats.
     let transport_server = transport.clone();
     let server_task = tokio::spawn(async move {
         let connection = transport_server.accept(&listener).await.unwrap();
@@ -290,7 +290,7 @@ async fn test_tcp_transport_with_heartbeat() {
             response.headers.get("server_time").unwrap()
         );
 
-        // Small delay between heartbeats
+        // 100 ms between heartbeats
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
@@ -303,11 +303,10 @@ async fn test_tcp_transport_with_heartbeat() {
 
 #[test]
 fn test_transport_factory_creation() {
-    // Test creating TCP transport via factory
     let transport = TransportFactory::create("tcp");
     assert!(transport.is_ok());
 
-    // Test creating with custom config
+    // The custom config path only has to build without panicking
     let config = eventflux::core::distributed::transport::TcpTransportConfig {
         connection_timeout_ms: 10000,
         read_timeout_ms: 60000,
@@ -320,5 +319,4 @@ fn test_transport_factory_creation() {
         max_message_size: 50 * 1024 * 1024, // 50MB
     };
     let _transport = TransportFactory::create_tcp_with_config(config);
-    // Transport created successfully
 }

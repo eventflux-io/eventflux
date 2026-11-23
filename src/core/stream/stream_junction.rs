@@ -15,10 +15,11 @@
  * limitations under the License.
  */
 
-//! Optimized StreamJunction with Crossbeam-Based High-Performance Pipeline
+//! StreamJunction on a Fast Crossbeam Pipeline
 //!
-//! This implementation replaces the original crossbeam_channel-based StreamJunction
-//! with our high-performance crossbeam pipeline for >1M events/second throughput.
+//! A StreamJunction routes the events of one stream to its subscribers. It
+//! runs on the crossbeam based event pipeline, built for more than 1M events
+//! per second, which replaced the older crossbeam_channel version.
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
@@ -42,33 +43,34 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-/// DEFAULT drain budget for `EventFluxAppRuntime::shutdown()` (mirrors
-/// `SOURCE_STOP_GRACE_PERIOD`). The effective value can be overridden via the
-/// `EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS` env var (capped at
-/// [`MAX_DRAIN_TIMEOUT`]), and a timed-out shutdown waits up to
-/// [`HALT_SETTLE_TIMEOUT`] more — orchestrator kill grace periods should
-/// budget for drain + settle, not this constant alone.
+/// DEFAULT time `EventFluxAppRuntime::shutdown()` gives junctions to empty
+/// out. Same as `SOURCE_STOP_GRACE_PERIOD`. The env var
+/// `EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS` can override it (capped at
+/// [`MAX_DRAIN_TIMEOUT`]), and a shutdown that times out waits up to
+/// [`HALT_SETTLE_TIMEOUT`] more. So an orchestrator's kill grace period should
+/// cover drain plus settle time, not this constant alone.
 pub const JUNCTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Poll interval for quiescence checks during the shutdown drain.
+/// How often the shutdown drain checks whether the junctions have gone idle.
 pub const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-/// Upper bound on any drain/wait timeout. Caps user-supplied values so
-/// `Instant::now() + timeout` cannot overflow (which panics).
+/// Upper limit on any drain or wait timeout. Caps values from the user so
+/// `Instant::now() + timeout` cannot overflow, which would panic.
 pub const MAX_DRAIN_TIMEOUT: Duration = Duration::from_secs(86_400);
 
-/// How long `restart_processing` waits for the previous consumer set to exit
-/// before clearing the sticky shutdown flags.
+/// How long `restart_processing` waits for the old consumer threads to exit
+/// before it clears the shutdown flags, which otherwise stay set.
 const CONSUMER_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long a timed-out shutdown waits, after halting, for live consumers and
-/// in-flight dispatches to finish before counting abandons and persisting.
+/// How long a shutdown that timed out waits, after halting, for live consumers
+/// and dispatches still running to finish, before it counts abandoned events
+/// and saves state.
 pub const HALT_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Poll until every handle is settled (no live consumers, no in-flight
-/// dispatches) or the deadline passes. Used after `halt_processing` so the
-/// abandoned-event counts are exact and nothing mutates state concurrently
-/// with the shutdown snapshot. Returns whether all handles settled.
+/// Checks every 1 ms until every handle is settled (no live consumers and no
+/// dispatches running) or the deadline passes. Used after `halt_processing`, so
+/// the abandoned event counts are exact and nothing changes state while the
+/// shutdown snapshot is taken. Returns true when all handles settled.
 pub fn poll_settled(handles: &[JunctionDrainHandle], deadline: Instant) -> bool {
     loop {
         if handles.iter().all(|h| h.settled()) {
@@ -81,25 +83,27 @@ pub fn poll_settled(handles: &[JunctionDrainHandle], deadline: Instant) -> bool 
     }
 }
 
-/// Poll until every handle is quiescent for two consecutive passes with an
-/// unchanged total published count, or the deadline passes. Returns whether
-/// global quiescence was reached.
+/// Checks until every handle is idle for two passes in a row with the same
+/// total published count, or the deadline passes. Returns true when all
+/// junctions went idle.
 ///
-/// PRECONDITION: every publisher must be stopped or covered — a source thread
-/// (joined), a consumer (its withheld consumed-increment covers it), or a
-/// tracked dispatch (its in-flight guard covers it). An uncovered publisher
-/// parked between its queue push and its published-count increment is
-/// invisible to this poll and can produce false quiescence.
+/// PRECONDITION: every publisher must be stopped or covered. That means a
+/// source thread that was joined, a consumer (covered because it holds back its
+/// consumed count until done), or a tracked dispatch (covered by its in flight
+/// guard). A publisher that is not covered and is paused between pushing to the
+/// queue and raising its published count is invisible here, and can make the
+/// system look idle when it is not.
 ///
-/// Why two passes with unchanged ΣP suffice (given the precondition): each
-/// all-quiescent pass reads every junction's consumed counter (Acquire) before
-/// its in-flight count, so hidden progress at one cascade hop surfaces as
-/// either a non-zero in-flight, a consumed/published imbalance, or a changed
-/// ΣP on the next pass — any of which resets the streak. Work hidden at
-/// cascade depth d can take up to ~d passes to surface, which costs liveness
-/// (deep cascades may need more passes near the deadline) but never safety.
-/// The confirming pass needs a second read, not elapsed time, so the loop only
-/// sleeps while the system is visibly still moving.
+/// Why two passes with the same total published count (ΣP) are enough, given
+/// the precondition. Each pass where all are idle reads every junction's
+/// consumed counter (Acquire) before its in flight count. So hidden work at one
+/// hop of a cascade shows up on the next pass as a non zero in flight count, a
+/// consumed and published mismatch, or a changed ΣP, and any of these resets
+/// the streak. Work hidden d hops deep can take about d passes to show up. That
+/// can cost time (deep cascades may need more passes near the deadline) but
+/// never gives a wrong answer. The confirming pass needs a second read, not
+/// time passing, so the loop only sleeps while the system is clearly still
+/// moving.
 pub fn poll_quiescent(handles: &[JunctionDrainHandle], deadline: Instant) -> bool {
     if handles.is_empty() {
         return true;
@@ -123,30 +127,30 @@ pub fn poll_quiescent(handles: &[JunctionDrainHandle], deadline: Instant) -> boo
         }
         last_total_published = Some(total_published);
         if Instant::now() >= deadline {
-            // A quiescent pass deserves its confirming re-read even at the
-            // deadline — otherwise an exhausted budget reports "timed out" for
-            // an already-idle system (e.g. the post-flush drain reusing the
-            // first drain's deadline). A few grace passes (each costs only a
-            // handful of atomic reads) also cover the final cascade event
-            // completing ON the grace pass; the cap keeps a genuinely moving
-            // system from looping past the deadline.
+            // An idle pass still gets its confirming read at the deadline.
+            // Otherwise a used up budget reports "timed out" for a system that
+            // is already idle, such as the drain after the flush, which reuses
+            // the first drain's deadline. A few extra passes (each only a
+            // handful of atomic reads) also cover the last cascade event
+            // finishing ON an extra pass. The cap of 3 keeps a system that is
+            // really still moving from looping past the deadline.
             if quiescent_streak == 0 || grace_passes >= 3 {
                 return false;
             }
             grace_passes += 1;
             continue;
         }
-        // Only skip the sleep when this pass ADVANCED the streak (the
-        // confirming re-read needs a second read, not elapsed time). A pass
-        // that merely reset the streak to 1 saw ΣP move — sleeping there
-        // keeps a cascade-heavy shutdown from hot-spinning until the deadline.
+        // Skip the sleep only when this pass RAISED the streak, since the
+        // confirming read needs a second read, not time passing. A pass that
+        // only reset the streak to 1 saw ΣP move. Sleeping there keeps a
+        // shutdown with many cascades from spinning hot until the deadline.
         if quiescent_streak <= previous_streak {
             std::thread::sleep(DRAIN_POLL_INTERVAL);
         }
     }
 }
 
-/// Error handling strategies for StreamJunction
+/// What a StreamJunction does with a failed event. Default LOG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OnErrorAction {
     #[default]
@@ -156,22 +160,22 @@ pub enum OnErrorAction {
     DROP,
 }
 
-/// High-performance event router with crossbeam-based pipeline
+/// Fast event router for one stream, built on the crossbeam pipeline
 #[allow(clippy::type_complexity)]
 pub struct StreamJunction {
-    // Core identification
+    // Identity
     pub stream_id: String,
     stream_definition: Arc<StreamDefinition>,
     eventflux_app_context: Arc<EventFluxAppContext>,
 
-    // High-performance pipeline
+    // Event pipeline
     event_pipeline: Arc<EventPipeline>,
-    _event_pool: Arc<EventPool>, // Reserved for future object pooling optimizations
+    _event_pool: Arc<EventPool>, // kept for object pooling later, not used yet
 
-    // Subscriber management
-    // OPTIMIZATION: RwLock for read-heavy subscriber access pattern
-    // - Read: Every event (millions/sec) - can be concurrent with RwLock
-    // - Write: Only on subscribe/unsubscribe (rare) - exclusive access
+    // Subscribers
+    // An RwLock suits this mostly read pattern
+    // - Read on every event (millions per second), many readers at once
+    // - Write only on subscribe and unsubscribe, which is rare
     subscribers: Arc<RwLock<Vec<Arc<Mutex<dyn Processor>>>>>,
 
     // Configuration
@@ -179,28 +183,29 @@ pub struct StreamJunction {
     buffer_size: usize,
     on_error_action: OnErrorAction,
 
-    // Lifecycle management
+    // Start and stop state
     started: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
 
-    // Fault handling
+    // Junction for the fault stream, if any
     fault_stream_junction: Option<Arc<Mutex<StreamJunction>>>,
 
-    // Performance tracking
+    // Counters
     events_processed: Arc<CachePadded<AtomicU64>>,
     events_dropped: Arc<CachePadded<AtomicU64>>,
     processing_errors: Arc<CachePadded<AtomicU64>>,
 
-    // Executor service for async processing
+    // Thread pool for async processing
     executor_service: Arc<ExecutorService>,
 
-    // In-flight subscriber dispatches (async non-inline mode only).
-    // Consumer loops themselves are deliberately NOT tracked here — they run
-    // until shutdown, so counting them would make quiescence unreachable.
+    // Subscriber dispatches still running (async mode that does not run
+    // inline only). The consumer loops are NOT tracked here on purpose. They
+    // run until shutdown, so counting them would mean the junction never
+    // looks idle.
     dispatch_tracker: Arc<TaskTracker>,
 
-    // Live dedicated consumer threads. Lets restart_processing wait for the
-    // previous set to exit before clearing the sticky shutdown flags.
+    // Live consumer threads. Lets restart_processing wait for the old ones to
+    // exit before it clears the shutdown flags, which otherwise stay set.
     active_consumers: Arc<TaskTracker>,
 }
 
@@ -229,35 +234,43 @@ impl Debug for StreamJunction {
 }
 
 impl StreamJunction {
-    /// Create a new optimized stream junction
+    /// Creates a stream junction.
+    ///
+    /// Uses the app context's executor service, or a default one. Async mode
+    /// uses the ExponentialBackoff strategy (up to 1000 ms) when the buffer is
+    /// full, and sync mode uses Block.
     ///
     /// # Arguments
-    /// * `stream_id` - Unique identifier for this stream junction
-    /// * `stream_definition` - Schema definition for events flowing through this junction
-    /// * `eventflux_app_context` - Application context for configuration and services
-    /// * `buffer_size` - Internal buffer capacity (power of 2 recommended for async mode)
-    /// * `is_async` - **CRITICAL**: Processing mode selection
-    ///   - `false` (RECOMMENDED DEFAULT): Synchronous processing with guaranteed event ordering
-    ///   - `true`: Async processing for high throughput but potential event reordering
-    /// * `fault_stream_junction` - Optional fault handling junction
+    /// * `stream_id` - Id of this stream junction
+    /// * `stream_definition` - Schema of the events that pass through
+    /// * `eventflux_app_context` - App context for config and services
+    /// * `buffer_size` - Pipeline buffer size. A power of 2 is best for async mode.
+    /// * `is_async` - **CRITICAL**: picks the processing mode
+    ///   - `false` (RECOMMENDED DEFAULT): sync processing that keeps event order
+    ///   - `true`: async processing for high throughput, but events may be reordered
+    /// * `fault_stream_junction` - Optional junction for the fault stream
     ///
     /// # Processing Modes
     ///
-    /// **Synchronous Mode (`is_async: false`):**
-    /// - Events are processed sequentially in the exact order they arrive
-    /// - Thread-safe but blocking - each event waits for previous event to complete
-    /// - Guarantees temporal correctness and event causality
-    /// - Throughput: ~1K-10K events/sec depending on processing complexity
+    /// **Sync mode (`is_async: false`)**
+    /// - Events are processed one at a time in the exact order they arrive
+    /// - Thread safe but blocking. Each event waits for the one before it.
+    /// - Keeps time order and cause and effect between events correct
+    /// - Throughput around 1K to 10K events per second, depending on the work
     ///
-    /// **Async Mode (`is_async: true`):**
-    /// - Events are processed concurrently using lock-free pipeline
-    /// - Non-blocking, high-throughput processing with object pooling
-    /// - **⚠️ WARNING: May process events out of arrival order**
-    /// - Throughput: >100K events/sec capability
+    /// **Async mode (`is_async: true`)**
+    /// - Events are processed in parallel on the lock free pipeline
+    /// - Senders do not wait, and throughput is high, with object pooling
+    /// - **WARNING: events may be processed out of arrival order**
+    /// - Throughput can pass 100K events per second
     ///
     /// # Recommendation
-    /// Use synchronous mode unless you specifically need high throughput AND can tolerate
-    /// potential event reordering in your stream processing logic.
+    /// Use sync mode unless you really need high throughput AND your logic can
+    /// cope with events being reordered.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pipeline cannot be built.
     pub fn new(
         stream_id: String,
         stream_definition: Arc<StreamDefinition>,
@@ -289,14 +302,18 @@ impl StreamJunction {
         )
     }
 
-    /// Create a new StreamJunction with a custom backpressure strategy.
+    /// Creates a StreamJunction with a chosen strategy for a full buffer.
     ///
-    /// Use this constructor when you need control over backpressure behavior:
-    /// - `BackpressureStrategy::Drop` - Fire-and-forget, immediately drop when buffer full
-    /// - `BackpressureStrategy::Block` - Guaranteed delivery, block until space available
-    /// - `BackpressureStrategy::ExponentialBackoff` - Retry with backoff before dropping
-    /// - `BackpressureStrategy::BlockWithTimeout` - Block with timeout, then drop
-    /// - `BackpressureStrategy::CircuitBreaker` - Fail fast after threshold
+    /// Use it when you need to control what happens when the buffer is full.
+    /// - `BackpressureStrategy::Drop` - send and forget, drop at once when full
+    /// - `BackpressureStrategy::Block` - always deliver, wait until there is room
+    /// - `BackpressureStrategy::ExponentialBackoff` - retry with growing waits, then drop
+    /// - `BackpressureStrategy::BlockWithTimeout` - wait up to a timeout, then drop
+    /// - `BackpressureStrategy::CircuitBreaker` - fail at once after a threshold
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pipeline cannot be built.
     pub fn new_with_backpressure(
         stream_id: String,
         stream_definition: Arc<StreamDefinition>,
@@ -323,9 +340,10 @@ impl StreamJunction {
         )
     }
 
-    /// Test-only constructor with custom executor.
+    /// Constructor for tests that takes its own executor. Uses the same full
+    /// buffer strategy as `new`.
     ///
-    /// Not available in production builds.
+    /// Only in test builds.
     #[cfg(test)]
     pub fn new_with_executor(
         stream_id: String,
@@ -354,10 +372,12 @@ impl StreamJunction {
         )
     }
 
-    /// Internal constructor with all configuration options.
+    /// Internal constructor that takes every option. Use `new()` or
+    /// `new_with_backpressure()` outside this module.
     ///
-    /// This is a private implementation detail - use `new()` or `new_with_backpressure()`
-    /// for production code.
+    /// Async mode runs half the CPU count (at least 1) as consumer threads,
+    /// and sync mode runs 1. Batches are 64 events. Metrics are on unless the
+    /// app's metrics level is OFF. The event pool holds twice `buffer_size`.
     #[allow(clippy::too_many_arguments)]
     fn new_with_backpressure_and_executor(
         stream_id: String,
@@ -369,8 +389,6 @@ impl StreamJunction {
         backpressure_strategy: BackpressureStrategy,
         executor_service: Arc<ExecutorService>,
     ) -> Result<Self, String> {
-        // Configure pipeline based on async mode and performance requirements
-
         let pipeline_config = PipelineConfig {
             capacity: buffer_size,
             backpressure: backpressure_strategy,
@@ -419,11 +437,11 @@ impl StreamJunction {
             active_consumers: Arc::new(TaskTracker::new()),
         };
 
-        // Automatically start async consumer if in async mode
+        // Async mode starts its consumer threads right away
         if is_async {
             if let Err(e) = junction.start_async_consumer() {
-                // Stop any partially spawned consumers before the junction is
-                // dropped, or they idle forever holding the pipeline alive.
+                // Stop any consumers that did start before the junction is
+                // dropped, or they sit idle forever and keep the pipeline alive.
                 junction.halt_processing();
                 return Err(e);
             }
@@ -433,19 +451,20 @@ impl StreamJunction {
         Ok(junction)
     }
 
-    /// Get the stream definition
+    /// Returns the stream definition
     pub fn get_stream_definition(&self) -> Arc<StreamDefinition> {
         Arc::clone(&self.stream_definition)
     }
 
-    /// Create a publisher for this junction
+    /// Creates a publisher for this junction.
     ///
-    /// The publisher holds an Arc to keep the junction alive for its lifetime
+    /// The publisher holds an Arc, so the junction lives as long as it does.
     pub fn construct_publisher(junction: Arc<Mutex<StreamJunction>>) -> Publisher {
         Publisher::new(junction)
     }
 
-    /// Subscribe a processor to receive events
+    /// Adds a processor that receives events. Adding the same processor (same
+    /// Arc) twice does nothing.
     pub fn subscribe(&self, processor: Arc<Mutex<dyn Processor>>) {
         let mut subs = self.subscribers.write().expect("RwLock poisoned");
         if !subs.iter().any(|p| Arc::ptr_eq(p, &processor)) {
@@ -453,19 +472,20 @@ impl StreamJunction {
         }
     }
 
-    /// Unsubscribe a processor from receiving events
+    /// Removes a processor (matched by Arc) so it no longer gets events
     pub fn unsubscribe(&self, processor: &Arc<Mutex<dyn Processor>>) {
         let mut subs = self.subscribers.write().expect("RwLock poisoned");
         subs.retain(|p| !Arc::ptr_eq(p, processor));
     }
 
-    /// Reserve capacity for expected subscribers
+    /// Reserves room for the expected subscribers.
     ///
-    /// Pre-allocates vector capacity based on the subscriber_count hint from JunctionConfig.
-    /// This avoids reallocation overhead when subscribers are added dynamically.
+    /// Sizes the subscriber list up front from the subscriber_count hint in
+    /// JunctionConfig, so the list does not have to grow as subscribers are
+    /// added.
     ///
     /// # Arguments
-    /// * `capacity` - Expected number of subscribers to reserve space for
+    /// * `capacity` - Expected number of subscribers to make room for
     pub fn reserve_subscriber_capacity(&mut self, capacity: usize) {
         let mut subs = self.subscribers.write().expect("RwLock poisoned");
         subs.reserve(capacity);
@@ -476,25 +496,32 @@ impl StreamJunction {
         );
     }
 
-    /// Set error handling action
+    /// Sets what to do with a failed event
     pub fn set_on_error_action(&mut self, action: OnErrorAction) {
         self.on_error_action = action;
     }
 
-    /// Start processing events.
+    /// Starts processing events.
     ///
-    /// For async junctions, this is called automatically during construction;
-    /// calling it again while running is a safe no-op. It is NOT valid after
-    /// `stop_processing`/`halt_processing`: a stopped junction returns `Err` —
-    /// use [`StreamJunction::restart_processing`], which waits out the old
-    /// consumer set and clears the sticky flags.
+    /// Async junctions already start when they are built, and calling this
+    /// again while running does nothing. It is NOT valid after
+    /// `stop_processing` or `halt_processing`, where it returns `Err`. Use
+    /// [`StreamJunction::restart_processing`] instead, which waits for the old
+    /// consumer threads and clears the shutdown flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the junction is stopped, or when the async
+    /// consumer threads fail to start. In that case it halts, counts any
+    /// queued events as dropped, and a retry must go through
+    /// `restart_processing`.
     pub fn start_processing(&self) -> Result<(), String> {
         if self.shutdown.load(Ordering::Acquire) {
             // A stopped junction must go through restart_processing, which
-            // waits out the old consumer set and clears the sticky flags.
-            // Starting here would CAS `started` to true while the spawned
-            // consumers immediately observe the shutdown flag and exit —
-            // a junction that accepts events nothing ever drains.
+            // waits for the old consumers and clears the shutdown flags.
+            // Starting here would CAS `started` to true while the new
+            // consumers see the shutdown flag and exit at once. The junction
+            // would then take events that nothing ever reads.
             return Err(format!(
                 "[{}] junction is stopped; use restart_processing()",
                 self.stream_id
@@ -505,20 +532,20 @@ impl StreamJunction {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
         {
-            return Ok(()); // Already started
+            return Ok(()); // already started
         }
 
         if self.is_async {
             if let Err(e) = self.start_async_consumer() {
-                // Stop the partially spawned set (they exit at their next
-                // iteration) and un-latch `started`. A retry must go through
-                // restart_processing, which waits for them and clears flags.
+                // Stop the consumers that did start (they exit at their next
+                // round) and reset `started`. A retry must go through
+                // restart_processing, which waits for them and clears the flags.
                 self.halt_processing();
-                // Let the partial set finish its in-flight events so the
-                // abandon count below is exact, then keep the
-                // halted-implies-counted invariant that restart's purge relies
-                // on: anything queued here would otherwise be discarded later
-                // without ever showing up in events_dropped.
+                // Let those consumers finish the events they hold so the
+                // abandon count below is exact. This keeps the rule that a
+                // halted queue is already counted, which restart's purge
+                // relies on. Anything queued here would otherwise be thrown
+                // away later without ever showing up in events_dropped.
                 poll_settled(&[self.drain_handle()], Instant::now() + HALT_SETTLE_TIMEOUT);
                 self.abandon_pending();
                 return Err(e);
@@ -528,57 +555,61 @@ impl StreamJunction {
         Ok(())
     }
 
-    /// Stop processing events gracefully: consumers finish draining the queue,
-    /// then exit. Use `halt_processing` to stop without draining.
+    /// Stops processing cleanly. Consumers finish the queue, then exit. New
+    /// sends are rejected. Use `halt_processing` to stop without emptying the
+    /// queue.
     pub fn stop_processing(&self) {
         self.shutdown.store(true, Ordering::Release);
         self.event_pipeline.shutdown();
         self.started.store(false, Ordering::Release);
     }
 
-    /// Stop processing WITHOUT draining: consumers exit at their next
-    /// iteration, leaving queued events in place. Used on drain timeout so the
-    /// events counted by `abandon_pending` are not also delivered afterwards
-    /// (into stopped sinks, concurrently with the shutdown snapshot).
+    /// Stops processing WITHOUT emptying the queue. Consumers exit at their
+    /// next round and queued events stay where they are. Used when the drain
+    /// times out, so the events counted by `abandon_pending` are not also
+    /// delivered afterwards, into stopped sinks, while the shutdown snapshot
+    /// is taken.
     ///
     /// CALLER CONTRACT: after halting, wait for [`JunctionDrainHandle::settled`]
-    /// (see [`poll_settled`]) and then call [`StreamJunction::abandon_pending`]
-    /// so the frozen backlog is counted into `events_dropped`.
-    /// `restart_processing` purges a halted queue on the assumption that this
-    /// accounting already happened; halting without abandoning makes events
-    /// vanish from the metrics at the next restart.
+    /// (see [`poll_settled`]), then call [`StreamJunction::abandon_pending`] so
+    /// the frozen queue is counted into `events_dropped`. `restart_processing`
+    /// throws away a halted queue and assumes this counting already happened.
+    /// Halting without abandoning makes those events vanish from the metrics at
+    /// the next restart.
     pub fn halt_processing(&self) {
         self.stop_processing();
         self.event_pipeline.halt();
     }
 
-    /// Undo a previous `stop_processing()`/`halt_processing()` so the junction
-    /// accepts events again. Both shutdown flags are sticky, so this must run
-    /// on every runtime restart — for sync junctions too, or `send_event`
-    /// rejects forever after the first shutdown.
+    /// Undoes an earlier `stop_processing()` or `halt_processing()` so the
+    /// junction takes events again. Both shutdown flags stay set until cleared,
+    /// so this must run on every runtime restart. That includes sync
+    /// junctions, or `send_event` rejects everything after the first shutdown.
     ///
-    /// Effects, in order: (1) bounded wait for the previous consumer set AND
-    /// its in-flight dispatches to finish; (2) **permanently discards** any
-    /// leftover queued backlog (stale events from the previous run must not
-    /// replay into the restarted topology before sinks reconnect — they were
-    /// counted into `events_dropped` when abandoned, or are counted here);
-    /// (3) clears the sticky flags; (4) spawns a fresh consumer set.
+    /// Steps, in order. (1) Wait, up to a limit, for the old consumer threads
+    /// AND their running dispatches to finish. (2) **Throw away for good** any
+    /// events left in the queue. Old events from the last run must not replay
+    /// into the restarted app before sinks reconnect. They were counted into
+    /// `events_dropped` when abandoned, or are counted here. (3) Clear the
+    /// shutdown flags. (4) Start new consumer threads.
     ///
-    /// Fails (leaving the flags sticky) if the previous run is still live
-    /// after the bounded wait: clearing the flags with a straggler alive would
-    /// revive it permanently alongside the fresh set, leaking a consumer set
-    /// per restart. With sticky flags the straggler still exits once it
-    /// unblocks, and the restart can be retried.
+    /// # Errors
+    ///
+    /// Fails, leaving the flags set, if the last run is still alive after the
+    /// wait. Clearing the flags with an old thread alive would bring it back
+    /// for good next to the new ones, leaking a set of consumers on each
+    /// restart. With the flags still set, the old thread exits once it
+    /// unblocks, and the restart can be tried again. Also returns any error
+    /// from `start_processing`.
     pub fn restart_processing(&self) -> Result<(), String> {
         if self.shutdown.load(Ordering::Acquire) {
-            // Consumers exit promptly here (queue drained, or halted) and
-            // their dispatches are single subscriber invocations, so this
-            // normally completes in well under a millisecond. Waiting on BOTH
-            // trackers matters: a consumer set can be fully gone while its
-            // dispatched work is still queued on the executor — restarting
-            // then would interleave stale-run deliveries with the new run.
-            // One loop with one deadline keeps the error message's counts
-            // consistent with the decision to refuse.
+            // Consumers exit quickly here (queue empty, or halted), and each of
+            // their dispatches is a single subscriber call, so this normally
+            // takes well under a millisecond. Waiting on BOTH trackers matters.
+            // The consumers can be gone while work they dispatched is still
+            // queued on the executor, and restarting then would mix old run
+            // deliveries into the new run. One loop with one deadline keeps
+            // the counts in the error message in line with the refusal.
             let settle_deadline = Instant::now() + CONSUMER_EXIT_TIMEOUT;
             loop {
                 let consumers = self.active_consumers.in_flight();
@@ -594,12 +625,12 @@ impl StreamJunction {
                 }
                 std::thread::sleep(DRAIN_POLL_INTERVAL);
             }
-            // Any leftover queue is stale-run work and must not replay into
-            // the restarted topology (sinks reconnect only after junctions —
-            // replaying would repeat the #136 lost-event window). Halted
-            // backlogs were already counted into events_dropped by
-            // abandon_pending; a graceful stop's leftover (a producer that
-            // raced the flags) was not — count it before discarding.
+            // Anything left in the queue is old run work and must not replay
+            // into the restarted app. Sinks reconnect only after junctions, so
+            // replaying would bring back the #136 lost event window. A halted
+            // queue was already counted into events_dropped by abandon_pending.
+            // What a clean stop left behind (a producer that raced the flags)
+            // was not, so count it before throwing it away.
             if !self.event_pipeline.is_halted() {
                 self.abandon_pending();
             }
@@ -614,14 +645,15 @@ impl StreamJunction {
             self.shutdown.store(false, Ordering::Release);
             self.event_pipeline.clear_shutdown();
         }
-        // start_processing's CAS re-admits a fresh consumer set for async
-        // junctions; on a first start the constructor-spawned set is still
-        // running and the CAS makes this a no-op.
+        // For async junctions, the CAS in start_processing lets a new set of
+        // consumers start. On a first start the set the constructor started is
+        // still running, and the CAS makes this do nothing.
         self.start_processing()
     }
 
-    /// Lock-free handle for polling this junction's drain state without
-    /// holding the junction's Mutex (shutdown polls many junctions at 1ms).
+    /// Returns a handle that reads this junction's drain state without a lock,
+    /// so callers do not hold the junction's Mutex. Shutdown checks many
+    /// junctions every 1 ms.
     pub fn drain_handle(&self) -> JunctionDrainHandle {
         JunctionDrainHandle {
             is_async: self.is_async,
@@ -631,36 +663,37 @@ impl StreamJunction {
         }
     }
 
-    /// Best-effort estimate of undrained work: `(queued, in_flight)` where
-    /// `queued` counts events still in the pipeline and `in_flight` counts
-    /// subscriber dispatches handed to the executor but not yet finished.
+    /// Best effort estimate of the work not yet done, as `(queued, in_flight)`.
+    /// `queued` counts events still in the pipeline. `in_flight` counts
+    /// subscriber dispatches given to the executor but not finished.
     pub fn pending_drain_estimate(&self) -> (u64, u64) {
         self.drain_handle().pending_drain_estimate()
     }
 
-    /// Poll until this junction is quiescent for two consecutive passes with
-    /// an unchanged published count, or `timeout` elapses (capped at one day).
-    /// Returns whether quiescence was reached. Only meaningful once producers
-    /// have stopped; for multi-junction cascades use [`poll_quiescent`] over
-    /// all the junctions' handles — a single junction's stability cannot see
-    /// dispatches still in flight toward it from other junctions.
+    /// Checks until this junction is idle for two passes in a row with the
+    /// same published count, or `timeout` passes (capped at one day). Returns
+    /// true when it went idle. Only makes sense once producers have stopped.
+    /// For cascades across several junctions, use [`poll_quiescent`] over all
+    /// their handles, since one junction cannot see dispatches still heading
+    /// to it from other junctions.
     pub fn wait_quiescent(&self, timeout: Duration) -> bool {
         let timeout = timeout.min(MAX_DRAIN_TIMEOUT);
         poll_quiescent(&[self.drain_handle()], Instant::now() + timeout)
     }
 
-    /// Give up on undrained events: count still-queued events as dropped and
-    /// warn. Returns the number of abandoned (queued) events.
+    /// Gives up on events not yet processed. Counts the events still queued as
+    /// dropped and logs a warning. Returns how many queued events were
+    /// abandoned. Always 0 for sync junctions.
     ///
-    /// For an exact count, call only after `halt_processing` + settling
-    /// ([`poll_settled`]): until consumers settle, an event they already
-    /// popped (not yet counted consumed) appears in `queued` — it would be
-    /// counted dropped AND still delivered. In-flight dispatches are logged
-    /// but never counted dropped: their events were already handed toward
-    /// subscribers. Not idempotent — recounting the same frozen backlog
-    /// double-counts; the drain protocol guarantees one call per backlog
-    /// (halted junctions read as quiescent, so a repeated shutdown skips the
-    /// abandon branch).
+    /// For an exact count, call only after `halt_processing` and settling
+    /// ([`poll_settled`]). Until consumers settle, an event they already took
+    /// (but have not counted as consumed) still shows in `queued`, so it would
+    /// be counted dropped AND still delivered. Running dispatches are logged
+    /// but never counted dropped, since their events were already handed on to
+    /// subscribers. NOT safe to repeat, since counting the same frozen queue
+    /// again counts it twice. The drain steps make sure it runs once per queue,
+    /// since a halted junction reads as idle and a second shutdown skips the
+    /// abandon step.
     pub fn abandon_pending(&self) -> u64 {
         if !self.is_async {
             return 0;
@@ -678,16 +711,23 @@ impl StreamJunction {
         queued
     }
 
-    /// Count events lost on an internal cascade edge (query output → this
-    /// junction) whose send was rejected by the shutdown gate. The sending
-    /// processor swallows the error — without this the events would vanish
-    /// from the delivered/dropped ledger. External senders are NOT counted
-    /// here: they receive the `Err` and still own their events.
+    /// Counts events lost on an internal cascade link (a query output feeding
+    /// this junction) because the send was rejected during shutdown. The
+    /// sending processor drops the error, so without this the events would
+    /// vanish from the delivered and dropped totals. Outside senders are NOT
+    /// counted here, since they get the `Err` and still own their events.
     pub(crate) fn record_cascade_drop(&self, count: u64) {
         self.events_dropped.fetch_add(count, Ordering::Relaxed);
     }
 
-    /// Send a single event through the pipeline
+    /// Sends one event. Async junctions queue it in the pipeline. Sync
+    /// junctions hand it to the subscribers right away on this thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ShutdownRejected` during shutdown. In async mode returns
+    /// `SendError` when the pipeline is full, timed out, shutting down, or
+    /// fails. Full and timed out events are counted as dropped.
     pub fn send_event(&self, event: Event) -> Result<(), EventFluxError> {
         if self.shutdown.load(Ordering::Acquire) {
             self.handle_backpressure_error("StreamJunction is shutting down");
@@ -697,10 +737,9 @@ impl StreamJunction {
         let stream_event = Self::event_to_stream_event(event);
 
         if self.is_async {
-            // Use high-performance pipeline for async processing
             match self.event_pipeline.publish(stream_event) {
                 PipelineResult::Success { .. } => {
-                    // Don't count here - let the consumer count processed events
+                    // Not counted here. The consumer counts processed events.
                     Ok(())
                 }
                 PipelineResult::Full => {
@@ -725,13 +764,14 @@ impl StreamJunction {
                 }
             }
         } else {
-            // Synchronous processing - direct dispatch to subscribers
+            // Sync mode hands the event straight to the subscribers
             self.dispatch_to_subscribers_sync(Box::new(stream_event))
         }
     }
 
-    /// Send a ComplexEvent chain through the pipeline
-    /// Handles both StreamEvent and StateEvent, converting them to Events
+    /// Sends a chain of complex events. Turns StreamEvents and StateEvents into
+    /// Events first (see `complex_event_chain_to_events`), then calls
+    /// `send_events`. `None` does nothing.
     pub fn send_complex_event_chunk(
         &self,
         complex_event_chunk: Option<Box<dyn ComplexEvent>>,
@@ -744,20 +784,23 @@ impl StreamJunction {
         self.send_events(events)
     }
 
-    /// Convert a ComplexEvent chain to Vec<Event>
-    /// Handles StreamEvent (single event) and StateEvent (pattern/join with multiple events)
+    /// Turns a chain of complex events into a Vec<Event>.
+    ///
+    /// Handles StreamEvent (one event) and StateEvent (a pattern or join that
+    /// holds several events). Other event types are skipped. Each event keeps
+    /// its expired flag.
     fn complex_event_chain_to_events(&self, chunk_head: Box<dyn ComplexEvent>) -> Vec<Event> {
         let mut events = Vec::new();
         let mut current_opt = Some(chunk_head);
 
         while let Some(mut current) = current_opt {
-            // Try StreamEvent first (most common case)
+            // StreamEvent first, the most common case
             if let Some(stream_event) = current
                 .as_any()
                 .downcast_ref::<crate::core::event::stream::StreamEvent>()
             {
-                // Use output_data if available (processed/projected data),
-                // otherwise fall back to before_window_data (raw input data)
+                // Use output_data when present (processed or projected data),
+                // else before_window_data (raw input data)
                 let data = stream_event
                     .output_data
                     .as_ref()
@@ -765,20 +808,19 @@ impl StreamJunction {
                     .clone();
 
                 let mut event = Event::new_with_data(stream_event.timestamp, data);
-                // Preserve expired status from ComplexEventType
                 event.is_expired = matches!(
                     stream_event.event_type,
                     crate::core::event::complex_event::ComplexEventType::Expired
                 );
                 events.push(event);
             }
-            // Try StateEvent (used in patterns, joins, sequences)
+            // Then StateEvent, used in patterns, joins, and sequences
             else if let Some(state_event) = current
                 .as_any()
                 .downcast_ref::<crate::core::event::state::StateEvent>()
             {
-                // StateEvent contains multiple StreamEvents
-                // Use output_data from StateEvent if available (this is the joined/pattern-matched result)
+                // A StateEvent holds several StreamEvents. Use its own
+                // output_data when present, which is the joined or matched result.
                 if let Some(ref output_data) = state_event.output_data {
                     let mut event =
                         Event::new_with_data(state_event.timestamp, output_data.clone());
@@ -788,21 +830,21 @@ impl StreamJunction {
                     );
                     events.push(event);
                 } else {
-                    // Fallback: extract data from individual StreamEvents in the StateEvent
-                    // CRITICAL: Each slot can contain a linked list of StreamEvents via `next` pointers
-                    // (e.g., from count/sequence quantifiers like e1[2] or e1{2,5})
-                    // We must traverse the entire chain, not just the head
+                    // Otherwise emit one event per StreamEvent inside the
+                    // StateEvent, all with the StateEvent's expired flag.
+                    // CRITICAL: each slot can hold a linked list of StreamEvents
+                    // through `next`, for example from count or sequence
+                    // quantifiers like e1[2] or e1{2,5}. Walk the whole list,
+                    // not just its head.
                     for stream_event_arc in state_event.stream_events.iter().flatten() {
-                        // Traverse the chain of StreamEvents at this position
-                        // stream_event_arc is &Arc<StreamEvent>, *stream_event_arc is Arc<StreamEvent> (via Deref)
-                        // which derefs to StreamEvent, so &*stream_event_arc gives &StreamEvent
+                        // stream_event_arc is &Arc<StreamEvent>. Deref
+                        // coercion turns it into &StreamEvent here.
                         let stream_event_ref: &crate::core::event::stream::StreamEvent =
                             stream_event_arc;
                         let mut current_in_chain: Option<&dyn crate::core::event::ComplexEvent> =
                             Some(stream_event_ref);
 
                         while let Some(current) = current_in_chain {
-                            // Try to downcast to StreamEvent
                             if let Some(se) = current
                                 .as_any()
                                 .downcast_ref::<crate::core::event::stream::StreamEvent>(
@@ -819,10 +861,9 @@ impl StreamJunction {
                                 );
                                 events.push(event);
 
-                                // Move to next in chain
                                 current_in_chain = se.next.as_ref().map(|b| b.as_ref());
                             } else {
-                                // Not a StreamEvent, stop traversing this chain
+                                // Not a StreamEvent, so stop walking this list
                                 break;
                             }
                         }
@@ -836,18 +877,19 @@ impl StreamJunction {
         events
     }
 
-    /// Send multiple events through the pipeline
+    /// Sends several events. Async junctions queue them as one batch. An empty
+    /// list does nothing.
     pub fn send_events(&self, events: Vec<Event>) -> Result<(), EventFluxError> {
         if events.is_empty() {
             return Ok(());
         }
 
         if self.shutdown.load(Ordering::Acquire) {
-            // "rejected", not "dropped": the caller receives Err and these
-            // events are never counted into events_dropped (that metric is
-            // reserved for silently lost events). Fire-and-forget callers
-            // that swallow the Err must count it via record_cascade_drop —
-            // the ShutdownRejected variant carries the count for that.
+            // "Rejected", not "dropped". The caller gets Err, and these events
+            // are never counted into events_dropped, which is only for events
+            // lost silently. Callers that send and forget and drop the Err must
+            // count them with record_cascade_drop. ShutdownRejected carries the
+            // count for that.
             self.handle_backpressure_error(&format!(
                 "StreamJunction is shutting down ({} events rejected)",
                 events.len()
@@ -858,7 +900,7 @@ impl StreamJunction {
         }
 
         if self.is_async {
-            // Use batch publishing for better throughput
+            // Publish as one batch for better throughput
             let event_count = events.len();
             let stream_events: Vec<_> = events
                 .into_iter()
@@ -878,13 +920,14 @@ impl StreamJunction {
                     PipelineResult::Full | PipelineResult::Timeout => dropped += 1,
                     PipelineResult::Error(_) => errors += 1,
                     PipelineResult::Shutdown => {
-                        // CRITICAL: Count the shutdown event itself as dropped
-                        // This event returned Shutdown, so it was rejected
+                        // CRITICAL: count this event as dropped, since it got
+                        // Shutdown and was rejected
                         dropped += 1;
 
-                        // CRITICAL: Count remaining events as dropped
-                        // When shutdown occurs mid-batch, remaining events are rejected by pipeline
-                        // Without this, callers think the entire batch succeeded if successful > 0
+                        // CRITICAL: count the rest of the batch as dropped too.
+                        // When shutdown starts in the middle of a batch, the
+                        // pipeline rejects the rest. Without this, callers would
+                        // think the whole batch worked when successful > 0.
                         let remaining = event_count - processed_count;
                         dropped += remaining;
                         break;
@@ -892,14 +935,14 @@ impl StreamJunction {
                 }
             }
 
-            // Don't count processed events here - let the consumer count them
+            // Processed events are not counted here. The consumer counts them.
             self.events_dropped
                 .fetch_add(dropped as u64, Ordering::Relaxed);
             self.processing_errors
                 .fetch_add(errors as u64, Ordering::Relaxed);
 
-            // CRITICAL: Consistent with send_event() behavior - return error if ANY event failed
-            // This allows upstream retry logic to work correctly
+            // CRITICAL: like send_event(), return an error if ANY event failed,
+            // so retry logic further up works correctly
             if dropped > 0 || errors > 0 {
                 Err(EventFluxError::SendError {
                     message: format!(
@@ -918,13 +961,15 @@ impl StreamJunction {
                 })
             }
         } else {
-            // Synchronous batch processing
+            // Sync mode hands the whole batch to subscribers as one chain
             let event_chain = self.create_event_chain(events);
             self.dispatch_to_subscribers_sync(event_chain)
         }
     }
 
-    /// Start async consumer for pipeline processing
+    /// Starts the consumer threads that read the pipeline, one per configured
+    /// consumer. Returns an error if a thread cannot be started. Threads that
+    /// did start keep running.
     fn start_async_consumer(&self) -> Result<(), String> {
         let subscribers = Arc::clone(&self.subscribers);
         let pipeline = Arc::clone(&self.event_pipeline);
@@ -934,17 +979,17 @@ impl StreamJunction {
         let dispatch_tracker = Arc::clone(&self.dispatch_tracker);
         let stream_id = self.stream_id.clone();
 
-        // Consumers are long-running loops, so they run on dedicated threads,
-        // NOT on the shared executor: a work-stealing pool thread occupied by
-        // a consumer never executes queued subscriber dispatches, and with
-        // several async junctions the consumers alone could saturate the pool
-        // and starve every dispatch in the app.
+        // Consumers are loops that run for a long time, so each gets its own
+        // thread, NOT a thread from the shared executor. A pool thread busy
+        // with a consumer never runs queued subscriber dispatches, and with
+        // several async junctions the consumers alone could fill the pool and
+        // starve every dispatch in the app.
         let pool_size = executor_service.pool_size();
         let consumer_threads = self.event_pipeline.config().consumer_threads;
 
-        // With a single-threaded executor, dispatching per event through the
-        // pool would serialize everything anyway — run subscribers inline on
-        // the consumer threads instead.
+        // With a one thread executor, dispatching each event through the pool
+        // would run everything one at a time anyway. So run subscribers on the
+        // consumer threads instead.
         let use_inline_processing = pool_size == 1;
         if use_inline_processing {
             log::info!(
@@ -953,8 +998,8 @@ impl StreamJunction {
             );
         }
 
-        // Start N dedicated consumer threads that process events from the pipeline
-        // This enables parallel consumption for higher throughput
+        // Start N consumer threads that read events from the pipeline in
+        // parallel, for higher throughput
         for consumer_id in 0..consumer_threads {
             let subscribers_clone = Arc::clone(&subscribers);
             let pipeline_clone = Arc::clone(&pipeline);
@@ -966,19 +1011,18 @@ impl StreamJunction {
             let consumer_guard = self.active_consumers.register();
 
             let consumer_body = move || {
-                // Dropped (even on panic) when the loop exits, so
+                // Dropped when the loop exits, even on panic, so
                 // restart_processing can tell when this consumer set is gone.
                 let _consumer_guard = consumer_guard;
-                // Clone variables needed after the consumer closure
+                // Copies needed after the handler closure takes the originals
                 let stream_id_for_completion = stream_id_clone.clone();
                 let error_counter_for_completion = Arc::clone(&error_counter_clone);
 
-                // Use the pipeline's consume method with a proper handler
                 let result = pipeline_clone.consume(move |event, _sequence| {
                     let boxed_event = Box::new(event);
 
-                    // Get current subscribers - read lock allows concurrent access
-                    // OPTIMIZATION: Multiple consumer threads can read simultaneously
+                    // Take a copy of the subscriber list. The read lock lets
+                    // several consumer threads read at once.
                     let subs_guard = match subscribers_clone.read() {
                         Ok(guard) => guard,
                         Err(_) => {
@@ -994,19 +1038,17 @@ impl StreamJunction {
                         return Ok(());
                     }
 
-                    // Process for each subscriber
+                    // Each subscriber gets its own copy of the event
                     for subscriber in subs.iter() {
-                        // Clone event for each subscriber
                         let event_for_sub = Some(crate::core::event::complex_event::clone_event_chain(
                             boxed_event.as_ref(),
                         ));
 
                         if use_inline_processing {
-                            // pool_size == 1: dispatching per event through a
-                            // single-thread pool would serialize everything
-                            // anyway, so run the subscriber on this consumer
-                            // thread. Quiescence is still covered: inline work
-                            // finishes before this event counts as consumed.
+                            // pool_size == 1, so run the subscriber on this
+                            // consumer thread. The idle check still holds,
+                            // since this work finishes before the event counts
+                            // as consumed.
                             match subscriber.lock() {
                                 Ok(processor) => {
                                     processor.process(event_for_sub);
@@ -1017,14 +1059,15 @@ impl StreamJunction {
                                 }
                             }
                         } else {
-                            // Multi-threaded: dispatch asynchronously to avoid blocking consumer
+                            // Several pool threads, so hand the work to the pool
+                            // and do not block the consumer
                             let subscriber_clone = Arc::clone(subscriber);
                             let stream_id_clone2 = stream_id_clone.clone();
                             let executor_clone = Arc::clone(&executor_service_clone);
                             let error_counter_clone2 = Arc::clone(&error_counter_clone);
 
                             // Tracked so the shutdown drain can wait for
-                            // in-flight subscriber work (see is_quiescent()).
+                            // subscriber work still running (see is_quiescent()).
                             executor_clone.execute_tracked(&dispatch_tracker_clone, move || match subscriber_clone.lock() {
                                 Ok(processor) => {
                                     processor.process(event_for_sub);
@@ -1041,7 +1084,7 @@ impl StreamJunction {
                     Ok(())
                 });
 
-                // Handle consumer completion
+                // The consumer loop has ended, after shutdown or an error
                 match result {
                     Ok(processed_count) => {
                         log::info!(
@@ -1073,7 +1116,13 @@ impl StreamJunction {
         Ok(())
     }
 
-    /// Dispatch events directly to subscribers (synchronous mode)
+    /// Hands an event chain straight to every subscriber on this thread (sync
+    /// mode). Counts one processed event per call, even for a chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SendError` when a subscriber lock is poisoned. Subscribers
+    /// after it in the list do not get the event.
     fn dispatch_to_subscribers_sync(
         &self,
         event: Box<dyn ComplexEvent>,
@@ -1087,7 +1136,7 @@ impl StreamJunction {
             return Ok(());
         }
 
-        // Process all subscribers except the last one with cloned events
+        // Every subscriber but the last gets a copy
         for subscriber in subs.iter().take(subs.len().saturating_sub(1)) {
             let event_for_sub = Some(crate::core::event::complex_event::clone_event_chain(
                 event.as_ref(),
@@ -1106,7 +1155,7 @@ impl StreamJunction {
             }
         }
 
-        // Last subscriber gets the original event (transfer ownership)
+        // The last subscriber gets the original, which saves one copy
         if let Some(last_subscriber) = subs.last() {
             match last_subscriber.lock() {
                 Ok(processor) => {
@@ -1125,26 +1174,29 @@ impl StreamJunction {
         Ok(())
     }
 
-    /// Convert Event to StreamEvent
+    /// Turns an Event into a StreamEvent, keeping the expired flag.
     ///
-    /// CORRECTNESS NOTE: Both before_window_data and output_data must be populated.
-    /// - before_window_data: Original event data for window/aggregation processors
-    /// - output_data: Data sent downstream for joins, selects, and output processors
+    /// CORRECTNESS NOTE: both before_window_data and output_data must be set.
+    /// - before_window_data: the original data, for window and aggregation processors
+    /// - output_data: the data sent on to joins, selects, and output processors
     ///
-    /// Join processors specifically require output_data to be populated.
-    /// The clone is necessary to satisfy both use cases.
+    /// Join processors need output_data to be set. The clone is needed to
+    /// serve both.
     fn event_to_stream_event(event: Event) -> StreamEvent {
         let mut stream_event = StreamEvent::new_with_data(event.timestamp, event.data);
-        // Populate output_data for downstream processors (joins require this)
         stream_event.output_data = Some(stream_event.before_window_data.clone());
-        // Preserve expired status
         if event.is_expired {
             stream_event.event_type = crate::core::event::complex_event::ComplexEventType::Expired;
         }
         stream_event
     }
 
-    /// Create an event chain from multiple events
+    /// Links several events into one chain, in order.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `events` is empty. `send_events` returns early for an empty
+    /// list, so it never calls this with one.
     fn create_event_chain(&self, events: Vec<Event>) -> Box<dyn ComplexEvent> {
         let mut iter = events.into_iter();
         let first = match iter.next() {
@@ -1167,18 +1219,22 @@ impl StreamJunction {
         head
     }
 
-    /// Handle backpressure errors
+    /// Reports a send that failed (full pipeline or shutdown) as set by
+    /// `on_error_action`. LOG warns, DROP does nothing, STREAM sends a
+    /// (stream id, message) event to the fault stream, and STORE saves the
+    /// error in the app's error store. STREAM and STORE only warn when that
+    /// target is not set up.
     fn handle_backpressure_error(&self, message: &str) {
         match self.on_error_action {
             OnErrorAction::LOG => {
                 log::warn!("[{}] Backpressure: {}", self.stream_id, message);
             }
             OnErrorAction::DROP => {
-                // Silently drop
+                // Do nothing
             }
             OnErrorAction::STREAM => {
                 if let Some(fault_junction) = &self.fault_stream_junction {
-                    // Create an error event and send to fault stream
+                    // The error event is timestamped now. Its send result is ignored.
                     let error_event = Event::new_with_data(
                         chrono::Utc::now().timestamp_millis(),
                         vec![
@@ -1218,7 +1274,7 @@ impl StreamJunction {
         }
     }
 
-    /// Get comprehensive performance metrics
+    /// Returns a snapshot of the junction and pipeline metrics
     pub fn get_performance_metrics(&self) -> JunctionPerformanceMetrics {
         let pipeline_metrics = self.event_pipeline.metrics().snapshot();
 
@@ -1235,19 +1291,22 @@ impl StreamJunction {
         }
     }
 
-    /// Check if the junction is healthy
+    /// Returns true when the junction is not shut down, the pipeline metrics
+    /// look healthy, and at least one event was processed. A new junction
+    /// that has seen no events is not healthy.
     pub fn is_healthy(&self) -> bool {
         !self.shutdown.load(Ordering::Acquire)
             && self.event_pipeline.metrics().snapshot().is_healthy()
             && self.events_processed.load(Ordering::Relaxed) > 0
     }
 
-    /// Get total events processed
+    /// Returns the number of events processed. Always `Some`.
     pub fn total_events(&self) -> Option<u64> {
         Some(self.events_processed.load(Ordering::Relaxed))
     }
 
-    /// Get average latency from pipeline metrics
+    /// Returns the average publish latency in nanoseconds, from the pipeline
+    /// metrics. `None` when there is no latency data yet.
     pub fn average_latency_ns(&self) -> Option<u64> {
         let metrics = self.event_pipeline.metrics().snapshot();
         if metrics.avg_publish_latency_us > 0.0 {
@@ -1258,10 +1317,10 @@ impl StreamJunction {
     }
 }
 
-/// Lock-free view of a junction's drain state for shutdown polling.
+/// View of a junction's drain state that needs no lock, for shutdown checks.
 ///
-/// Snapshot this once (requires the junction Mutex), then poll freely —
-/// all reads go through Arcs to atomics, never back through the Mutex.
+/// Take it once (which needs the junction Mutex), then check it as often as
+/// needed. All reads go through Arcs to atomics, never back through the Mutex.
 #[derive(Clone)]
 pub struct JunctionDrainHandle {
     is_async: bool,
@@ -1275,40 +1334,40 @@ impl JunctionDrainHandle {
         self.is_async
     }
 
-    /// True once no consumer thread is live and no subscriber dispatch is in
-    /// flight — i.e. nothing can mutate downstream state anymore. Used after
-    /// `halt_processing` to keep the abandoned-event count exact and the
-    /// shutdown snapshot free of concurrent mutation.
+    /// True once no consumer thread is alive and no subscriber dispatch is
+    /// running, so nothing can change state further down anymore. Used after
+    /// `halt_processing` to keep the abandoned event count exact and to stop
+    /// anything changing while the shutdown snapshot is taken.
     pub fn settled(&self) -> bool {
         self.active_consumers.in_flight() == 0 && self.dispatch_tracker.in_flight() == 0
     }
 
-    /// Published-event count (Acquire). Monotone once sources are stopped.
+    /// Published event count (Acquire). Only goes up once sources are stopped.
     pub fn published(&self) -> u64 {
         self.pipeline.metrics().events_published_count()
     }
 
-    /// Quiescence predicate: `!is_async || (halted ? settled : (queue empty
+    /// Idle check: `!is_async || (halted ? settled : (queue empty
     /// && published == consumed && in_flight == 0))`
     ///
-    /// A halted junction is quiescent once settled: its frozen backlog will
-    /// never move again (it was counted by `abandon_pending` and is purged on
-    /// restart), so waiting on it would only burn the drain budget — and
-    /// re-abandoning it on a later shutdown would double-count the drops.
+    /// A halted junction counts as idle once settled. Its frozen queue will
+    /// never move again (it was counted by `abandon_pending` and is thrown
+    /// away on restart), so waiting on it would only use up the drain budget.
+    /// Abandoning it again on a later shutdown would count the drops twice.
     ///
-    /// For live junctions: `published` increments only after a successful
-    /// queue push; `consumed` only after the consumer handler returns (i.e.
-    /// after all subscriber dispatches for that event were registered). The
-    /// read order consumed → published → is_empty → in_flight supplies the
-    /// happens-before edges the counters need (the latest `consumed` makes
-    /// prior dispatch registrations visible before `in_flight` is read).
+    /// For live junctions, `published` goes up only after a successful queue
+    /// push, and `consumed` only after the consumer handler returns, which is
+    /// after all subscriber dispatches for that event were registered. Reading
+    /// in the order consumed, published, is_empty, in_flight gives the
+    /// ordering the counters need. The latest `consumed` makes earlier
+    /// dispatch registrations visible before `in_flight` is read.
     ///
-    /// CAUTION: a single call can still return a false `true` — a cascade
+    /// CAUTION: a single call can still wrongly return `true`. A cascade
     /// dispatch on another thread may have pushed an event whose `published`
-    /// increment this thread has not observed, and the queue-empty check is
-    /// not synchronized with that push. The predicate is only sound under
-    /// [`poll_quiescent`]'s two-pass ΣP-stability protocol; do not gate
-    /// anything on one isolated call.
+    /// increase this thread has not seen yet, and the empty queue check is not
+    /// synced with that push. The check is only reliable inside
+    /// [`poll_quiescent`]'s two pass check that ΣP stays the same. Do not
+    /// base anything on one call alone.
     pub fn is_quiescent(&self) -> bool {
         if !self.is_async {
             return true;
@@ -1323,7 +1382,7 @@ impl JunctionDrainHandle {
         empty && published == consumed && in_flight == 0
     }
 
-    /// Best-effort `(queued, in_flight)` estimate; see
+    /// Best effort `(queued, in_flight)` estimate. See
     /// `StreamJunction::pending_drain_estimate`.
     pub fn pending_drain_estimate(&self) -> (u64, u64) {
         let consumed = self.pipeline.metrics().events_consumed_count();
@@ -1335,7 +1394,7 @@ impl JunctionDrainHandle {
     }
 }
 
-/// Performance metrics for the optimized stream junction
+/// Snapshot of a stream junction's metrics
 #[derive(Debug, Clone)]
 pub struct JunctionPerformanceMetrics {
     pub stream_id: String,
@@ -1367,24 +1426,27 @@ impl JunctionPerformanceMetrics {
         };
 
         let mut score = pipeline_health;
-        score -= error_rate * 2.0; // 2x penalty for errors
-        score -= drop_rate * 1.5; // 1.5x penalty for drops
+        score -= error_rate * 2.0; // errors weigh 2x
+        score -= drop_rate * 1.5; // drops weigh 1.5x
 
         score.clamp(0.0, 1.0)
     }
 
-    /// Check if metrics indicate healthy operation
+    /// Returns true when the health score is above 0.8, the pipeline metrics
+    /// look healthy, and errors are under 1% of processed events. With fewer
+    /// than 100 processed events the error limit is 0, so this is false.
     pub fn is_healthy(&self) -> bool {
         self.health_score() > 0.8
             && self.pipeline_metrics.is_healthy()
-            && self.processing_errors < (self.events_processed / 100) // <1% error rate
+            && self.processing_errors < (self.events_processed / 100) // under 1% errors
     }
 }
 
-/// High-performance publisher for the stream junction
+/// Sends events into a stream junction. Used as an InputProcessor.
 ///
-/// Holds an Arc to the junction to ensure it remains alive while the publisher exists.
-/// This prevents use-after-free issues when publishers outlive their creating scope.
+/// Holds an Arc to the junction, so the junction stays alive as long as the
+/// publisher does, even when the publisher outlives the code that made it.
+/// The stream index is ignored.
 #[derive(Debug, Clone)]
 pub struct Publisher {
     junction: Arc<Mutex<StreamJunction>>,
@@ -1442,7 +1504,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    // Test processor that records events
+    // Processor for tests that records the data of each StreamEvent it gets
     #[derive(Debug)]
     struct TestProcessor {
         events: Arc<Mutex<Vec<Vec<AttributeValue>>>>,
@@ -1575,26 +1637,27 @@ mod tests {
 
     #[test]
     fn test_async_junction_auto_starts_without_explicit_start_processing() {
-        // REGRESSION TEST: Async junctions must auto-start consumer thread in constructor
-        // Bug: Previously, async junctions required explicit start_processing() call
-        // This test mimics production usage where start_processing() is never called
+        // REGRESSION TEST: async junctions must start their consumer threads in
+        // the constructor. The old bug was that async junctions needed an
+        // explicit start_processing() call. This test acts like real use,
+        // where start_processing() is never called.
 
         let (junction, processor) = setup_junction(true); // async=true
 
-        // CRITICAL: Do NOT call start_processing() - mimics production code!
-        // If auto-start is broken, events will queue forever and this test fails
+        // CRITICAL: do NOT call start_processing(), as in real code. If the
+        // automatic start is broken, events queue forever and this test fails.
 
-        // Send events immediately after construction
+        // Send events right after construction
         let events: Vec<_> = (0..50)
             .map(|i| Event::new_with_data(1000 + i, vec![AttributeValue::Int(i as i32)]))
             .collect();
 
         junction.send_events(events).unwrap();
 
-        // Wait for async processing (consumer should be running)
+        // Wait for async processing, with the consumer already running
         thread::sleep(Duration::from_millis(200));
 
-        // ASSERT: Events must be received (proves consumer auto-started)
+        // Events must be received, which shows the consumer started on its own
         let received_events = processor.lock().unwrap().get_events();
         assert_eq!(
             received_events.len(),
@@ -1603,7 +1666,7 @@ mod tests {
              Events were not processed, indicating consumer never started!"
         );
 
-        // Verify metrics show processing happened
+        // The metrics must show the processing
         let metrics = junction.get_performance_metrics();
         assert!(
             metrics.events_processed >= 50,
@@ -1636,7 +1699,7 @@ mod tests {
 
         let metrics = junction.get_performance_metrics();
         assert!(metrics.events_processed >= 100);
-        // Note: Health check might be strict for small loads, just verify basic functionality
+        // The health check can be too strict for a small load, so only check the basics
         assert!(metrics.pipeline_metrics.events_published > 0);
         assert!(metrics.pipeline_metrics.events_consumed > 0);
     }
@@ -1660,7 +1723,7 @@ mod tests {
 
         println!("Throughput: {:.0} events/sec", throughput);
 
-        // Should handle significantly more than original crossbeam_channel implementation
+        // Must be much faster than the old crossbeam_channel version
         assert!(throughput > 50000.0, "Throughput should be >50K events/sec");
 
         // Wait for processing
@@ -1687,22 +1750,23 @@ mod tests {
 
         let metrics = junction.get_performance_metrics();
 
-        // Verify metrics are being collected
+        // Metrics must be collected
         assert!(metrics.events_processed > 0);
         assert!(metrics.pipeline_metrics.events_published > 0);
         assert!(metrics.pipeline_metrics.throughput_events_per_sec > 0.0);
         assert!(metrics.health_score() > 0.0);
 
-        // Test legacy methods for compatibility
+        // The older getter methods still work
         assert!(junction.total_events().unwrap() > 0);
-        // Note: average_latency_ns might be None if processing is too fast
+        // average_latency_ns may be None if processing is too fast
     }
 
     #[test]
     fn test_async_batch_partial_failure_returns_error() {
-        // REGRESSION TEST: Partial batch failures must be reported as errors
-        // Bug: Previously returned Ok(()) if ANY event succeeded, even if others failed
-        // This broke retry logic because callers thought all events succeeded
+        // REGRESSION TEST: a batch where only some events fail must return an
+        // error. The old bug returned Ok(()) if ANY event worked, even when
+        // others failed. That broke retry logic, since callers thought all
+        // events went through.
 
         let ctx = Arc::new(EventFluxContext::new());
         let app = Arc::new(EventFluxApp::new("TestApp".to_string()));
@@ -1718,41 +1782,42 @@ mod tests {
                 .attribute("value".to_string(), AttrType::INT),
         );
 
-        // Create async junction with minimal buffer to force drops
+        // Async junction with a tiny buffer, to force drops
         let junction = Arc::new(Mutex::new(
             StreamJunction::new(
                 "TestStream".to_string(),
                 stream_def,
                 app_ctx,
-                64, // Minimum buffer size
+                64, // smallest buffer size
                 true,
                 None,
             )
             .unwrap(),
         ));
 
-        // Create processor that captures events
         let processor = Arc::new(Mutex::new(TestProcessor::new("test".to_string())));
         junction.lock().unwrap().subscribe(processor.clone());
 
-        // DO NOT start processing - this will cause the pipeline to fill up
+        // start_processing() is not called, but async junctions start their
+        // consumers in the constructor anyway. The batch below is still far
+        // bigger than the buffer, so it fills faster than the consumers read.
 
-        // Send a large batch - buffer will fill (64) and rest will be dropped
+        // Send a large batch. The 64 slot buffer fills and some events are dropped.
         let events: Vec<_> = (0..500)
             .map(|i| Event::new_with_data(1000 + i, vec![AttributeValue::Int(i as i32)]))
             .collect();
 
         let result = junction.lock().unwrap().send_events(events);
 
-        // CRITICAL ASSERTION: Must return error because SOME events failed
-        // Previously this would return Ok(()) if ANY events succeeded
+        // CRITICAL: must return an error because SOME events failed. Before
+        // the fix this returned Ok(()) if ANY event worked.
         assert!(
             result.is_err(),
             "send_events() must return error when ANY events fail (partial batch failure). \
              Got Ok(()) which breaks retry logic!"
         );
 
-        // Verify error message includes details
+        // The error message must give details
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1760,7 +1825,7 @@ mod tests {
             "Error message should include failure details, got: {msg}"
         );
 
-        // Verify metrics show both successful and dropped events
+        // The metrics must show dropped events
         let metrics = junction.lock().unwrap().get_performance_metrics();
         assert!(
             metrics.events_dropped > 0,
@@ -1770,10 +1835,11 @@ mod tests {
 
     #[test]
     fn test_single_threaded_executor_no_starvation() {
-        // REGRESSION TEST: Single-threaded executor must not starve subscribers
-        // Bug: Consumer and subscribers share same executor - if only 1 thread, consumer
-        // occupies it and subscriber tasks never execute, causing pipeline to fill
-        // Fix: Run subscribers inline when pool_size == 1
+        // REGRESSION TEST: a one thread executor must not starve subscribers.
+        // The old bug was that the consumer and subscribers shared one executor.
+        // With only 1 thread the consumer held it, subscriber tasks never ran,
+        // and the pipeline filled up. The fix runs subscribers on the consumer
+        // threads when pool_size == 1. Consumers now also have their own threads.
 
         let ctx = Arc::new(EventFluxContext::new());
         let app = Arc::new(EventFluxApp::new("TestApp".to_string()));
@@ -1789,11 +1855,11 @@ mod tests {
                 .attribute("value".to_string(), AttrType::INT),
         );
 
-        // CRITICAL: Create single-threaded executor to reproduce starvation bug
+        // CRITICAL: a one thread executor, to reproduce the starvation bug
         let single_thread_executor =
             Arc::new(crate::core::util::executor_service::ExecutorService::new(
                 "single-thread-test",
-                1, // Only 1 thread - will cause starvation if not handled correctly
+                1, // only 1 thread, which starves subscribers if handled wrong
             ));
 
         let junction = Arc::new(Mutex::new(
@@ -1802,18 +1868,17 @@ mod tests {
                 stream_def,
                 app_ctx,
                 4096,
-                true, // Async junction
+                true, // async junction
                 None,
                 single_thread_executor,
             )
             .unwrap(),
         ));
 
-        // Create processor that captures events
         let processor = Arc::new(Mutex::new(TestProcessor::new("test".to_string())));
         junction.lock().unwrap().subscribe(processor.clone());
 
-        // Send events - these should be processed even with single-threaded executor
+        // These must be processed even with a one thread executor
         let events: Vec<_> = (0..100)
             .map(|i| Event::new_with_data(1000 + i, vec![AttributeValue::Int(i as i32)]))
             .collect();
@@ -1823,8 +1888,8 @@ mod tests {
         // Wait for async processing
         thread::sleep(Duration::from_millis(500));
 
-        // CRITICAL ASSERTION: Events must be received despite single-threaded executor
-        // If fix is broken, consumer starves subscribers and no events are processed
+        // CRITICAL: events must arrive even with a one thread executor. If the
+        // fix breaks, the consumer starves subscribers and no events are processed.
         let received_events = processor.lock().unwrap().get_events();
         assert_eq!(
             received_events.len(),
@@ -1835,7 +1900,7 @@ mod tests {
             received_events.len()
         );
 
-        // Verify metrics show all events processed (no drops)
+        // The metrics must show all events processed and none dropped
         let metrics = junction.lock().unwrap().get_performance_metrics();
         assert_eq!(
             metrics.events_processed, 100,
@@ -1849,10 +1914,12 @@ mod tests {
 
     #[test]
     fn test_limited_pool_executor_no_starvation() {
-        // REGRESSION TEST: Limited executor pool must not starve subscribers
-        // Bug: Consumer threads exhausted executor pool, leaving no threads for subscriber tasks
-        // Scenario: pool_size=2, but junction wants 4 consumers (num_cpus/2 on 8-core machine)
-        // Fix: Consumers run on dedicated threads, so the pool serves only subscriber dispatches
+        // REGRESSION TEST: a small executor pool must not starve subscribers.
+        // The old bug was that consumer threads used up the executor pool and
+        // left no threads for subscriber tasks. Case: pool_size=2, but the
+        // junction wants 4 consumers (num_cpus/2 on an 8 core machine). The fix
+        // runs consumers on their own threads, so the pool serves only
+        // subscriber dispatches.
 
         let ctx = Arc::new(EventFluxContext::new());
         let app = Arc::new(EventFluxApp::new("TestApp".to_string()));
@@ -1868,11 +1935,11 @@ mod tests {
                 .attribute("value".to_string(), AttrType::INT),
         );
 
-        // CRITICAL: Create executor with only 2 threads (insufficient for default 4 consumers)
-        // This simulates EVENTFLUX_EXECUTOR_THREADS=2 in production
+        // CRITICAL: an executor with only 2 threads, fewer than the 4 consumers
+        // above. This acts like EVENTFLUX_EXECUTOR_THREADS=2 in production.
         let limited_executor = Arc::new(crate::core::util::executor_service::ExecutorService::new(
             "limited-pool-test",
-            2, // Only 2 threads - will force consumer clamping
+            2, // only 2 threads, which consumers used to use up
         ));
 
         let junction = Arc::new(Mutex::new(
@@ -1881,18 +1948,17 @@ mod tests {
                 stream_def,
                 app_ctx,
                 4096,
-                true, // Async junction - would normally spawn num_cpus/2 consumers
+                true, // async junction, which starts num_cpus/2 consumers
                 None,
                 limited_executor,
             )
             .unwrap(),
         ));
 
-        // Create processor that captures events
         let processor = Arc::new(Mutex::new(TestProcessor::new("test".to_string())));
         junction.lock().unwrap().subscribe(processor.clone());
 
-        // Send events - these should be processed despite limited executor
+        // These must be processed even with the small executor
         let events: Vec<_> = (0..200)
             .map(|i| Event::new_with_data(1000 + i, vec![AttributeValue::Int(i as i32)]))
             .collect();
@@ -1902,8 +1968,8 @@ mod tests {
         // Wait for async processing
         thread::sleep(Duration::from_millis(1000));
 
-        // CRITICAL ASSERTION: Events must be received despite limited executor pool
-        // If fix is broken, consumers occupy all threads and no subscriber tasks run
+        // CRITICAL: events must arrive even with the small pool. If the fix
+        // breaks, consumers hold all threads and no subscriber tasks run.
         let received_events = processor.lock().unwrap().get_events();
         assert_eq!(
             received_events.len(),
@@ -1914,7 +1980,7 @@ mod tests {
             received_events.len()
         );
 
-        // Verify metrics show all events processed (no drops due to starvation)
+        // The metrics must show all events processed and none dropped from starvation
         let metrics = junction.lock().unwrap().get_performance_metrics();
         assert_eq!(
             metrics.events_processed, 200,
@@ -1928,38 +1994,36 @@ mod tests {
 
     #[test]
     fn test_batch_shutdown_counts_all_failed_events() {
-        // REGRESSION TEST: Shutdown must count both the shutdown event AND remaining events
-        // Bug #1: Previously, PipelineResult::Shutdown just broke the loop without counting
-        //         remaining events, so callers thought the entire batch succeeded
-        // Bug #2: The shutdown event itself was never counted as dropped, causing
-        //         silent data loss when shutdown happened on the last event
+        // REGRESSION TEST: shutdown must count both the event that got Shutdown
+        // AND the rest of the batch.
+        // Bug 1: PipelineResult::Shutdown used to just break the loop without
+        //        counting the rest, so callers thought the whole batch worked.
+        // Bug 2: the event that got Shutdown was never counted as dropped, so
+        //        data was lost silently when shutdown hit the last event.
 
-        // Note: This test validates the logic, but we can't easily simulate a real
-        // shutdown mid-batch without mocking the pipeline. The fix ensures that
-        // when shutdown happens, all failed events are properly counted as dropped.
+        // This test has no assertions. A real shutdown in the middle of a batch
+        // is hard to set up without mocking the pipeline. It only records the
+        // expected logic, which lives in the PipelineResult::Shutdown arm of
+        // send_events. When Shutdown comes back, that code
+        // 1. adds 1 to dropped for the event itself (dropped += 1)
+        // 2. works out remaining = event_count - processed_count
+        // 3. adds remaining to dropped (dropped += remaining)
+        // 4. returns Err because dropped > 0
 
-        // This is more of a code review verification - the fix at lines 519-530
-        // ensures that when Shutdown is encountered:
-        // 1. We increment dropped for the shutdown event itself (dropped += 1)
-        // 2. We calculate remaining = event_count - processed_count
-        // 3. We add remaining to dropped counter (dropped += remaining)
-        // 4. We return Err because dropped > 0
-
-        // Scenario 1: Shutdown on last event
+        // Case 1: shutdown on the last event
         // - Send 100 events
-        // - First 99 succeed
+        // - The first 99 succeed
         // - Event 100 gets PipelineResult::Shutdown
-        // - dropped = 1 (the shutdown event itself) + 0 (remaining) = 1
+        // - dropped = 1 (the event itself) + 0 (remaining) = 1
         // - Returns Err (not Ok) because dropped = 1
 
-        // Scenario 2: Shutdown mid-batch
+        // Case 2: shutdown in the middle of the batch
         // - Send 100 events
-        // - First 20 succeed
+        // - The first 20 succeed
         // - Event 21 gets PipelineResult::Shutdown
-        // - dropped = 1 (shutdown event) + 79 (remaining) = 80
+        // - dropped = 1 (the event itself) + 79 (remaining) = 80
         // - Returns Err (not Ok) because dropped = 80
 
-        // We verify the fix exists by checking the code logic is correct
-        // A real integration test would require pipeline mocking which is complex
+        // A real integration test would need a mock pipeline, which is complex
     }
 }

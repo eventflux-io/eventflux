@@ -61,7 +61,7 @@ async fn cron_trigger_emits() {
     assert!(out.len() >= 2);
 }
 
-/// Periodic trigger using SQL syntax
+/// A periodic trigger defined in SQL fires at least twice in 130 ms at a 50 ms interval.
 #[tokio::test]
 async fn parse_periodic_trigger_emits() {
     let app = "CREATE TRIGGER PT AT EVERY 50 MILLISECONDS;";
@@ -71,7 +71,7 @@ async fn parse_periodic_trigger_emits() {
     assert!(out.len() >= 2);
 }
 
-/// Cron trigger using SQL syntax
+/// A cron trigger defined in SQL that fires every second fires at least twice in 2.2 seconds.
 #[tokio::test]
 async fn parse_cron_trigger_emits() {
     let app = "CREATE TRIGGER CronStr AT CRON '*/1 * * * * *';";

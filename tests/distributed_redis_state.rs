@@ -19,32 +19,32 @@
 
 //! Redis State Backend Integration Tests
 //!
-//! These tests verify the Redis state backend implementation for distributed
-//! state management. Tests include connection pooling, state operations,
-//! checkpoint/restore functionality, and error handling.
+//! Tests for the Redis state backend used for distributed state. They cover
+//! connection pooling, state operations, checkpoint and restore, and error
+//! handling. Tests that need Redis return early when it is not reachable.
 
 use eventflux::core::distributed::{DistributedError, RedisBackend, RedisConfig, StateBackend};
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Test helper to create a Redis backend with test configuration and unique prefix  
+/// Creates a Redis backend with test settings and a key prefix unique to this call.
 fn create_test_redis_backend() -> RedisBackend {
     create_test_redis_backend_with_prefix(&format!("test:eventflux:{}:", Uuid::new_v4()))
 }
 
-/// Test helper to create a Redis backend with a specific prefix
+/// Creates a Redis backend on localhost:6379 with the given key prefix.
 fn create_test_redis_backend_with_prefix(prefix: &str) -> RedisBackend {
     let config = RedisConfig {
         url: "redis://localhost:6379".to_string(),
         max_connections: 5,
         connection_timeout_ms: 1000,
         key_prefix: prefix.to_string(),
-        ttl_seconds: Some(300), // 5 minutes for aggressive test cleanup
+        ttl_seconds: Some(300), // 5 minutes, so leftover test keys clean up quickly
     };
     RedisBackend::with_config(config)
 }
 
-/// Test helper to skip test if Redis is not available
+/// Returns Err when Redis is not reachable, so the caller can skip the test.
 async fn ensure_redis_available() -> Result<(), Box<dyn std::error::Error>> {
     let mut backend = RedisBackend::new();
     match backend.initialize().await {
@@ -61,12 +61,11 @@ async fn ensure_redis_available() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn test_redis_backend_creation() {
+    // Passes if neither constructor panics. No connection is made here.
     let _backend = RedisBackend::new();
-    // Backend should be created successfully
 
     let config = RedisConfig::default();
     let _backend = RedisBackend::with_config(config);
-    // Backend with config should be created successfully
 }
 
 #[tokio::test]
@@ -79,7 +78,6 @@ async fn test_redis_backend_initialization() {
     let result = backend.initialize().await;
     assert!(result.is_ok());
 
-    // Shutdown to clean up
     backend.shutdown().await.unwrap();
 }
 
@@ -100,7 +98,7 @@ async fn test_redis_backend_basic_operations() {
     let retrieved = backend.get(key).await.unwrap();
     assert_eq!(retrieved, Some(value));
 
-    // Test non-existent key
+    // A key that does not exist
     let missing = backend.get("non_existent").await.unwrap();
     assert_eq!(missing, None);
 
@@ -155,12 +153,12 @@ async fn test_redis_backend_key_prefixing() {
     let mut backend = create_test_redis_backend();
     backend.initialize().await.unwrap();
 
-    // Set a value through our backend
     let key = "prefix_test";
     let value = b"prefix_value".to_vec();
     backend.set(key, value.clone()).await.unwrap();
 
-    // Verify it's stored with prefix (this would require direct Redis connection to verify)
+    // Only checks the round trip through the backend. Checking the stored key
+    // really has the prefix would need a direct Redis connection.
     let retrieved = backend.get(key).await.unwrap();
     assert_eq!(retrieved, Some(value));
 
@@ -267,7 +265,7 @@ async fn test_redis_backend_restore_nonexistent_checkpoint() {
     let mut backend = create_test_redis_backend();
     backend.initialize().await.unwrap();
 
-    // Try to restore non-existent checkpoint
+    // Restoring a checkpoint that does not exist
     let result = backend.restore("non_existent_checkpoint").await;
     assert!(result.is_err());
 
@@ -363,7 +361,7 @@ async fn test_redis_backend_concurrent_operations() {
         handle.await.unwrap();
     }
 
-    // Try to extract the backend for shutdown
+    // All tasks are done, so this is the last Arc and can be unwrapped for shutdown
     let mut backend = std::sync::Arc::try_unwrap(backend).unwrap();
     backend.shutdown().await.unwrap();
 }
@@ -484,11 +482,11 @@ async fn test_redis_backend_ttl_functionality() {
     let retrieved = backend.get(key).await.unwrap();
     assert_eq!(retrieved, Some(value));
 
-    // Wait for TTL to expire (with some buffer)
+    // Wait 1.5 s, past the 1 s TTL
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
-    // Value should be expired (this test might be flaky depending on Redis behavior)
-    // Note: This test verifies TTL was set, but Redis might not immediately expire
+    // Expiry is not asserted. Redis may not remove the key right away, so a check
+    // here would be flaky. The test only makes sure setting a TTL does not fail.
 
     backend.shutdown().await.unwrap();
 }

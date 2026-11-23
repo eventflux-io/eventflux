@@ -17,35 +17,35 @@
 
 use std::fmt::Debug;
 
-/// Sink trait for publishing formatted event data to external systems
+/// Publishes formatted event data to an outside system.
 ///
-/// Sinks receive formatted payloads (JSON, CSV, XML, or binary) from mappers
-/// and publish them to external transports (HTTP, Kafka, files, etc.).
+/// Sinks get formatted payloads (JSON, CSV, or binary) from mappers and send
+/// them over a transport (HTTP, Kafka, files, and so on).
 ///
 /// # Architecture
 ///
-/// The event flow is:
+/// The event flow is
 /// ```text
 /// StreamJunction → Events → SinkMapper → bytes → Sink::publish() → External System
 /// ```
 ///
-/// All sinks work with byte payloads, ensuring a clean separation between:
-/// - **Formatting** (handled by SinkMapper)
-/// - **Transport** (handled by Sink)
+/// All sinks work with byte payloads, which keeps two jobs apart
+/// - **Formatting**, done by SinkMapper
+/// - **Transport**, done by Sink
 pub trait Sink: Debug + Send + Sync {
-    /// Publish formatted payload to external system
+    /// Publishes one formatted payload to the outside system.
     ///
-    /// This method receives pre-formatted bytes from a mapper and publishes
-    /// them to the external system (HTTP endpoint, Kafka topic, file, etc.).
+    /// Gets bytes already formatted by a mapper and sends them on, to an HTTP
+    /// endpoint, a Kafka topic, a file, and so on.
     ///
     /// # Arguments
     ///
-    /// * `payload` - Formatted event data (JSON, CSV, XML, or binary format)
+    /// * `payload` - Formatted event data (JSON, CSV, or binary)
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - Payload published successfully
-    /// * `Err(EventFluxError)` - Publishing failed (connection issues, format errors, etc.)
+    /// * `Ok(())` - The payload was published
+    /// * `Err(EventFluxError)` - Publishing failed, such as a connection problem
     ///
     /// # Examples
     ///
@@ -62,31 +62,31 @@ pub trait Sink: Debug + Send + Sync {
     /// ```
     fn publish(&self, payload: &[u8]) -> Result<(), crate::core::exception::EventFluxError>;
 
-    /// Start the sink (connect, initialize resources)
+    /// Starts the sink, such as connecting and setting up resources. Does
+    /// nothing by default.
     fn start(&self) {}
 
-    /// Stop the sink (disconnect, cleanup resources)
+    /// Stops the sink, such as disconnecting and freeing resources. Does
+    /// nothing by default.
     fn stop(&self) {}
 
-    /// Clone the sink into a boxed trait object
+    /// Clones the sink into a boxed trait object
     fn clone_box(&self) -> Box<dyn Sink>;
 
-    /// Phase 2 validation: Verify connectivity and external resource availability
+    /// Phase 2 check that outside systems can be reached and are set up right.
     ///
-    /// This method is called during application initialization (Phase 2) to validate
-    /// that external systems are reachable and properly configured.
-    ///
-    /// **Fail-Fast Principle**: Application should NOT start if transports are not ready.
+    /// Called during app startup (Phase 2). The app should NOT start when a
+    /// transport is not ready, so problems show up early.
     ///
     /// # Default Implementation
     ///
-    /// Returns Ok by default - sinks that don't need external validation can use this.
-    /// Sinks with external dependencies (Kafka, HTTP, databases) MUST override this method.
+    /// Returns Ok. Sinks with no outside system to check can keep it. Sinks
+    /// that depend on one (Kafka, HTTP, databases) MUST override it.
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - External system is reachable and properly configured
-    /// * `Err(EventFluxError)` - Validation failed, application should not start
+    /// * `Ok(())` - The outside system can be reached and is set up right
+    /// * `Err(EventFluxError)` - The check failed and the app should not start
     ///
     /// # Examples
     ///
@@ -107,7 +107,7 @@ pub trait Sink: Debug + Send + Sync {
     /// }
     /// ```
     fn validate_connectivity(&self) -> Result<(), crate::core::exception::EventFluxError> {
-        Ok(()) // Default: no validation needed
+        Ok(())
     }
 }
 

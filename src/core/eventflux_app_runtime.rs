@@ -15,29 +15,28 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.core.EventFluxAppRuntime (interface)
-// and io.eventflux.core.EventFluxAppRuntimeImpl (implementation)
+// Port of the Java EventFluxAppRuntime interface and its EventFluxAppRuntimeImpl.
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
-use crate::core::config::eventflux_query_context::EventFluxQueryContext; // For add_callback
+use crate::core::config::eventflux_query_context::EventFluxQueryContext;
 use crate::core::config::{ApplicationConfig, EventFluxConfig};
 use crate::core::eventflux_app_runtime_builder::TableRuntimePlaceholder;
 use crate::core::partition::PartitionRuntime;
 use crate::core::persistence::SnapshotService;
-use crate::core::query::output::callback_processor::CallbackProcessor; // To be created
+use crate::core::query::output::callback_processor::CallbackProcessor;
 use crate::core::query::query_runtime::QueryRuntime;
 use crate::core::stream::input::input_handler::InputHandler;
 use crate::core::stream::input::input_manager::InputManager;
 use crate::core::stream::output::sink::SinkCallbackAdapter;
-use crate::core::stream::output::stream_callback::StreamCallback; // The trait
+use crate::core::stream::output::stream_callback::StreamCallback;
 use crate::core::stream::stream_junction::{
     poll_quiescent, poll_settled, StreamJunction, HALT_SETTLE_TIMEOUT, JUNCTION_DRAIN_TIMEOUT,
     MAX_DRAIN_TIMEOUT,
 };
 use crate::core::trigger::TriggerRuntime;
-use crate::core::util::parser::eventflux_app_parser::EventFluxAppParser; // For EventFluxAppParser::parse_eventflux_app_runtime_builder
+use crate::core::util::parser::eventflux_app_parser::EventFluxAppParser;
 use crate::core::window::WindowRuntime;
-use crate::query_api::EventFluxApp as ApiEventFluxApp; // From query_api
+use crate::query_api::EventFluxApp as ApiEventFluxApp;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -47,40 +46,42 @@ use std::sync::RwLock;
 
 use crate::core::query::processor::Processor;
 
-/// Type alias for callback tracking map: callback_id → (stream_id, processor).
+/// Tracks registered callbacks, mapping callback_id to (stream_id, processor).
 #[rustfmt::skip]
 type CallbackMap = Arc<RwLock<HashMap<String, (String, Arc<Mutex<dyn Processor>>)>>>;
 
-/// Runtime lifecycle states for EventFluxAppRuntime
+/// Lifecycle states of an EventFluxAppRuntime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeState {
-    /// Initial state after construction
+    /// Built but not started yet.
     Created,
-    /// Attaching sources/sinks/triggers
+    /// Attaching sources, sinks and triggers. Nothing in this file sets it today,
+    /// start() goes straight from Created to Starting.
     Attaching,
-    /// Executing startup sequence
+    /// start() is running.
     Starting,
-    /// Fully operational
+    /// Started and processing events.
     Running,
-    /// Graceful shutdown in progress
+    /// shutdown() is running.
     Stopping,
-    /// Clean shutdown completed
+    /// shutdown() finished.
     Stopped,
-    /// Error occurred, partial state
+    /// start() failed. Some parts may still be set up. start() can be retried.
     Failed,
 }
 
-/// Manages the runtime lifecycle of a single EventFlux Application.
-#[derive(Debug)] // Default removed, construction via new() -> Result
+/// Runs a single EventFlux app and manages its lifecycle.
+///
+/// Built through `new` or `new_with_config`, which return a Result. There is no Default.
+#[derive(Debug)]
 pub struct EventFluxAppRuntime {
     pub name: String,
-    pub eventflux_app: Arc<ApiEventFluxApp>, // The original parsed API definition
+    pub eventflux_app: Arc<ApiEventFluxApp>, // the parsed app definition
     pub eventflux_app_context: Arc<EventFluxAppContext>,
 
-    // Lifecycle state tracking
     pub state: Arc<RwLock<RuntimeState>>,
 
-    // Runtime components constructed by EventFluxAppRuntimeBuilder
+    // Runtime parts built by EventFluxAppRuntimeBuilder.
     pub stream_junction_map: HashMap<String, Arc<Mutex<StreamJunction>>>,
     pub input_manager: Arc<InputManager>,
     pub query_runtimes: Vec<Arc<QueryRuntime>>,
@@ -91,7 +92,7 @@ pub struct EventFluxAppRuntime {
     pub window_map: HashMap<String, Arc<Mutex<WindowRuntime>>>,
     pub aggregation_map: HashMap<String, Arc<Mutex<crate::core::aggregation::AggregationRuntime>>>,
 
-    // Stream handlers for lifecycle management (M7)
+    // Source and sink handlers, started and stopped with the runtime.
     pub source_handlers: Arc<
         std::sync::RwLock<HashMap<String, Arc<crate::core::stream::handler::SourceStreamHandler>>>,
     >,
@@ -99,42 +100,42 @@ pub struct EventFluxAppRuntime {
         std::sync::RwLock<HashMap<String, Arc<crate::core::stream::handler::SinkStreamHandler>>>,
     >,
 
-    // Table handlers (tables are passively queried, no lifecycle needed)
+    // Table handlers. Tables are only queried, so they have no start or stop.
     pub table_handlers: Arc<std::sync::RwLock<HashMap<String, Arc<dyn crate::core::table::Table>>>>,
 
-    /// Pre-resolved element configurations
+    /// Fully merged configs for every element (sources, sinks, tables and so on).
     ///
-    /// This map holds fully merged configurations for all elements (sources, sinks, tables, etc.)
-    /// resolved at construction time. Keys are in format "type:name" (e.g., "source:EventInput").
+    /// Resolved once at construction. Keys look like "type:name", for example
+    /// "source:EventInput".
     ///
-    /// Benefits:
-    /// - Single merge location for all config precedence logic
-    /// - Fail-fast: config errors caught before any element starts
-    /// - Extensible: new element types can easily plug into the resolver
-    /// - Debuggable: each config tracks where properties came from
+    /// Why resolve up front:
+    /// - All config precedence rules live in one merge step.
+    /// - Config errors show up before any element starts.
+    /// - New element types can plug into the same resolver.
+    /// - Each config records where each property came from, which helps debugging.
     pub resolved_configs: HashMap<String, crate::core::config::ResolvedElementConfig>,
 
-    /// Callback tracking for removal support.
-    /// See `add_callback()` and `remove_callback()` for usage.
+    /// Registered callbacks, kept so they can be removed later.
+    /// See `add_callback()` and `remove_callback()`.
     pub callback_map: CallbackMap,
 
-    /// Serializes start() and shutdown() bodies. The RuntimeState guard alone
-    /// is not enough: shutdown() accepts the Starting state, and two drivers
-    /// interleaving junction restart/stop calls would leave a zombie "Running"
-    /// runtime whose junctions all reject events.
+    /// Makes start() and shutdown() run one at a time. The RuntimeState check
+    /// alone is not enough. shutdown() accepts the Starting state, and if the two
+    /// interleave their junction restart and stop calls, the runtime can end up
+    /// "Running" with every junction rejecting events.
     pub(crate) lifecycle: Mutex<()>,
 }
 
 impl EventFluxAppRuntime {
-    // This 'new' function replaces the direct construction and acts more like
-    // EventFluxManager.createEventFluxAppRuntime(api_eventflux_app)
+    // Builds the runtime from a parsed app. Plays the role of the Java
+    // EventFluxManager.createEventFluxAppRuntime(api_eventflux_app).
     pub fn new(
         api_eventflux_app: Arc<ApiEventFluxApp>,
-        // EventFluxContext is needed to initialize EventFluxAppContext if not already done
+        // Used to build the EventFluxAppContext.
         eventflux_context: Arc<crate::core::config::eventflux_context::EventFluxContext>,
         eventflux_app_string: Option<String>,
     ) -> Result<Self, String> {
-        // 1. Create EventFluxAppContext using @app level annotations when present
+        // 1. Build the EventFluxAppContext, using @app annotation settings when present.
         let mut name = api_eventflux_app.name.clone();
         let mut is_playback = false;
         let mut enforce_order = false;
@@ -192,19 +193,19 @@ impl EventFluxAppRuntime {
         }
         ctx.set_transport_channel_creation_enabled(transport_creation);
 
-        // Initialize ThreadBarrier if enforce_order is enabled or for persistence coordination
+        // Always set a ThreadBarrier. Input handlers pass through it, so incoming
+        // events can be held back while state is restored.
         let thread_barrier = Arc::new(crate::core::util::thread_barrier::ThreadBarrier::new());
         ctx.set_thread_barrier(thread_barrier);
 
-        // Create scheduler with dedicated thread pool (separate from event processing)
-        // This prevents scheduler sleep operations from blocking event processing threads
-        // Thread pool size: Configurable via EVENTFLUX_EXECUTOR_THREADS or num_cpus::get()
+        // The scheduler gets its own thread pool, so its sleeps never block event
+        // processing threads. It reuses the context's scheduled executor if one exists.
         let scheduler = if let Some(exec) = ctx.get_scheduled_executor_service() {
             Arc::new(crate::core::util::Scheduler::new(Arc::clone(
                 &exec.executor,
             )))
         } else {
-            // Create dedicated scheduler executor (separate from event processing)
+            // Default pool size is EVENTFLUX_EXECUTOR_THREADS, or the CPU count.
             Arc::new(crate::core::util::Scheduler::new(Arc::new(
                 crate::core::util::ExecutorService::default(),
             )))
@@ -218,27 +219,29 @@ impl EventFluxAppRuntime {
         ctx.set_snapshot_service(Arc::clone(&snapshot_service));
         let eventflux_app_context = Arc::new(ctx);
 
-        // 2. Parse the ApiEventFluxApp into a builder
+        // 2. Parse the app into a builder.
         let builder = EventFluxAppParser::parse_eventflux_app_runtime_builder(
             &api_eventflux_app,
             eventflux_app_context,
             None,
         )?;
 
-        // 3. Build the EventFluxAppRuntime from the builder
-        builder.build(api_eventflux_app) // Pass the Arc<ApiEventFluxApp> again
+        // 3. Build the runtime from the builder.
+        builder.build(api_eventflux_app)
     }
 
-    /// Create a new EventFluxAppRuntime with specific application configuration
+    /// Builds a runtime with an application config, or falls back to `new` when
+    /// `app_config` is None.
+    ///
+    /// With a config, @app annotations are not read and `eventflux_app_string` is
+    /// ignored. Returns an error if parsing or building fails.
     pub fn new_with_config(
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_context: Arc<crate::core::config::eventflux_context::EventFluxContext>,
         eventflux_app_string: Option<String>,
         app_config: Option<ApplicationConfig>,
     ) -> Result<Self, String> {
-        // If we have application configuration, apply it before creating the runtime
         if let Some(config) = app_config {
-            // Apply global configuration from app config to the runtime
             Self::new_with_applied_config(
                 api_eventflux_app,
                 eventflux_context,
@@ -246,25 +249,27 @@ impl EventFluxAppRuntime {
                 &config,
             )
         } else {
-            // Fall back to standard creation if no config provided
             Self::new(api_eventflux_app, eventflux_context, eventflux_app_string)
         }
     }
 
-    /// Internal method to create runtime with applied configuration
+    /// Builds a runtime whose context comes from an ApplicationConfig.
+    ///
+    /// Unlike `new`, this sets no scheduler on the context, so the builder creates a
+    /// default one.
     fn new_with_applied_config(
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_context: Arc<crate::core::config::eventflux_context::EventFluxContext>,
         _eventflux_app_string: Option<String>,
         app_config: &ApplicationConfig,
     ) -> Result<Self, String> {
-        // 1. Create EventFluxAppContext using YAML/TOML configuration (ApplicationConfig)
+        // 1. Build the EventFluxAppContext from the YAML or TOML ApplicationConfig.
         let name = api_eventflux_app.name.clone();
         let mut root_metrics =
             crate::core::config::eventflux_app_context::MetricsLevelPlaceholder::OFF;
         let buffer_size = 0i32;
 
-        // Apply configuration-based settings from monitoring
+        // monitoring.metrics_enabled turns on BASIC metrics.
         if let Some(ref monitoring) = app_config.monitoring {
             if monitoring.metrics_enabled {
                 root_metrics =
@@ -287,17 +292,16 @@ impl EventFluxAppRuntime {
             ctx.set_buffer_size(buffer_size);
         }
 
-        // Apply additional configuration settings to context
         if let Some(ref _error_handling) = app_config.error_handling {
-            // Error handling configuration would be applied here
-            // Future implementation will configure error handling strategies
+            // Not applied yet. Error handling settings from the config are ignored here.
         }
 
-        // Initialize ThreadBarrier if enforce_order is enabled or for persistence coordination
+        // Always set a ThreadBarrier. Input handlers pass through it, so incoming
+        // events can be held back while state is restored.
         let thread_barrier = Arc::new(crate::core::util::ThreadBarrier::new());
         ctx.set_thread_barrier(Arc::clone(&thread_barrier));
 
-        // 2. Create SnapshotService and configure it
+        // 2. Create the SnapshotService, using the context's persistence store if set.
         let mut ss = SnapshotService::new(name.clone());
         if let Some(store) = ctx.eventflux_context.get_persistence_store() {
             ss.persistence_store = Some(store);
@@ -306,24 +310,23 @@ impl EventFluxAppRuntime {
         ctx.set_snapshot_service(Arc::clone(&snapshot_service));
         let eventflux_app_context = Arc::new(ctx);
 
-        // 2. Parse the ApiEventFluxApp into a builder with configuration
+        // 3. Parse the app into a builder, passing the config along.
         let builder = EventFluxAppParser::parse_eventflux_app_runtime_builder(
             &api_eventflux_app,
             eventflux_app_context,
             Some(app_config.clone()),
         )?;
 
-        // 3. Build the EventFluxAppRuntime from the builder
+        // 4. Build the runtime from the builder.
         let runtime = builder.build(api_eventflux_app)?;
 
-        // Note: Auto-attach of sources and sinks is deferred to start() method
-        // This allows proper lifecycle management:
-        //  - Construction: Create runtime and register components
-        //  - Start: Attach and start I/O sources/sinks
-        //  - Shutdown: Stop I/O and clean up
+        // Sources and sinks are not attached here. start() attaches them, so the
+        // lifecycle stays clean:
+        //  - Construction: build the runtime and register parts
+        //  - Start: attach and start I/O sources and sinks
+        //  - Shutdown: stop I/O and clean up
         //
-        // The application configuration is stored in eventflux_app_context.app_config
-        // and will be accessed during start()
+        // start() reads the config from eventflux_app_context.app_config.
 
         Ok(runtime)
     }
@@ -339,17 +342,21 @@ impl EventFluxAppRuntime {
         self.input_manager.get_table_input_handler(table_id)
     }
 
-    /// Add a callback to receive events from a stream.
+    /// Subscribes a callback to the events of a stream.
     ///
     /// # Arguments
     ///
     /// * `stream_id` - The stream to subscribe to
-    /// * `callback` - The callback implementation to receive events
+    /// * `callback` - Receives the stream's events
     ///
     /// # Returns
     ///
-    /// * `Ok(String)` - The callback ID that can be used with `remove_callback()`
-    /// * `Err(String)` - If the stream doesn't exist
+    /// * `Ok(String)` - A new UUID callback id to pass to `remove_callback()`
+    /// * `Err(String)` - If the stream does not exist
+    ///
+    /// # Panics
+    ///
+    /// Panics if the junction mutex or the callback map lock is poisoned.
     pub fn add_callback(
         &self,
         stream_id: &str,
@@ -366,7 +373,7 @@ impl EventFluxAppRuntime {
         let query_context_for_callback = Arc::new(EventFluxQueryContext::new(
             Arc::clone(&self.eventflux_app_context),
             query_name_for_callback.clone(),
-            None, // No specific partition ID for a generic stream callback processor
+            None, // a stream callback belongs to no partition
         ));
 
         let callback_processor: Arc<Mutex<dyn Processor>> =
@@ -376,13 +383,12 @@ impl EventFluxAppRuntime {
                 query_context_for_callback,
             )));
 
-        // Subscribe to the junction
         output_junction
             .lock()
             .expect("Output StreamJunction Mutex poisoned")
             .subscribe(Arc::clone(&callback_processor));
 
-        // Track for later removal
+        // Keep the processor so remove_callback can unsubscribe it.
         self.callback_map
             .write()
             .expect("callback_map RwLock poisoned")
@@ -394,18 +400,22 @@ impl EventFluxAppRuntime {
         Ok(callback_id)
     }
 
-    /// Remove a previously registered callback.
+    /// Unsubscribes a callback added with `add_callback()`.
     ///
     /// # Arguments
     ///
-    /// * `callback_id` - The ID returned from `add_callback()`
+    /// * `callback_id` - The id returned by `add_callback()`
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - Callback successfully removed
-    /// * `Err(String)` - If callback ID not found or stream junction doesn't exist
+    /// * `Ok(())` - The callback was removed
+    /// * `Err(String)` - If the callback id is unknown or the stream junction no longer
+    ///   exists. In the second case the id is already gone from the map.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the callback map lock or the junction mutex is poisoned.
     pub fn remove_callback(&self, callback_id: &str) -> Result<(), String> {
-        // Remove from tracking map and get the stream_id + processor
         let (stream_id, processor) = self
             .callback_map
             .write()
@@ -413,14 +423,12 @@ impl EventFluxAppRuntime {
             .remove(callback_id)
             .ok_or_else(|| format!("Callback '{}' not found", callback_id))?;
 
-        // Get the stream junction
         let junction = self
             .stream_junction_map
             .get(&stream_id)
             .ok_or_else(|| format!("StreamJunction '{}' not found", stream_id))?
             .clone();
 
-        // Unsubscribe from the junction
         junction
             .lock()
             .expect("StreamJunction Mutex poisoned")
@@ -430,10 +438,10 @@ impl EventFluxAppRuntime {
     }
 
     // ========================================================================
-    // Stream Handler Management (M7)
+    // Stream handler management
     // ========================================================================
 
-    /// Register a source stream handler
+    /// Registers a source handler for a stream, replacing any existing one.
     pub fn register_source_handler(
         &self,
         stream_name: String,
@@ -445,7 +453,7 @@ impl EventFluxAppRuntime {
             .insert(stream_name, handler);
     }
 
-    /// Get a source stream handler by name
+    /// Returns the source handler for a stream, if one is registered.
     pub fn get_source_handler(
         &self,
         stream_name: &str,
@@ -457,7 +465,7 @@ impl EventFluxAppRuntime {
             .cloned()
     }
 
-    /// Register a sink stream handler
+    /// Registers a sink handler for a stream, replacing any existing one.
     pub fn register_sink_handler(
         &self,
         stream_name: String,
@@ -469,7 +477,7 @@ impl EventFluxAppRuntime {
             .insert(stream_name, handler);
     }
 
-    /// Get a sink stream handler by name
+    /// Returns the sink handler for a stream, if one is registered.
     pub fn get_sink_handler(
         &self,
         stream_name: &str,
@@ -477,7 +485,7 @@ impl EventFluxAppRuntime {
         self.sink_handlers.read().unwrap().get(stream_name).cloned()
     }
 
-    /// Register a table handler
+    /// Registers a table by name, replacing any existing one.
     pub fn register_table_handler(
         &self,
         table_name: String,
@@ -489,7 +497,7 @@ impl EventFluxAppRuntime {
             .insert(table_name, table);
     }
 
-    /// Get a table handler by name
+    /// Returns the table registered under `table_name`, if any.
     pub fn get_table_handler(
         &self,
         table_name: &str,
@@ -497,19 +505,19 @@ impl EventFluxAppRuntime {
         self.table_handlers.read().unwrap().get(table_name).cloned()
     }
 
-    /// Get pre-resolved configuration for an element
+    /// Returns the merged config for one element.
     ///
-    /// Returns the fully merged configuration for the specified element type and name.
-    /// Configuration is pre-resolved at construction time by merging YAML base + SQL WITH.
+    /// Configs are resolved at construction by merging the YAML base with SQL WITH
+    /// properties.
     ///
     /// # Arguments
     ///
-    /// * `element_type` - Type of element (source, sink, table, etc.)
+    /// * `element_type` - Type of element (source, sink, table and so on)
     /// * `name` - Name of the element
     ///
     /// # Returns
     ///
-    /// The resolved configuration if it exists, None otherwise.
+    /// The resolved config, or None if there is none for this element.
     pub fn get_resolved_config(
         &self,
         element_type: crate::core::config::ElementType,
@@ -518,10 +526,11 @@ impl EventFluxAppRuntime {
         self.resolved_configs.get(&element_type.config_key(name))
     }
 
-    /// Attach sink handler to junction for event delivery
+    /// Subscribes a sink handler to a stream junction so the sink receives its events.
     ///
-    /// This connects a sink handler to the stream junction so it receives events.
-    /// Uses the same pattern as `add_callback` to properly wire the sink to the junction.
+    /// Wires the sink the same way `add_callback` wires a callback. Unlike
+    /// `add_callback`, the subscription is not tracked and cannot be removed later.
+    /// Returns an error if the stream does not exist.
     pub fn attach_sink_to_junction(
         &self,
         stream_name: &str,
@@ -533,7 +542,6 @@ impl EventFluxAppRuntime {
             .ok_or_else(|| format!("StreamJunction '{}' not found to attach sink", stream_name))?
             .clone();
 
-        // Create a query context for the sink callback processor
         let query_name_for_sink = format!(
             "sink_handler_{}_{}",
             stream_name,
@@ -545,35 +553,30 @@ impl EventFluxAppRuntime {
             None,
         ));
 
-        // Get the underlying sink Arc from the handler
-        // CRITICAL FIX: Use adapter to share the SAME Arc instead of cloning the sink
-        // This ensures lifecycle calls (start/stop) and event callbacks (receive)
-        // operate on the SAME sink instance, fixing the bug where SQL sinks never started
+        // Share the handler's own sink Arc instead of cloning the sink. Start, stop and
+        // event delivery must all reach the same sink instance. Cloning it once left
+        // SQL defined sinks never started.
         let sink_arc = handler.sink(); // Arc<Mutex<Box<dyn Sink>>>
 
-        // Get mapper from handler (custom format) or use PassthroughMapper (binary default)
+        // Use the handler's mapper for a custom format. With no format, fall back to
+        // the binary PassthroughMapper.
         let mapper = handler.mapper().unwrap_or_else(|| {
-            // No format specified - use efficient binary passthrough for debug sinks
             Arc::new(Mutex::new(Box::new(
                 crate::core::stream::output::mapper::PassthroughMapper::new(),
             )
                 as Box<dyn crate::core::stream::output::mapper::SinkMapper>))
         });
 
-        // Create adapter with sink and mapper
-        // Flow: Events → mapper.map() → bytes → sink.publish()
+        // Flow: events -> mapper.map() -> bytes -> sink.publish()
         let adapter = SinkCallbackAdapter {
             sink: Arc::clone(&sink_arc),
             mapper,
         };
 
-        // Wrap adapter as Box<dyn StreamCallback>
         let callback_box: Box<dyn StreamCallback> = Box::new(adapter);
 
-        // Wrap in Arc<Mutex<>> as expected by CallbackProcessor
         let sink_callback_arc = Arc::new(Mutex::new(callback_box));
 
-        // Wrap in a CallbackProcessor and subscribe to junction
         let callback_processor = Arc::new(Mutex::new(CallbackProcessor::new(
             sink_callback_arc,
             Arc::clone(&self.eventflux_app_context),
@@ -588,11 +591,14 @@ impl EventFluxAppRuntime {
         Ok(())
     }
 
-    /// Start all registered source handlers
+    /// Starts every registered source handler.
+    ///
+    /// Tries every source even after a failure, logs each failure, and returns one
+    /// error listing them all. Sources that did start are left running. The caller
+    /// must roll them back.
     pub fn start_all_sources(&self) -> Result<(), String> {
         let mut errors = Vec::new();
 
-        // Attempt to start all sources, accumulating errors
         for handler in self.source_handlers.read().unwrap().values() {
             if let Err(e) = handler.start() {
                 let error_msg = format!("Failed to start source '{}': {}", handler.stream_id(), e);
@@ -601,7 +607,6 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Fail fast - no partial success allowed
         if !errors.is_empty() {
             Err(format!(
                 "Failed to start {} source(s): {}",
@@ -613,12 +618,11 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Stop all registered source handlers
+    /// Stops every registered source handler and waits for all of them.
     ///
-    /// Joins run in parallel via scoped threads, so total shutdown is
-    /// bounded by one grace period instead of one per source — without
-    /// requiring anything from `Source` implementations beyond a correct
-    /// `stop()`.
+    /// Each stop runs on its own scoped thread, so the total wait is about one
+    /// grace period rather than one per source. `Source` implementations only need
+    /// a correct `stop()` for this.
     pub fn stop_all_sources(&self) {
         let handlers = self.source_handlers.read().unwrap();
         std::thread::scope(|s| {
@@ -628,15 +632,17 @@ impl EventFluxAppRuntime {
         });
     }
 
-    /// Start all registered sink handlers
+    /// Starts every registered sink handler.
+    ///
+    /// Tries every sink, logs each one that is not running afterwards, and returns
+    /// one error listing them all. Sinks that did start are left running.
     pub fn start_all_sinks(&self) -> Result<(), String> {
         let mut errors = Vec::new();
 
-        // Attempt to start all sinks, accumulating errors
         for handler in self.sink_handlers.read().unwrap().values() {
             handler.start();
-            // Note: SinkStreamHandler::start() is infallible (no Result),
-            // but we check is_running() to verify it started
+            // SinkStreamHandler::start() returns nothing, so check is_running()
+            // to see whether it worked.
             if !handler.is_running() {
                 let error_msg = format!("Failed to start sink '{}'", handler.stream_id());
                 log::error!("[EventFluxAppRuntime] {}", error_msg);
@@ -644,7 +650,6 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Fail fast - no partial success allowed
         if !errors.is_empty() {
             Err(format!(
                 "Failed to start {} sink(s): {}",
@@ -656,39 +661,23 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Stop all registered sink handlers
+    /// Stops every registered sink handler, one after another.
     pub fn stop_all_sinks(&self) {
         for handler in self.sink_handlers.read().unwrap().values() {
             handler.stop();
         }
     }
 
-    /// Start the EventFlux application runtime
+    /// Undoes a failed start by stopping everything start() may have started.
     ///
-    /// Attempts to auto-attach configured sources, sinks, and tables, then starts
-    /// all components. Errors are logged for debugging and accumulated for reporting.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - Runtime started successfully (all attachments succeeded)
-    /// * `Err(EventFluxError)` - One or more attachment or startup failures occurred
-    ///
-    /// # Error Handling
-    ///
-    /// This method logs all errors as they occur for immediate debugging feedback,
-    /// then returns an aggregated error if any operations failed. This allows callers
-    /// to detect startup failures while still providing detailed logs.
-    ///
-    /// Partial success is possible (e.g., some sources attach, others fail). The
-    /// returned error will contain details about all failures.
-    /// Rollback startup by stopping all started components
+    /// Best effort. Nothing here returns an error.
     fn rollback_startup(&self) {
         log::warn!("Rolling back runtime startup for '{}'", self.name);
 
-        // Stop in reverse order (best effort, don't propagate errors).
-        // NOTE: must not clear restored state — a retried start() enters via
-        // the Failed arm with restarting=false and skips auto-restore, so it
-        // relies on the state from the failed attempt surviving the rollback.
+        // Stop partitions and triggers in reverse order.
+        // Must not clear restored state. A retried start() comes in through the
+        // Failed arm with restarting=false and skips auto restore, so it relies on
+        // the state from the failed attempt surviving this rollback.
         for pr in self.partition_runtimes.iter().rev() {
             pr.shutdown();
         }
@@ -697,21 +686,19 @@ impl EventFluxAppRuntime {
             tr.shutdown();
         }
 
-        // Stop sinks
         self.stop_all_sinks();
 
-        // Stop sources
         self.stop_all_sources();
 
-        // Halt junctions: start() restarts them before sinks/sources, so a
-        // failure after that point would otherwise leave consumers live and
-        // junctions accepting events into a rolled-back topology (and leak the
-        // consumer threads if the runtime is then discarded). Halt — not a
-        // graceful stop — because the sinks above are already stopped: letting
-        // consumers drain the backlog now would deliver into dead sinks (the
-        // #136 window) while counting the events as processed. Settle, then
-        // count the frozen backlog as dropped; a retried start() purges it and
-        // clears the flags via restart_processing.
+        // Halt the junctions. start() restarts them before sinks and sources, so a
+        // failure after that point would leave consumers live and junctions taking
+        // events into a rolled back setup. It would also leak the consumer threads
+        // if the runtime is then thrown away. Halt instead of a graceful stop,
+        // because the sinks are already stopped. Draining the backlog now would
+        // deliver into dead sinks (the #136 window) and still count the events as
+        // processed. So wait for consumers to settle, then count the frozen backlog
+        // as dropped. A retried start() purges it and clears the flags through
+        // restart_processing.
         let rollback_handles: Vec<_> = self
             .stream_junction_map
             .values()
@@ -729,16 +716,38 @@ impl EventFluxAppRuntime {
         log::info!("Rollback completed for '{}'", self.name);
     }
 
+    /// Starts the runtime.
+    ///
+    /// Attaches the configured sources, sinks and tables, then starts junctions,
+    /// sinks, sources, triggers and partitions in that order. Calling it while
+    /// Running or Starting does nothing and returns `Ok`. From Stopped it first
+    /// restores the last persisted revision, if a persistence store has one.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - The runtime is running
+    /// * `Err(EventFluxError)` - Attachment or startup failed, or the runtime was in
+    ///   a state it cannot start from. The state is then set to Failed, except for
+    ///   the bad state case, and start() can be retried.
+    ///
+    /// # Error handling
+    ///
+    /// Every attachment error is logged as it happens, then all of them are returned
+    /// as one error before anything starts. Elements that did attach stay attached.
+    /// A failure while starting rolls back everything started so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lifecycle mutex is poisoned.
     pub fn start(&self) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::exception::EventFluxError;
 
-        // Serialize against shutdown(): without this, a concurrent shutdown
-        // (legal from the Starting state) interleaves junction stop calls with
-        // our restart calls and can leave a "Running" runtime whose junctions
-        // all reject events.
+        // Run one at a time with shutdown(). Otherwise a shutdown, which is allowed
+        // from Starting, could interleave its junction stops with our restarts and
+        // leave a "Running" runtime whose junctions all reject events.
         let _lifecycle = self.lifecycle.lock().expect("lifecycle mutex poisoned");
 
-        // 1. State validation - idempotent start
+        // 1. Check the state. Starting twice is harmless.
         let restarting;
         {
             let mut state = self.state.write().unwrap();
@@ -748,12 +757,11 @@ impl EventFluxAppRuntime {
                     *state = RuntimeState::Starting;
                 }
                 RuntimeState::Running => {
-                    // Idempotent: already running, nothing to do
                     log::debug!("Runtime already running, start() is no-op");
                     return Ok(());
                 }
                 RuntimeState::Starting => {
-                    // Concurrent start attempt - treat as idempotent
+                    // Another start is in progress, so this call does nothing.
                     log::debug!("Runtime already starting, start() is no-op");
                     return Ok(());
                 }
@@ -770,8 +778,8 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Auto-restore on restart only — on first start (Created), the user may have
-        // already called restore_revision() manually before start()
+        // Auto restore only on a restart from Stopped. On the first start (Created) the
+        // user may already have called restore_revision() by hand.
         if restarting {
             if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
                 if let Some(store) = &service.persistence_store {
@@ -785,8 +793,8 @@ impl EventFluxAppRuntime {
                                     "Auto-restore failed, clearing partial state and starting fresh: {}",
                                     e
                                 );
-                                // Clear in-memory state only — preserve persisted revisions
-                                // so they remain available for debugging or manual recovery
+                                // Clear only the in memory state. Keep the persisted
+                                // revisions for debugging or manual recovery.
                                 service.clear_state_holders();
                                 self.clear_select_processor_group_states();
                             }
@@ -798,9 +806,9 @@ impl EventFluxAppRuntime {
 
         let mut all_errors = Vec::new();
 
-        // 2. Attachment phase - prepare all components
-        // SQL WITH definitions have highest priority - they merge with YAML base properties
-        // SQL attachment must run FIRST so it can merge YAML base + SQL WITH overrides
+        // 2. Attach all elements.
+        // SQL WITH properties win over YAML. SQL attachment runs first so it can merge
+        // the YAML base with the SQL WITH overrides.
         match self.auto_attach_from_sql_definitions() {
             Ok((sources, sinks)) => {
                 if !sources.is_empty() || !sinks.is_empty() {
@@ -823,10 +831,10 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // YAML attachment runs SECOND - only attaches streams not already handled by SQL
-        // This provides default configuration for streams without SQL WITH clauses
+        // YAML attachment runs second and only attaches streams SQL did not handle.
+        // It gives a config to streams that have no SQL WITH clause.
+        // Each step below is safe to repeat and collects its errors.
         if let Some(app_config) = &self.eventflux_app_context.app_config {
-            // Auto-attach sources - idempotent operation with error accumulation
             match self.auto_attach_sources_from_config(app_config) {
                 Ok(sources) => {
                     if !sources.is_empty() {
@@ -846,7 +854,6 @@ impl EventFluxAppRuntime {
                 }
             }
 
-            // Auto-attach sinks - idempotent operation with error accumulation
             match self.auto_attach_sinks_from_config(app_config) {
                 Ok(sinks) => {
                     if !sinks.is_empty() {
@@ -866,7 +873,6 @@ impl EventFluxAppRuntime {
                 }
             }
 
-            // Auto-attach tables - idempotent operation with error accumulation
             match self.auto_attach_tables_from_config(app_config) {
                 Ok(tables) => {
                     if !tables.is_empty() {
@@ -887,7 +893,7 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // 3. Early error check - fail before starting anything
+        // 3. Fail before starting anything if any attachment failed.
         if !all_errors.is_empty() {
             *self.state.write().unwrap() = RuntimeState::Failed;
             log::error!(
@@ -905,10 +911,10 @@ impl EventFluxAppRuntime {
             )));
         }
 
-        // 4. Execution phase - start all components (with rollback on error).
-        // Junctions first: shutdown() leaves sticky shutdown flags on every
-        // junction (sync and async), so a restarted runtime must clear them
-        // before anything can flow. No-op on first start.
+        // 4. Start everything, rolling back on error.
+        // Junctions first. shutdown() leaves shutdown flags set on every junction,
+        // sync and async, so a restarted runtime must clear them before anything
+        // can flow. Does nothing on the first start.
         for junction in self.stream_junction_map.values() {
             if let Err(e) = junction.lock().unwrap().restart_processing() {
                 log::error!("Failed to restart stream junction: {}", e);
@@ -921,11 +927,11 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Downstream-first: sinks start before sources so that when the
-        // first event is consumed, every sink is subscribed and connected.
-        // The reverse order lost events published into not-yet-ready sink
-        // streams (#136). Shutdown mirrors this (sources stop first,
-        // sinks last).
+        // Downstream first. Sinks start before sources, so every sink is
+        // subscribed and connected by the time the first event is read. The
+        // reverse order lost events published into sink streams that were not
+        // ready yet (#136). Shutdown mirrors this, stopping sources first and
+        // sinks last.
         if let Err(e) = self.start_all_sinks() {
             log::error!("Failed to start sinks: {}", e);
             self.rollback_startup();
@@ -936,7 +942,7 @@ impl EventFluxAppRuntime {
             )));
         }
 
-        // Sources start last — this is what begins event consumption
+        // Sources start last. This is what starts reading events.
         if let Err(e) = self.start_all_sources() {
             log::error!("Failed to start sources: {}", e);
             self.rollback_startup();
@@ -954,26 +960,26 @@ impl EventFluxAppRuntime {
             );
         }
 
-        // Start triggers
         for tr in &self.trigger_runtimes {
             tr.start();
         }
 
-        // Start partitions
         for pr in &self.partition_runtimes {
             pr.start();
         }
 
-        // 5. Success - update state
+        // 5. Done.
         *self.state.write().unwrap() = RuntimeState::Running;
         log::info!("EventFluxAppRuntime '{}' started successfully", self.name);
         Ok(())
     }
 
-    /// Drain timeout for async junctions, overridable via
-    /// `EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS` (same pattern as
-    /// `EVENTFLUX_EXECUTOR_THREADS`). Capped so `Instant + timeout` cannot
-    /// overflow on absurd override values.
+    /// Returns how long shutdown waits for async junctions to drain.
+    ///
+    /// Defaults to `JUNCTION_DRAIN_TIMEOUT`. Set `EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS`
+    /// to override it, the same way `EVENTFLUX_EXECUTOR_THREADS` works. A value that
+    /// does not parse is ignored. Capped at `MAX_DRAIN_TIMEOUT` so `Instant + timeout`
+    /// cannot overflow on huge values.
     fn junction_drain_timeout() -> Duration {
         std::env::var("EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS")
             .ok()
@@ -983,28 +989,34 @@ impl EventFluxAppRuntime {
             .min(MAX_DRAIN_TIMEOUT)
     }
 
+    /// Stops the runtime.
+    ///
+    /// Stops producers, drains async junctions, flushes queries, persists state if a
+    /// persistence store is set, then stops sinks and partitions. Does nothing
+    /// unless the state is Running, Starting or Failed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lifecycle mutex is poisoned.
     pub fn shutdown(&self) {
-        // Serialize against start(); see the `lifecycle` field. A shutdown
-        // issued during a concurrent start() waits for the start to finish,
-        // then tears the runtime down cleanly.
+        // Run one at a time with start(). See the `lifecycle` field. A shutdown
+        // called during start() waits for it to finish, then tears down cleanly.
         let _lifecycle = self.lifecycle.lock().expect("lifecycle mutex poisoned");
 
-        // Guard: only shutdown if Running, Starting, or Failed
         {
             let mut state = self.state.write().unwrap();
             match *state {
                 RuntimeState::Running | RuntimeState::Starting | RuntimeState::Failed => {
                     *state = RuntimeState::Stopping;
                 }
-                _ => return, // Already stopped or not started
+                _ => return, // already stopped, stopping or never started
             }
         }
 
-        // Deactivate every producer BEFORE the drain: triggers, the scheduler
-        // (its ticks — timer windows, rate limiters — publish into junctions
-        // and are covered by no tracker, so a tick firing mid- or post-drain
-        // would be invisible to the quiescence poll and stranded uncounted),
-        // and finally the sources.
+        // Stop every producer before the drain. First triggers, then the scheduler,
+        // then sources. Scheduler ticks (timer windows, rate limiters) publish into
+        // junctions without being tracked. A tick during or after the drain would be
+        // missed by the quiescence check and left uncounted.
         for tr in &self.trigger_runtimes {
             tr.shutdown();
         }
@@ -1014,10 +1026,10 @@ impl EventFluxAppRuntime {
         self.stop_all_sources();
 
         // Drain async junctions before touching sinks (#138). With sources
-        // stopped, wait for natural quiescence WITHOUT setting shutdown flags:
-        // flagging junctions first breaks cascades, because an event drained
-        // from junction A flows through a query into junction B, whose flag
-        // would reject it.
+        // stopped, wait until everything goes quiet WITHOUT setting shutdown
+        // flags. Flagging junctions first breaks chains, because an event drained
+        // from junction A flows through a query into junction B, whose flag would
+        // reject it.
         let drain_handles: Vec<_> = self
             .stream_junction_map
             .values()
@@ -1026,14 +1038,15 @@ impl EventFluxAppRuntime {
             .collect();
         let drain_timeout = Self::junction_drain_timeout();
         let drain_deadline = Instant::now() + drain_timeout;
-        // The first drain's result is intentionally unused: the second drain
-        // re-establishes global quiescence after the flush; this pass only
-        // ensures the flush sees drained events.
+        // The first drain's result is ignored on purpose. This pass only makes
+        // sure the flush sees the drained events. The second drain checks that
+        // everything is quiet again after the flush.
         poll_quiescent(&drain_handles, drain_deadline);
 
-        // Flush remaining events through the pipeline so state is stable.
-        // Runs after the first drain so flushes see the drained events; flush
-        // outputs can cascade into async junctions, hence the second drain.
+        // Flush what is left through the pipeline so state is stable. Runs after
+        // the first drain so the flush sees drained events. Flush output can flow
+        // on into async junctions, hence the second drain. Both drains share one
+        // deadline.
         for qr in &self.query_runtimes {
             qr.flush();
         }
@@ -1041,28 +1054,28 @@ impl EventFluxAppRuntime {
 
         let settled;
         if drained {
-            // Queues are empty — the sticky shutdown flags are safe to set;
-            // consumer loops exit promptly.
+            // Queues are empty, so it is safe to set the shutdown flags, which
+            // stay set until restart. Consumer loops exit quickly.
             for junction in self.stream_junction_map.values() {
                 junction.lock().unwrap().stop_processing();
             }
-            // Settle before persisting even on the clean path: a producer that
-            // raced the flags may have slipped one more event in, and the
-            // exiting consumers would deliver it concurrently with the
-            // snapshot below. Normally instant (queues already empty).
+            // Wait for consumers to settle before persisting, even on this clean
+            // path. A producer that raced the flags may have slipped in one more
+            // event, and the exiting consumers would deliver it while the snapshot
+            // below is taken. Normally instant, since the queues are empty.
             settled = poll_settled(&drain_handles, Instant::now() + HALT_SETTLE_TIMEOUT);
         } else {
-            // Timed out with a backlog. Halt consumers (no further draining)
-            // BEFORE counting the leftovers: a graceful stop would let them
-            // keep delivering the "abandoned" events concurrently with the
-            // persist below and into sinks that are about to stop.
+            // Timed out with a backlog. Halt consumers so they stop draining
+            // BEFORE counting the leftovers. A graceful stop would let them keep
+            // delivering the "abandoned" events while the persist below runs, and
+            // into sinks that are about to stop.
             for junction in self.stream_junction_map.values() {
                 junction.lock().unwrap().halt_processing();
             }
-            // Let live consumers finish their current event and in-flight
-            // dispatches complete, so the abandoned counts below are exact and
-            // the persist snapshot sees no concurrent mutation. Bounded: a
-            // wedged subscriber can't hold shutdown hostage twice over.
+            // Let live consumers finish their current event and any dispatch in
+            // flight, so the abandoned counts are exact and the snapshot sees no
+            // change while it is taken. Bounded by HALT_SETTLE_TIMEOUT, so a stuck
+            // subscriber cannot block shutdown forever.
             settled = poll_settled(&drain_handles, Instant::now() + HALT_SETTLE_TIMEOUT);
             if !settled {
                 log::warn!(
@@ -1083,11 +1096,11 @@ impl EventFluxAppRuntime {
             );
         }
 
-        // Auto-persist after the drain so the snapshot includes the effects of
-        // every event the runtime accepted, not just those processed before
-        // shutdown was called. Skipped when subscriber work is still mutating
-        // state (unsettled): persisting a torn snapshot is worse than keeping
-        // the previous revision, which auto-restore will fall back to.
+        // Persist after the drain, so the snapshot covers every event the runtime
+        // accepted, not just those processed before shutdown was called. Skipped
+        // when subscriber work may still be changing state (not settled). A half
+        // written snapshot is worse than keeping the previous revision, which auto
+        // restore will fall back to.
         if settled {
             if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
                 if service.persistence_store.is_some() {
@@ -1108,7 +1121,7 @@ impl EventFluxAppRuntime {
 
         self.stop_all_sinks();
 
-        // (Scheduler already shut down before the drain, with the triggers.)
+        // The scheduler was already shut down before the drain, with the triggers.
         for pr in &self.partition_runtimes {
             pr.shutdown();
         }
@@ -1117,15 +1130,14 @@ impl EventFluxAppRuntime {
         log::info!("EventFluxAppRuntime '{}' shutdown", self.name);
     }
 
-    /// Persist the current snapshot using the configured SnapshotService.
+    /// Persists a snapshot of the current state through the SnapshotService.
     ///
     /// # Returns
     ///
-    /// * `Ok(PersistReport)` - Persistence completed with details about successes/failures
-    /// * `Err(String)` - Critical failure (no snapshot service or persistence store)
-    ///
-    /// Callers should check the returned `PersistReport.failure_count` to detect
-    /// partial failures where some components failed to persist.
+    /// * `Ok(PersistReport)` - Every component was saved. `failure_count` is always 0.
+    /// * `Err(String)` - No snapshot service is set, or `SnapshotService::persist`
+    ///   failed. That includes no persistence store, and a partial save where some
+    ///   components failed. A partial revision is still written to the store.
     pub fn persist(&self) -> Result<crate::core::persistence::PersistReport, String> {
         let service = self
             .eventflux_app_context
@@ -1134,7 +1146,7 @@ impl EventFluxAppRuntime {
         service.persist()
     }
 
-    /// Capture a snapshot of the current state via the SnapshotService.
+    /// Returns a snapshot of the current state as bytes. Errors if no SnapshotService is set.
     pub fn snapshot(&self) -> Result<Vec<u8>, String> {
         let service = self
             .eventflux_app_context
@@ -1143,7 +1155,10 @@ impl EventFluxAppRuntime {
         Ok(service.snapshot())
     }
 
-    /// Restore the given snapshot bytes using the SnapshotService.
+    /// Restores state from snapshot bytes. Errors if no SnapshotService is set.
+    ///
+    /// Unlike `restore_revision`, this does not hold back events through the
+    /// ThreadBarrier and does not clear SelectProcessor group states.
     pub fn restore(&self, snapshot: &[u8]) -> Result<(), String> {
         let service = self
             .eventflux_app_context
@@ -1153,46 +1168,48 @@ impl EventFluxAppRuntime {
         Ok(())
     }
 
-    /// Restore the given revision using the SnapshotService.
+    /// Restores a persisted revision through the SnapshotService.
+    ///
+    /// With a ThreadBarrier set, new events are held back and in flight events
+    /// finish first. On success, SelectProcessor group states are cleared so
+    /// aggregators start fresh. Errors if no SnapshotService is set or the restore
+    /// fails.
     pub fn restore_revision(&self, revision: &str) -> Result<(), String> {
         let service = self
             .eventflux_app_context
             .get_snapshot_service()
             .ok_or("SnapshotService not set")?;
 
-        // Use ThreadBarrier to coordinate with event processing threads
         if let Some(barrier) = self.eventflux_app_context.get_thread_barrier() {
-            // Lock the barrier to prevent new events from entering
+            // Stop new events from entering.
             barrier.lock();
 
-            // Wait for all active threads to complete their current processing
+            // Wait for threads already inside to finish their current event.
             while barrier.get_active_threads() > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
 
-            // Perform the restoration while event processing is blocked
             let result = service.restore_revision(revision);
 
-            // Clear SelectProcessor group states after restoration to ensure fresh aggregator state
             if result.is_ok() {
                 self.clear_select_processor_group_states();
             }
 
-            // Unlock the barrier to resume normal processing
             barrier.unlock();
 
             result
         } else {
-            // No barrier configured, proceed with restoration (may have timing issues)
+            // No barrier, so events may race the restore. Group states are not
+            // cleared on this path.
             service.restore_revision(revision)
         }
     }
 
-    /// Clear all persisted and in-memory state.
+    /// Clears all persisted and in memory state.
     ///
-    /// Call this between `shutdown()` and `start()` to ensure a clean restart
-    /// with no residual state from previous runs. Only works when the runtime
-    /// is in `Stopped` state.
+    /// Call it between `shutdown()` and `start()` for a clean restart with nothing
+    /// left from earlier runs. In any state other than `Stopped` it only logs a
+    /// warning and does nothing.
     pub fn clear_state(&self) {
         {
             let state = self.state.read().unwrap();
@@ -1206,44 +1223,48 @@ impl EventFluxAppRuntime {
             }
         }
         if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
-            // Clear persisted revisions
             if let Some(store) = &service.persistence_store {
                 store.clear_all_revisions(&self.name);
             }
-            // Reset all registered state holders (window buffers, aggregator accumulators)
+            // Reset every registered state holder, such as window buffers and
+            // aggregator totals.
             service.clear_state_holders();
         }
-        // Clear in-memory group states (aggregator/window per-partition state)
+        // Clear per group state held in SelectProcessors.
         self.clear_select_processor_group_states();
         log::info!("Cleared all state for '{}'", self.name);
     }
 
-    /// Clear group states in all SelectProcessors to ensure fresh state after restoration
+    /// Clears group states in every query's processor chain, so restored or cleared
+    /// state starts fresh.
     fn clear_select_processor_group_states(&self) {
         for query_runtime in &self.query_runtimes {
-            // Try to access the processor chain and find SelectProcessors
             if let Some(ref processor) = query_runtime.processor_chain_head {
                 Self::clear_processor_chain_group_states(processor);
             }
         }
     }
 
-    /// Recursively clear group states in processor chains
+    /// Clears group states on this processor and every processor after it.
+    ///
+    /// Skips the rest of the chain if a processor mutex is poisoned.
     fn clear_processor_chain_group_states(
         processor: &Arc<Mutex<dyn crate::core::query::processor::Processor>>,
     ) {
         if let Ok(proc) = processor.lock() {
-            // Clear group states for this processor (no-op for non-SelectProcessors)
+            // Does nothing for processors other than SelectProcessor.
             proc.clear_group_states();
 
-            // Recursively check next processors in the chain
             if let Some(ref next) = proc.next_processor() {
                 Self::clear_processor_chain_group_states(next);
             }
         }
     }
 
-    /// Query an aggregation runtime using optional `within` and `per` clauses.
+    /// Queries an aggregation with optional `within` and `per` clauses.
+    ///
+    /// Returns an empty list if `agg_id` is unknown. See
+    /// `AggregationRuntime::query` for how the clauses are handled.
     pub fn query_aggregation(
         &self,
         agg_id: &str,
@@ -1257,33 +1278,35 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Auto-attach sources and sinks from SQL WITH definitions
+    /// Attaches sources and sinks for streams declared with a SQL WITH clause.
     ///
-    /// Processes StreamDefinitions that have SQL WITH clauses and automatically
-    /// creates source/sink handlers based on the WITH configuration.
+    /// For each stream whose WITH config has `type` set to source or sink, builds the
+    /// handler from the resolved config. Streams with no WITH clause, no `type`, or
+    /// type internal are skipped.
     ///
-    /// This completes the end-to-end flow:
-    /// SQL parsing → StreamDefinition.with_config → StreamTypeConfig → Factory initialization
+    /// Full flow:
+    /// SQL parsing -> StreamDefinition.with_config -> StreamTypeConfig -> factory setup
     ///
     /// # Priority
     ///
-    /// This is called AFTER YAML config processing in start(), so SQL WITH has higher
-    /// priority. If a stream is defined in both YAML and SQL WITH, SQL configuration wins
-    /// due to idempotent handler registration (first registration stays).
+    /// start() calls this BEFORE the YAML attachment, and the YAML path skips any
+    /// stream that already has a handler. So when a stream is in both YAML and SQL
+    /// WITH, the SQL handler wins. Its resolved config already merges the YAML base.
     ///
-    /// # Idempotent Operation
+    /// # Safe to repeat
     ///
-    /// Safe to call multiple times - existing handlers are not recreated.
+    /// Calling it again does not recreate existing handlers.
     ///
-    /// # Error Handling
+    /// # Error handling
     ///
-    /// Uses error accumulation pattern - continues processing all streams even if some fail.
-    /// Returns all errors encountered for debugging.
+    /// Keeps going through every stream when some fail, and returns all errors. An
+    /// unknown `type` value is an error.
     ///
     /// # Returns
     ///
-    /// * `Ok((sources, sinks))` - Lists of successfully attached stream names
-    /// * `Err(errors)` - All errors encountered (partial success possible)
+    /// * `Ok((sources, sinks))` - Names of the source and sink streams now attached,
+    ///   including ones that already had a handler
+    /// * `Err(errors)` - Every error found. Streams that did attach stay attached.
     fn auto_attach_from_sql_definitions(
         &self,
     ) -> Result<(Vec<String>, Vec<String>), Vec<crate::core::exception::EventFluxError>> {
@@ -1291,25 +1314,21 @@ impl EventFluxAppRuntime {
         let mut attached_sources = Vec::new();
         let mut attached_sinks = Vec::new();
 
-        // Iterate through all stream definitions from the parsed SQL application
         for (stream_id, stream_def) in &self.eventflux_app.stream_definition_map {
-            // Skip streams without SQL WITH configuration
             let with_config = match &stream_def.with_config {
                 Some(config) => config,
-                None => continue, // Internal stream or no WITH clause
+                None => continue, // no WITH clause
             };
 
-            // Determine stream type from configuration
             let stream_type = match with_config.get("type") {
                 Some(t) => t.as_str(),
                 None => {
-                    // No type specified - this is an internal stream, skip
+                    // No type means an internal stream.
                     continue;
                 }
             };
 
-            // Process based on stream type
-            // Uses pre-resolved configs (YAML base + SQL WITH merged at construction time)
+            // Uses the configs resolved at construction, YAML base merged with SQL WITH.
             match stream_type {
                 "source" => match self.attach_source_from_resolved_config(stream_id) {
                     Ok(()) => {
@@ -1338,7 +1357,6 @@ impl EventFluxAppRuntime {
                     }
                 },
                 "internal" => {
-                    // Internal streams don't need source/sink attachment
                     continue;
                 }
                 other => {
@@ -1350,7 +1368,6 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Fail fast - no partial success allowed
         if !errors.is_empty() {
             Err(errors)
         } else {
@@ -1358,8 +1375,8 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Attribute names of a stream's schema in declaration order (empty if the
-    /// stream is not defined). Format mappers use these to map fields by name.
+    /// Returns the attribute names of a stream in declaration order, or an empty list
+    /// if the stream is not defined. Format mappers use them to map fields by name.
     fn stream_field_names(&self, stream_name: &str) -> Vec<String> {
         self.eventflux_app
             .stream_definition_map
@@ -1368,13 +1385,13 @@ impl EventFluxAppRuntime {
             .unwrap_or_default()
     }
 
-    /// Resolve the `InputHandler` of the DLQ stream that `stream_name`'s
-    /// source routes failed events to.
+    /// Returns the `InputHandler` of the DLQ stream that the source of `stream_name`
+    /// sends failed events to.
     ///
-    /// The reference is validated again here, though app creation already
-    /// checked every resolved source config. The YAML-only attachment path
-    /// builds its properties outside the resolver, so this keeps every
-    /// attachment path covered.
+    /// Checks the DLQ reference again, even though app creation already checked
+    /// every resolved source config. The YAML only attachment path builds its
+    /// properties outside the resolver, so this covers every path. Errors if the
+    /// reference is invalid or the input handler cannot be built.
     fn dlq_input_handler(
         &self,
         stream_name: &str,
@@ -1390,8 +1407,8 @@ impl EventFluxAppRuntime {
             &self.eventflux_app.stream_definition_map,
         )?;
 
-        // Junctions exist for every defined stream before attachment, so the
-        // DLQ stream needs no initialization ordering
+        // Every defined stream has a junction before attachment starts, so the DLQ
+        // stream does not need to be set up in any particular order.
         self.input_manager
             .construct_input_handler(dlq_stream)
             .map_err(|e| {
@@ -1402,24 +1419,25 @@ impl EventFluxAppRuntime {
             })
     }
 
-    /// Common helper for attaching source streams
+    /// Attaches a source to a stream. Shared helper for both attachment paths.
     ///
-    /// Shared by the resolved-config (SQL WITH + YAML) and YAML-only paths:
-    /// creates the source and mapper, builds the handler and registers it.
-    /// Callers check for an already-registered handler before building the
-    /// config.
+    /// Used by both the resolved config path (SQL WITH plus YAML) and the YAML only
+    /// path. Creates the source and mapper, wires the DLQ stream if one is set,
+    /// builds the handler and registers it. Callers check for an existing handler
+    /// before building the config.
     ///
     /// # Arguments
     ///
     /// * `stream_name` - Name of the stream to attach
-    /// * `stream_type_config` - Already-constructed StreamTypeConfig
+    /// * `stream_type_config` - The StreamTypeConfig, already built
     /// * `context_label` - Label for error messages ("YAML", "resolved")
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - Source successfully attached (it is started later by
-    ///   `start_all_sources` in the execution phase)
-    /// * `Err(EventFluxError)` - Detailed error with context
+    /// * `Ok(())` - The source is attached. `start_all_sources` starts it later,
+    ///   when start() reaches the execution phase.
+    /// * `Err(EventFluxError)` - Source setup, input handler or DLQ wiring failed.
+    ///   The message names the stream and extension.
     fn attach_source_common(
         &self,
         stream_name: &str,
@@ -1433,7 +1451,6 @@ impl EventFluxAppRuntime {
 
         let field_names = self.stream_field_names(stream_name);
 
-        // Use stream_initializer to create source with mapper
         let mut initialized = initialize_source_stream(
             &self.eventflux_app_context.eventflux_context,
             stream_type_config,
@@ -1450,7 +1467,6 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Get or create InputHandler for this stream
         let input_handler = self
             .input_manager
             .construct_input_handler(stream_name)
@@ -1461,8 +1477,8 @@ impl EventFluxAppRuntime {
                 ))
             })?;
 
-        // Factories build sources without a DLQ junction; wire it now so
-        // failed events reach the DLQ stream instead of being dropped (#207)
+        // Factories build sources with no DLQ junction. Wire it now so failed
+        // events reach the DLQ stream instead of being dropped (#207).
         if let Some(dlq_stream) = stream_type_config.properties.get(DLQ_STREAM_KEY) {
             let dlq_handler = self.dlq_input_handler(stream_name, dlq_stream)?;
             initialized
@@ -1480,7 +1496,6 @@ impl EventFluxAppRuntime {
                 })?;
         }
 
-        // Create SourceStreamHandler
         let handler = Arc::new(SourceStreamHandler::new(
             initialized.source,
             initialized.mapper,
@@ -1488,22 +1503,21 @@ impl EventFluxAppRuntime {
             stream_name.to_string(),
         ));
 
-        // Register handler in runtime. The source is NOT started here:
-        // attachment only wires components. Consumption begins in the
-        // execution phase (start_all_sources), which runs after every sink
-        // is subscribed and started — a source that consumed at attach time
-        // could publish into a sink stream that has no subscriber yet,
-        // silently dropping events (#136).
+        // Register only. The source is NOT started here, attachment just wires
+        // parts together. Reading starts in the execution phase
+        // (start_all_sources), after every sink is subscribed and started. A
+        // source that read at attach time could publish into a sink stream with
+        // no subscriber yet and silently drop events (#136).
         self.register_source_handler(stream_name.to_string(), handler);
 
         Ok(())
     }
 
-    /// Attach a single source stream using pre-resolved configuration
+    /// Attaches one source stream from its resolved config.
     ///
-    /// Uses the pre-resolved configuration (YAML base + SQL WITH merged at construction time)
-    /// to attach the source stream. This is the simplified attachment flow that consumes
-    /// pre-resolved configs instead of doing inline merging.
+    /// The resolved config is the YAML base merged with SQL WITH at construction
+    /// time, so nothing is merged here. Does nothing if the stream already has a
+    /// source handler.
     ///
     /// # Arguments
     ///
@@ -1511,8 +1525,10 @@ impl EventFluxAppRuntime {
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - Source successfully attached (started later by `start_all_sources`)
-    /// * `Err(EventFluxError)` - Detailed error with context
+    /// * `Ok(())` - The source is attached, or already was. `start_all_sources`
+    ///   starts it later.
+    /// * `Err(EventFluxError)` - No resolved config, no `extension`, an invalid
+    ///   StreamTypeConfig, or a failure in `attach_source_common`
     fn attach_source_from_resolved_config(
         &self,
         stream_name: &str,
@@ -1521,12 +1537,10 @@ impl EventFluxAppRuntime {
         use crate::core::config::ElementType;
         use crate::core::exception::EventFluxError;
 
-        // Check if handler already registered (idempotent operation)
         if self.get_source_handler(stream_name).is_some() {
             return Ok(());
         }
 
-        // Get pre-resolved config (computed at construction time)
         let resolved = self
             .get_resolved_config(ElementType::Source, stream_name)
             .ok_or_else(|| {
@@ -1537,7 +1551,6 @@ impl EventFluxAppRuntime {
                 ))
             })?;
 
-        // Validate required fields
         let extension = resolved.extension.clone().ok_or_else(|| {
             EventFluxError::configuration(format!(
                 "Missing 'extension' property for source stream '{}'. \
@@ -1546,7 +1559,6 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Create StreamTypeConfig from pre-resolved properties
         let stream_type_config = StreamTypeConfig::new(
             StreamType::Source,
             Some(extension.clone()),
@@ -1560,7 +1572,6 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Delegate to common helper for actual attachment
         self.attach_source_common(stream_name, &stream_type_config, "resolved")?;
 
         log::info!(
@@ -1574,18 +1585,20 @@ impl EventFluxAppRuntime {
         Ok(())
     }
 
-    /// Common helper for attaching sink streams
+    /// Attaches a sink to a stream. Shared helper for both attachment paths.
     ///
-    /// Sink counterpart of [`Self::attach_source_common`], shared by the
-    /// resolved-config and YAML-only paths: creates the sink and mapper,
-    /// builds the handler, registers it and subscribes it to the stream's
-    /// junction. Callers check for an already-registered handler before
-    /// building the config.
+    /// Sink version of [`Self::attach_source_common`], used by the resolved config
+    /// path and the YAML only path. Creates the sink and mapper, builds the
+    /// handler, registers it and subscribes it to the stream's junction. Callers
+    /// check for an existing handler before building the config.
+    ///
+    /// The handler is registered before the junction subscribe. If the subscribe
+    /// fails, the handler stays registered.
     ///
     /// # Arguments
     ///
     /// * `stream_name` - Name of the stream to attach
-    /// * `stream_type_config` - Already-constructed StreamTypeConfig
+    /// * `stream_type_config` - The StreamTypeConfig, already built
     /// * `context_label` - Label for error messages ("YAML", "resolved")
     fn attach_sink_common(
         &self,
@@ -1597,8 +1610,8 @@ impl EventFluxAppRuntime {
         use crate::core::stream::handler::SinkStreamHandler;
         use crate::core::stream::stream_initializer::initialize_sink_stream;
 
-        // Schema field names give format mappers proper output keys
-        // (e.g. JSON "symbol" instead of "field_0")
+        // Schema field names give format mappers real output keys, such as JSON
+        // "symbol" instead of "field_0".
         let field_names = self.stream_field_names(stream_name);
 
         let initialized = initialize_sink_stream(
@@ -1623,10 +1636,8 @@ impl EventFluxAppRuntime {
             stream_name.to_string(),
         ));
 
-        // Register handler in runtime
         self.register_sink_handler(stream_name.to_string(), Arc::clone(&handler));
 
-        // Attach sink to junction for event delivery
         self.attach_sink_to_junction(stream_name, handler)
             .map_err(|e| {
                 EventFluxError::app_creation(format!(
@@ -1636,11 +1647,11 @@ impl EventFluxAppRuntime {
             })
     }
 
-    /// Attach a single sink stream using pre-resolved configuration
+    /// Attaches one sink stream from its resolved config.
     ///
-    /// Uses the pre-resolved configuration (YAML base + SQL WITH merged at construction time)
-    /// to attach the sink stream. This is the simplified attachment flow that consumes
-    /// pre-resolved configs instead of doing inline merging.
+    /// The resolved config is the YAML base merged with SQL WITH at construction
+    /// time, so nothing is merged here. Does nothing if the stream already has a
+    /// sink handler.
     ///
     /// # Arguments
     ///
@@ -1648,8 +1659,9 @@ impl EventFluxAppRuntime {
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - Sink successfully attached
-    /// * `Err(EventFluxError)` - Detailed error with context
+    /// * `Ok(())` - The sink is attached, or already was
+    /// * `Err(EventFluxError)` - No resolved config, no `extension`, an invalid
+    ///   StreamTypeConfig, or a failure in `attach_sink_common`
     fn attach_sink_from_resolved_config(
         &self,
         stream_name: &str,
@@ -1658,12 +1670,10 @@ impl EventFluxAppRuntime {
         use crate::core::config::ElementType;
         use crate::core::exception::EventFluxError;
 
-        // Check if handler already registered (idempotent operation)
         if self.get_sink_handler(stream_name).is_some() {
             return Ok(());
         }
 
-        // Get pre-resolved config (computed at construction time)
         let resolved = self
             .get_resolved_config(ElementType::Sink, stream_name)
             .ok_or_else(|| {
@@ -1674,7 +1684,6 @@ impl EventFluxAppRuntime {
                 ))
             })?;
 
-        // Validate required fields
         let extension = resolved.extension.clone().ok_or_else(|| {
             EventFluxError::configuration(format!(
                 "Missing 'extension' property for sink stream '{}'. \
@@ -1683,7 +1692,6 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Create StreamTypeConfig from pre-resolved properties
         let stream_type_config = StreamTypeConfig::new(
             StreamType::Sink,
             Some(extension.clone()),
@@ -1697,7 +1705,6 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Delegate to common helper for actual attachment
         self.attach_sink_common(stream_name, &stream_type_config, "resolved")?;
 
         log::info!(
@@ -1711,40 +1718,34 @@ impl EventFluxAppRuntime {
         Ok(())
     }
 
-    /// Auto-attach sources from configuration
+    /// Attaches a source for every stream with a source in the YAML or TOML config.
     ///
-    /// Automatically creates source stream handlers based on application configuration.
-    /// Uses the existing stream_initializer infrastructure for proper factory integration
-    /// and mapper support.
+    /// Builds each source and its mapper through stream_initializer, so registered
+    /// factories and mappers are used. Streams that already have a source handler
+    /// are skipped, so calling it again is safe.
     ///
-    /// This operation is idempotent - if a source handler is already registered for a stream,
-    /// it will be skipped.
-    ///
-    /// # Production Features
-    ///
-    /// - Accumulates all errors instead of failing on first error
-    /// - Provides detailed error context for debugging
-    /// - Tracks which sources succeeded vs failed
-    /// - Proper logging instead of println
+    /// Keeps going after a failure, logs each result, and collects every error with
+    /// the stream name and source type.
     ///
     /// # Flow
     ///
-    /// 1. Iterate through all configured streams with sources
-    /// 2. Skip if handler already registered (idempotent)
-    /// 3. Convert SourceConfig to StreamTypeConfig
-    /// 4. Use stream_initializer to create source with mapper
-    /// 5. Create SourceStreamHandler and register it (started later by
-    ///    `start_all_sources`)
+    /// 1. Go through every configured stream that has a source
+    /// 2. Skip it if a handler is already registered
+    /// 3. Convert the SourceConfig to a StreamTypeConfig
+    /// 4. Create the source and mapper through stream_initializer
+    /// 5. Build the SourceStreamHandler and register it. `start_all_sources` starts
+    ///    it later.
     /// 6. Collect successes and failures
     ///
     /// # Arguments
     ///
-    /// * `app_config` - Application configuration containing stream definitions
+    /// * `app_config` - Application config holding the stream definitions
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<String>)` - List of successfully attached source stream names
-    /// * `Err(Vec<EventFluxError>)` - List of all errors encountered (partial success possible)
+    /// * `Ok(Vec<String>)` - Names of the source streams handled, including skipped ones
+    /// * `Err(Vec<EventFluxError>)` - Every error found. Sources that did attach stay
+    ///   attached.
     fn auto_attach_sources_from_config(
         &self,
         app_config: &ApplicationConfig,
@@ -1752,11 +1753,8 @@ impl EventFluxAppRuntime {
         let mut errors = Vec::new();
         let mut successes = Vec::new();
 
-        // Iterate through all configured streams
         for (stream_name, stream_config) in &app_config.streams {
-            // Check if this stream has a source configuration
             if let Some(ref source_config) = stream_config.source {
-                // Process this source, collecting errors instead of failing fast
                 match self.attach_single_source(stream_name, source_config) {
                     Ok(()) => {
                         successes.push(stream_name.clone());
@@ -1778,7 +1776,6 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Fail fast - no partial success allowed
         if !errors.is_empty() {
             Err(errors)
         } else {
@@ -1786,10 +1783,11 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Attach a single source stream handler
+    /// Attaches one source from its YAML SourceConfig.
     ///
-    /// Converts YAML SourceConfig to StreamTypeConfig and delegates to common helper.
-    /// All errors are properly typed as EventFluxError with context.
+    /// Converts the SourceConfig to a StreamTypeConfig and hands it to
+    /// `attach_source_common`. Does nothing if the stream already has a source
+    /// handler. Errors are EventFluxError values that name the stream.
     fn attach_single_source(
         &self,
         stream_name: &str,
@@ -1798,14 +1796,12 @@ impl EventFluxAppRuntime {
         use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
         use crate::core::exception::EventFluxError;
 
-        // Check if handler already registered (idempotent operation). Done
-        // before parsing the YAML so a stream already attached from its
-        // resolved config is skipped rather than re-validated.
+        // Check before parsing the YAML, so a stream already attached from its
+        // resolved config is skipped, not checked again.
         if self.get_source_handler(stream_name).is_some() {
             return Ok(());
         }
 
-        // Convert SourceConfig to StreamTypeConfig
         let mut properties = self
             .extract_connection_config(&source_config.connection)
             .map_err(|e| {
@@ -1815,7 +1811,7 @@ impl EventFluxAppRuntime {
                 ))
             })?;
 
-        // Merge remaining SourceConfig fields (security, error_handling, rate_limit)
+        // Merge the other SourceConfig fields (security, error_handling, rate_limit).
         Self::merge_source_config_into_properties(source_config, &mut properties).map_err(|e| {
             EventFluxError::configuration(format!(
                 "Failed to merge source config for stream '{}': {}",
@@ -1836,34 +1832,34 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Delegate to common helper for actual attachment
         self.attach_source_common(stream_name, &stream_type_config, "YAML")
     }
 
-    /// Extract connection configuration from serde_yaml::Value into HashMap
+    /// Turns a connection config from a SourceConfig or SinkConfig into a string map.
     ///
-    /// Converts the flattened connection configuration from SourceConfig/SinkConfig into
-    /// a HashMap that can be passed to factory create_initialized() methods.
+    /// The map can be passed to factory create_initialized() methods. Strings,
+    /// numbers and bools become their text form. Lists become a JSON string. Null
+    /// becomes an empty string.
     ///
     /// # Arguments
     ///
-    /// * `connection` - Connection configuration from SourceConfig/SinkConfig
+    /// * `connection` - Connection config from a SourceConfig or SinkConfig
     ///
     /// # Returns
     ///
-    /// * `Ok(HashMap)` - Configuration as key-value pairs
-    /// * `Err(String)` - If configuration cannot be extracted
+    /// * `Ok(HashMap)` - The config as key and value strings. Empty if `connection`
+    ///   is Null.
+    /// * `Err(String)` - If `connection` is not a mapping, a key is not a string, or
+    ///   a value is a nested mapping or another unsupported type
     fn extract_connection_config(
         &self,
         connection: &serde_yaml::Value,
     ) -> Result<std::collections::HashMap<String, String>, String> {
         use std::collections::HashMap;
 
-        // Convert serde_yaml::Value to HashMap<String, String>
         let map = match connection {
             serde_yaml::Value::Mapping(m) => m,
             serde_yaml::Value::Null => {
-                // Empty connection config is valid
                 return Ok(HashMap::new());
             }
             _ => {
@@ -1877,18 +1873,16 @@ impl EventFluxAppRuntime {
         let mut config = HashMap::new();
 
         for (key, value) in map {
-            // Get key as string
             let key_str = key
                 .as_str()
                 .ok_or_else(|| format!("Configuration key must be a string, got: {:?}", key))?;
 
-            // Convert value to string representation
             let value_str = match value {
                 serde_yaml::Value::String(s) => s.clone(),
                 serde_yaml::Value::Number(n) => n.to_string(),
                 serde_yaml::Value::Bool(b) => b.to_string(),
                 serde_yaml::Value::Sequence(_) => {
-                    // Serialize arrays as JSON string for factory consumption
+                    // Factories read lists as a JSON string.
                     serde_json::to_string(value).map_err(|e| {
                         format!(
                             "Failed to serialize array value for key '{}': {}",
@@ -1911,20 +1905,22 @@ impl EventFluxAppRuntime {
         Ok(config)
     }
 
-    /// Auto-attach sinks from configuration
+    /// Attaches a sink for every stream with a sink in the YAML or TOML config.
     ///
-    /// CRITICAL FIX: Uses stream_initializer with EventFluxContext's registered factories
-    /// instead of creating a fresh SinkFactoryRegistry that only has built-in sinks.
-    /// This allows custom/extension sinks to be auto-attached from YAML/TOML configuration.
+    /// Uses stream_initializer with the factories registered on EventFluxContext,
+    /// not a fresh SinkFactoryRegistry that only knows the built in sinks. That is
+    /// what lets custom and extension sinks attach from config. Streams that
+    /// already have a sink handler are skipped. Keeps going after a failure.
     ///
     /// # Arguments
     ///
-    /// * `app_config` - Application configuration containing sink definitions
+    /// * `app_config` - Application config holding the sink definitions
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<String>)` - List of successfully attached sink names
-    /// * `Err(Vec<EventFluxError>)` - List of all errors encountered
+    /// * `Ok(Vec<String>)` - Names of the sink streams handled, including skipped ones
+    /// * `Err(Vec<EventFluxError>)` - Every error found. Sinks that did attach stay
+    ///   attached.
     fn auto_attach_sinks_from_config(
         &self,
         app_config: &ApplicationConfig,
@@ -1932,11 +1928,8 @@ impl EventFluxAppRuntime {
         let mut errors = Vec::new();
         let mut successes = Vec::new();
 
-        // Iterate through all configured streams
         for (stream_name, stream_config) in &app_config.streams {
-            // Check if this stream has a sink configuration
             if let Some(ref sink_config) = stream_config.sink {
-                // Process this sink, collecting errors instead of failing fast
                 match self.attach_single_sink(stream_name, sink_config) {
                     Ok(()) => {
                         successes.push(stream_name.clone());
@@ -1959,7 +1952,6 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Fail fast - no partial success allowed
         if !errors.is_empty() {
             Err(errors)
         } else {
@@ -1967,10 +1959,11 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Attach a single sink stream handler
+    /// Attaches one sink from its YAML SinkConfig.
     ///
-    /// Converts YAML SinkConfig to StreamTypeConfig and delegates to common helper.
-    /// All errors are properly typed as EventFluxError with context.
+    /// Converts the SinkConfig to a StreamTypeConfig and hands it to
+    /// `attach_sink_common`. Does nothing if the stream already has a sink handler.
+    /// Errors are EventFluxError values that name the stream.
     fn attach_single_sink(
         &self,
         stream_name: &str,
@@ -1979,12 +1972,10 @@ impl EventFluxAppRuntime {
         use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
         use crate::core::exception::EventFluxError;
 
-        // Check if sink handler already registered (idempotent operation)
         if self.get_sink_handler(stream_name).is_some() {
             return Ok(());
         }
 
-        // Convert SinkConfig to StreamTypeConfig (similar to sources)
         let mut properties = self
             .extract_connection_config(&sink_config.connection)
             .map_err(|e| {
@@ -1994,7 +1985,7 @@ impl EventFluxAppRuntime {
                 ))
             })?;
 
-        // Merge remaining SinkConfig fields (security, delivery_guarantee, retry, batching)
+        // Merge the other SinkConfig fields (security, delivery_guarantee, retry, batching).
         Self::merge_sink_config_into_properties(sink_config, &mut properties).map_err(|e| {
             EventFluxError::configuration(format!(
                 "Failed to merge sink config for stream '{}': {}",
@@ -2015,23 +2006,22 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Delegate to common helper for actual attachment
         self.attach_sink_common(stream_name, &stream_type_config, "YAML")
     }
 
-    /// Auto-attach tables from configuration
+    /// Builds and registers every table defined in the YAML or TOML config.
     ///
-    /// Initializes tables from TOML/YAML configuration and registers them in the runtime.
-    /// Tables are passively queried and don't require lifecycle management like sources/sinks.
+    /// Tables are only queried, so unlike sources and sinks they need no start or
+    /// stop. Tables already registered are skipped. Keeps going after a failure.
     ///
     /// # Arguments
     ///
-    /// * `app_config` - Application configuration containing table definitions
+    /// * `app_config` - Application config holding the table definitions
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<String>)` - List of successfully attached table names
-    /// * `Err(Vec<EventFluxError>)` - List of all errors encountered
+    /// * `Ok(Vec<String>)` - Names of the tables handled, including skipped ones
+    /// * `Err(Vec<EventFluxError>)` - Every error found
     fn auto_attach_tables_from_config(
         &self,
         app_config: &ApplicationConfig,
@@ -2041,16 +2031,13 @@ impl EventFluxAppRuntime {
         let mut errors = Vec::new();
         let mut successes = Vec::new();
 
-        // Iterate through all definitions, filtering for tables
         for (table_name, def_config) in &app_config.definitions {
             if let DefinitionConfig::Table(table_config) = def_config {
-                // Check if handler already registered (idempotent operation)
                 if self.get_table_handler(table_name).is_some() {
                     successes.push(table_name.clone());
                     continue;
                 }
 
-                // Process this table, collecting errors instead of failing fast
                 match self.attach_single_table(table_name, table_config) {
                     Ok(()) => {
                         successes.push(table_name.clone());
@@ -2072,7 +2059,6 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // Fail fast - no partial success allowed
         if !errors.is_empty() {
             Err(errors)
         } else {
@@ -2080,10 +2066,10 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Attach a single table handler from TableConfig
+    /// Builds one table from its YAML TableConfig and registers it.
     ///
-    /// Converts TableConfig (YAML config) to TableTypeConfig (initializer format)
-    /// and registers the initialized table in the runtime.
+    /// Converts the TableConfig to the TableTypeConfig the initializer takes.
+    /// Errors if the conversion or the table factory fails.
     fn attach_single_table(
         &self,
         table_name: &str,
@@ -2092,7 +2078,6 @@ impl EventFluxAppRuntime {
         use crate::core::exception::EventFluxError;
         use crate::core::stream::stream_initializer::initialize_table;
 
-        // Convert TableConfig to TableTypeConfig
         let table_type_config = Self::convert_table_config(table_config).map_err(|e| {
             EventFluxError::configuration(format!(
                 "Failed to convert TableConfig for '{}': {}",
@@ -2100,7 +2085,6 @@ impl EventFluxAppRuntime {
             ))
         })?;
 
-        // Initialize table using factory
         let table = initialize_table(
             &self.eventflux_app_context.eventflux_context,
             &table_type_config,
@@ -2114,34 +2098,31 @@ impl EventFluxAppRuntime {
         })?
         .table;
 
-        // Register table in runtime
         self.register_table_handler(table_name.to_string(), table);
 
         Ok(())
     }
 
-    /// Convert TableConfig (YAML) to TableTypeConfig (initializer format)
+    /// Converts a YAML TableConfig to the flat TableTypeConfig the initializer takes.
     ///
-    /// Maps the structured TableConfig with store/schema/caching/indexing
-    /// to the flattened TableTypeConfig with extension and properties HashMap.
+    /// The store type becomes the extension. Properties hold `extension`, the
+    /// flattened store connection, and the pool settings as
+    /// `<extension>.pool.max_size`, `.min_size` and `.connection_timeout_ms`.
+    /// The schema, caching and indexing sections are not used. Errors if the
+    /// connection cannot be flattened or TableTypeConfig rejects the result.
     fn convert_table_config(
         table_config: &crate::core::config::types::application_config::TableConfig,
     ) -> Result<crate::core::config::stream_config::TableTypeConfig, String> {
         use crate::core::config::stream_config::TableTypeConfig;
 
-        // Extension comes from store type
         let extension = table_config.store.store_type.clone();
 
-        // Flatten all configuration into properties HashMap
         let mut properties = HashMap::new();
 
-        // Add extension property
         properties.insert("extension".to_string(), extension.clone());
 
-        // Flatten store connection configuration
         Self::flatten_yaml_value(&table_config.store.connection, "", &mut properties)?;
 
-        // Add pool configuration if present
         if let Some(ref pool) = table_config.store.pool {
             properties.insert(
                 format!("{}.pool.max_size", extension),
@@ -2157,79 +2138,82 @@ impl EventFluxAppRuntime {
             );
         }
 
-        // Create TableTypeConfig with validation
+        // TableTypeConfig::new validates the result.
         TableTypeConfig::new(extension, properties)
     }
 
-    // NOTE: The old get_yaml_source_base_properties() and get_yaml_sink_base_properties()
-    // methods have been removed. Their functionality is now handled by ElementConfigResolver
-    // which pre-resolves all element configurations at runtime construction time.
-    // See src/core/config/element_config_resolver.rs for the new implementation.
+    // The old get_yaml_source_base_properties() and get_yaml_sink_base_properties()
+    // methods are gone. ElementConfigResolver now does that work, resolving every
+    // element config when the runtime is built.
+    // See src/core/config/element_config_resolver.rs.
 
-    /// Merge SinkConfig fields into properties HashMap
+    /// Flattens the rest of a SinkConfig into `properties`.
     ///
-    /// Serializes entire SinkConfig to YAML and flattens all fields (security, delivery_guarantee,
-    /// retry, batching) into the properties HashMap using generic serialization.
-    /// This ensures all configuration fields reach the factory without hardcoding field names.
+    /// Serializes the whole SinkConfig to YAML and flattens every field (security,
+    /// delivery_guarantee, retry, batching) into `properties`. So every field
+    /// reaches the factory without listing field names here. `type` and `format`
+    /// are dropped because they are read elsewhere. `connection` is flattened by
+    /// serde, so there is no `connection` key to drop and its keys are written
+    /// again. Errors if the config does not serialize to a mapping or cannot be
+    /// flattened.
     fn merge_sink_config_into_properties(
         sink_config: &crate::core::config::types::application_config::SinkConfig,
         properties: &mut HashMap<String, String>,
     ) -> Result<(), String> {
-        // Serialize entire SinkConfig to YAML for generic flattening
         let config_value = serde_yaml::to_value(sink_config)
             .map_err(|e| format!("Failed to serialize SinkConfig: {}", e))?;
 
-        // Extract mapping
         let mut mapping = match config_value {
             serde_yaml::Value::Mapping(m) => m,
             _ => return Err("SinkConfig must serialize to mapping".to_string()),
         };
 
-        // Remove fields already extracted elsewhere (to avoid duplication)
+        // Already read elsewhere, so drop them to avoid duplicates.
         mapping.remove(serde_yaml::Value::String("type".to_string()));
         mapping.remove(serde_yaml::Value::String("format".to_string()));
         mapping.remove(serde_yaml::Value::String("connection".to_string()));
 
-        // Flatten remaining fields (security, delivery_guarantee, retry, batching)
         Self::flatten_yaml_value(&serde_yaml::Value::Mapping(mapping), "", properties)?;
 
         Ok(())
     }
 
-    /// Merge SourceConfig fields into properties HashMap
+    /// Flattens the rest of a SourceConfig into `properties`.
     ///
-    /// Serializes entire SourceConfig to YAML and flattens all fields (security, error_handling,
-    /// rate_limit) into the properties HashMap using generic serialization.
-    /// This ensures all configuration fields reach the factory without hardcoding field names.
+    /// Serializes the whole SourceConfig to YAML and flattens every field (security,
+    /// error_handling, rate_limit) into `properties`. So every field reaches the
+    /// factory without listing field names here. `type` and `format` are dropped
+    /// because they are read elsewhere. `connection` is flattened by serde, so
+    /// there is no `connection` key to drop and its keys are written again. Errors
+    /// if the config does not serialize to a mapping or cannot be flattened.
     fn merge_source_config_into_properties(
         source_config: &crate::core::config::types::application_config::SourceConfig,
         properties: &mut HashMap<String, String>,
     ) -> Result<(), String> {
-        // Serialize entire SourceConfig to YAML for generic flattening
         let config_value = serde_yaml::to_value(source_config)
             .map_err(|e| format!("Failed to serialize SourceConfig: {}", e))?;
 
-        // Extract mapping
         let mut mapping = match config_value {
             serde_yaml::Value::Mapping(m) => m,
             _ => return Err("SourceConfig must serialize to mapping".to_string()),
         };
 
-        // Remove fields already extracted elsewhere (to avoid duplication)
+        // Already read elsewhere, so drop them to avoid duplicates.
         mapping.remove(serde_yaml::Value::String("type".to_string()));
         mapping.remove(serde_yaml::Value::String("format".to_string()));
         mapping.remove(serde_yaml::Value::String("connection".to_string()));
 
-        // Flatten remaining fields (security, error_handling, rate_limit)
         Self::flatten_yaml_value(&serde_yaml::Value::Mapping(mapping), "", properties)?;
 
         Ok(())
     }
 
-    /// Flatten serde_yaml::Value into HashMap<String, String>
+    /// Flattens a YAML value into `result`, joining nested keys with dots.
     ///
-    /// Recursively flattens nested YAML structures using dot notation.
-    /// For example: {mysql: {host: "localhost"}} becomes {"mysql.host": "localhost"}
+    /// For example {mysql: {host: "localhost"}} becomes {"mysql.host": "localhost"}.
+    /// Null becomes the string "null". A list becomes its scalar items joined by
+    /// commas, and nested lists or mappings inside it are dropped. Errors on a
+    /// non string key or a tagged value.
     fn flatten_yaml_value(
         value: &serde_yaml::Value,
         prefix: &str,
@@ -2264,7 +2248,7 @@ impl EventFluxAppRuntime {
                 result.insert(prefix.to_string(), "null".to_string());
             }
             serde_yaml::Value::Sequence(seq) => {
-                // For arrays, join with commas or create indexed keys
+                // Join scalar items with commas. Other items are skipped.
                 let values: Vec<String> = seq
                     .iter()
                     .filter_map(|v| match v {

@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 //
-// Comprehensive tests for OUTPUT RATE LIMITING functionality.
-// Tests cover event-based rate limiting with ALL, FIRST, and LAST behaviors,
-// including edge cases, state persistence, and negative test cases.
+// Tests for OUTPUT RATE LIMITING.
+// They cover rate limiting by event count with the ALL, FIRST and LAST behaviours,
+// plus edge cases, state persistence and inputs that must be rejected.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -56,7 +56,7 @@ fn get_string(event: &[AttributeValue], index: usize) -> String {
 }
 
 // ============================================================================
-// POSITIVE TESTS: EVENT-BASED ALL BEHAVIOR
+// POSITIVE TESTS: ALL BEHAVIOUR, BY EVENT COUNT
 // ============================================================================
 
 /// Test: ALL behavior emits all accumulated events when batch size is reached
@@ -73,7 +73,7 @@ async fn test_all_behavior_exact_batch_emission() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Send 3 events - should emit all 3
+    // Send 3 events. All 3 are emitted.
     runner.send("Input", vec![AttributeValue::Int(10)]);
     assert_eq!(
         runner.collected.lock().unwrap().len(),
@@ -216,7 +216,7 @@ async fn test_all_behavior_preserves_order() {
 }
 
 // ============================================================================
-// POSITIVE TESTS: EVENT-BASED FIRST BEHAVIOR
+// POSITIVE TESTS: FIRST BEHAVIOUR, BY EVENT COUNT
 // ============================================================================
 
 /// Test: FIRST behavior only emits first event of each batch
@@ -233,7 +233,7 @@ async fn test_first_behavior_keeps_only_first() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // First batch: send 10, 20, 30 - only 10 should be emitted
+    // First batch 10, 20, 30. Only 10 is emitted.
     runner.send("Input", vec![AttributeValue::Int(10)]);
     runner.send("Input", vec![AttributeValue::Int(20)]);
     runner.send("Input", vec![AttributeValue::Int(30)]);
@@ -244,7 +244,7 @@ async fn test_first_behavior_keeps_only_first() {
         assert_eq!(get_int(&collected[0], 0), 10, "First event value is 10");
     }
 
-    // Second batch: send 40, 50, 60 - only 40 should be emitted
+    // Second batch 40, 50, 60. Only 40 is emitted.
     runner.send("Input", vec![AttributeValue::Int(40)]);
     runner.send("Input", vec![AttributeValue::Int(50)]);
     runner.send("Input", vec![AttributeValue::Int(60)]);
@@ -293,7 +293,7 @@ async fn test_first_behavior_discards_subsequent() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Send 5 events - only first should be kept
+    // Send 5 events. Only the first is kept.
     runner.send("Input", vec![AttributeValue::Int(100)]);
     runner.send("Input", vec![AttributeValue::Int(200)]); // discarded
     runner.send("Input", vec![AttributeValue::Int(300)]); // discarded
@@ -306,7 +306,7 @@ async fn test_first_behavior_discards_subsequent() {
 }
 
 // ============================================================================
-// POSITIVE TESTS: EVENT-BASED LAST BEHAVIOR
+// POSITIVE TESTS: LAST BEHAVIOUR, BY EVENT COUNT
 // ============================================================================
 
 /// Test: LAST behavior only emits last event of each batch
@@ -323,7 +323,7 @@ async fn test_last_behavior_keeps_only_last() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // First batch: send 10, 20, 30 - only 30 should be emitted
+    // First batch 10, 20, 30. Only 30 is emitted.
     runner.send("Input", vec![AttributeValue::Int(10)]);
     runner.send("Input", vec![AttributeValue::Int(20)]);
     runner.send("Input", vec![AttributeValue::Int(30)]);
@@ -334,7 +334,7 @@ async fn test_last_behavior_keeps_only_last() {
         assert_eq!(get_int(&collected[0], 0), 30, "Last event value is 30");
     }
 
-    // Second batch: send 40, 50, 60 - only 60 should be emitted
+    // Second batch 40, 50, 60. Only 60 is emitted.
     runner.send("Input", vec![AttributeValue::Int(40)]);
     runner.send("Input", vec![AttributeValue::Int(50)]);
     runner.send("Input", vec![AttributeValue::Int(60)]);
@@ -383,7 +383,7 @@ async fn test_last_behavior_replaces_previous() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Send 5 events - each replaces the previous in buffer
+    // Send 5 events. Each replaces the previous one in the buffer.
     runner.send("Input", vec![AttributeValue::Int(100)]); // kept
     runner.send("Input", vec![AttributeValue::Int(200)]); // replaces 100
     runner.send("Input", vec![AttributeValue::Int(300)]); // replaces 200
@@ -413,12 +413,12 @@ async fn test_partial_batch_flushed_on_shutdown() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Send only 3 events (partial batch)
+    // Send only 3 events, a partial batch
     runner.send("Input", vec![AttributeValue::Int(1)]);
     runner.send("Input", vec![AttributeValue::Int(2)]);
     runner.send("Input", vec![AttributeValue::Int(3)]);
 
-    // No output yet (batch not complete)
+    // No output yet because the batch is not complete
     assert_eq!(runner.collected.lock().unwrap().len(), 0);
 
     // Shutdown should flush the partial batch
@@ -442,7 +442,7 @@ async fn test_partial_batch_first_on_shutdown() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Send 3 events (partial batch) - only first should be in buffer
+    // Send 3 events, a partial batch. Only the first stays in the buffer.
     runner.send("Input", vec![AttributeValue::Int(10)]);
     runner.send("Input", vec![AttributeValue::Int(20)]);
     runner.send("Input", vec![AttributeValue::Int(30)]);
@@ -465,7 +465,7 @@ async fn test_partial_batch_last_on_shutdown() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Send 3 events (partial batch) - only last should be in buffer
+    // Send 3 events, a partial batch. Only the last stays in the buffer.
     runner.send("Input", vec![AttributeValue::Int(10)]);
     runner.send("Input", vec![AttributeValue::Int(20)]);
     runner.send("Input", vec![AttributeValue::Int(30)]);
@@ -515,7 +515,7 @@ async fn test_large_batch_size() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Send only 5 events (far fewer than batch size)
+    // Send only 5 events, far fewer than the batch size
     for i in 1..=5 {
         runner.send("Input", vec![AttributeValue::Int(i)]);
     }
@@ -541,22 +541,22 @@ async fn test_mixed_complete_and_partial_batches() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Complete batch 1: 3 events
+    // Complete batch 1 of 3 events
     runner.send("Input", vec![AttributeValue::Int(1)]);
     runner.send("Input", vec![AttributeValue::Int(2)]);
     runner.send("Input", vec![AttributeValue::Int(3)]);
     assert_eq!(runner.collected.lock().unwrap().len(), 3);
 
-    // Complete batch 2: 3 more events
+    // Complete batch 2 of 3 more events
     runner.send("Input", vec![AttributeValue::Int(4)]);
     runner.send("Input", vec![AttributeValue::Int(5)]);
     runner.send("Input", vec![AttributeValue::Int(6)]);
     assert_eq!(runner.collected.lock().unwrap().len(), 6);
 
-    // Partial batch: 2 events
+    // Partial batch of 2 events
     runner.send("Input", vec![AttributeValue::Int(7)]);
     runner.send("Input", vec![AttributeValue::Int(8)]);
-    assert_eq!(runner.collected.lock().unwrap().len(), 6); // Still 6, partial not emitted
+    assert_eq!(runner.collected.lock().unwrap().len(), 6); // partial batch not emitted
 
     let out = runner.shutdown();
     assert_eq!(out.len(), 8, "All events including partial batch");
@@ -639,7 +639,7 @@ async fn test_rate_limit_with_aggregation() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Events: 10, 20, 30 - sum should update with each
+    // Events 10, 20, 30. The sum updates with each.
     runner.send("Input", vec![AttributeValue::Int(10)]);
     runner.send("Input", vec![AttributeValue::Int(20)]);
     runner.send("Input", vec![AttributeValue::Int(30)]);
@@ -667,7 +667,7 @@ async fn test_state_persistence_mid_batch() {
 
     let runner = AppRunner::new_with_store(app, "Output", Arc::clone(&store)).await;
 
-    // Send 2 events (partial batch)
+    // Send 2 events, a partial batch
     runner.send("Input", vec![AttributeValue::Int(1)]);
     runner.send("Input", vec![AttributeValue::Int(2)]);
 
@@ -677,16 +677,16 @@ async fn test_state_persistence_mid_batch() {
     // Send 1 more event
     runner.send("Input", vec![AttributeValue::Int(3)]);
 
-    // Restore to revision (should go back to 2 events in buffer)
+    // Restore the revision, back to 2 events in the buffer
     runner.restore_revision(&rev);
 
-    // Send 3 more events to complete batch (2 restored + 3 new = 5)
+    // 3 more events complete the batch, 2 restored plus 3 new = 5
     runner.send("Input", vec![AttributeValue::Int(100)]);
     runner.send("Input", vec![AttributeValue::Int(200)]);
     runner.send("Input", vec![AttributeValue::Int(300)]);
 
     let out = runner.shutdown();
-    // Should have: [1, 2, 100, 200, 300] from the batch
+    // The batch is [1, 2, 100, 200, 300]
     assert_eq!(out.len(), 5);
     assert_eq!(get_int(&out[0], 0), 1);
     assert_eq!(get_int(&out[1], 0), 2);
@@ -722,7 +722,7 @@ async fn test_state_persistence_first_behavior() {
     // Should have emitted first event (10)
     assert_eq!(runner.collected.lock().unwrap().len(), 1);
 
-    // Restore - buffer should have [10], counter should be 2
+    // Restore. The buffer goes back to [10] and the counter to 2.
     runner.restore_revision(&rev);
 
     // Send 2 more events to complete batch
@@ -730,7 +730,7 @@ async fn test_state_persistence_first_behavior() {
     runner.send("Input", vec![AttributeValue::Int(60)]);
 
     let out = runner.shutdown();
-    // After restore + 2 new events, batch completes with first=10
+    // After restore and 2 new events, the batch completes with first=10
     assert_eq!(out.len(), 2); // One from before restore, one after
 }
 
@@ -757,7 +757,7 @@ async fn test_state_persistence_last_behavior() {
     // Restore
     runner.restore_revision(&rev);
 
-    // Send 2 more to complete batch (counter=2 + 2 new = 4)
+    // 2 more complete the batch, counter=2 plus 2 new = 4
     runner.send("Input", vec![AttributeValue::Int(30)]); // replaces 20
     runner.send("Input", vec![AttributeValue::Int(40)]); // replaces 30, triggers emit
 
@@ -835,7 +835,7 @@ async fn test_time_unit_milliseconds_accepted() {
         OUTPUT ALL EVERY 100 MILLISECONDS;
     "#;
 
-    // Should parse without error - we just need to create the runner
+    // Must parse without error. Creating the runner is enough to check that.
     let runner = AppRunner::new(app, "Output").await;
     runner.shutdown();
 }

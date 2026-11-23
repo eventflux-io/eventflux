@@ -28,7 +28,7 @@ use super::aggregation_runtime::AggregationRuntime;
 #[derive(Debug)]
 pub struct AggregationInputProcessor {
     meta: CommonProcessorMeta,
-    runtime: Arc<Mutex<AggregationRuntime>>, // shared runtime
+    runtime: Arc<Mutex<AggregationRuntime>>, // shared with clones made by clone_processor
 }
 
 impl AggregationInputProcessor {

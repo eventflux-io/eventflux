@@ -15,36 +15,36 @@
  * limitations under the License.
  */
 
-//! Retry configuration and backoff strategies for error handling.
+//! Retry settings and backoff.
 //!
-//! This module provides configurable retry logic with multiple backoff strategies
-//! including exponential, linear, and fixed delay patterns.
+//! Backoff is how the wait between retries grows. Exponential, linear and fixed
+//! patterns are supported.
 
 use std::str::FromStr;
 use std::time::Duration;
 
 use crate::core::config::FlatConfig;
 
-/// Backoff strategy for retry delays
+/// How the wait between retries grows.
 ///
-/// Determines how the delay between retry attempts increases.
+/// Every pattern is capped at `max_delay`, except `Fixed`, which never changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackoffStrategy {
-    /// Exponential backoff: delay = initial_delay * 2^(attempt-1)
+    /// delay = initial_delay * 2^(attempt-1)
     ///
-    /// Provides aggressive backoff to avoid overwhelming failing systems.
+    /// Backs off fast so a failing system is not flooded.
     /// Example: 100ms, 200ms, 400ms, 800ms, 1.6s, 3.2s, ...
     Exponential,
 
-    /// Linear backoff: delay = initial_delay * attempt
+    /// delay = initial_delay * attempt
     ///
-    /// Provides gradual, predictable increase in delays.
+    /// Grows slowly and evenly.
     /// Example: 100ms, 200ms, 300ms, 400ms, 500ms, ...
     Linear,
 
-    /// Fixed delay: delay = initial_delay (constant)
+    /// delay = initial_delay
     ///
-    /// Uses the same delay for all retry attempts.
+    /// The same wait every time.
     /// Example: 100ms, 100ms, 100ms, 100ms, ...
     Fixed,
 }
@@ -52,7 +52,7 @@ pub enum BackoffStrategy {
 impl std::str::FromStr for BackoffStrategy {
     type Err = String;
 
-    /// Parse backoff strategy from string (case-insensitive)
+    /// Parse `exponential`, `linear` or `fixed`, ignoring case.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "exponential" => Ok(BackoffStrategy::Exponential),
@@ -67,7 +67,7 @@ impl std::str::FromStr for BackoffStrategy {
 }
 
 impl BackoffStrategy {
-    /// Convert backoff strategy to string representation
+    /// Returns the lowercase name, such as `"exponential"`.
     #[inline]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -79,34 +79,36 @@ impl BackoffStrategy {
 }
 
 impl Default for BackoffStrategy {
-    /// Default backoff strategy is Exponential
+    /// Returns `Exponential`.
     #[inline]
     fn default() -> Self {
         BackoffStrategy::Exponential
     }
 }
 
-/// Retry configuration with backoff settings
-///
-/// Configures how failed operations should be retried, including
-/// maximum attempts, backoff strategy, and delay bounds.
+/// How failed operations are retried.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
-    /// Maximum number of retry attempts
+    /// Most attempts, counting the first one. 3 means up to 2 retries. Must be
+    /// greater than 0.
     pub max_attempts: usize,
 
-    /// Backoff strategy for calculating delays
     pub backoff: BackoffStrategy,
 
-    /// Initial delay before first retry
+    /// Wait before the first retry.
     pub initial_delay: Duration,
 
-    /// Maximum delay cap (prevents unbounded exponential growth)
+    /// Longest wait. Stops exponential and linear growth.
     pub max_delay: Duration,
 }
 
 impl RetryConfig {
-    /// Create a new retry configuration
+    /// Build retry settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if `max_attempts` is 0 or `initial_delay` is
+    /// longer than `max_delay`.
     pub fn new(
         max_attempts: usize,
         backoff: BackoffStrategy,
@@ -129,13 +131,20 @@ impl RetryConfig {
         })
     }
 
-    /// Parse retry configuration from FlatConfig
+    /// Parse retry settings from `error.retry.*` properties.
     ///
-    /// Extracts retry settings from configuration with sensible defaults:
-    /// - max_attempts: 3
-    /// - backoff: exponential
-    /// - initial_delay: 100ms
-    /// - max_delay: 30s
+    /// Defaults when a key is missing:
+    /// - `error.retry.max-attempts`: 3
+    /// - `error.retry.backoff`: exponential
+    /// - `error.retry.initial-delay`: 100ms
+    /// - `error.retry.max-delay`: 30s
+    ///
+    /// Delays use the [`parse_duration`] format.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if a value fails to parse, `max-attempts` is 0, or
+    /// `initial-delay` is longer than `max-delay`.
     pub fn from_flat_config(config: &FlatConfig) -> Result<Self, String> {
         let max_attempts = config
             .get("error.retry.max-attempts")
@@ -144,7 +153,7 @@ impl RetryConfig {
                     .map_err(|_| "error.retry.max-attempts must be a positive integer".to_string())
             })
             .transpose()?
-            .unwrap_or(3); // Default: 3 attempts
+            .unwrap_or(3);
 
         if max_attempts == 0 {
             return Err("error.retry.max-attempts must be greater than 0".to_string());
@@ -154,19 +163,19 @@ impl RetryConfig {
             .get("error.retry.backoff")
             .map(|s| BackoffStrategy::from_str(s))
             .transpose()?
-            .unwrap_or(BackoffStrategy::Exponential); // Default: exponential
+            .unwrap_or(BackoffStrategy::Exponential);
 
         let initial_delay = config
             .get("error.retry.initial-delay")
             .map(|s| parse_duration(s))
             .transpose()?
-            .unwrap_or(Duration::from_millis(100)); // Default: 100ms
+            .unwrap_or(Duration::from_millis(100));
 
         let max_delay = config
             .get("error.retry.max-delay")
             .map(|s| parse_duration(s))
             .transpose()?
-            .unwrap_or(Duration::from_secs(30)); // Default: 30s
+            .unwrap_or(Duration::from_secs(30));
 
         if initial_delay > max_delay {
             return Err(
@@ -183,24 +192,19 @@ impl RetryConfig {
         })
     }
 
-    /// Calculate the delay for a specific retry attempt
+    /// Returns the wait before a retry.
     ///
     /// # Arguments
-    /// * `attempt` - The retry attempt number (1-indexed)
-    ///
-    /// # Returns
-    /// Duration to wait before this retry attempt
+    /// * `attempt` - Retry number, starting at 1. 0 gives zero for exponential and
+    ///   linear backoff.
     pub fn calculate_delay(&self, attempt: usize) -> Duration {
         calculate_backoff(attempt, self)
     }
 }
 
 impl Default for RetryConfig {
-    /// Default retry configuration:
-    /// - 3 max attempts
-    /// - Exponential backoff
-    /// - 100ms initial delay
-    /// - 30s max delay
+    /// Returns 3 attempts, exponential backoff, 100ms initial delay and 30s max
+    /// delay.
     fn default() -> Self {
         Self {
             max_attempts: 3,
@@ -211,11 +215,12 @@ impl Default for RetryConfig {
     }
 }
 
-/// Calculate exponential backoff delay for a retry attempt
+/// Returns the exponential backoff wait for a retry.
 ///
-/// Formula: delay = min(initial_delay * 2^(attempt-1), max_delay)
+/// Formula is `min(initial_delay * 2^(attempt-1), max_delay)`. `attempt` starts at
+/// 1, and 0 gives zero. Works in whole milliseconds.
 ///
-/// # Example with initial=100ms, max=30s:
+/// # Example with initial 100ms and max 30s
 /// - Attempt 1: 100ms
 /// - Attempt 2: 200ms
 /// - Attempt 3: 400ms
@@ -234,9 +239,11 @@ pub fn exponential_backoff(
     exponential_backoff_with_multiplier(attempt, initial_delay, max_delay, 2.0)
 }
 
-/// Exponential backoff with a configurable growth factor (`multiplier >= 1`),
-/// capped at `max_delay`; overflow saturates at the cap. `attempt` is
-/// 1-based; attempt 0 returns zero.
+/// Returns the exponential backoff wait with a chosen growth factor.
+///
+/// `multiplier` should be at least 1. The result is capped at `max_delay`, and a
+/// value too large to hold stays at the cap. `attempt` starts at 1, and 0 gives
+/// zero. Works in whole milliseconds.
 pub fn exponential_backoff_with_multiplier(
     attempt: usize,
     initial_delay: Duration,
@@ -249,15 +256,17 @@ pub fn exponential_backoff_with_multiplier(
 
     let max_ms = max_delay.as_millis() as u64 as f64;
     let factor = multiplier.powi((attempt - 1) as i32);
-    // Clamp in f64 space before the cast so overflow saturates at the cap
+    // Cap while still an f64, before the cast, so a huge value lands on the cap
+    // instead of wrapping.
     let delay_ms = (initial_delay.as_millis() as u64 as f64 * factor).min(max_ms);
 
     Duration::from_millis(delay_ms as u64)
 }
 
-/// Calculate linear backoff delay for a retry attempt
+/// Returns the linear backoff wait for a retry.
 ///
-/// Formula: delay = min(initial_delay * attempt, max_delay)
+/// Formula is `min(initial_delay * attempt, max_delay)`. `attempt` starts at 1,
+/// and 0 gives zero.
 pub fn linear_backoff(attempt: usize, initial_delay: Duration, max_delay: Duration) -> Duration {
     if attempt == 0 {
         return Duration::ZERO;
@@ -272,9 +281,7 @@ pub fn linear_backoff(attempt: usize, initial_delay: Duration, max_delay: Durati
     }
 }
 
-/// Calculate backoff delay based on retry configuration
-///
-/// Applies the configured backoff strategy to determine the delay.
+/// Returns the wait for a retry using the backoff pattern in `config`.
 pub fn calculate_backoff(attempt: usize, config: &RetryConfig) -> Duration {
     match config.backoff {
         BackoffStrategy::Exponential => {
@@ -285,15 +292,20 @@ pub fn calculate_backoff(attempt: usize, config: &RetryConfig) -> Duration {
     }
 }
 
-/// Parse duration from string
+/// Parse a duration string.
 ///
-/// Supports formats like:
-/// - "100ms", "1s", "30s"
-/// - "1000" (milliseconds by default)
+/// Takes a whole number with an optional unit. `ms` is milliseconds, `s` seconds
+/// and `m` minutes, such as `"100ms"`, `"30s"` or `"5m"`. A bare number such as
+/// `"1000"` is milliseconds. Spaces around the number are allowed.
+///
+/// # Errors
+///
+/// Returns an error message if the number is missing or not a whole number, or
+/// the unit is unknown.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
 
-    // Try parsing with suffix first
+    // Check "ms" before "s", since "ms" also ends in "s".
     if let Some(stripped) = s.strip_suffix("ms") {
         let millis = stripped
             .trim()
@@ -318,7 +330,7 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
         return Ok(Duration::from_secs(mins * 60));
     }
 
-    // Default to milliseconds if no suffix
+    // No unit means milliseconds.
     let millis = s.parse::<u64>().map_err(|_| {
         format!(
             "Invalid duration '{}': expected number or duration with suffix (ms, s, m)",

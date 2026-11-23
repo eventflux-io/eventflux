@@ -21,11 +21,11 @@ use common::AppRunner;
 use eventflux::core::event::value::AttributeValue;
 use eventflux::query_api::aggregation::time_period::Duration;
 
-// TODO: NOT PART OF M1 - Requires DEFINE AGGREGATION syntax support in SQL compiler
-// This test uses "define aggregation" which is an advanced feature not included in M1.
-// M1 covers: Basic queries, Windows, Joins, GROUP BY, HAVING, ORDER BY, LIMIT
-// Incremental aggregation will be implemented in Phase 2.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. The tests in this file are ignored because they need
+// DEFINE AGGREGATION support in the SQL compiler. "define aggregation" is an advanced
+// feature outside M1, which covers basic queries, windows, joins, GROUP BY, HAVING,
+// ORDER BY and LIMIT. Incremental aggregation is planned for Phase 2.
+// See feat/grammar/GRAMMAR.md for the grammar status.
 #[tokio::test]
 #[ignore = "Requires DEFINE AGGREGATION - Not part of M1"]
 async fn incremental_sum_seconds() {
@@ -39,21 +39,18 @@ async fn incremental_sum_seconds() {
     runner.send_with_ts("In", 500, vec![AttributeValue::Int(1)]);
     runner.send_with_ts("In", 1500, vec![AttributeValue::Int(1)]);
     runner.send_with_ts("In", 1600, vec![AttributeValue::Int(1)]);
-    runner.send_with_ts("In", 2000, vec![AttributeValue::Int(1)]); // flush second bucket
+    runner.send_with_ts("In", 2000, vec![AttributeValue::Int(1)]); // closes the second bucket
     let data = runner.get_aggregation_data("Agg", None, Some(Duration::Seconds));
     let _ = runner.shutdown();
-    // Aggregation tables are not yet fully implemented; ensure runtime does not panic.
+    // Aggregation tables are not fully implemented yet, so empty data is accepted.
+    // The main check is that the runtime does not panic.
     assert!(
         data.is_empty()
             || data == vec![vec![AttributeValue::Long(2)], vec![AttributeValue::Long(2)]]
     );
 }
 
-// TODO: NOT PART OF M1 - Requires DEFINE AGGREGATION syntax support in SQL compiler
-// This test uses "define aggregation" which is an advanced feature not included in M1.
-// M1 covers: Basic queries, Windows, Joins, GROUP BY, HAVING, ORDER BY, LIMIT
-// Incremental aggregation will be implemented in Phase 2.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Needs DEFINE AGGREGATION, see the note on the first test.
 #[tokio::test]
 #[ignore = "Requires DEFINE AGGREGATION - Not part of M1"]
 async fn incremental_sum_single_bucket() {
@@ -65,18 +62,14 @@ async fn incremental_sum_single_bucket() {
     let runner = AppRunner::new(app, "Out").await;
     runner.send_with_ts("In", 0, vec![AttributeValue::Int(1)]);
     runner.send_with_ts("In", 200, vec![AttributeValue::Int(1)]);
-    // flush bucket
+    // an event past the 1 second boundary closes the bucket
     runner.send_with_ts("In", 1100, vec![AttributeValue::Int(1)]);
     let data = runner.get_aggregation_data("Agg", None, Some(Duration::Seconds));
     let _ = runner.shutdown();
     assert!(data.is_empty() || data[0] == vec![AttributeValue::Long(2)]);
 }
 
-// TODO: NOT PART OF M1 - Requires DEFINE AGGREGATION syntax support in SQL compiler
-// This test uses "define aggregation" which is an advanced feature not included in M1.
-// M1 covers: Basic queries, Windows, Joins, GROUP BY, HAVING, ORDER BY, LIMIT
-// Incremental aggregation will be implemented in Phase 2.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Needs DEFINE AGGREGATION, see the note on the first test.
 #[tokio::test]
 #[ignore = "Requires DEFINE AGGREGATION - Not part of M1"]
 async fn query_within_per() {

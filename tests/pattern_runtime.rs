@@ -50,15 +50,15 @@ impl StreamCallback for CollectCallback {
     }
 }
 
-/// Test sequence pattern WITHOUT EVERY - matches only once
+/// Test a sequence pattern WITHOUT EVERY, which matches only once.
 ///
-/// Pattern: A -> B (no EVERY)
-/// Events: A(1), B(2), A(3), B(4)
-/// Expected: 1 match (first complete sequence only)
+/// Pattern A -> B, with no EVERY.
+/// Events A(1), B(2), A(3), B(4).
+/// Expected 1 match, the first complete sequence only.
 ///
 /// Without EVERY, the pattern matches once and stops. The second A(3)->B(4)
 /// sequence does not match because the pattern has already completed.
-/// This is standard CEP behavior - use EVERY for continuous matching.
+/// This is standard CEP behaviour. Use EVERY to keep matching.
 #[test]
 fn test_sequence_runtime_processing() {
     let eventflux_context = Arc::new(EventFluxContext::new());
@@ -155,17 +155,16 @@ fn test_sequence_runtime_processing() {
     runtime.shutdown();
 
     let events = collected.lock().unwrap();
-    // Without EVERY, pattern matches only once (first complete sequence)
     assert_eq!(events.len(), 1, "Without EVERY, pattern matches only once");
     assert_eq!(events[0].data[0], CoreAttributeValue::Int(1));
     assert_eq!(events[0].data[1], CoreAttributeValue::Int(2));
 }
 
-/// Test EVERY pattern - pattern restarts after each complete match
+/// Test an EVERY pattern, which restarts after each complete match.
 ///
-/// Pattern: EVERY(A -> B)
-/// Events: A(1), B(2), A(3), B(4)
-/// Expected: 2 matches (pattern restarts after each completion)
+/// Pattern EVERY(A -> B).
+/// Events A(1), B(2), A(3), B(4).
+/// Expected 2 matches, because the pattern restarts after each one.
 ///
 /// EVERY must wrap the entire pattern. After A(1)->B(2) completes,
 /// the pattern restarts and matches A(3)->B(4).
@@ -195,7 +194,7 @@ fn test_every_sequence() {
     // EVERY must wrap the ENTIRE pattern at top level
     let inner_pattern = State::next(StateElement::Stream(sse1), StateElement::Stream(sse2));
     let every_pattern = State::every(inner_pattern);
-    // EVERY requires PATTERN mode (not SEQUENCE mode)
+    // EVERY needs PATTERN mode, not SEQUENCE mode
     let state_stream = StateInputStream::pattern_stream(every_pattern, None);
     let input = InputStream::State(Box::new(state_stream));
 

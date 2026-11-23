@@ -17,12 +17,12 @@
 
 //! # Startup ordering regression test (#136)
 //!
-//! Sources must not begin consuming until every sink is attached and
-//! started. The bug: `attach_source_common` started sources during the
-//! attachment phase, so a source's first events could flow through a sink
-//! stream's junction before the sink subscribed — every such event was
-//! silently dropped (0 subscribers). A source that emits synchronously
-//! inside `start()` makes the failure deterministic instead of a race.
+//! Sources must not start reading until every sink is attached and started.
+//! The bug was that `attach_source_common` started sources while still
+//! attaching, so a source's first events could pass through a sink stream's
+//! junction before the sink subscribed. With 0 subscribers, each such event
+//! was dropped without any error. A source that emits synchronously inside
+//! `start()` makes the failure happen every time instead of only on a race.
 
 use eventflux::core::eventflux_manager::EventFluxManager;
 use eventflux::core::exception::EventFluxError;
@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Source that emits its payloads synchronously inside `start()` — the
+/// Source that emits its payloads synchronously inside `start()`, the
 /// earliest moment any source is allowed to deliver events.
 #[derive(Debug, Clone)]
 struct ImmediateSource {
@@ -177,8 +177,8 @@ async fn test_source_events_emitted_at_start_reach_the_sink() {
     runtime.start().expect("start");
 
     // The source delivered synchronously inside start(), so the events are
-    // either already at the sink or lost — a short deadline absorbs mapper
-    // scheduling only.
+    // either already at the sink or lost. The 5 second deadline only covers
+    // mapper scheduling.
     let deadline = Instant::now() + Duration::from_secs(5);
     while published.lock().unwrap().len() < 3 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));

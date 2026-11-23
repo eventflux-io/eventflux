@@ -15,43 +15,47 @@
  * limitations under the License.
  */
 
-// src/core/util/parser/eventflux_app_parser.rs
 // Corresponds to io.eventflux.core.util.parser.EventFluxAppParser
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex}; // Added Mutex // If QueryParser needs table_map etc. from builder
+use std::sync::{Arc, Mutex};
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
-use crate::core::config::eventflux_query_context::EventFluxQueryContext; // QueryParser will need this
+use crate::core::config::eventflux_query_context::EventFluxQueryContext;
 use crate::core::config::ApplicationConfig;
 use crate::core::eventflux_app_runtime_builder::EventFluxAppRuntimeBuilder;
-use crate::core::stream::junction_factory::{JunctionConfig, StreamJunctionFactory}; // For creating junctions
+use crate::core::stream::junction_factory::{JunctionConfig, StreamJunctionFactory};
 use crate::core::window::WindowRuntime;
 use crate::query_api::{
-    definition::{Attribute as ApiAttribute, StreamDefinition as ApiStreamDefinition}, // For fault stream creation
-    // Other API definitions will be needed by specific parsers (Table, Window etc.)
+    definition::{Attribute as ApiAttribute, StreamDefinition as ApiStreamDefinition}, // For fault streams
     execution::ExecutionElement as ApiExecutionElement,
     EventFluxApp as ApiEventFluxApp,
 };
 // use super::query_parser::QueryParser; // To be created or defined in this file for now
 use crate::core::partition::parser::PartitionParser;
 // use super::definition_parser_helpers::*; // For defineStreamDefinitions, defineTableDefinitions etc.
-use super::query_parser::QueryParser; // Use the real QueryParser implementation
+use super::query_parser::QueryParser;
 use super::trigger_parser::TriggerParser;
-// Core constants, if any, vs query_api constants
 
+/// Turns a parsed EventFlux application into a runtime builder.
 pub struct EventFluxAppParser;
 
 impl EventFluxAppParser {
-    // Corresponds to EventFluxAppParser.parse(EventFluxApp eventfluxApp, String eventfluxAppString, EventFluxContext eventfluxContext)
-    // The eventfluxAppString is already in EventFluxAppContext. EventFluxContext is also in EventFluxAppContext.
-    /// Parse EventFlux application and build runtime components
+    // Corresponds to Java EventFluxAppParser.parse(EventFluxApp eventfluxApp, String
+    // eventfluxAppString, EventFluxContext eventfluxContext). The app string and the
+    // EventFluxContext both come from the EventFluxAppContext here.
+    /// Parses an EventFlux application and builds its runtime components
     ///
-    /// This method orchestrates the parsing of all application components in the correct order:
+    /// Builds everything in dependency order:
     /// 1. Stream definitions and junctions
     /// 2. Table definitions
     /// 3. Window definitions
     /// 4. Aggregation definitions
-    /// 5. Execution elements (queries, partitions, triggers)
+    /// 5. Triggers, then execution elements (queries and partitions)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a stream junction, table, trigger, query or partition cannot
+    /// be built. A table must name its `extension` in SQL WITH.
     pub fn parse_eventflux_app_runtime_builder(
         api_eventflux_app: &ApiEventFluxApp,
         eventflux_app_context: Arc<EventFluxAppContext>,
@@ -62,12 +66,11 @@ impl EventFluxAppParser {
             application_config.clone(),
         );
 
-        // Get default async mode from configuration (YAML/TOML)
+        // Default async mode from the configuration (YAML/TOML)
         let default_stream_async = eventflux_app_context
             .get_eventflux_context()
             .get_default_async_mode();
 
-        // Process components in dependency order
         Self::process_stream_definitions(
             api_eventflux_app,
             &mut builder,
@@ -90,7 +93,12 @@ impl EventFluxAppParser {
         Ok(builder)
     }
 
-    /// Process stream definitions and create StreamJunctions
+    /// Registers each stream definition and creates its StreamJunction.
+    ///
+    /// Reads these SQL WITH properties: `async.buffer_size`, `async.workers` (turned into
+    /// a throughput hint of 10K events per worker), `async.enabled` (only "true" has an
+    /// effect, it cannot turn off the default) and `fault.stream`. Values that do not
+    /// parse are ignored.
     fn process_stream_definitions(
         api_eventflux_app: &ApiEventFluxApp,
         builder: &mut EventFluxAppRuntimeBuilder,
@@ -104,24 +112,20 @@ impl EventFluxAppParser {
                 .with_buffer_size(eventflux_app_context.buffer_size as usize)
                 .with_async(default_stream_async);
 
-            // Check for SQL WITH async properties
             if let Some(with_config) = &stream_def_arc.with_config {
-                // async.buffer_size property
                 if let Some(buffer_size_str) = with_config.get("async.buffer_size") {
                     if let Ok(sz) = buffer_size_str.parse::<usize>() {
                         config = config.with_buffer_size(sz);
                     }
                 }
 
-                // async.workers property
                 if let Some(workers_str) = with_config.get("async.workers") {
                     if let Ok(workers) = workers_str.parse::<u64>() {
-                        let estimated_throughput = workers * 10000; // 10K events/worker estimate
+                        let estimated_throughput = workers * 10000; // Rough 10K events per worker
                         config = config.with_expected_throughput(estimated_throughput);
                     }
                 }
 
-                // async.enabled property
                 if let Some(async_str) = with_config.get("async.enabled") {
                     if async_str.eq_ignore_ascii_case("true") {
                         config = config.with_async(true);
@@ -129,7 +133,9 @@ impl EventFluxAppParser {
                 }
             }
 
-            // Create fault stream if requested via SQL WITH fault.stream='true'
+            // With fault.stream='true', also define a fault stream named
+            // FAULT_STREAM_FLAG + stream id. It has the same attributes plus an `_error`
+            // OBJECT attribute.
             let create_fault_stream = stream_def_arc
                 .with_config
                 .as_ref()
@@ -159,18 +165,17 @@ impl EventFluxAppParser {
                 builder.add_stream_definition(Arc::new(fault_def));
             }
 
-            // Create StreamJunction with async configuration from SQL WITH or YAML
-            // Preserve all tuning hints collected from WITH clause
+            // Build the junction config from the settings above, keeping every tuning hint
+            // taken from the WITH clause
             let mut junction_config = JunctionConfig::new(stream_id.clone())
                 .with_buffer_size(config.buffer_size)
                 .with_async(config.is_async);
 
-            // Preserve expected_throughput hint if set (from async.workers)
+            // Set from async.workers
             if let Some(throughput) = config.expected_throughput {
                 junction_config = junction_config.with_expected_throughput(throughput);
             }
 
-            // Preserve subscriber_count hint if set
             if let Some(count) = config.subscriber_count {
                 junction_config = junction_config.with_subscriber_count(count);
             }
@@ -194,7 +199,15 @@ impl EventFluxAppParser {
         Ok(())
     }
 
-    /// Process table definitions and create table instances
+    /// Creates each table and registers it in the EventFluxContext.
+    ///
+    /// The table type comes from `extension` in SQL WITH. A registered table factory wins,
+    /// then the built in "jdbc" (reads `data_source`), "cache" and "inMemory" types.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `extension` is missing or unknown, or if the table cannot be
+    /// created. There is no silent fallback to an in memory table.
     fn process_table_definitions(
         api_eventflux_app: &ApiEventFluxApp,
         builder: &mut EventFluxAppRuntimeBuilder,
@@ -203,26 +216,24 @@ impl EventFluxAppParser {
         for (table_id, table_def) in &api_eventflux_app.table_definition_map {
             builder.add_table_definition(Arc::clone(table_def));
 
-            // Extract table type and properties from SQL WITH clause
+            // Table type and properties from the SQL WITH clause
             let mut props = HashMap::new();
             let table_type: Option<String>;
 
             if let Some(with_config) = &table_def.with_config {
-                // Extract extension (table type) from WITH clause
                 table_type = with_config.get("extension").cloned();
 
-                // Copy all WITH properties
+                // Pass every WITH property to the table
                 for (key, value) in with_config.properties() {
                     props.insert(key.clone(), value.clone());
                 }
             } else {
-                // No SQL WITH configuration - use default InMemoryTable
+                // No SQL WITH clause, so no type. This is rejected below.
                 table_type = None;
             }
 
-            // Create table based on type
             let table: Arc<dyn crate::core::table::Table> = if let Some(t_type) = table_type {
-                // Try registered factory first
+                // A registered factory wins over the built in types
                 if let Some(factory) = eventflux_app_context
                     .get_eventflux_context()
                     .get_table_factory(&t_type)
@@ -233,7 +244,7 @@ impl EventFluxAppParser {
                         eventflux_app_context.get_eventflux_context(),
                     )?
                 }
-                // Built-in JDBC table
+                // Built in JDBC table
                 else if t_type == "jdbc" {
                     let ds = props.get("data_source").cloned().unwrap_or_default();
                     Arc::new(crate::core::table::JdbcTable::new(
@@ -242,11 +253,11 @@ impl EventFluxAppParser {
                         eventflux_app_context.get_eventflux_context(),
                     )?)
                 }
-                // Built-in cache table
+                // Built in cache table. "cache" and "inMemory" both give an InMemoryTable.
                 else if t_type == "cache" || t_type == "inMemory" {
                     Arc::new(crate::core::table::InMemoryTable::new())
                 } else {
-                    // Unknown extension type - error instead of silent fallback
+                    // Unknown type. Fail instead of silently falling back.
                     return Err(format!(
                         "Unknown table extension '{}' for table '{}'. Available extensions: registered factories, 'jdbc', 'cache', 'inMemory'. \
                          Check for typos or register the extension factory.",
@@ -254,7 +265,7 @@ impl EventFluxAppParser {
                     ));
                 }
             } else {
-                // No extension specified - error instead of silent fallback
+                // No type given. Fail instead of silently falling back.
                 return Err(format!(
                     "Table '{}' requires explicit extension specification for durability safety. \
                      Use SQL WITH (extension='<type>') or register in configuration. \
@@ -278,7 +289,10 @@ impl EventFluxAppParser {
         Ok(())
     }
 
-    /// Process window definitions and create window runtimes
+    /// Creates a WindowRuntime for each window definition, then initializes them all.
+    ///
+    /// If the window processor cannot be created, the error is dropped and the runtime
+    /// is kept without a processor.
     fn process_window_definitions(
         api_eventflux_app: &ApiEventFluxApp,
         builder: &mut EventFluxAppRuntimeBuilder,
@@ -293,7 +307,7 @@ impl EventFluxAppParser {
                     format!("__window_{window_id}"),
                     None,
                 ));
-                // Create minimal parse context for legacy WindowDefinition path
+                // Empty parse context for the older WindowDefinition path
                 let empty_parse_ctx =
                     crate::core::util::parser::expression_parser::ExpressionParserContext {
                         eventflux_app_context: Arc::clone(eventflux_app_context),
@@ -322,7 +336,7 @@ impl EventFluxAppParser {
             builder.add_window(window_id.clone(), Arc::new(Mutex::new(runtime)));
         }
 
-        // Initialize Windows after all are created
+        // Initialize only after every window exists
         for win_rt in builder.window_map.values() {
             win_rt.lock().unwrap().initialize();
         }
@@ -330,7 +344,9 @@ impl EventFluxAppParser {
         Ok(())
     }
 
-    /// Process aggregation definitions and wire up input processors
+    /// Creates an AggregationRuntime for each aggregation and subscribes an input
+    /// processor to its input stream junction. If that junction does not exist, the
+    /// runtime is created but gets no input.
     fn process_aggregation_definitions(
         api_eventflux_app: &ApiEventFluxApp,
         builder: &mut EventFluxAppRuntimeBuilder,
@@ -366,28 +382,28 @@ impl EventFluxAppParser {
         Ok(())
     }
 
-    /// Process execution elements (queries and partitions) and triggers
+    /// Builds triggers, then the execution elements (queries and partitions)
     fn process_execution_elements(
         api_eventflux_app: &ApiEventFluxApp,
         builder: &mut EventFluxAppRuntimeBuilder,
         eventflux_app_context: &Arc<EventFluxAppContext>,
     ) -> Result<(), String> {
-        // Process triggers FIRST so their stream junctions exist when queries reference them
-        // This enables queries like: SELECT ... FROM TriggerName
+        // Triggers go FIRST so their stream junctions exist when queries refer to them,
+        // as in SELECT ... FROM TriggerName
         for trig_def in api_eventflux_app.trigger_definition_map.values() {
             let runtime = TriggerParser::parse(builder, trig_def, eventflux_app_context)?;
             builder.add_trigger_runtime(Arc::new(runtime));
         }
 
-        // Parse Execution Elements (Queries, Partitions)
-        // Use counters to provide deterministic indices for stable component IDs (needed for state recovery)
+        // Count queries and partitions separately so each gets the same index on every
+        // run. Component ids are built from it and must stay stable for state recovery.
         let mut query_index = 0;
         let mut partition_index = 0;
         for exec_element in &api_eventflux_app.execution_element_list {
             match exec_element {
                 ApiExecutionElement::Query(api_query) => {
-                    // The QueryParser needs access to various maps (stream_junctions, tables, windows, aggregations)
-                    // from the builder to resolve references.
+                    // QueryParser resolves references through the builder maps of stream
+                    // junctions, table definitions and aggregations
                     let query_runtime = QueryParser::parse_query(
                         api_query,
                         eventflux_app_context,
@@ -398,8 +414,8 @@ impl EventFluxAppParser {
                         query_index,
                     )?;
                     builder.add_query_runtime(Arc::new(query_runtime));
-                    query_index += 1; // Increment for next query
-                                      // TODO: eventflux_app_context.addEternalReferencedHolder(queryRuntime);
+                    query_index += 1;
+                    // TODO: eventflux_app_context.addEternalReferencedHolder(queryRuntime);
                 }
                 ApiExecutionElement::Partition(api_partition) => {
                     let part_rt = PartitionParser::parse(
@@ -409,7 +425,7 @@ impl EventFluxAppParser {
                         partition_index,
                     )?;
                     builder.add_partition_runtime(Arc::new(part_rt));
-                    partition_index += 1; // Increment for next partition
+                    partition_index += 1;
                 }
             }
         }

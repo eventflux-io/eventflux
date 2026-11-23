@@ -18,22 +18,27 @@
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-/// CASE expression for conditional logic
-/// Supports both Searched CASE (CASE WHEN condition THEN result...)
-/// and Simple CASE (CASE operand WHEN value THEN result...)
+/// A CASE expression.
+///
+/// Covers both forms. A searched CASE (CASE WHEN condition THEN result ...) and a simple
+/// CASE (CASE operand WHEN value THEN result ...).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Case {
-    /// Optional operand for simple CASE (CASE expr WHEN val...)
+    /// The operand of a simple CASE. `None` for a searched CASE.
     pub operand: Option<Box<Expression>>,
-    /// WHEN clauses: (condition/value, result)
+    /// The WHEN clauses in order.
     pub when_clauses: Vec<WhenClause>,
-    /// ELSE result (required - ensures type consistency)
+    /// The ELSE result. Always present. The SQL converter fills in NULL when the query has
+    /// no ELSE.
     pub else_result: Box<Expression>,
-    /// Source location for error reporting
+    /// Position in the query text, for error messages.
     pub eventflux_element: EventFluxElement,
 }
 
-/// A single WHEN clause in a CASE expression
+/// One WHEN clause of a CASE expression.
+///
+/// `condition` is a boolean test in a searched CASE, or the value to compare with the
+/// operand in a simple CASE.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WhenClause {
     pub condition: Box<Expression>,

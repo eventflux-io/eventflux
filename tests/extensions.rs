@@ -281,7 +281,7 @@ fn test_register_window_factory() {
         None,
     ));
 
-    // Create minimal ExpressionParserContext for the test
+    // Minimal ExpressionParserContext with empty meta maps
     let parse_ctx = eventflux::core::util::parser::expression_parser::ExpressionParserContext {
         eventflux_app_context: Arc::clone(&app_ctx),
         eventflux_query_context: Arc::clone(&q_ctx),
@@ -349,11 +349,10 @@ fn test_query_parser_uses_custom_window_factory() {
     assert!(dbg.contains("DummyWindowProcessor"));
 }
 
-// TODO: NOT PART OF M1 - Old EventFluxQL syntax for custom window
-// This test uses "define stream" and old query syntax.
-// Custom window functionality works (see other tests in this file using programmatic API),
-// but SQL syntax for custom windows is not part of M1.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Ignored because it uses the old EventFluxQL syntax
+// ("define stream") for a custom window. Custom windows work, as the other tests in this
+// file show through the programmatic API, but SQL syntax for custom windows is not part
+// of M1. See feat/grammar/GRAMMAR.md for the grammar status.
 #[tokio::test]
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn app_runner_custom_window() {
@@ -405,7 +404,7 @@ fn test_table_factory_invoked() {
         String::new(),
     ));
 
-    // Create WITH config: WITH ('extension' = 'rec')
+    // Same as WITH ('extension' = 'rec') in SQL
     let mut with_config = FlatConfig::new();
     with_config.set("extension", "rec", PropertySource::SqlWith);
 

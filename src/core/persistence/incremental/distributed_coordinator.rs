@@ -17,11 +17,14 @@
 
 // src/core/persistence/incremental/distributed_coordinator.rs
 
-//! Distributed Coordinator Implementation
+//! Distributed checkpoint coordinator.
 //!
-//! Distributed coordination system for cluster-wide checkpointing with leader election,
-//! consensus protocols, and fault tolerance. Implements checkpoint barriers and
-//! distributed snapshot algorithms for enterprise environments.
+//! Coordinates checkpoints across a cluster. The leader starts a checkpoint,
+//! nodes report back, and the checkpoint succeeds once enough nodes finish.
+//!
+//! The Raft style coordinator is a sketch. Nothing is sent over the network,
+//! messages are only printed, and a node only wins an election when it has no
+//! other cluster members. The in memory coordinator is for tests.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -31,66 +34,58 @@ use std::time::{Duration, Instant};
 use super::{ClusterHealth, DistributedConfig, DistributedCoordinator, PartitionStatus};
 use crate::core::persistence::state_holder::{CheckpointId, StateError};
 
-/// Distributed coordinator with leader election and consensus
+/// Coordinator modeled on Raft leader election.
 pub struct RaftDistributedCoordinator {
-    /// Node configuration
     config: DistributedConfig,
 
-    /// Current node state
+    /// This node's role, term and health.
     node_state: Arc<RwLock<NodeState>>,
 
-    /// Cluster member information
+    /// Other cluster members, keyed by node id. Never filled outside tests.
     cluster_members: Arc<RwLock<HashMap<String, NodeInfo>>>,
 
-    /// Active checkpoints
+    /// Checkpoints in progress. Entries are never removed.
     active_checkpoints: Arc<Mutex<HashMap<CheckpointId, CheckpointProgress>>>,
 
-    /// Leader election state
     election_state: Arc<Mutex<ElectionState>>,
 
-    /// Consensus log
+    /// Log of coordination events. Only appended and counted, never replicated.
     consensus_log: Arc<Mutex<Vec<ConsensusEntry>>>,
 
-    /// Coordinator statistics
     stats: Arc<Mutex<CoordinatorStatistics>>,
 }
 
-/// In-memory distributed coordinator for testing
+/// In memory coordinator for tests. Any 2 successful reports complete a
+/// checkpoint.
 pub struct InMemoryDistributedCoordinator {
-    /// Node ID
     node_id: String,
 
-    /// Simulated cluster state
     cluster_state: Arc<RwLock<SimulatedClusterState>>,
 
-    /// Active checkpoints
     active_checkpoints: Arc<Mutex<HashMap<CheckpointId, CheckpointProgress>>>,
 }
 
-/// State of the current node
+/// State of this node.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct NodeState {
-    /// Node identifier
     node_id: String,
 
-    /// Current role
     role: NodeRole,
 
-    /// Current term (for leader election)
+    /// Election term.
     current_term: u64,
 
-    /// Voted for in current term
+    /// Node voted for in the current term.
     voted_for: Option<String>,
 
-    /// Last heartbeat received
+    /// Last heartbeat received. Never updated yet.
     last_heartbeat: Instant,
 
-    /// Node health status
     health: NodeHealth,
 }
 
-/// Role of a node in the cluster
+/// Role of a node in leader election.
 #[derive(Debug, Clone, PartialEq)]
 enum NodeRole {
     Follower,
@@ -98,7 +93,6 @@ enum NodeRole {
     Leader,
 }
 
-/// Health status of a node
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum NodeHealth {
@@ -107,123 +101,107 @@ enum NodeHealth {
     Failed { reason: String },
 }
 
-/// Information about a cluster member
+/// A cluster member.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct NodeInfo {
-    /// Node identifier
     node_id: String,
 
-    /// Node endpoints
     endpoints: Vec<String>,
 
-    /// Last seen timestamp
     last_seen: Instant,
 
-    /// Node capabilities
     capabilities: NodeCapabilities,
 
-    /// Current health
     health: NodeHealth,
 }
 
-/// Capabilities of a cluster node
+/// What a cluster node can do.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct NodeCapabilities {
-    /// Can participate in leader election
+    /// Can stand in leader elections.
     can_be_leader: bool,
 
-    /// Storage capacity
+    /// Bytes.
     storage_capacity: u64,
 
-    /// Processing capacity
+    /// CPU cores.
     processing_capacity: u32,
 
-    /// Network bandwidth
+    /// Bytes per second.
     network_bandwidth: u64,
 }
 
-/// Progress tracking for distributed checkpoints
+/// Progress of one distributed checkpoint.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct CheckpointProgress {
-    /// Checkpoint identifier
     checkpoint_id: CheckpointId,
 
-    /// Nodes that have started the checkpoint
+    /// Nodes that started the checkpoint. Never filled yet.
     nodes_started: HashSet<String>,
 
-    /// Nodes that have completed the checkpoint
     nodes_completed: HashSet<String>,
 
-    /// Nodes that have failed the checkpoint
     nodes_failed: HashSet<String>,
 
-    /// Checkpoint start time
     start_time: Instant,
 
-    /// Expected completion time
     expected_completion: Option<Instant>,
 
-    /// Checkpoint metadata
     metadata: CheckpointMetadata,
 }
 
-/// Metadata for a distributed checkpoint
+/// Details of a distributed checkpoint.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct CheckpointMetadata {
-    /// Checkpoint type
+    /// Free text such as `full` or `simulated`.
     checkpoint_type: String,
 
-    /// Coordinator node
+    /// Node that started the checkpoint.
     coordinator_node: String,
 
-    /// Timeout duration
+    /// Not enforced. `wait_for_completion` uses its own timeout.
     timeout: Duration,
 
-    /// Required quorum size
+    /// Successful reports needed for the checkpoint to count as done.
     required_quorum: usize,
 }
 
-/// Leader election state
+/// Leader election state.
 #[derive(Debug)]
 struct ElectionState {
-    /// Current election term
     current_term: u64,
 
-    /// Election timeout
+    /// When to start the next election if no leader is found.
     election_timeout: Instant,
 
-    /// Votes received in current term
+    /// Nodes that voted for this node in the current term.
     votes_received: HashSet<String>,
 
-    /// Election in progress
     election_in_progress: bool,
 }
 
-/// Consensus log entry
+/// One entry in the coordination log.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct ConsensusEntry {
-    /// Entry term
+    /// Election term when the entry was added.
     term: u64,
 
-    /// Entry index
+    /// Position in the log, starting at 0.
     index: u64,
 
-    /// Entry type
     entry_type: ConsensusEntryType,
 
-    /// Entry data
+    /// For checkpoint entries, the checkpoint id as little endian bytes.
     data: Vec<u8>,
 
-    /// Timestamp
     timestamp: Instant,
 }
 
-/// Type of consensus entry
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum ConsensusEntryType {
@@ -234,51 +212,49 @@ enum ConsensusEntryType {
     Configuration,
 }
 
-/// Coordinator performance statistics
+/// Coordinator counters.
+///
+/// Only the checkpoint counts and `avg_coordination_time` are updated.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 struct CoordinatorStatistics {
-    /// Total checkpoints coordinated
+    /// Checkpoints started.
     pub total_checkpoints: u64,
 
-    /// Successful checkpoints
+    /// Counted on every successful report once quorum is reached, so one
+    /// checkpoint can be counted more than once.
     pub successful_checkpoints: u64,
 
-    /// Failed checkpoints
     pub failed_checkpoints: u64,
 
-    /// Average checkpoint coordination time
+    /// Kept in whole milliseconds.
     pub avg_coordination_time: Duration,
 
-    /// Leader elections
     pub leader_elections: u64,
 
-    /// Network partitions detected
     pub network_partitions: u64,
 
-    /// Average cluster size
     pub avg_cluster_size: f64,
 }
 
-/// Simulated cluster state for testing
+/// Fake cluster for the in memory coordinator.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 struct SimulatedClusterState {
-    /// Nodes in the cluster
     nodes: HashMap<String, NodeInfo>,
 
-    /// Current leader
+    /// Never set yet.
     leader: Option<String>,
 
-    /// Active checkpoints
+    /// Not used. Checkpoints live in the coordinator itself.
     checkpoints: HashMap<CheckpointId, CheckpointProgress>,
 
-    /// Simulated network partitions
+    /// Recorded but not used when computing health.
     partitions: Vec<Vec<String>>,
 }
 
 impl RaftDistributedCoordinator {
-    /// Create a new Raft-based distributed coordinator
+    /// Create a coordinator that starts as a follower in term 0.
     pub fn new(config: DistributedConfig) -> Self {
         let node_state = NodeState {
             node_id: config.node_id.clone(),
@@ -307,26 +283,27 @@ impl RaftDistributedCoordinator {
         }
     }
 
-    /// Start the coordinator (background threads for heartbeat, election, etc.)
+    /// Start the heartbeat, election and log threads.
+    ///
+    /// The threads loop forever. There is no way to stop them, and calling this
+    /// again starts another set.
     pub fn start(&self) -> Result<(), StateError> {
         println!(
             "Starting distributed coordinator for node: {}",
             self.config.node_id
         );
 
-        // Start heartbeat thread
         self.start_heartbeat_thread();
 
-        // Start leader election thread
         self.start_election_thread();
 
-        // Start consensus thread
         self.start_consensus_thread();
 
         Ok(())
     }
 
-    /// Start heartbeat thread
+    /// Start a thread that, while this node is leader, prints a heartbeat line
+    /// for each member every `heartbeat_interval`. Nothing is sent.
     fn start_heartbeat_thread(&self) {
         let node_state = Arc::clone(&self.node_state);
         let cluster_members = Arc::clone(&self.cluster_members);
@@ -338,11 +315,10 @@ impl RaftDistributedCoordinator {
 
                 let state = node_state.read().unwrap();
                 if state.role == NodeRole::Leader {
-                    // Send heartbeats to all followers
                     let members = cluster_members.read().unwrap();
                     for (node_id, _node_info) in members.iter() {
                         if node_id != &state.node_id {
-                            // Send heartbeat (simplified)
+                            // Printed only. No heartbeat is sent.
                             println!("Sending heartbeat to node: {node_id}");
                         }
                     }
@@ -351,7 +327,12 @@ impl RaftDistributedCoordinator {
         });
     }
 
-    /// Start leader election thread
+    /// Start a thread that runs an election when the election timeout passes and
+    /// this node is not leader.
+    ///
+    /// The node votes for itself and only prints vote requests, so it wins only
+    /// when it has no other members. If it does not win, `election_in_progress`
+    /// stays set and no later election starts.
     fn start_election_thread(&self) {
         let node_state = Arc::clone(&self.node_state);
         let election_state = Arc::clone(&self.election_state);
@@ -360,13 +341,13 @@ impl RaftDistributedCoordinator {
 
         thread::spawn(move || {
             loop {
-                thread::sleep(Duration::from_millis(100)); // Check every 100ms
+                thread::sleep(Duration::from_millis(100));
 
                 let mut election = election_state.lock().unwrap();
                 let mut state = node_state.write().unwrap();
 
                 if state.role != NodeRole::Leader && Instant::now() > election.election_timeout {
-                    // Start leader election
+                    // Election timed out with no leader, so start one unless one is running
                     if !election.election_in_progress {
                         println!("Starting leader election for node: {}", state.node_id);
 
@@ -380,21 +361,19 @@ impl RaftDistributedCoordinator {
                         election.votes_received.insert(state.node_id.clone());
                         election.election_in_progress = true;
 
-                        // Request votes from other nodes
                         let members = cluster_members.read().unwrap();
                         for (node_id, _node_info) in members.iter() {
                             if node_id != &state.node_id {
-                                // Send vote request (simplified)
+                                // Printed only. No vote request is sent.
                                 println!("Requesting vote from node: {node_id}");
                             }
                         }
 
-                        // Check if we have majority (simplified)
+                        // Only this node's own vote is ever counted.
                         let total_nodes = members.len() + 1; // +1 for self
                         let required_votes = (total_nodes / 2) + 1;
 
                         if election.votes_received.len() >= required_votes {
-                            // Become leader
                             state.role = NodeRole::Leader;
                             election.election_in_progress = false;
                             println!("Node {} became leader", state.node_id);
@@ -405,24 +384,22 @@ impl RaftDistributedCoordinator {
         });
     }
 
-    /// Start consensus thread
+    /// Start a thread that prints the log size every second when the log is not
+    /// empty. Entries are not processed or replicated.
     fn start_consensus_thread(&self) {
         let consensus_log = Arc::clone(&self.consensus_log);
 
-        thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_secs(1));
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_secs(1));
 
-                // Process consensus log entries
-                let log = consensus_log.lock().unwrap();
-                if !log.is_empty() {
-                    println!("Processing {} consensus entries", log.len());
-                }
+            let log = consensus_log.lock().unwrap();
+            if !log.is_empty() {
+                println!("Processing {} consensus entries", log.len());
             }
         });
     }
 
-    /// Add consensus entry
+    /// Append an entry to the log, tagged with the current term.
     fn add_consensus_entry(
         &self,
         entry_type: ConsensusEntryType,
@@ -443,13 +420,13 @@ impl RaftDistributedCoordinator {
         Ok(())
     }
 
-    /// Check if node is leader
     fn is_leader(&self) -> bool {
         let state = self.node_state.read().unwrap();
         state.role == NodeRole::Leader
     }
 
-    /// Get cluster quorum size
+    /// Returns the majority size of the cluster, counting this node. That is
+    /// half the nodes rounded down, plus one.
     fn get_quorum_size(&self) -> usize {
         let members = self.cluster_members.read().unwrap();
         let total_nodes = members.len() + 1; // +1 for self
@@ -458,6 +435,15 @@ impl RaftDistributedCoordinator {
 }
 
 impl DistributedCoordinator for RaftDistributedCoordinator {
+    /// Start tracking a checkpoint and log it. Barriers to members are only
+    /// printed.
+    ///
+    /// The checkpoint needs a majority of successful reports and expects to
+    /// finish within 60 seconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if this node is not the leader.
     fn initiate_checkpoint(&self, checkpoint_id: CheckpointId) -> Result<(), StateError> {
         if !self.is_leader() {
             return Err(StateError::InvalidStateData {
@@ -484,25 +470,22 @@ impl DistributedCoordinator for RaftDistributedCoordinator {
             },
         };
 
-        // Add to active checkpoints
         {
             let mut checkpoints = self.active_checkpoints.lock().unwrap();
             checkpoints.insert(checkpoint_id, progress);
         }
 
-        // Add to consensus log
         self.add_consensus_entry(
             ConsensusEntryType::CheckpointInitiation,
             checkpoint_id.to_le_bytes().to_vec(),
         )?;
 
-        // Send checkpoint barrier to all nodes
+        // Printed only. No barrier is sent.
         let members = self.cluster_members.read().unwrap();
         for (node_id, _node_info) in members.iter() {
             println!("Sending checkpoint barrier to node: {node_id}");
         }
 
-        // Update statistics
         {
             let mut stats = self.stats.lock().unwrap();
             stats.total_checkpoints += 1;
@@ -511,6 +494,13 @@ impl DistributedCoordinator for RaftDistributedCoordinator {
         Ok(())
     }
 
+    /// Record a node's result for a checkpoint. Unknown checkpoint ids are
+    /// ignored.
+    ///
+    /// Once successful reports reach the quorum, the checkpoint counts as done.
+    /// While they are still below it, the failure check subtracts the quorum
+    /// from the size of `nodes_started`, which is never filled, so it underflows.
+    /// That panics in debug builds.
     fn report_completion(
         &self,
         checkpoint_id: CheckpointId,
@@ -528,16 +518,14 @@ impl DistributedCoordinator for RaftDistributedCoordinator {
                 progress.nodes_failed.insert(node_id.to_string());
             }
 
-            // Check if we have quorum
             let quorum_size = progress.metadata.required_quorum;
             let completed_count = progress.nodes_completed.len();
             let failed_count = progress.nodes_failed.len();
 
             if completed_count >= quorum_size {
-                // Checkpoint successful
                 println!("Checkpoint {checkpoint_id} completed successfully with {completed_count} nodes");
 
-                // Update statistics
+                // Running average in whole milliseconds.
                 {
                     let mut stats = self.stats.lock().unwrap();
                     stats.successful_checkpoints += 1;
@@ -550,13 +538,13 @@ impl DistributedCoordinator for RaftDistributedCoordinator {
                     );
                 }
 
-                // Add to consensus log
                 self.add_consensus_entry(
                     ConsensusEntryType::CheckpointCompletion,
                     checkpoint_id.to_le_bytes().to_vec(),
                 )?;
             } else if failed_count > (progress.nodes_started.len() - quorum_size) {
-                // Too many failures, checkpoint failed
+                // Meant to fire when so many nodes failed that quorum can no
+                // longer be reached.
                 println!("Checkpoint {checkpoint_id} failed with {failed_count} failures");
 
                 {
@@ -569,6 +557,11 @@ impl DistributedCoordinator for RaftDistributedCoordinator {
         Ok(())
     }
 
+    /// Poll every 100 ms until the checkpoint reaches quorum or `timeout` passes.
+    ///
+    /// Returns true on quorum and false on timeout. Has the same underflow in
+    /// its failure check as `report_completion`. The checkpoint lock stays held
+    /// during each 100 ms sleep, which blocks reports in the meantime.
     fn wait_for_completion(
         &self,
         checkpoint_id: CheckpointId,
@@ -578,7 +571,7 @@ impl DistributedCoordinator for RaftDistributedCoordinator {
 
         loop {
             if start_time.elapsed() > timeout {
-                return Ok(false); // Timeout
+                return Ok(false); // timed out
             }
 
             let checkpoints = self.active_checkpoints.lock().unwrap();
@@ -586,41 +579,42 @@ impl DistributedCoordinator for RaftDistributedCoordinator {
                 let quorum_size = progress.metadata.required_quorum;
 
                 if progress.nodes_completed.len() >= quorum_size {
-                    return Ok(true); // Success
+                    return Ok(true);
                 }
 
                 if progress.nodes_failed.len() > (progress.nodes_started.len() - quorum_size) {
-                    return Ok(false); // Failed
+                    return Ok(false); // quorum can no longer be reached
                 }
             }
 
-            // Sleep briefly before checking again
             thread::sleep(Duration::from_millis(100));
         }
     }
 
+    /// Report cluster health from the member list.
+    ///
+    /// This node always counts as healthy. The leader is only known when it is
+    /// this node. A lack of healthy majority is reported as `MajorPartition` with
+    /// only this node listed.
     fn cluster_health(&self) -> Result<ClusterHealth, StateError> {
         let members = self.cluster_members.read().unwrap();
         let state = self.node_state.read().unwrap();
 
         let total_nodes = members.len() + 1; // +1 for self
-        let mut healthy_nodes = 1; // self is healthy (simplified)
+        let mut healthy_nodes = 1; // this node always counts as healthy
 
-        // Count healthy nodes
         for (_node_id, node_info) in members.iter() {
             if let NodeHealth::Healthy = node_info.health {
                 healthy_nodes += 1
             }
         }
 
-        // Determine leader
         let leader_node = if state.role == NodeRole::Leader {
             Some(state.node_id.clone())
         } else {
             None
         };
 
-        // Determine partition status (simplified)
         let partition_status = if healthy_nodes < (total_nodes / 2) + 1 {
             PartitionStatus::MajorPartition {
                 majority_nodes: vec![state.node_id.clone()],
@@ -639,7 +633,6 @@ impl DistributedCoordinator for RaftDistributedCoordinator {
 }
 
 impl InMemoryDistributedCoordinator {
-    /// Create a new in-memory coordinator for testing
     pub fn new(node_id: String) -> Self {
         Self {
             node_id,
@@ -648,7 +641,7 @@ impl InMemoryDistributedCoordinator {
         }
     }
 
-    /// Add a simulated node to the cluster
+    /// Add a healthy fake node with made up capabilities.
     pub fn add_node(&self, node_id: String) {
         let mut state = self.cluster_state.write().unwrap();
         let node_info = NodeInfo {
@@ -657,16 +650,17 @@ impl InMemoryDistributedCoordinator {
             last_seen: Instant::now(),
             capabilities: NodeCapabilities {
                 can_be_leader: true,
-                storage_capacity: 1024 * 1024 * 1024,  // 1GB
+                storage_capacity: 1024 * 1024 * 1024,  // 1 GiB
                 processing_capacity: 4,                // 4 cores
-                network_bandwidth: 1024 * 1024 * 1024, // 1Gbps
+                network_bandwidth: 1024 * 1024 * 1024, // 1 GiB/s
             },
             health: NodeHealth::Healthy,
         };
         state.nodes.insert(node_id, node_info);
     }
 
-    /// Simulate a network partition
+    /// Record a fake network split into two groups. Not used when computing
+    /// health yet.
     pub fn simulate_partition(&self, partition1: Vec<String>, partition2: Vec<String>) {
         let mut state = self.cluster_state.write().unwrap();
         state.partitions = vec![partition1, partition2];
@@ -741,6 +735,8 @@ impl DistributedCoordinator for InMemoryDistributedCoordinator {
         }
     }
 
+    /// Count this node and the fake nodes. The partition status is always
+    /// `Healthy`, even after `simulate_partition`.
     fn cluster_health(&self) -> Result<ClusterHealth, StateError> {
         let state = self.cluster_state.read().unwrap();
 
@@ -805,7 +801,7 @@ mod tests {
         let coordinator = RaftDistributedCoordinator::new(config);
 
         assert_eq!(coordinator.config.node_id, "test_node");
-        assert!(!coordinator.is_leader()); // Should start as follower
+        assert!(!coordinator.is_leader()); // starts as a follower
     }
 
     #[test]
@@ -871,7 +867,7 @@ mod tests {
             );
         }
 
-        // Quorum for 3 nodes should be 2
+        // Two members plus this node is 3 nodes, so the quorum is 2.
         assert_eq!(coordinator.get_quorum_size(), 2);
     }
 }

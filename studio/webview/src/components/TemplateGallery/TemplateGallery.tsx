@@ -23,11 +23,12 @@ export function TemplateGallery({ isOpen, onClose }: TemplateGalleryProps) {
   useEffect(() => {
     if (!isOpen) return;
 
-    // Request templates from extension
+    // Ask the extension for the template list each time the gallery opens
     vscode.postMessage({ type: 'getTemplates' });
     setLoading(true);
 
-    // Listen for templates response
+    // Handles both the template list and a loaded template. A loaded template
+    // replaces the current application and closes the gallery.
     const handleMessage = (event: MessageEvent) => {
       const message = event.data;
       if (message.type === 'templates') {

@@ -20,12 +20,12 @@
 //! Requires building with the `kafka` feature:
 //! `cargo test --features kafka --test kafka_integration -- --ignored`
 //!
-//! Tests marked `#[ignore]` require a running Kafka broker. Each test
+//! Tests marked `#[ignore]` need a running Kafka broker. Each test
 //! creates its own unique topic by producing to it first.
 //!
 //! ## Setup
 //!
-//! Start a single-node KRaft broker with Docker:
+//! Start a single node KRaft broker with Docker:
 //! ```bash
 //! docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.1
 //! ```
@@ -51,7 +51,7 @@ fn broker() -> String {
     std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string())
 }
 
-/// Unique per-run topic so tests never see each other's records
+/// Topic name unique to this run, so tests never see each other's records
 fn unique_topic(prefix: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -76,16 +76,15 @@ fn sink_props(topic: &str) -> HashMap<String, String> {
     let mut props = HashMap::new();
     props.insert("kafka.bootstrap.servers".to_string(), broker());
     props.insert("kafka.topic".to_string(), topic.to_string());
-    // Deterministic delivery for test assertions
+    // Sync delivery, so a record is on the broker before publish returns
     props.insert("kafka.delivery.sync".to_string(), "true".to_string());
-    // Exercise the static record-key path
+    // Cover the fixed record key path
     props.insert("kafka.key".to_string(), "test-key".to_string());
     props
 }
 
-// Factory metadata and config-validation coverage lives in the in-module
-// unit tests (kafka_source.rs / kafka_sink.rs); this file holds only the
-// broker-backed tests.
+// Factory metadata and config validation are covered by the unit tests inside
+// kafka_source.rs and kafka_sink.rs. This file holds only tests that need a broker.
 
 // ============================================================================
 // Broker Tests (run with --ignored against a live broker)
@@ -96,7 +95,7 @@ fn sink_props(topic: &str) -> HashMap<String, String> {
 fn test_sink_to_source_round_trip() {
     let topic = unique_topic("roundtrip");
 
-    // Produce three records (sync delivery; broker auto-creates the topic)
+    // Produce three records with sync delivery. The broker creates the topic on first write.
     let sink = KafkaSink::from_properties(&sink_props(&topic)).unwrap();
     sink.start();
     sink.publish(b"one").unwrap();
@@ -104,7 +103,7 @@ fn test_sink_to_source_round_trip() {
     sink.publish(b"three").unwrap();
     sink.stop();
 
-    // Consume them from the beginning
+    // Read them back from the beginning with a new group
     let callback = CollectingCallback::new();
     let mut source =
         KafkaSource::from_properties(&source_props(&topic, &unique_topic("grp")), None, "Test")
@@ -131,7 +130,7 @@ fn test_manual_commit_no_redelivery_across_restarts() {
     sink.start();
     sink.publish(b"first").unwrap();
 
-    // At-least-once mode: offset committed only after delivery
+    // At least once mode. The offset is committed only after delivery.
     let mut props = source_props(&topic, &group);
     props.insert("kafka.enable.auto.commit".to_string(), "false".to_string());
 
@@ -142,8 +141,8 @@ fn test_manual_commit_no_redelivery_across_restarts() {
     assert_eq!(got, vec![b"first".to_vec()]);
     source.stop(); // final sync commit happens here
 
-    // Produce a second record, then resume with the SAME group:
-    // only the uncommitted record may arrive
+    // Produce a second record, then resume with the SAME group.
+    // Only the uncommitted record may arrive.
     sink.publish(b"second").unwrap();
     sink.stop();
 
@@ -180,7 +179,7 @@ fn test_validate_connectivity_existing_topic() {
     sink.validate_connectivity().unwrap();
 }
 
-/// Callback that rejects every payload — used to exercise the fail strategy
+/// Callback that rejects every payload, used to drive the fail strategy
 #[derive(Debug)]
 struct AlwaysFailCallback;
 
@@ -193,9 +192,9 @@ impl SourceCallback for AlwaysFailCallback {
 #[test]
 #[ignore = "Requires Kafka broker - run with --ignored"]
 fn test_fail_strategy_leaves_record_uncommitted() {
-    // The at-least-once contract for the `fail` strategy: the poisoned
-    // record's offset must NOT be committed by ANY path (including the
-    // shutdown/revoke commits), so it is redelivered after restart.
+    // The at least once promise for the `fail` strategy. No path may commit the
+    // offset of the poisoned record, including the commits on shutdown and on
+    // partition revoke, so it is delivered again after a restart.
     let topic = unique_topic("poison");
     let group = unique_topic("grp");
 
@@ -211,10 +210,10 @@ fn test_fail_strategy_leaves_record_uncommitted() {
     // First source hits the poison record and stops without committing
     let mut source = KafkaSource::from_properties(&props, None, "Test").unwrap();
     source.start(Arc::new(AlwaysFailCallback));
-    std::thread::sleep(Duration::from_secs(10)); // let it consume + fail
+    std::thread::sleep(Duration::from_secs(10)); // let it consume and fail
     source.stop();
 
-    // Restart with the SAME group: the record must be redelivered
+    // Restart with the SAME group. The record must be delivered again.
     let callback = CollectingCallback::new();
     let mut source2 = KafkaSource::from_properties(&props, None, "Test").unwrap();
     source2.start(Arc::new(callback.clone()));
@@ -231,8 +230,8 @@ fn test_fail_strategy_leaves_record_uncommitted() {
 #[test]
 #[ignore = "Requires Kafka broker - run with --ignored"]
 fn test_validate_connectivity_missing_topic_fails() {
-    // Validation must fail on a topic that does not exist — and must not
-    // create it as a side effect (fail-fast, not create-on-probe)
+    // Validation must fail on a topic that does not exist, and must not create it
+    // as a side effect. It fails right away instead of creating the topic on probe.
     let topic = unique_topic("missing");
 
     let source =
@@ -249,7 +248,7 @@ fn test_validate_connectivity_missing_topic_fails() {
         "sink validation must fail for a missing topic"
     );
 
-    // Probing must not have created the topic: a second validation still fails
+    // Probing must not have created the topic, so a second validation still fails
     let sink = KafkaSink::from_properties(&sink_props(&topic)).unwrap();
     assert!(
         sink.validate_connectivity().is_err(),
@@ -294,8 +293,8 @@ fn test_source_stop_joins_promptly() {
     source.start(Arc::new(callback.clone()));
     callback.wait_for(1, Duration::from_secs(30));
 
-    // The poll loop checks the running flag every ≤100ms — stop() must
-    // return well within the grace period
+    // The poll loop checks the running flag at least every 100 ms, so stop()
+    // must return well within the grace period
     let start = Instant::now();
     source.stop();
     assert!(

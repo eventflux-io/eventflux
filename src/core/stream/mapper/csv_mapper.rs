@@ -17,14 +17,14 @@
 
 //! CSV Mapper Implementation
 //!
-//! Provides bidirectional mapping between CSV and EventFlux events.
+//! Maps CSV to EventFlux events and back.
 //!
 //! ## Source Mapping (CSV → Events)
 //!
-//! ### Auto-Mapping (No `mapping.*` properties)
-//! Maps CSV columns by position to event fields in order.
+//! ### Auto Mapping (no `mapping.*` properties)
+//! Maps CSV columns by position to event fields, in order.
 //!
-//! ### Explicit Mapping (With `mapping.*` properties)
+//! ### Explicit Mapping (with `mapping.*` properties)
 //! ```toml
 //! csv.mapping.orderId = "0"    # First column
 //! csv.mapping.amount = "2"     # Third column
@@ -33,7 +33,8 @@
 //!
 //! ## Sink Mapping (Events → CSV)
 //!
-//! Converts events to CSV format with configurable delimiter and headers.
+//! Turns each event into one CSV row, with a configurable delimiter and an
+//! optional header line.
 //!
 //! ## Configuration Example
 //!
@@ -58,30 +59,33 @@ use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
 use std::collections::HashMap;
 
-/// Source mapper for CSV format
+/// Source mapper for CSV format.
+///
+/// Each non empty line becomes one event with the current time as its
+/// timestamp. Fields are trimmed and their type is guessed (see `parse_field`).
 #[derive(Debug, Clone)]
 pub struct CsvSourceMapper {
-    /// Field name → column index mappings
-    /// Empty = map all columns in order
+    /// Field name to column index. Empty means map all columns in order.
     mappings: HashMap<String, usize>,
     /// CSV delimiter character
     delimiter: char,
-    /// Whether the first row is a header (skip it)
+    /// The first line is a header and is skipped
     has_header: bool,
-    /// Whether to ignore parse errors
+    /// Skip lines that fail to parse instead of returning an error
     ignore_parse_errors: bool,
-    /// Maximum input size in bytes (default: 10 MB)
+    /// Largest input in bytes. Default 10 MB.
     max_input_size: usize,
-    /// Maximum number of fields per row (default: 1000)
+    /// Most fields in one row. Default 1000.
     max_fields: usize,
     /// Explicit mappings as (field name, column index) in output order.
-    /// Precomputed at configuration time: schema order when field names are
-    /// set, alphabetical otherwise (HashMap iteration is non-deterministic).
+    /// Worked out at config time. Schema order when field names are set,
+    /// otherwise alphabetical, since HashMap order is random.
     ordered_mappings: Vec<(String, usize)>,
 }
 
 impl CsvSourceMapper {
-    /// Create a new CSV source mapper with default settings (comma delimiter, no header)
+    /// Creates a CSV source mapper with default settings: comma delimiter, no
+    /// header, 10 MB input limit, and 1000 fields per row
     pub fn new() -> Self {
         Self {
             mappings: HashMap::new(),
@@ -94,7 +98,8 @@ impl CsvSourceMapper {
         }
     }
 
-    /// Create a CSV source mapper with explicit column mappings
+    /// Creates a CSV source mapper with explicit column mappings. Output is in
+    /// alphabetical field order until `set_field_names` is called.
     pub fn with_mappings(mappings: HashMap<String, usize>) -> Self {
         let ordered_mappings = alphabetical_mappings(&mappings);
         Self {
@@ -108,47 +113,54 @@ impl CsvSourceMapper {
         }
     }
 
-    /// Set the stream schema field names (in schema order).
+    /// Sets the stream schema field names, in schema order.
     ///
-    /// With explicit `mapping.*` properties configured, re-orders the output
-    /// to schema order and validates fail-fast: every stream field must have
-    /// a mapping (matched exactly or ASCII case-insensitively) and every
-    /// mapping key must correspond to a stream field. Without explicit
-    /// mappings, CSV mapping stays positional and the names are unused.
-    /// An empty list clears the schema and restores alphabetical mapping order.
+    /// With explicit `mapping.*` properties, this puts the output in schema
+    /// order and checks right away that every stream field has a mapping
+    /// (matched exactly, or ignoring ASCII case) and every mapping key names a
+    /// stream field. Without explicit mappings, CSV stays positional and the
+    /// names are not used. An empty list clears the schema and goes back to
+    /// alphabetical order.
     ///
-    /// On error the mapper is left unchanged.
+    /// # Errors
+    ///
+    /// Returns an error when a field and the mappings do not match. The mapper
+    /// is then left unchanged.
     pub fn set_field_names(&mut self, names: Vec<String>) -> Result<(), EventFluxError> {
         self.ordered_mappings = order_mappings(&names, &self.mappings, "csv")?;
         Ok(())
     }
 
-    /// Set the CSV delimiter
+    /// Sets the CSV delimiter
     pub fn set_delimiter(&mut self, delimiter: char) {
         self.delimiter = delimiter;
     }
 
-    /// Set whether the CSV has a header row
+    /// Sets whether the first line is a header to skip
     pub fn set_has_header(&mut self, has_header: bool) {
         self.has_header = has_header;
     }
 
-    /// Set whether to ignore parse errors
+    /// Sets whether lines that fail to parse are skipped instead of failing
     pub fn set_ignore_parse_errors(&mut self, ignore: bool) {
         self.ignore_parse_errors = ignore;
     }
 
-    /// Set maximum input size in bytes (for DoS protection)
+    /// Sets the largest input in bytes, to guard against huge inputs
     pub fn set_max_input_size(&mut self, max_size: usize) {
         self.max_input_size = max_size;
     }
 
-    /// Set maximum number of fields per row (for DoS protection)
+    /// Sets the most fields in one row, to guard against huge inputs
     pub fn set_max_fields(&mut self, max_fields: usize) {
         self.max_fields = max_fields;
     }
 
-    /// Parse a single CSV line
+    /// Splits one CSV line into trimmed fields.
+    ///
+    /// A `"` turns quoting on or off and is not kept, so a delimiter inside
+    /// quotes stays in the field. Doubled quotes (`""`) are not turned back
+    /// into one quote. It never returns an error today.
     fn parse_line(&self, line: &str) -> Result<Vec<String>, EventFluxError> {
         let mut fields = Vec::new();
         let mut current_field = String::new();
@@ -165,20 +177,21 @@ impl CsvSourceMapper {
             }
         }
 
-        // Add the last field
         fields.push(current_field.trim().to_string());
 
         Ok(fields)
     }
 
-    /// Convert CSV field to AttributeValue with type inference
+    /// Turns a CSV field into an AttributeValue by guessing its type.
+    ///
+    /// Tries in this order: empty or `null` (any case) gives Null, `true` or
+    /// `false` (any case) gives Bool, then Int (i32), Long (i64), and Double.
+    /// Anything else stays a String.
     fn parse_field(&self, field: &str) -> AttributeValue {
-        // Try parsing as different types
         if field.is_empty() || field.eq_ignore_ascii_case("null") {
             return AttributeValue::Null;
         }
 
-        // Try boolean
         if field.eq_ignore_ascii_case("true") {
             return AttributeValue::Bool(true);
         }
@@ -186,22 +199,18 @@ impl CsvSourceMapper {
             return AttributeValue::Bool(false);
         }
 
-        // Try integer
         if let Ok(i) = field.parse::<i32>() {
             return AttributeValue::Int(i);
         }
 
-        // Try long
         if let Ok(l) = field.parse::<i64>() {
             return AttributeValue::Long(l);
         }
 
-        // Try double
         if let Ok(d) = field.parse::<f64>() {
             return AttributeValue::Double(d);
         }
 
-        // Default to string
         AttributeValue::String(field.to_string())
     }
 }
@@ -214,7 +223,7 @@ impl Default for CsvSourceMapper {
 
 impl SourceMapper for CsvSourceMapper {
     fn map(&self, input: &[u8]) -> Result<Vec<Event>, EventFluxError> {
-        // Check input size to prevent DoS attacks
+        // Reject huge inputs so a sender cannot exhaust memory
         if input.len() > self.max_input_size {
             return Err(EventFluxError::MappingFailed {
                 message: format!(
@@ -234,21 +243,21 @@ impl SourceMapper for CsvSourceMapper {
         let mut events = Vec::new();
         let mut lines = input_str.lines();
 
-        // Skip header if configured
         if self.has_header {
             lines.next();
         }
 
+        // line_num counts from the first data line, so with a header it is one
+        // less than the line number in the input
         for (line_num, line) in lines.enumerate() {
             if line.trim().is_empty() {
-                continue; // Skip empty lines
+                continue;
             }
 
             let fields = match self.parse_line(line) {
                 Ok(f) => f,
                 Err(e) => {
                     if self.ignore_parse_errors {
-                        // Skip this line - continue to next
                         continue;
                     } else {
                         return Err(EventFluxError::MappingFailed {
@@ -259,7 +268,8 @@ impl SourceMapper for CsvSourceMapper {
                 }
             };
 
-            // Check field count to prevent DoS attacks
+            // Reject huge rows so a sender cannot exhaust memory. This is not
+            // skipped by ignore_parse_errors.
             if fields.len() > self.max_fields {
                 return Err(EventFluxError::MappingFailed {
                     message: format!(
@@ -273,12 +283,12 @@ impl SourceMapper for CsvSourceMapper {
             }
 
             let event_data = if self.mappings.is_empty() {
-                // Auto-map: use all columns in order
+                // Auto mapping uses all columns in order
                 fields.iter().map(|f| self.parse_field(f)).collect()
             } else {
-                // Explicit mapping: extract columns in the order precomputed
-                // at configuration time (schema order when available,
-                // alphabetical otherwise)
+                // Explicit mapping takes columns in the order worked out at
+                // config time (schema order when known, else alphabetical). A
+                // missing column gives Null.
                 self.ordered_mappings
                     .iter()
                     .map(|(_, col_idx)| {
@@ -306,14 +316,14 @@ impl SourceMapper for CsvSourceMapper {
 pub struct CsvSinkMapper {
     /// CSV delimiter character
     delimiter: char,
-    /// Whether to include header row (field names)
+    /// Write a header line of field names before each row
     include_header: bool,
     /// Optional custom header names
     header_names: Option<Vec<String>>,
 }
 
 impl CsvSinkMapper {
-    /// Create a new CSV sink mapper with default settings (comma delimiter, no header)
+    /// Creates a CSV sink mapper with default settings: comma delimiter, no header
     pub fn new() -> Self {
         Self {
             delimiter: ',',
@@ -322,22 +332,27 @@ impl CsvSinkMapper {
         }
     }
 
-    /// Set the CSV delimiter
+    /// Sets the CSV delimiter
     pub fn set_delimiter(&mut self, delimiter: char) {
         self.delimiter = delimiter;
     }
 
-    /// Set whether to include header row
+    /// Sets whether to write a header line before each row
     pub fn set_include_header(&mut self, include: bool) {
         self.include_header = include;
     }
 
-    /// Set custom header names
+    /// Sets custom header names. Without them the header is `field_0`,
+    /// `field_1`, and so on. Header names are written as is, not quoted.
     pub fn set_header_names(&mut self, headers: Vec<String>) {
         self.header_names = Some(headers);
     }
 
-    /// Format a value for CSV output (escape if needed)
+    /// Formats a value for CSV output.
+    ///
+    /// Null becomes an empty field, Bytes becomes `<bytes:N>`, and Object
+    /// becomes `<object>`. A value that holds the delimiter, a quote, or a
+    /// newline is wrapped in quotes, with inner quotes doubled.
     fn format_field(&self, value: &AttributeValue) -> String {
         let s = match value {
             AttributeValue::String(s) => s.clone(),
@@ -351,7 +366,6 @@ impl CsvSinkMapper {
             AttributeValue::Object(_) => "<object>".to_string(),
         };
 
-        // Escape if contains delimiter, quotes, or newlines
         if s.contains(self.delimiter) || s.contains('"') || s.contains('\n') {
             format!("\"{}\"", s.replace('"', "\"\""))
         } else {
@@ -370,14 +384,14 @@ impl SinkMapper for CsvSinkMapper {
     fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
         let mut output = String::new();
 
-        // Add header if configured. With one-event-per-message semantics the
-        // header is prepended to EVERY message; it is off by default and only
-        // emitted when explicitly enabled via `csv.include-header`.
+        // Each event is its own message, so the header goes before EVERY
+        // message. It is off by default and only written when
+        // `csv.include-header` turns it on.
         if self.include_header {
             if let Some(headers) = &self.header_names {
                 output.push_str(&headers.join(&self.delimiter.to_string()));
             } else {
-                // Generate default headers (field_0, field_1, etc.)
+                // Default header names are field_0, field_1, and so on
                 let field_count = event.data.len();
                 let headers: Vec<String> =
                     (0..field_count).map(|i| format!("field_{}", i)).collect();
@@ -386,7 +400,6 @@ impl SinkMapper for CsvSinkMapper {
             output.push('\n');
         }
 
-        // Add the data row
         let fields: Vec<String> = event.data.iter().map(|v| self.format_field(v)).collect();
         output.push_str(&fields.join(&self.delimiter.to_string()));
         output.push('\n');
@@ -435,7 +448,7 @@ mod tests {
 
         let events = mapper.map(csv_str.as_bytes()).unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].data.len(), 2); // Only mapped fields
+        assert_eq!(events[0].data.len(), 2); // only the mapped fields
     }
 
     #[test]
@@ -488,7 +501,7 @@ mod tests {
         let csv_str = String::from_utf8(result).unwrap();
 
         let lines: Vec<&str> = csv_str.lines().collect();
-        assert_eq!(lines.len(), 2); // Header + data row
+        assert_eq!(lines.len(), 2); // header and data row
         assert!(lines[0].contains("field_0"));
         assert!(lines[0].contains("field_1"));
     }
@@ -504,7 +517,7 @@ mod tests {
         let result = mapper.map_event(&event).unwrap();
         let csv_str = String::from_utf8(result).unwrap();
 
-        // Should be quoted due to commas
+        // Must be quoted because of the commas
         assert!(csv_str.contains('"'));
     }
 
@@ -519,28 +532,27 @@ mod tests {
         assert_eq!(events[0].data.len(), 3);
     }
 
-    // ERROR CASE TESTS - Testing bug fixes
+    // Error case tests, guarding earlier bug fixes
 
     #[test]
     fn test_csv_ignore_parse_errors_enabled() {
         let mut mapper = CsvSourceMapper::new();
         mapper.set_ignore_parse_errors(true);
 
-        // Valid CSV - both lines should parse successfully
-        // (Note: CSV format is very permissive, most strings are valid)
+        // Valid CSV, so both lines parse. The CSV parser is very lenient and
+        // accepts almost any string.
         let csv_str = "123,100.0,customer1\n456,200.5,customer2";
         let events = mapper.map(csv_str.as_bytes()).unwrap();
 
-        // Both lines should be parsed
         assert_eq!(events.len(), 2);
     }
 
     #[test]
     fn test_csv_max_input_size_limit() {
         let mut mapper = CsvSourceMapper::new();
-        mapper.set_max_input_size(100); // Set small limit
+        mapper.set_max_input_size(100); // small limit
 
-        // Create CSV larger than limit
+        // Input larger than the limit
         let large_csv = format!("{}\n", "x,y,z".repeat(100));
         let result = mapper.map(large_csv.as_bytes());
 
@@ -554,9 +566,9 @@ mod tests {
     #[test]
     fn test_csv_max_fields_limit() {
         let mut mapper = CsvSourceMapper::new();
-        mapper.set_max_fields(5); // Set small limit
+        mapper.set_max_fields(5); // small limit
 
-        // Create CSV with more fields than limit
+        // More fields than the limit
         let csv_str = "1,2,3,4,5,6,7,8,9,10";
         let result = mapper.map(csv_str.as_bytes());
 
@@ -567,13 +579,12 @@ mod tests {
     #[test]
     fn test_csv_fields_within_limit() {
         let mut mapper = CsvSourceMapper::new();
-        mapper.set_max_fields(10); // Set reasonable limit
+        mapper.set_max_fields(10);
 
-        // Create CSV within limit
         let csv_str = "1,2,3,4,5";
         let result = mapper.map(csv_str.as_bytes());
 
-        // Should succeed since it's within limit
+        // Within the limit, so it must succeed
         assert!(result.is_ok());
         assert_eq!(result.unwrap()[0].data.len(), 5);
     }
@@ -583,22 +594,21 @@ mod tests {
         let mut mapper = CsvSourceMapper::new();
         mapper.set_max_input_size(1024 * 1024); // 1 MB limit
 
-        // Create CSV within limit
         let csv_str = format!("{}\n", "a,b,c".repeat(100));
         let result = mapper.map(csv_str.as_bytes());
 
-        // Should succeed since it's within limit
+        // Within the limit, so it must succeed
         assert!(result.is_ok());
     }
 
     // ========================================================================
-    // Schema-Aware Explicit Mapping Tests (#201)
+    // Explicit Mapping Tests That Use the Schema (#201)
     // ========================================================================
 
     #[test]
     fn test_csv_schema_explicit_mappings_follow_schema_order() {
-        // Schema order: symbol, amount — alphabetical ordering would emit
-        // amount first and silently swap the fields
+        // Schema order is symbol, amount. Alphabetical order would put amount
+        // first and silently swap the fields.
         let mut mappings = HashMap::new();
         mappings.insert("symbol".to_string(), 0usize);
         mappings.insert("amount".to_string(), 1usize);
@@ -656,8 +666,8 @@ mod tests {
 
     #[test]
     fn test_csv_schema_case_only_aliases_are_rejected() {
-        // Schema (foo, FOO) with keys "Foo" and "fOO": ambiguous, so it must
-        // fail rather than assign columns based on HashMap order
+        // Schema (foo, FOO) with keys "Foo" and "fOO" is ambiguous. It must fail
+        // instead of picking columns by HashMap order.
         let mut mappings = HashMap::new();
         mappings.insert("Foo".to_string(), 0usize);
         mappings.insert("fOO".to_string(), 1usize);
@@ -702,17 +712,17 @@ mod tests {
             .unwrap();
         assert!(matches!(first(&mapper), AttributeValue::String(_)));
 
-        // Failed update leaves the current schema order in place
+        // A failed update keeps the current schema order
         assert!(mapper.set_field_names(vec!["symbol".to_string()]).is_err());
         assert!(matches!(first(&mapper), AttributeValue::String(_)));
 
-        // Replaced schema is recomputed
+        // A new schema gets its order worked out again
         mapper
             .set_field_names(vec!["amount".to_string(), "symbol".to_string()])
             .unwrap();
         assert!(matches!(first(&mapper), AttributeValue::Int(5)));
 
-        // Cleared schema restores alphabetical order (amount, symbol)
+        // Clearing the schema goes back to alphabetical order (amount, symbol)
         mapper
             .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
             .unwrap();
@@ -722,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_csv_schema_without_mappings_stays_positional() {
-        // CSV auto-mapping is inherently positional; schema names are unused
+        // CSV auto mapping works by position, so schema names are not used
         let mut mapper = CsvSourceMapper::new();
         mapper
             .set_field_names(vec!["a".to_string(), "b".to_string()])

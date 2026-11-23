@@ -15,13 +15,16 @@
  * limitations under the License.
  */
 
-// src/core/executor/math/subtract.rs
 use super::common::CoerceNumeric;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum // Use CoerceNumeric from common.rs
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
 
+/// Subtracts two numbers with `-`.
+///
+/// NULL on either side gives NULL. No value on either side gives `None`. INT and LONG
+/// results wrap on overflow.
 #[derive(Debug)]
 pub struct SubtractExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
@@ -30,6 +33,11 @@ pub struct SubtractExpressionExecutor {
 }
 
 impl SubtractExpressionExecutor {
+    /// The result type is the widest operand type, in the order INT < LONG < FLOAT < DOUBLE.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either operand is STRING, BOOL or OBJECT.
     pub fn new(
         left: Box<dyn ExpressionExecutor>,
         right: Box<dyn ExpressionExecutor>,
@@ -38,7 +46,7 @@ impl SubtractExpressionExecutor {
         let right_type = right.get_return_type();
 
         let return_type = match (left_type, right_type) {
-            // Handle error cases first
+            // Unsupported types first
             (ApiAttributeType::STRING, _)
             | (_, ApiAttributeType::STRING)
             | (ApiAttributeType::BOOL, _)
@@ -49,7 +57,7 @@ impl SubtractExpressionExecutor {
                     "Subtraction not supported for input types {left_type:?} and {right_type:?}"
                 ));
             }
-            // Handle numeric types in order of precedence
+            // Then numeric types, widest first
             (ApiAttributeType::DOUBLE, ApiAttributeType::DOUBLE) => ApiAttributeType::DOUBLE,
             (ApiAttributeType::DOUBLE, _) | (_, ApiAttributeType::DOUBLE) => {
                 ApiAttributeType::DOUBLE

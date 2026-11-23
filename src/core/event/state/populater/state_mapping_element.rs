@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/event/state/populater/state_mapping_element.rs
 #[derive(Debug, Clone)]
 pub struct StateMappingElement {
     pub from_position: Vec<i32>,

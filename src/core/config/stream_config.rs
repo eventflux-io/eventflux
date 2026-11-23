@@ -17,16 +17,16 @@
 
 //! # Stream Configuration Module
 //!
-//! This module provides configuration management for EventFlux streams with multi-layer
-//! property resolution. It implements a priority-based configuration system where settings
-//! can come from multiple sources and are merged according to their precedence.
+//! Configuration for EventFlux streams and tables, built from several layers. Each
+//! property remembers where it came from, and a value from a higher priority source
+//! replaces one from a lower priority source.
 //!
 //! ## Configuration Sources (Priority: Low to High)
 //!
-//! 1. **RustDefault** - Built-in Rust defaults
-//! 2. **TomlApplication** - Global application-level TOML config
-//! 3. **TomlStream** - Stream-specific TOML config
-//! 4. **SqlWith** - SQL WITH clause (highest priority)
+//! 1. **RustDefault**. Built in Rust defaults.
+//! 2. **TomlApplication**. The TOML `[application]` section, shared by all streams.
+//! 3. **TomlStream**. The TOML section for one stream.
+//! 4. **SqlWith**. The SQL WITH clause. Highest priority.
 //!
 //! ## Example Usage
 //!
@@ -49,9 +49,9 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-/// Property source identifier with priority ordering
+/// Where a property came from, ordered by priority
 ///
-/// Higher priority sources override lower priority sources during configuration merging.
+/// A value from a higher priority source replaces one from a lower priority source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropertySource {
     /// Rust code defaults (priority: 0)
@@ -65,7 +65,7 @@ pub enum PropertySource {
 }
 
 impl PropertySource {
-    /// Get numeric priority for comparison (higher = more important)
+    /// Numeric priority from 0 to 3. A higher number wins.
     #[inline]
     pub const fn priority(&self) -> u8 {
         match self {
@@ -76,7 +76,7 @@ impl PropertySource {
         }
     }
 
-    /// Get human-readable description of the source
+    /// Short description of the source for people to read
     #[inline]
     pub const fn description(&self) -> &'static str {
         match self {
@@ -88,10 +88,10 @@ impl PropertySource {
     }
 }
 
-/// Flat key-value configuration with source tracking
+/// Flat map of string properties that remembers the source of each one
 ///
-/// Uses priority-based merging: higher priority sources override lower priority sources.
-/// This is the foundation for multi-layer configuration resolution.
+/// A value from a higher priority source replaces one from a lower priority source.
+/// The layered stream and table configuration is built on this.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlatConfig {
     properties: HashMap<String, String>,
@@ -99,7 +99,7 @@ pub struct FlatConfig {
 }
 
 impl FlatConfig {
-    /// Create a new empty configuration
+    /// Create an empty configuration
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -108,7 +108,7 @@ impl FlatConfig {
         }
     }
 
-    /// Create with initial capacity for better performance
+    /// Create an empty configuration with room for `capacity` properties
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -117,9 +117,10 @@ impl FlatConfig {
         }
     }
 
-    /// Set a property with source tracking and priority-based override
+    /// Set a property and record its source
     ///
-    /// Only sets the value if the new source has equal or higher priority than the existing source.
+    /// Does nothing if the key is already set from a higher priority source. A source
+    /// of equal priority replaces the value, so the last write wins.
     pub fn set(
         &mut self,
         key: impl Into<String>,
@@ -129,15 +130,12 @@ impl FlatConfig {
         let key = key.into();
         let value = value.into();
 
-        // Check if property exists and compare priorities
         if let Some(existing_source) = self.sources.get(&key) {
             if existing_source.priority() > source.priority() {
-                // Existing source has strictly higher priority, don't override
                 return;
             }
         }
 
-        // Set or override the property
         self.properties.insert(key.clone(), value);
         self.sources.insert(key, source);
     }
@@ -168,15 +166,16 @@ impl FlatConfig {
         self.properties.keys()
     }
 
-    /// Get immutable reference to all properties
+    /// Get all properties, without their sources
     #[inline]
     pub fn properties(&self) -> &HashMap<String, String> {
         &self.properties
     }
 
-    /// Merge another configuration into this one (respects priorities)
+    /// Merge `other` into this config through [`FlatConfig::set`]
     ///
-    /// Properties from `other` will only override if they have higher priority.
+    /// A property from `other` replaces an existing one only when its source has equal
+    /// or higher priority.
     pub fn merge(&mut self, other: &FlatConfig) {
         for (key, value) in &other.properties {
             if let Some(source) = other.sources.get(key) {
@@ -185,9 +184,10 @@ impl FlatConfig {
         }
     }
 
-    /// Get all properties with a specific prefix
+    /// Get all properties whose key starts with `prefix`
     ///
-    /// Useful for extracting extension-specific properties like "kafka.*"
+    /// Handy for pulling out the settings of one extension, such as "kafka.*". Keys keep
+    /// their prefix.
     pub fn get_properties_with_prefix<'a>(
         &'a self,
         prefix: &'a str,
@@ -217,23 +217,23 @@ impl Default for FlatConfig {
     }
 }
 
-/// Stream type classification
+/// Kind of stream
 ///
-/// Determines validation rules and extension requirements for streams.
+/// Decides which validation rules apply and whether an extension is needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamType {
-    /// Source stream - reads from external systems
+    /// Reads from an external system
     Source,
-    /// Sink stream - writes to external systems
+    /// Writes to an external system
     Sink,
-    /// Internal stream - in-memory processing only
+    /// Lives only in memory
     Internal,
 }
 
 impl std::str::FromStr for StreamType {
     type Err = String;
 
-    /// Parse stream type from string (case-insensitive)
+    /// Parse "source", "sink" or "internal", ignoring case
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "source" => Ok(StreamType::Source),
@@ -248,7 +248,7 @@ impl std::str::FromStr for StreamType {
 }
 
 impl StreamType {
-    /// Convert stream type to string representation
+    /// Lower case name of the stream type
     #[inline]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -258,24 +258,25 @@ impl StreamType {
         }
     }
 
-    /// Check if stream type requires an extension (source/sink do, internal doesn't)
+    /// Check if the stream type needs an extension. True for source and sink.
     #[inline]
     pub const fn requires_extension(&self) -> bool {
         matches!(self, StreamType::Source | StreamType::Sink)
     }
 
-    /// Check if stream type requires a format (source/sink do, internal doesn't)
+    /// True for source and sink. [`StreamTypeConfig::validate`] still lets them leave
+    /// out the format.
     #[inline]
     pub const fn requires_format(&self) -> bool {
         matches!(self, StreamType::Source | StreamType::Sink)
     }
 }
 
-/// Typed stream configuration with validation
+/// Typed stream configuration that has passed validation
 ///
-/// Enforces type-specific validation rules:
-/// - Source/Sink streams **must** have extension and format
-/// - Internal streams **must not** have extension or format
+/// Rules for each stream type:
+/// - Source and sink streams **must** have an extension. The format is optional.
+/// - Internal streams **must not** have an extension or a format.
 #[derive(Debug, Clone)]
 pub struct StreamTypeConfig {
     pub stream_type: StreamType,
@@ -285,7 +286,7 @@ pub struct StreamTypeConfig {
 }
 
 impl StreamTypeConfig {
-    /// Create a new stream configuration with validation
+    /// Build a stream configuration and validate it. Returns the validation error.
     pub fn new(
         stream_type: StreamType,
         extension: Option<String>,
@@ -303,17 +304,20 @@ impl StreamTypeConfig {
         Ok(config)
     }
 
-    /// Create from flat configuration with type inference
+    /// Build a stream configuration from a [`FlatConfig`] and validate it
     ///
-    /// Type is optional - if not specified, defaults to Internal (pure in-memory stream).
-    /// This follows the progressive disclosure principle: start simple, add complexity as needed.
+    /// Reads `type`, `extension` and `format`. A missing `type` means an internal, in
+    /// memory stream, so simple streams need no config at all. All properties,
+    /// including those three, are copied into `properties`.
+    ///
+    /// Returns an error for an unknown `type` or a config that fails validation.
     pub fn from_flat_config(flat_config: &FlatConfig) -> Result<Self, String> {
-        // Type is optional - defaults to Internal if not specified (spec lines 178-197)
+        // A missing type means internal (spec lines 178-197)
         let stream_type = flat_config
             .get("type")
             .map(|s| StreamType::from_str(s))
             .transpose()?
-            .unwrap_or(StreamType::Internal); // Default to Internal for pure in-memory streams
+            .unwrap_or(StreamType::Internal);
 
         let extension = flat_config.get("extension").cloned();
         let format = flat_config.get("format").cloned();
@@ -322,11 +326,10 @@ impl StreamTypeConfig {
         Self::new(stream_type, extension, format, properties)
     }
 
-    /// Validate configuration rules based on stream type
+    /// Check the rules for the stream type. See [`StreamTypeConfig`].
     pub fn validate(&self) -> Result<(), String> {
         match self.stream_type {
             StreamType::Source | StreamType::Sink => {
-                // External streams require extension and format
                 if self.extension.is_none() {
                     return Err(format!(
                         "Stream has type='{}' but missing required 'extension' property",
@@ -334,11 +337,10 @@ impl StreamTypeConfig {
                     ));
                 }
 
-                // Format is optional - some sources/sinks use internal binary format
-                // If not specified, PassthroughMapper will be used automatically
+                // Format is optional. Some sources and sinks pass events in their own
+                // binary form, and PassthroughMapper is used when no format is set.
             }
             StreamType::Internal => {
-                // Internal streams must NOT have extension or format
                 if self.extension.is_some() {
                     return Err(
                         "Stream has type='internal' but specifies 'extension' (not allowed)"
@@ -358,7 +360,7 @@ impl StreamTypeConfig {
         Ok(())
     }
 
-    /// Get extension with validation (error if not present)
+    /// Get the extension. Returns an error when none is set, as for an internal stream.
     #[inline]
     pub fn extension(&self) -> Result<&str, String> {
         self.extension.as_deref().ok_or_else(|| {
@@ -369,18 +371,17 @@ impl StreamTypeConfig {
         })
     }
 
-    /// Get format (optional)
+    /// Get the format, or `None` when none is set
     ///
-    /// Returns None if no format is specified. Some sources/sinks (like timer)
-    /// use internal binary format and don't need an external format specification.
+    /// Some sources and sinks, such as timer, pass events in their own binary form and
+    /// need no format.
     #[inline]
     pub fn format(&self) -> Option<&str> {
         self.format.as_deref()
     }
 
-    /// Get all properties with a specific prefix
-    ///
-    /// Useful for extracting extension-specific properties like "kafka.*"
+    /// Copy out the properties whose key starts with `prefix`, such as "kafka.*".
+    /// Keys keep their prefix.
     pub fn get_properties_with_prefix(&self, prefix: &str) -> HashMap<String, String> {
         self.properties
             .iter()
@@ -390,19 +391,20 @@ impl StreamTypeConfig {
     }
 }
 
-/// Typed table configuration with validation
+/// Typed table configuration that has passed validation
 ///
-/// Tables are bidirectional data structures for persistent lookups and joins.
-/// Unlike streams, tables:
-/// - Do NOT have a 'type' property (always bidirectional)
-/// - Do NOT have a 'format' property (use relational schema only)
-/// - MUST have an 'extension' property (specifies backing store: mysql, postgres, redis, etc.)
+/// Tables hold data that queries both read and write, for lookups and joins. Unlike
+/// streams, tables:
+/// - Do NOT have a 'type' property, because data flows both ways
+/// - Do NOT have a 'format' property, because they only use the relational schema
+/// - MUST have an 'extension' property naming the backing store, such as mysql,
+///   postgres or redis
 ///
 /// # Validation Rules
 ///
-/// - `extension` is **REQUIRED** (specifies backing store)
-/// - `type` is **FORBIDDEN** (tables are always bidirectional)
-/// - `format` is **FORBIDDEN** (tables use relational schema only)
+/// - `extension` is **REQUIRED** and must not be empty
+/// - `type` is **FORBIDDEN**
+/// - `format` is **FORBIDDEN**
 ///
 /// # Example
 ///
@@ -426,7 +428,7 @@ pub struct TableTypeConfig {
 }
 
 impl TableTypeConfig {
-    /// Create a new table configuration with validation
+    /// Build a table configuration and validate it. Returns the validation error.
     pub fn new(extension: String, properties: HashMap<String, String>) -> Result<Self, String> {
         let config = Self {
             extension,
@@ -437,14 +439,11 @@ impl TableTypeConfig {
         Ok(config)
     }
 
-    /// Create from flat configuration with validation
+    /// Build a table configuration from a [`FlatConfig`] and validate it
     ///
-    /// Tables require:
-    /// - `extension` property (REQUIRED)
-    /// - NO `type` property (FORBIDDEN)
-    /// - NO `format` property (FORBIDDEN)
+    /// Returns an error if `type` or `format` is present or `extension` is missing.
+    /// All properties, including `extension`, are copied into `properties`.
     pub fn from_flat_config(flat_config: &FlatConfig) -> Result<Self, String> {
-        // Validate that type is NOT present (tables don't have type)
         if flat_config.contains("type") {
             return Err(
                 "Table defines 'type' property, but tables cannot have 'type'. \
@@ -453,7 +452,6 @@ impl TableTypeConfig {
             );
         }
 
-        // Validate that format is NOT present (tables use relational schema only)
         if flat_config.contains("format") {
             return Err(
                 "Table defines 'format' property, but tables cannot have 'format'. \
@@ -462,7 +460,6 @@ impl TableTypeConfig {
             );
         }
 
-        // Extension is REQUIRED for tables
         let extension = flat_config
             .get("extension")
             .ok_or_else(|| {
@@ -477,19 +474,14 @@ impl TableTypeConfig {
         Self::new(extension, properties)
     }
 
-    /// Validate table configuration
-    ///
-    /// Ensures:
-    /// - Extension is present (already guaranteed by construction)
-    /// - Properties don't contain forbidden fields
+    /// Check that the extension is not empty and that `properties` has no `type` or
+    /// `format` key
     pub fn validate(&self) -> Result<(), String> {
-        // Extension must not be empty
         if self.extension.is_empty() {
             return Err("Table extension cannot be empty".to_string());
         }
 
-        // Check that properties don't contain forbidden fields
-        // (this is defensive - should be caught in from_flat_config)
+        // from_flat_config already rejects these. This catches tables built with new().
         if self.properties.contains_key("type") {
             return Err(
                 "Table properties contain 'type', but tables cannot have 'type' property"
@@ -513,9 +505,8 @@ impl TableTypeConfig {
         &self.extension
     }
 
-    /// Get all properties with a specific prefix
-    ///
-    /// Useful for extracting extension-specific properties like "mysql.*"
+    /// Copy out the properties whose key starts with `prefix`, such as "mysql.*".
+    /// Keys keep their prefix.
     pub fn get_properties_with_prefix(&self, prefix: &str) -> HashMap<String, String> {
         self.properties
             .iter()
@@ -614,7 +605,7 @@ mod tests {
         config.set("buffer_size", "1024", PropertySource::RustDefault);
         assert_eq!(config.get("buffer_size"), Some(&"4096".to_string()));
 
-        // Try to override with same priority (should override - last write wins at same priority)
+        // Same priority does override. The last write wins.
         config.set("buffer_size", "2048", PropertySource::SqlWith);
         assert_eq!(config.get("buffer_size"), Some(&"2048".to_string()));
     }
@@ -804,12 +795,12 @@ mod tests {
 
     #[test]
     fn test_stream_type_config_source_without_format() {
-        // Format is optional - some sources use internal binary format
+        // Format is optional. Some sources pass events in their own binary form.
         let props = HashMap::new();
         let config = StreamTypeConfig::new(
             StreamType::Source,
             Some("timer".to_string()),
-            None, // No format - will use PassthroughMapper
+            None, // No format, so PassthroughMapper is used
             props,
         );
 
@@ -878,7 +869,7 @@ mod tests {
 
     #[test]
     fn test_stream_type_config_from_flat_config_no_type_defaults_internal() {
-        // Type is optional - should default to Internal for pure in-memory streams
+        // A missing type means an internal, in memory stream
         let flat_config = FlatConfig::new();
         let config = StreamTypeConfig::from_flat_config(&flat_config);
 

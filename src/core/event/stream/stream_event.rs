@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/event/stream/stream_event.rs
-// Corresponds to io.eventflux.core.event.stream.StreamEvent
+// Port of the Java StreamEvent.
 use crate::core::event::complex_event::{ComplexEvent, ComplexEventType};
 use crate::core::event::value::AttributeValue;
 use crate::core::util::eventflux_constants::{
@@ -27,16 +26,19 @@ use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::fmt::Debug;
 
-/// A concrete implementation of ComplexEvent for stream processing.
+/// The [`ComplexEvent`] used for single stream processing.
+///
+/// Cloning also clones every event after it in the chain.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StreamEvent {
     pub timestamp: i64,
     pub output_data: Option<Vec<AttributeValue>>,
-    pub event_type: ComplexEventType, // Using the canonical ComplexEventType
+    pub event_type: ComplexEventType,
 
     pub before_window_data: Vec<AttributeValue>,
     pub on_after_window_data: Vec<AttributeValue>,
 
+    // Next event in the chunk. Not serialized, so it is None after deserializing.
     #[serde(default, skip_serializing, skip_deserializing)]
     pub next: Option<Box<dyn ComplexEvent>>,
 }
@@ -71,14 +73,16 @@ impl StreamEvent {
             } else {
                 None
             },
-            event_type: ComplexEventType::default(), // Defaults to Current
+            event_type: ComplexEventType::default(), // Current
             before_window_data: vec![AttributeValue::default(); before_window_data_size],
             on_after_window_data: vec![AttributeValue::default(); on_after_window_data_size],
             next: None,
         }
     }
 
-    /// Create a new StreamEvent with specific data
+    /// Builds a Current StreamEvent that holds `data` as its before window data.
+    ///
+    /// Output data is None and on after window data is empty.
     pub fn new_with_data(timestamp: i64, data: Vec<AttributeValue>) -> Self {
         StreamEvent {
             timestamp,
@@ -90,9 +94,11 @@ impl StreamEvent {
         }
     }
 
-    /// Retrieve an attribute using the EventFlux position array convention.
+    /// Reads an attribute using a position array.
+    ///
     /// Only `position[STREAM_ATTRIBUTE_TYPE_INDEX]` and
-    /// `position[STREAM_ATTRIBUTE_INDEX_IN_TYPE]` are respected.
+    /// `position[STREAM_ATTRIBUTE_INDEX_IN_TYPE]` are used. Returns `None` if the array
+    /// is too short, the type is unknown, or the index is out of range.
     pub fn get_attribute_by_position(&self, position: &[i32]) -> Option<&AttributeValue> {
         let attr_index = *position.get(STREAM_ATTRIBUTE_INDEX_IN_TYPE)? as usize;
         match position.get(STREAM_ATTRIBUTE_TYPE_INDEX).copied()? as usize {
@@ -103,7 +109,11 @@ impl StreamEvent {
         }
     }
 
-    /// Set an attribute value using a EventFlux style position array.
+    /// Writes an attribute using a position array.
+    ///
+    /// Uses the same two entries as [`Self::get_attribute_by_position`]. Errors if the
+    /// array is too short, the type is unknown, output data is None, or the index is out
+    /// of range.
     pub fn set_attribute_by_position(
         &mut self,
         value: AttributeValue,
@@ -194,9 +204,10 @@ impl StreamEvent {
         self.next.is_some()
     }
 
-    /// Create a shallow clone of this `StreamEvent` without cloning the `next`
-    /// pointer.  This mirrors the behavior of `EventVariableFunctionExecutor`
-    /// in the Java implementation which extracts a single `StreamEvent` from a
+    /// Clones this `StreamEvent` alone. The copy has no `next` event.
+    ///
+    /// The data arrays are still cloned. This matches the Java
+    /// `EventVariableFunctionExecutor`, which takes a single `StreamEvent` out of a
     /// `StateEvent` without its chain.
     pub fn clone_without_next(&self) -> Self {
         StreamEvent {
@@ -218,11 +229,8 @@ impl ComplexEvent for StreamEvent {
         &mut self,
         next_event: Option<Box<dyn ComplexEvent>>,
     ) -> Option<Box<dyn ComplexEvent>> {
-        // Return the old next, as per typical linked list operations or Java's setNext.
-        // However, Java's ComplexEvent.setNext is void. For easier list manipulation in Rust,
-        // returning the old value can be useful if taking ownership.
-        // Given the prompt changes `mut_next_ref_option`, this `set_next` should just set.
-        // Let's make it return the old next to allow taking it.
+        // Java setNext returns nothing. Returning the old next lets the caller take
+        // ownership of the rest of the chain.
         let old_next = self.next.take();
         self.next = next_event;
         old_next

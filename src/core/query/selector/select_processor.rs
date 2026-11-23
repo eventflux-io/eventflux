@@ -35,12 +35,16 @@ use crate::core::persistence::StateHolder;
 use super::{GroupByKeyGenerator, OrderByEventComparator};
 use crate::core::executor::expression_executor::ExpressionExecutor;
 
+// Own copies of the attribute processors and HAVING executor for one group, so each
+// group keeps separate aggregator state
 #[derive(Debug)]
 struct GroupState {
     oaps: Vec<OutputAttributeProcessor>,
     having_exec: Option<Box<dyn ExpressionExecutor>>,
 }
-// Simplified OutputRateLimiter supporting event-count based throttling.
+// Basic output rate limiter that throttles by event count. Every `batch_size` events
+// it sends out all of them (All), the first one (First) or the last one (Last). A None
+// chunk flushes whatever is buffered. Its buffer and counter are checkpointed.
 #[derive(Debug)]
 pub struct OutputRateLimiter {
     pub next_processor: Option<Arc<Mutex<dyn Processor>>>,
@@ -145,7 +149,7 @@ impl StateHolder for OutputRateLimiterStateHolder {
         &self,
         _since: crate::core::persistence::CheckpointId,
     ) -> Result<crate::core::persistence::ChangeLog, crate::core::persistence::StateError> {
-        // OutputRateLimiter doesn't support incremental changes
+        // No incremental checkpoints, only full snapshots
         Err(crate::core::persistence::StateError::SerializationError {
             message: "OutputRateLimiter doesn't support incremental checkpointing".to_string(),
         })
@@ -155,7 +159,7 @@ impl StateHolder for OutputRateLimiterStateHolder {
         &self,
         _changes: &crate::core::persistence::ChangeLog,
     ) -> Result<(), crate::core::persistence::StateError> {
-        // OutputRateLimiter doesn't support incremental changes
+        // No incremental checkpoints, only full snapshots
         Err(crate::core::persistence::StateError::DeserializationError {
             message: "OutputRateLimiter doesn't support incremental changes".to_string(),
         })
@@ -165,13 +169,13 @@ impl StateHolder for OutputRateLimiterStateHolder {
         let buffer_size = self.buffer.lock().unwrap().len();
         crate::core::persistence::StateSize {
             bytes: buffer_size * std::mem::size_of::<StoredEvent>() + std::mem::size_of::<usize>(),
-            entries: buffer_size + 1, // events + counter
+            entries: buffer_size + 1, // buffered events plus the counter
             estimated_growth_rate: 0.0,
         }
     }
 
     fn access_pattern(&self) -> crate::core::persistence::AccessPattern {
-        crate::core::persistence::AccessPattern::Hot // Rate limiter is frequently accessed
+        crate::core::persistence::AccessPattern::Hot // touched on every event
     }
 
     fn component_metadata(&self) -> crate::core::persistence::StateMetadata {
@@ -338,7 +342,10 @@ impl Drop for OutputRateLimiter {
     }
 }
 
-/// A stream processor that handles SELECT clause projections.
+/// Stream processor for the SELECT clause. Computes the output attributes, then applies
+/// HAVING, GROUP BY, ORDER BY, LIMIT and OFFSET.
+///
+/// RESET events update the aggregators but are never sent on.
 #[derive(Debug)]
 pub struct SelectProcessor {
     meta: CommonProcessorMeta,
@@ -348,7 +355,7 @@ pub struct SelectProcessor {
     output_attribute_processors: Vec<OutputAttributeProcessor>,
     pub output_stream_definition: Arc<ApiStreamDefinition>,
     having_condition_executor:
-        Option<Box<dyn crate::core::executor::expression_executor::ExpressionExecutor>>, // Changed placeholder
+        Option<Box<dyn crate::core::executor::expression_executor::ExpressionExecutor>>,
     is_group_by: bool,
     group_by_key_generator: Option<GroupByKeyGenerator>,
     is_order_by: bool,
@@ -356,7 +363,8 @@ pub struct SelectProcessor {
     batching_enabled: bool,
     limit: Option<u64>,
     offset: Option<u64>,
-    /// Per-group aggregator state when both group-by and aggregators are used.
+    /// Aggregator state for each group key. Only used when there is both a GROUP BY and
+    /// an aggregator.
     group_states: Mutex<std::collections::HashMap<String, GroupState>>,
 }
 
@@ -393,7 +401,7 @@ impl SelectProcessor {
             is_group_by: group_by_key_generator.is_some(),
             group_by_key_generator,
             is_order_by: order_by_comparator.is_some(),
-            order_by_event_comparator: order_by_comparator, // Corrected field init
+            order_by_event_comparator: order_by_comparator,
             batching_enabled: batching_enabled.unwrap_or(true),
             limit: api_selector
                 .limit
@@ -407,13 +415,16 @@ impl SelectProcessor {
         }
     }
 
-    /// Clear group states - called during state restoration to ensure clean state
+    /// Drop the state of every group. Called during a restore so groups start clean.
+    /// Does nothing when the lock is poisoned.
     pub fn clear_group_states(&self) {
         if let Ok(mut group_states) = self.group_states.lock() {
             group_states.clear();
         }
     }
 
+    // Skip the first OFFSET events, then keep at most LIMIT. Only Current and Expired
+    // events count toward either. Other events are kept until the limit is reached.
     fn apply_limit_offset(&self, events: Vec<Box<dyn ComplexEvent>>) -> Vec<Box<dyn ComplexEvent>> {
         let mut final_events = Vec::new();
         let mut seen = 0u64;
@@ -501,8 +512,8 @@ impl Processor for SelectProcessor {
                         continue;
                     }
                 }
-                // RESET events are consumed (processed by aggregators) but NOT output
-                // They only signal aggregators to clear state before new batch
+                // A RESET event only tells the aggregators to clear before a new batch.
+                // They have seen it above, so it is not sent on.
                 if etype != ComplexEventType::Reset {
                     group_map.insert(key, event_box);
                 }
@@ -524,9 +535,10 @@ impl Processor for SelectProcessor {
                         continue;
                     }
                 }
-                // RESET events are consumed (processed by aggregators) but NOT output
-                // They only signal aggregators to clear state before new batch
+                // A RESET event only tells the aggregators to clear before a new batch.
+                // They have seen it above, so it is not sent on.
                 if etype != ComplexEventType::Reset {
+                    // With GROUP BY, only the last event of each group in the chunk is kept
                     if self.is_group_by {
                         let key = self
                             .group_by_key_generator
@@ -557,7 +569,7 @@ impl Processor for SelectProcessor {
 
         let final_events = self.apply_limit_offset(collected);
 
-        // Re-link chain
+        // Link the remaining events back into a chunk
         let mut head: Option<Box<dyn ComplexEvent>> = None;
         let mut tail_ref = &mut head;
         for ev in final_events {
@@ -638,25 +650,25 @@ impl Processor for SelectProcessor {
     }
 
     fn is_stateful(&self) -> bool {
-        self.contains_aggregator || self.is_group_by // Simplified
+        self.contains_aggregator || self.is_group_by
     }
 
     fn clear_group_states(&self) {
-        // Clear group states for SelectProcessor
+        // Same as the inherent SelectProcessor::clear_group_states
         if let Ok(mut group_states) = self.group_states.lock() {
             group_states.clear();
         }
     }
 }
 
-// Helper on query_api::ConstantValueWithFloat for limit/offset
+// Read a LIMIT or OFFSET constant from query_api::ConstantValueWithFloat
 use crate::query_api::expression::constant::ConstantValueWithFloat as ApiConstantValue;
 impl ApiConstantValue {
     fn to_u64_for_limit_offset(&self) -> Option<u64> {
         match self {
             ApiConstantValue::Int(i) if *i >= 0 => Some(*i as u64),
             ApiConstantValue::Long(l) if *l >= 0 => Some(*l as u64),
-            _ => None, // Or error for invalid type/negative value
+            _ => None, // other types and negative values are ignored, with no error
         }
     }
 }

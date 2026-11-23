@@ -17,8 +17,8 @@
 
 //! Integration tests for CASE expression support (SQL syntax)
 //!
-//! Tests both Searched CASE and Simple CASE expressions with various scenarios
-//! including NULL handling, type validation, and SQL standard compliance.
+//! Covers Searched CASE and Simple CASE, including NULL handling, type checks,
+//! and behaviour that must match standard SQL.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -139,7 +139,7 @@ async fn test_simple_case_basic() {
         results[0],
         vec![
             AttributeValue::String("AAPL".to_string()),
-            AttributeValue::Long(1) // SQL integer literals are BIGINT/LONG by default
+            AttributeValue::Long(1) // SQL integer literals are BIGINT (Long) by default
         ]
     );
     assert_eq!(
@@ -165,8 +165,8 @@ async fn test_simple_case_basic() {
     );
 }
 
-/// Test CASE with NULL handling (NULL != NULL in SQL standard)
-/// NOTE: Disabled because SQL parser doesn't support NULL literal in WHEN clause yet
+/// Test CASE with NULL handling. In standard SQL, NULL does not equal NULL.
+/// Ignored because the SQL parser does not accept a NULL literal in WHEN yet.
 #[tokio::test]
 #[ignore = "SQL parser doesn't support NULL in WHEN clause - feature pending"]
 async fn test_case_null_semantics() {
@@ -205,7 +205,7 @@ async fn test_case_null_semantics() {
 
     let results = runner.shutdown();
     assert_eq!(results.len(), 3);
-    // NULL != NULL in SQL, so should return ELSE
+    // NULL does not equal NULL in SQL, so the ELSE branch is taken
     assert_eq!(
         results[0],
         vec![
@@ -422,7 +422,7 @@ async fn test_case_string_results() {
     );
 }
 
-/// Test short-circuit evaluation (first matching WHEN wins)
+/// Test short circuit evaluation. The first matching WHEN wins.
 #[tokio::test]
 async fn test_case_short_circuit() {
     let app = "\
@@ -660,9 +660,9 @@ async fn test_nested_case_expression() {
     );
 }
 
-/// Test Simple CASE with INT column and numeric WHEN literals (cross-type Int<->Long comparison)
-/// SQL parser emits integer literals as Long, but INT columns produce Int values.
-/// This test verifies that Int(1) matches Long(1) in Simple CASE expressions.
+/// Test Simple CASE on an INT column with numeric WHEN literals, which compares Int with Long.
+/// The SQL parser turns integer literals into Long, but INT columns give Int values.
+/// Int(1) must still match Long(1) in a Simple CASE.
 #[tokio::test]
 async fn test_simple_case_int_column_cross_type() {
     let app = "\

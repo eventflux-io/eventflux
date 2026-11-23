@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/function/math_functions.rs
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
@@ -212,7 +211,7 @@ impl ExpressionExecutor for AsinFunctionExecutor {
             AttributeValue::Null => Some(AttributeValue::Null),
             _ => {
                 let num = to_f64(&val)?;
-                // asin is only defined for values in [-1, 1]
+                // asin is only defined for values in [-1, 1]. Outside that it gives NaN.
                 if !(-1.0..=1.0).contains(&num) {
                     Some(AttributeValue::Double(f64::NAN))
                 } else {
@@ -251,7 +250,7 @@ impl ExpressionExecutor for AcosFunctionExecutor {
             AttributeValue::Null => Some(AttributeValue::Null),
             _ => {
                 let num = to_f64(&val)?;
-                // acos is only defined for values in [-1, 1]
+                // acos is only defined for values in [-1, 1]. Outside that it gives NaN.
                 if !(-1.0..=1.0).contains(&num) {
                     Some(AttributeValue::Double(f64::NAN))
                 } else {
@@ -594,8 +593,11 @@ impl ExpressionExecutor for Log10FunctionExecutor {
     }
 }
 
-/// MaximumFunctionExecutor implements maximum(a, b, c, ...) - returns the maximum of all values.
-/// All arguments must be numeric. Returns DOUBLE.
+/// MaximumFunctionExecutor implements maximum(a, b, c, ...). Returns the largest value as
+/// a DOUBLE.
+///
+/// NULL arguments are skipped, and all NULL gives NULL. A non numeric argument, or one
+/// that gives no value, makes the result `None`. Needs at least one argument.
 #[derive(Debug)]
 pub struct MaximumFunctionExecutor {
     executors: Vec<Box<dyn ExpressionExecutor>>,
@@ -648,8 +650,11 @@ impl ExpressionExecutor for MaximumFunctionExecutor {
     }
 }
 
-/// MinimumFunctionExecutor implements minimum(a, b, c, ...) - returns the minimum of all values.
-/// All arguments must be numeric. Returns DOUBLE.
+/// MinimumFunctionExecutor implements minimum(a, b, c, ...). Returns the smallest value as
+/// a DOUBLE.
+///
+/// NULL arguments are skipped, and all NULL gives NULL. A non numeric argument, or one
+/// that gives no value, makes the result `None`. Needs at least one argument.
 #[derive(Debug)]
 pub struct MinimumFunctionExecutor {
     executors: Vec<Box<dyn ExpressionExecutor>>,
@@ -702,7 +707,8 @@ impl ExpressionExecutor for MinimumFunctionExecutor {
     }
 }
 
-/// ModFunctionExecutor implements mod(a, b) - returns a % b (modulo operation).
+/// ModFunctionExecutor implements mod(a, b). Returns a % b as a DOUBLE, with the sign of a.
+/// NULL in, or b equal to zero, gives NULL.
 #[derive(Debug)]
 pub struct ModFunctionExecutor {
     a_executor: Box<dyn ExpressionExecutor>,
@@ -732,7 +738,7 @@ impl ExpressionExecutor for ModFunctionExecutor {
                 let a = to_f64(&a_val)?;
                 let b = to_f64(&b_val)?;
                 if b == 0.0 {
-                    Some(AttributeValue::Null) // Division by zero returns null
+                    Some(AttributeValue::Null) // Modulo by zero gives NULL
                 } else {
                     Some(AttributeValue::Double(a % b))
                 }
@@ -752,7 +758,7 @@ impl ExpressionExecutor for ModFunctionExecutor {
     }
 }
 
-/// SignFunctionExecutor implements sign(num) - returns -1, 0, or 1.
+/// SignFunctionExecutor implements sign(num). Returns -1, 0, or 1 as an INT. NaN gives 0.
 #[derive(Debug)]
 pub struct SignFunctionExecutor {
     value_executor: Box<dyn ExpressionExecutor>,
@@ -794,7 +800,8 @@ impl ExpressionExecutor for SignFunctionExecutor {
 }
 
 /// TruncFunctionExecutor implements trunc(num) or trunc(num, precision).
-/// Truncates decimal places (towards zero).
+/// Cuts off digits past `precision` decimal places, towards zero, and returns a DOUBLE.
+/// Precision defaults to 0. A precision that is not INT or LONG counts as 0.
 #[derive(Debug)]
 pub struct TruncFunctionExecutor {
     value_executor: Box<dyn ExpressionExecutor>,

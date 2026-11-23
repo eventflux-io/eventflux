@@ -20,7 +20,7 @@ mod common;
 use common::AppRunner;
 use eventflux::core::event::value::AttributeValue;
 
-// All JOIN tests converted to SQL syntax - JOINs are part of M1
+// All JOIN tests use SQL syntax. JOINs are part of M1.
 
 #[tokio::test]
 async fn inner_join_simple() {
@@ -76,12 +76,12 @@ async fn join_with_condition_gt() {
     );
 }
 
-// TODO: NOT PART OF M1 - Complex nested expressions in JOIN ON clause
-// M1 Query 5 tests basic JOIN with simple equality condition (ON stream1.col = stream2.col).
-// Complex nested conditions like (expr1 AND expr2) OR expr3 are not part of M1.
-// M1 covers: Basic JOIN with simple conditions, comparison operators (=, >, <, etc.)
-// Complex nested JOIN conditions will be implemented in Phase 2.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Nested expressions in the JOIN ON clause.
+// M1 Query 5 covers a basic JOIN with one equality (ON stream1.col = stream2.col).
+// Nested conditions such as (expr1 AND expr2) OR expr3 are not part of M1.
+// M1 covers basic JOINs with simple conditions and comparison operators (=, >, < and so on).
+// Nested JOIN conditions are planned for Phase 2. See feat/grammar/GRAMMAR.md for the
+// grammar status.
 #[tokio::test]
 #[ignore = "Complex nested JOIN conditions - Not part of M1"]
 async fn join_complex_condition() {

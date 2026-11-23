@@ -17,11 +17,11 @@
 
 // src/core/distributed/distributed_runtime.rs
 
-//! Distributed Runtime Wrapper
+//! Distributed runtime.
 //!
-//! This module provides the main distributed runtime that wraps the existing
-//! EventFluxAppRuntime and adds distributed capabilities based on configuration.
-//! It maintains API compatibility while enabling distributed features.
+//! Wraps an `EventFluxAppRuntime` and adds distributed features based on the
+//! settings. In single node mode events go straight to the core runtime. In
+//! distributed and hybrid mode they go through the processing engine.
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -39,42 +39,43 @@ use super::{
     DistributedConfig, DistributedError, DistributedResult, RuntimeMode,
 };
 
-/// Distributed runtime that wraps EventFluxAppRuntime with distributed capabilities
+/// Wraps an `EventFluxAppRuntime` with distributed features.
 pub struct DistributedRuntime {
-    /// Core EventFlux runtime (always present)
+    /// Core runtime. Present in every mode.
     core_runtime: Arc<EventFluxAppRuntime>,
 
-    /// Runtime mode manager
     mode_manager: Arc<RwLock<RuntimeModeManager>>,
 
-    /// Processing engine
     processing_engine: Arc<ProcessingEngine>,
 
-    /// Distributed configuration
     config: Arc<DistributedConfig>,
 
-    /// Runtime state
     state: Arc<RwLock<RuntimeState>>,
 
-    /// Node ID (for distributed mode)
+    /// Taken from the node settings, or `node-<uuid>` when none are given.
     node_id: String,
 }
 
 impl DistributedRuntime {
-    /// Create a new distributed runtime
+    /// Build the core runtime, mode manager and processing engine, and initialize
+    /// the mode manager. The runtime starts in the `Initializing` state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` if the core runtime cannot be built. Also
+    /// returns any error from creating or initializing the mode manager or the
+    /// processing engine.
     pub async fn new(
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_context: Arc<EventFluxContext>,
         config: DistributedConfig,
     ) -> DistributedResult<Self> {
-        // Extract node ID from config or generate
         let node_id = config
             .node
             .as_ref()
             .map(|n| n.node_id.clone())
             .unwrap_or_else(|| format!("node-{}", uuid::Uuid::new_v4()));
 
-        // Create core runtime (always needed)
         let core_runtime = Arc::new(
             EventFluxAppRuntime::new(
                 Arc::clone(&api_eventflux_app),
@@ -86,13 +87,10 @@ impl DistributedRuntime {
             })?,
         );
 
-        // Create mode manager
         let mut mode_manager = RuntimeModeManager::new(config.clone())?;
 
-        // Create processing engine
         let processing_engine = Arc::new(ProcessingEngine::new(config.mode)?);
 
-        // Initialize mode manager
         mode_manager.initialize().await?;
 
         let runtime = Self {
@@ -107,29 +105,33 @@ impl DistributedRuntime {
         Ok(runtime)
     }
 
-    /// Start the distributed runtime
+    /// Start the core runtime and register its queries with the processing engine.
+    ///
+    /// Queries are registered as `query_<index>` in the order the core runtime
+    /// holds them. The state moves to `Starting`, then to `Running` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` if the core runtime fails to start, or any
+    /// error from registering a query. The state stays `Starting` on failure.
     pub async fn start(&self) -> DistributedResult<()> {
-        // Update state
         {
             let mut state = self.state.write().await;
             *state = RuntimeState::Starting;
         }
 
-        // Start core runtime and propagate errors
         self.core_runtime
             .start()
             .map_err(|e| DistributedError::ConfigurationError {
                 message: format!("Failed to start core runtime: {}", e),
             })?;
 
-        // Register queries with processing engine
         for (query_id, query_runtime) in self.core_runtime.query_runtimes.iter().enumerate() {
             self.processing_engine
                 .register_query(&format!("query_{}", query_id), Arc::clone(query_runtime))
                 .await?;
         }
 
-        // Update state
         {
             let mut state = self.state.write().await;
             *state = RuntimeState::Running;
@@ -143,22 +145,27 @@ impl DistributedRuntime {
         Ok(())
     }
 
-    /// Stop the distributed runtime
+    /// Shut down the core runtime and the mode manager.
+    ///
+    /// The state moves to `Stopping`, then to `Stopped` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from shutting down the mode manager. The state stays
+    /// `Stopping` in that case.
     pub async fn stop(&self) -> DistributedResult<()> {
-        // Update state
         {
             let mut state = self.state.write().await;
             *state = RuntimeState::Stopping;
         }
 
-        // Stop core runtime off the async executor: shutdown() drains async
-        // junctions with bounded sleeps (up to the drain + settle timeouts)
-        // and would otherwise stall this tokio worker for seconds. Fall back
-        // to the inline (blocking) call when there is no tokio runtime, or
-        // when the blocking task is cancelled by a tokio runtime that is
-        // itself shutting down — the core shutdown must run either way (it
-        // is idempotent via its state guard), and stop() must not bail
-        // before the mode manager and state updates below.
+        // Run the core shutdown on a blocking thread. shutdown() drains async
+        // junctions with bounded sleeps, up to the drain and settle timeouts, and
+        // would otherwise stall this tokio worker for seconds. Call it inline when
+        // there is no tokio runtime, or when the blocking task is cancelled because
+        // the tokio runtime is itself shutting down. The core shutdown must run
+        // either way, and is safe to repeat because of its state guard. stop() must
+        // not return early before the mode manager and state updates below.
         if tokio::runtime::Handle::try_current().is_ok() {
             let core_runtime = Arc::clone(&self.core_runtime);
             if tokio::task::spawn_blocking(move || core_runtime.shutdown())
@@ -171,13 +178,11 @@ impl DistributedRuntime {
             self.core_runtime.shutdown();
         }
 
-        // Shutdown mode manager
         {
             let mut manager = self.mode_manager.write().await;
             manager.shutdown().await?;
         }
 
-        // Update state
         {
             let mut state = self.state.write().await;
             *state = RuntimeState::Stopped;
@@ -188,16 +193,24 @@ impl DistributedRuntime {
         Ok(())
     }
 
-    /// Get input handler for a stream
+    /// Returns the core runtime input handler for a stream, or `None` if the stream
+    /// does not exist.
     pub fn get_input_handler(&self, stream_id: &str) -> Option<Arc<Mutex<InputHandler>>> {
         self.core_runtime.get_input_handler(stream_id)
     }
 
-    /// Send event to a stream (distributed-aware)
+    /// Send one event to a stream.
+    ///
+    /// Single node mode sends it straight to the core input handler. Distributed
+    /// and hybrid mode hand it to the processing engine.
+    ///
+    /// # Errors
+    ///
+    /// In single node mode, returns `NetworkError` if the stream does not exist or
+    /// the send fails. Otherwise returns any error from the processing engine.
     pub async fn send_event(&self, stream_id: &str, event: Event) -> DistributedResult<()> {
         match self.config.mode {
             RuntimeMode::SingleNode => {
-                // Use core runtime directly
                 if let Some(handler) = self.get_input_handler(stream_id) {
                     let handler = handler.lock().unwrap();
                     handler
@@ -212,17 +225,22 @@ impl DistributedRuntime {
                 }
             }
             RuntimeMode::Distributed | RuntimeMode::Hybrid => {
-                // Use processing engine for routing
                 self.processing_engine.process_event(stream_id, event).await
             }
         }
     }
 
-    /// Send batch of events (optimized for distributed)
+    /// Send a batch of events to a stream.
+    ///
+    /// Routes the same way as [`send_event`](Self::send_event).
+    ///
+    /// # Errors
+    ///
+    /// In single node mode, returns `NetworkError` if the stream does not exist or
+    /// the send fails. Otherwise returns any error from the processing engine.
     pub async fn send_batch(&self, stream_id: &str, events: Vec<Event>) -> DistributedResult<()> {
         match self.config.mode {
             RuntimeMode::SingleNode => {
-                // Use core runtime directly
                 if let Some(handler) = self.get_input_handler(stream_id) {
                     let handler = handler.lock().unwrap();
                     handler.send_multiple_events(events).map_err(|e| {
@@ -237,7 +255,6 @@ impl DistributedRuntime {
                 }
             }
             RuntimeMode::Distributed | RuntimeMode::Hybrid => {
-                // Use processing engine for batch routing
                 self.processing_engine
                     .process_batch(stream_id, events)
                     .await
@@ -245,17 +262,15 @@ impl DistributedRuntime {
         }
     }
 
-    /// Get runtime mode
     pub fn mode(&self) -> RuntimeMode {
         self.config.mode
     }
 
-    /// Get node ID
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
 
-    /// Check if running in distributed mode
+    /// Returns true in distributed or hybrid mode.
     pub fn is_distributed(&self) -> bool {
         matches!(
             self.config.mode,
@@ -263,13 +278,14 @@ impl DistributedRuntime {
         )
     }
 
-    /// Get runtime health status
+    /// Returns the health status reported by the mode manager.
     pub async fn health_check(&self) -> DistributedResult<HealthStatus> {
         let manager = self.mode_manager.read().await;
         manager.health_check().await
     }
 
-    /// Get runtime statistics
+    /// Returns the current state and engine counters. Uptime is always zero
+    /// because it is not tracked yet.
     pub async fn statistics(&self) -> RuntimeStatistics {
         let engine_stats = self.processing_engine.statistics().await;
         let state = self.state.read().await.clone();
@@ -279,42 +295,47 @@ impl DistributedRuntime {
             mode: self.config.mode,
             state,
             engine_stats,
-            uptime: std::time::Duration::from_secs(0), // Would track actual uptime
+            uptime: std::time::Duration::from_secs(0), // not tracked yet
         }
     }
 
-    /// Trigger checkpoint (for distributed state)
+    /// Returns checkpoint info with a new id and the current time.
+    ///
+    /// No state is saved yet. The type is `Local` in single node mode and
+    /// `Distributed` otherwise.
     pub async fn checkpoint(&self) -> DistributedResult<CheckpointInfo> {
         match self.config.mode {
-            RuntimeMode::SingleNode => {
-                // Local checkpoint
-                Ok(CheckpointInfo {
-                    checkpoint_id: uuid::Uuid::new_v4().to_string(),
-                    timestamp: std::time::SystemTime::now(),
-                    node_id: self.node_id.clone(),
-                    checkpoint_type: CheckpointType::Local,
-                })
-            }
-            RuntimeMode::Distributed | RuntimeMode::Hybrid => {
-                // Distributed checkpoint coordination
-                Ok(CheckpointInfo {
-                    checkpoint_id: uuid::Uuid::new_v4().to_string(),
-                    timestamp: std::time::SystemTime::now(),
-                    node_id: self.node_id.clone(),
-                    checkpoint_type: CheckpointType::Distributed,
-                })
-            }
+            RuntimeMode::SingleNode => Ok(CheckpointInfo {
+                checkpoint_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: std::time::SystemTime::now(),
+                node_id: self.node_id.clone(),
+                checkpoint_type: CheckpointType::Local,
+            }),
+            RuntimeMode::Distributed | RuntimeMode::Hybrid => Ok(CheckpointInfo {
+                checkpoint_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: std::time::SystemTime::now(),
+                node_id: self.node_id.clone(),
+                checkpoint_type: CheckpointType::Distributed,
+            }),
         }
     }
 
-    /// Restore from checkpoint
+    /// Restore from a checkpoint.
+    ///
+    /// Only prints the checkpoint id. No state is restored yet.
     pub async fn restore(&self, checkpoint_id: &str) -> DistributedResult<()> {
         println!("Restoring from checkpoint: {}", checkpoint_id);
-        // Implementation would restore state
+        // TODO: restore state from the checkpoint.
         Ok(())
     }
 
-    /// Scale out (add node to cluster)
+    /// Add a node to the cluster.
+    ///
+    /// Only prints the node id. The node is not added yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` in single node mode.
     pub async fn scale_out(&self, node_config: super::NodeConfig) -> DistributedResult<()> {
         if !self.is_distributed() {
             return Err(DistributedError::ConfigurationError {
@@ -323,11 +344,17 @@ impl DistributedRuntime {
         }
 
         println!("Adding node {} to cluster", node_config.node_id);
-        // Implementation would add node to cluster
+        // TODO: add the node to the cluster.
         Ok(())
     }
 
-    /// Scale in (remove node from cluster)
+    /// Remove a node from the cluster.
+    ///
+    /// Only prints the node id. The node is not removed yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` in single node mode.
     pub async fn scale_in(&self, node_id: &str) -> DistributedResult<()> {
         if !self.is_distributed() {
             return Err(DistributedError::ConfigurationError {
@@ -336,12 +363,12 @@ impl DistributedRuntime {
         }
 
         println!("Removing node {} from cluster", node_id);
-        // Implementation would remove node from cluster
+        // TODO: remove the node from the cluster.
         Ok(())
     }
 }
 
-/// Runtime state
+/// Lifecycle state of a [`DistributedRuntime`].
 #[derive(Debug, Clone)]
 pub enum RuntimeState {
     Initializing,
@@ -352,42 +379,35 @@ pub enum RuntimeState {
     Failed { reason: String },
 }
 
-/// Runtime statistics
+/// Snapshot of runtime state and counters.
 #[derive(Debug)]
 pub struct RuntimeStatistics {
-    /// Node identifier
     pub node_id: String,
 
-    /// Runtime mode
     pub mode: RuntimeMode,
 
-    /// Current state
     pub state: RuntimeState,
 
-    /// Engine statistics
     pub engine_stats: EngineStatistics,
 
-    /// Uptime
+    /// Always zero for now.
     pub uptime: std::time::Duration,
 }
 
-/// Checkpoint information
+/// Details of a checkpoint.
 #[derive(Debug)]
 pub struct CheckpointInfo {
-    /// Checkpoint identifier
     pub checkpoint_id: String,
 
-    /// Checkpoint timestamp
     pub timestamp: std::time::SystemTime,
 
-    /// Node that created checkpoint
+    /// Node that created the checkpoint.
     pub node_id: String,
 
-    /// Checkpoint type
     pub checkpoint_type: CheckpointType,
 }
 
-/// Checkpoint type
+/// Kind of checkpoint.
 #[derive(Debug)]
 pub enum CheckpointType {
     Local,
@@ -396,14 +416,13 @@ pub enum CheckpointType {
     Full,
 }
 
-/// Builder for distributed runtime
+/// Builder for [`DistributedRuntime`]. Starts from the default settings.
 pub struct DistributedRuntimeBuilder {
     config: DistributedConfig,
     eventflux_context: Option<Arc<EventFluxContext>>,
 }
 
 impl DistributedRuntimeBuilder {
-    /// Create a new builder
     pub fn new() -> Self {
         Self {
             config: DistributedConfig::default(),
@@ -411,31 +430,33 @@ impl DistributedRuntimeBuilder {
         }
     }
 
-    /// Set runtime mode
     pub fn mode(mut self, mode: RuntimeMode) -> Self {
         self.config.mode = mode;
         self
     }
 
-    /// Set node configuration
     pub fn node(mut self, node: super::NodeConfig) -> Self {
         self.config.node = Some(node);
         self
     }
 
-    /// Set cluster configuration
     pub fn cluster(mut self, cluster: super::ClusterConfig) -> Self {
         self.config.cluster = Some(cluster);
         self
     }
 
-    /// Set EventFlux context
+    /// Set the EventFlux context. Required before [`build`](Self::build).
     pub fn eventflux_context(mut self, context: Arc<EventFluxContext>) -> Self {
         self.eventflux_context = Some(context);
         self
     }
 
-    /// Build the distributed runtime
+    /// Build the runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigurationError` if no EventFlux context was set. Also returns
+    /// any error from [`DistributedRuntime::new`].
     pub async fn build(
         self,
         api_eventflux_app: Arc<ApiEventFluxApp>,

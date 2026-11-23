@@ -17,8 +17,8 @@
 
 //! Integration tests for configuration validation API
 //!
-//! These tests demonstrate how the comprehensive validation system works
-//! with custom rules, enterprise validation patterns, and detailed reporting.
+//! These tests show how the validation system works with custom rules,
+//! production style validation setups, and detailed reports.
 
 use async_trait::async_trait;
 use eventflux::core::config::{
@@ -440,7 +440,7 @@ async fn test_kubernetes_validation_rule() {
 async fn test_configuration_validator_integration() {
     let mut validator = ConfigurationValidator::new();
 
-    // Add built-in rules
+    // Built in rules
     validator.add_rule(Arc::new(SchemaValidationRule));
     validator.add_rule(Arc::new(PerformanceValidationRule));
     validator.add_rule(Arc::new(SecurityValidationRule));
@@ -505,7 +505,7 @@ fn test_validation_config_presets() {
     );
 }
 
-/// Test pre-built validators
+/// Test the ready made validators
 #[tokio::test]
 async fn test_prebuilt_validators() {
     let mut config = EventFluxConfig::default();
@@ -553,7 +553,7 @@ async fn test_strict_mode() {
     assert_eq!(report.warnings.len(), 0); // Warnings converted to errors
 }
 
-/// Test fail-fast functionality
+/// Test fail_fast, which stops at the first error
 #[tokio::test]
 async fn test_fail_fast() {
     let fail_fast_config = ValidationConfig {
@@ -571,9 +571,9 @@ async fn test_fail_fast() {
 
     let report = validator.validate(&config).await.unwrap();
 
-    // Should stop after first error in fail-fast mode
+    // fail_fast should stop after the first error. The error count is not checked
+    // because it depends on the order the rules run in.
     assert!(!report.is_valid);
-    // Exact count depends on rule execution order and implementation
 }
 
 /// Test minimum score validation
@@ -653,7 +653,7 @@ async fn test_validation_timeout() {
     assert!(report.errors.iter().any(|e| e.code == "VALIDATION_TIMEOUT"));
 }
 
-/// Test comprehensive validation scenario
+/// Test a configuration with several problems at once
 #[tokio::test]
 async fn test_comprehensive_validation_scenario() {
     let validator = create_production_validator(); // Strict validator
@@ -772,25 +772,25 @@ async fn test_validation_rule_priority() {
     assert!(report.is_valid);
     assert_eq!(report.info.len(), 2);
 
-    // High priority rule should execute first (and thus appear first in info messages)
+    // The high priority rule runs first, so its message comes first in info
     assert_eq!(report.info[0].code, "HIGH_PRIORITY_EXECUTED");
     assert_eq!(report.info[1].code, "LOW_PRIORITY_EXECUTED");
 }
 
-/// Example showing enterprise validation workflow
+/// Example of a full validation flow for a production setup
 #[tokio::test]
 async fn test_enterprise_validation_workflow() {
     println!("🏢 Enterprise Configuration Validation Workflow");
     println!("================================================");
 
-    // Step 1: Create production validator
+    // Step 1. Create the production validator
     let validator = create_production_validator();
     println!(
         "✅ Created production validator with {} rules",
         validator.get_rules().len()
     );
 
-    // Step 2: Load configuration (simulated)
+    // Step 2. Load the configuration. Built in code here, not read from a file.
     let mut config = EventFluxConfig::default();
     config.eventflux.runtime.performance.thread_pool_size = num_cpus::get();
     config.eventflux.runtime.performance.event_buffer_size = 50000;
@@ -799,14 +799,14 @@ async fn test_enterprise_validation_workflow() {
     config.eventflux.monitoring = Some(MonitoringConfig::production());
     println!("✅ Loaded enterprise configuration");
 
-    // Step 3: Run comprehensive validation
+    // Step 3. Run every rule
     let start_time = std::time::Instant::now();
     let report = validator.validate(&config).await.unwrap();
     let validation_time = start_time.elapsed();
 
     println!("✅ Validation completed in {:?}", validation_time);
 
-    // Step 4: Generate validation report
+    // Step 4. Print the validation report
     println!("\n📊 Validation Report:");
     println!(
         "  Status: {}",
@@ -825,7 +825,7 @@ async fn test_enterprise_validation_workflow() {
     );
     println!("  Summary: {}", report.summary());
 
-    // Step 5: Handle validation results
+    // Step 5. Handle the results
     if report.is_valid {
         println!("\n✅ Configuration approved for production deployment");
 
@@ -858,7 +858,7 @@ async fn test_enterprise_validation_workflow() {
         }
     }
 
-    // Step 6: Metadata and diagnostics
+    // Step 6. Metadata and diagnostics
     println!("\n🔍 Validation Metadata:");
     for (key, value) in &report.metadata {
         println!("   - {}: {}", key, value);

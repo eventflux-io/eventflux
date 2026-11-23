@@ -17,5 +17,5 @@
 
 pub mod error;
 pub use error::{ErrorCategory, EventFluxError, EventFluxResult, IntoEventFluxResult};
-// ErrorStore types now live under the stream::output module
+// ErrorStore types live in stream::output and are re-exported here.
 pub use crate::core::stream::output::error_store::{ErrorStore, InMemoryErrorStore};

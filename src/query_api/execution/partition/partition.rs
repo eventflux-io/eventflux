@@ -16,30 +16,29 @@
  */
 
 use super::partition_type::PartitionType;
-use crate::query_api::annotation::Annotation; // Using actual Annotation
-use crate::query_api::execution::query::Query; // Actual Query
+use crate::query_api::annotation::Annotation;
+use crate::query_api::execution::query::Query;
 use std::collections::HashMap;
 
-// For builder methods:
 use super::range_partition_type::{RangePartitionProperty, RangePartitionType};
 use super::value_partition_type::ValuePartitionType;
 use crate::query_api::expression::Expression;
 
+/// A group of queries that run once per partition key.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Partition {
-    // EventFluxElement fields for Partition itself
+    // Position in the query text. Held directly instead of through EventFluxElement.
     pub query_context_start_index: Option<(i32, i32)>,
     pub query_context_end_index: Option<(i32, i32)>,
 
-    // Partition fields from Java
-    pub partition_type_map: HashMap<String, PartitionType>, // Key is streamId being partitioned
+    /// How each stream is partitioned, keyed by the stream id.
+    pub partition_type_map: HashMap<String, PartitionType>,
     pub query_list: Vec<Query>,
     pub annotations: Vec<Annotation>,
-    // queryNameList from Java is for validation, might not be needed as a field in Rust
+    // Query names are not stored. add_query() scans query_list to warn on duplicates.
 }
 
 impl Partition {
-    // Constructor
     pub fn new() -> Self {
         Partition {
             query_context_start_index: None,
@@ -50,20 +49,22 @@ impl Partition {
         }
     }
 
-    // Static factory `partition()` from Java
+    /// Same as `new`. Starts a builder chain.
     #[allow(clippy::self_named_constructors)]
     pub fn partition() -> Self {
         Self::new()
     }
 
-    // Static factory `range()` from Java Partition for creating RangePartitionProperty
+    /// Build one range for `with_range_partition`. Events matching `condition` get
+    /// `partition_key` as their key.
     pub fn range_property(partition_key: String, condition: Expression) -> RangePartitionProperty {
         RangePartitionProperty::new(partition_key, condition)
     }
 
-    // Builder method `with(String streamId, Expression expression)`
+    /// Partition `stream_id` by the value of `expression`.
+    ///
+    /// Replaces any earlier partition for the same stream and prints a warning to stderr.
     pub fn with_value_partition(mut self, stream_id: String, expression: Expression) -> Self {
-        // Check for duplicate stream partition definition and warn
         if self.partition_type_map.contains_key(&stream_id) {
             eprintln!(
                 "Warning: Duplicate partition definition for stream '{}'",
@@ -77,13 +78,14 @@ impl Partition {
         self
     }
 
-    // Builder method `with(String streamId, RangePartitionProperty... rangePartitionProperties)`
+    /// Partition `stream_id` by a list of ranges.
+    ///
+    /// Replaces any earlier partition for the same stream and prints a warning to stderr.
     pub fn with_range_partition(
         mut self,
         stream_id: String,
         range_props: Vec<RangePartitionProperty>,
     ) -> Self {
-        // Check for duplicate stream partition definition and warn
         if self.partition_type_map.contains_key(&stream_id) {
             eprintln!(
                 "Warning: Duplicate partition definition for stream '{}'",
@@ -97,11 +99,12 @@ impl Partition {
         self
     }
 
-    // Builder method `with(PartitionType partitionType)`
+    /// Add a ready made partition type, keyed by its stream id.
+    ///
+    /// Replaces any earlier partition for the same stream and prints a warning to stderr.
     pub fn with_partition_type(mut self, partition_type: PartitionType) -> Self {
         let stream_id = partition_type.get_stream_id().to_string();
 
-        // Check for duplicate stream partition definition and warn
         if self.partition_type_map.contains_key(&stream_id) {
             eprintln!(
                 "Warning: Duplicate partition definition for stream '{}'",
@@ -113,11 +116,12 @@ impl Partition {
         self
     }
 
-    // Builder method `addQuery(Query query)`
+    /// Add a query to the partition.
+    ///
+    /// A query whose @info(name) matches an earlier one is still added. It only prints a
+    /// warning to stderr.
     pub fn add_query(mut self, query: Query) -> Self {
-        // Check for duplicate query names and warn
         if let Some(query_name) = self.extract_query_name(&query) {
-            // Check if this name already exists
             for existing_query in &self.query_list {
                 if let Some(existing_name) = self.extract_query_name(existing_query) {
                     if existing_name == query_name {
@@ -135,7 +139,7 @@ impl Partition {
         self
     }
 
-    // Helper method to extract query name from annotations
+    // The name from the query's @info(name = '...') annotation, if any.
     fn extract_query_name(&self, query: &Query) -> Option<String> {
         for annotation in query.get_annotations() {
             if annotation.name == "info" {
@@ -149,7 +153,6 @@ impl Partition {
         None
     }
 
-    // Builder method `annotation(Annotation annotation)`
     pub fn annotation(mut self, annotation: Annotation) -> Self {
         self.annotations.push(annotation);
         self
@@ -162,7 +165,6 @@ impl Default for Partition {
     }
 }
 
-// Implement ExecutionElement for Partition (conceptual, actual trait defined elsewhere)
 use crate::query_api::execution::execution_element::ExecutionElementTrait;
 impl ExecutionElementTrait for Partition {
     fn get_annotations(&self) -> &Vec<Annotation> {

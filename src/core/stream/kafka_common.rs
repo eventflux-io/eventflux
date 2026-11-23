@@ -17,9 +17,9 @@
 
 //! Configuration and validation shared by the Kafka source and sink.
 //!
-//! Broker connection, security (SASL/SSL), the `kafka.rdkafka.*` passthrough,
-//! and topic-existence validation are identical on both sides — this module
-//! keeps them in one place so they cannot drift.
+//! Broker connection, security (SASL and SSL), the raw `kafka.rdkafka.*` keys,
+//! and the check that topics exist are the same on both sides. This module
+//! keeps them in one place so they cannot drift apart.
 
 use crate::core::exception::EventFluxError;
 use rdkafka::client::{Client, ClientContext};
@@ -27,30 +27,36 @@ use rdkafka::config::ClientConfig;
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Broker connection + security settings shared by source and sink configs
+/// Broker connection and security settings shared by the source and sink configs
 #[derive(Debug, Clone)]
 pub struct KafkaConnectionConfig {
-    /// Comma-separated broker list (`host1:9092,host2:9092`)
+    /// Comma separated broker list (`host1:9092,host2:9092`)
     pub bootstrap_servers: String,
     /// `plaintext`, `ssl`, `sasl_plaintext`, `sasl_ssl`
     pub security_protocol: Option<String>,
     /// `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512`
     pub sasl_mechanism: Option<String>,
     pub sasl_username: Option<String>,
-    /// Redacted in Debug output — call `.expose()` at the point of use
+    /// Hidden in Debug output. Call `.expose()` only where it is used.
     pub sasl_password: Option<crate::core::stream::connector_util::Redacted>,
     /// CA certificate path
     pub ssl_ca_location: Option<String>,
-    /// Verbatim librdkafka overrides from `kafka.rdkafka.<prop>`
+    /// Raw librdkafka settings from `kafka.rdkafka.<prop>`, passed as is
     pub rdkafka_overrides: Vec<(String, String)>,
 }
 
 impl KafkaConnectionConfig {
-    /// Parse the connection/security properties.
+    /// Reads the connection and security properties.
     ///
-    /// `reserved` lists librdkafka keys owned by the caller's first-class
-    /// options — passing them through `kafka.rdkafka.*` is rejected to avoid
-    /// two sources of truth for the same knob.
+    /// `reserved` lists librdkafka keys that the caller sets through its own
+    /// options. Setting them through `kafka.rdkafka.*` is rejected, so one
+    /// setting is never set in two places.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `kafka.bootstrap.servers` is missing or blank,
+    /// when any `kafka.sasl.*` key is set without a `sasl_` security protocol,
+    /// or when a reserved key is passed through `kafka.rdkafka.*`.
     pub fn from_properties(
         properties: &HashMap<String, String>,
         reserved: &[&str],
@@ -71,9 +77,9 @@ impl KafkaConnectionConfig {
             .map(|v| crate::core::stream::connector_util::Redacted::new(v.clone()));
         let ssl_ca_location = properties.get("kafka.ssl.ca.location").cloned();
 
-        // SASL credentials only make sense with a SASL security protocol.
-        // librdkafka accepts protocol names case-insensitively (Kafka
-        // convention is uppercase SASL_SSL), so compare accordingly.
+        // SASL settings only make sense with a SASL security protocol.
+        // librdkafka ignores case in protocol names (Kafka usually writes
+        // SASL_SSL in uppercase), so compare without case.
         if (sasl_username.is_some() || sasl_password.is_some() || sasl_mechanism.is_some())
             && !security_protocol
                 .as_deref()
@@ -109,7 +115,8 @@ impl KafkaConnectionConfig {
         })
     }
 
-    /// Apply broker, security, and override settings to a client config
+    /// Applies the broker, security, and raw settings to a client config. Raw
+    /// `kafka.rdkafka.*` settings are applied last, so they win.
     pub fn apply_to(&self, config: &mut ClientConfig) {
         config.set("bootstrap.servers", &self.bootstrap_servers);
 
@@ -134,10 +141,17 @@ impl KafkaConnectionConfig {
     }
 }
 
-/// Fail-fast topic validation used by both connectors at startup.
+/// Checks at startup that every topic exists, so both connectors fail early.
 ///
-/// One metadata round-trip regardless of topic count: a single topic is
-/// fetched directly; multiple topics reuse one full-metadata response.
+/// Makes one metadata request however many topics there are. A single topic is
+/// fetched by name. Several topics share one request for all metadata. The
+/// request times out after 10 s. A topic counts as existing only when it has no
+/// error and at least one partition.
+///
+/// # Errors
+///
+/// Returns `ConnectionUnavailable` when the brokers cannot be reached, and a
+/// configuration error naming the first topic that does not exist.
 pub fn validate_topics_exist<C: ClientContext>(
     client: &Client<C>,
     brokers: &str,
@@ -224,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_connection_sasl_protocol_case_insensitive() {
-        // Kafka convention is uppercase; librdkafka accepts both
+        // Kafka usually writes it in uppercase, and librdkafka accepts both
         let mut props = base_props();
         props.insert(
             "kafka.security.protocol".to_string(),

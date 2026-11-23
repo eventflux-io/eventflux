@@ -15,11 +15,10 @@
  * limitations under the License.
  */
 
-//! Error configuration system that integrates all error handling components.
+//! Error settings.
 //!
-//! This module provides the main ErrorConfig structure that combines error strategy,
-//! retry configuration, DLQ configuration, and logging settings into a unified
-//! configuration system.
+//! [`ErrorConfig`] gathers the strategy, retry, DLQ, fail and log level settings in
+//! one place.
 
 use std::str::FromStr;
 
@@ -29,25 +28,22 @@ use super::dlq::{DlqConfig, DLQ_STREAM_KEY};
 use super::retry::RetryConfig;
 use super::strategy::ErrorStrategy;
 
-/// Log level for error reporting
-///
-/// Determines how errors are logged when they occur.
+/// Lowest level of error handling messages to log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LogLevel {
-    /// Debug level - verbose logging for development
+    /// Everything, for development.
     Debug,
-    /// Info level - informational messages
     Info,
-    /// Warn level - warning messages (default)
+    /// Warnings and errors. The default.
     Warn,
-    /// Error level - error messages
+    /// Errors only.
     Error,
 }
 
 impl std::str::FromStr for LogLevel {
     type Err = String;
 
-    /// Parse log level from string (case-insensitive)
+    /// Parse a level name, ignoring case. Accepts `warning` as well as `warn`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "debug" => Ok(LogLevel::Debug),
@@ -63,7 +59,7 @@ impl std::str::FromStr for LogLevel {
 }
 
 impl LogLevel {
-    /// Convert log level to string representation
+    /// Returns the lowercase name, such as `"warn"`.
     #[inline]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -76,33 +72,32 @@ impl LogLevel {
 }
 
 impl Default for LogLevel {
-    /// Default log level is Warn
+    /// Returns `Warn`.
     #[inline]
     fn default() -> Self {
         LogLevel::Warn
     }
 }
 
-/// Fail configuration (for ErrorStrategy::Fail)
+/// Settings for `ErrorStrategy::Fail`.
 ///
-/// Currently a placeholder for future configuration options.
+/// Has no options yet.
 #[derive(Debug, Clone)]
 pub struct FailConfig {
-    // Future: Could include options like:
+    // Possible later options:
     // - shutdown_timeout: Duration
     // - cleanup_handler: Option<Box<dyn FnOnce()>>
     // - send_alert: bool
 }
 
 impl FailConfig {
-    /// Create default fail configuration
     pub fn new() -> Self {
         Self {}
     }
 
-    /// Parse fail configuration from FlatConfig
+    /// Parse from `error.fail.*` properties. There are none yet, so this always
+    /// succeeds.
     pub fn from_flat_config(_config: &FlatConfig) -> Result<Self, String> {
-        // Currently no configuration options, but prepared for future extension
         Ok(Self {})
     }
 }
@@ -113,40 +108,40 @@ impl Default for FailConfig {
     }
 }
 
-/// Comprehensive error handling configuration
+/// All error handling settings for a source.
 ///
-/// Combines all error handling settings into a single configuration structure
-/// that can be applied to sources, sinks, and processors.
-///
-/// # Configuration Precedence
-/// The configuration is parsed from FlatConfig with the following structure:
-/// - `error.strategy` - Main error handling strategy (drop/retry/dlq/fail)
-/// - `error.log-level` - Logging level for errors
-/// - `error.retry.*` - Retry configuration (if strategy=retry)
-/// - `error.dlq.*` - DLQ configuration (if strategy=dlq, or strategy=retry
-///   with `error.dlq.stream` set)
-/// - `error.fail.*` - Fail configuration (if strategy=fail)
+/// # Properties
+/// Read from these `FlatConfig` keys:
+/// - `error.strategy` - `drop`, `retry`, `dlq` or `fail`.
+/// - `error.log-level` - Lowest level to log.
+/// - `error.retry.*` - Retry settings, read when the strategy is `retry`.
+/// - `error.dlq.*` - DLQ settings, read when the strategy is `dlq`, or `retry`
+///   with `error.dlq.stream` set.
+/// - `error.fail.*` - Fail settings, read when the strategy is `fail`.
 #[derive(Debug, Clone)]
 pub struct ErrorConfig {
-    /// Primary error handling strategy
     pub strategy: ErrorStrategy,
 
-    /// Log level for error messages
     pub log_level: LogLevel,
 
-    /// Retry configuration (only if strategy is Retry)
+    /// Set when the strategy is `Retry`.
     pub retry: Option<RetryConfig>,
 
-    /// DLQ configuration (strategy Dlq, or Retry with a DLQ stream as the
-    /// destination for exhausted retries)
+    /// Set when the strategy is `Dlq`, or `Retry` with a DLQ stream that takes
+    /// events whose retries ran out.
     pub dlq: Option<DlqConfig>,
 
-    /// Fail configuration (only if strategy is Fail)
+    /// Set when the strategy is `Fail`.
     pub fail: Option<FailConfig>,
 }
 
 impl ErrorConfig {
-    /// Create a new error configuration
+    /// Build settings from parts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the strategy is `Retry` without `retry`, or
+    /// `Dlq` without `dlq`.
     pub fn new(
         strategy: ErrorStrategy,
         log_level: LogLevel,
@@ -154,7 +149,6 @@ impl ErrorConfig {
         dlq: Option<DlqConfig>,
         fail: Option<FailConfig>,
     ) -> Result<Self, String> {
-        // Validate that required configs are present for each strategy
         if strategy == ErrorStrategy::Retry && retry.is_none() {
             return Err("ErrorStrategy::Retry requires retry configuration".to_string());
         }
@@ -172,17 +166,22 @@ impl ErrorConfig {
         })
     }
 
-    /// Parse error configuration from FlatConfig
+    /// Parse settings from `error.*` properties.
     ///
-    /// Extracts error handling settings from configuration with sensible defaults:
-    /// - strategy: drop (default)
-    /// - log-level: warn (default)
-    /// - retry: Only parsed if strategy=retry
-    /// - dlq: Parsed if strategy=dlq, or strategy=retry with `error.dlq.stream`
-    ///   set (events whose retries are exhausted go to the DLQ)
-    /// - fail: Only parsed if strategy=fail
+    /// - strategy defaults to `drop`.
+    /// - log level defaults to `warn`.
+    /// - retry is parsed only when the strategy is `retry`.
+    /// - dlq is parsed when the strategy is `dlq`, or `retry` with
+    ///   `error.dlq.stream` set. In the retry case, events whose retries run out go
+    ///   to the DLQ.
+    /// - fail is parsed only when the strategy is `fail`.
     ///
-    /// # Example Configuration
+    /// # Errors
+    ///
+    /// Returns an error message if any value fails to parse, or if the parsed
+    /// retry or DLQ settings are invalid.
+    ///
+    /// # Example configuration
     /// ```toml
     /// [application]
     /// error.strategy = "retry"
@@ -193,7 +192,7 @@ impl ErrorConfig {
     /// error.retry.max-delay = "30s"
     /// ```
     ///
-    /// # Example with DLQ
+    /// # Example with a DLQ
     /// ```toml
     /// [application]
     /// error.strategy = "dlq"
@@ -205,13 +204,13 @@ impl ErrorConfig {
             .get("error.strategy")
             .map(|s| ErrorStrategy::from_str(s))
             .transpose()?
-            .unwrap_or(ErrorStrategy::Drop); // Default: drop
+            .unwrap_or(ErrorStrategy::Drop);
 
         let log_level = config
             .get("error.log-level")
             .map(|s| LogLevel::from_str(s))
             .transpose()?
-            .unwrap_or(LogLevel::Warn); // Default: warn
+            .unwrap_or(LogLevel::Warn);
 
         let retry = if matches!(strategy, ErrorStrategy::Retry) {
             Some(RetryConfig::from_flat_config(config)?)
@@ -219,8 +218,9 @@ impl ErrorConfig {
             None
         };
 
-        // DLQ routing: always for strategy=dlq; for strategy=retry when a DLQ
-        // stream is named, which receives events whose retries are exhausted
+        // Always parse DLQ settings for strategy=dlq. For strategy=retry, parse
+        // them only when a DLQ stream is named. That stream gets events whose
+        // retries ran out.
         let dlq = match strategy {
             ErrorStrategy::Dlq => Some(DlqConfig::from_flat_config(config)?),
             ErrorStrategy::Retry if config.get(DLQ_STREAM_KEY).is_some() => {
@@ -238,35 +238,29 @@ impl ErrorConfig {
         Self::new(strategy, log_level, retry, dlq, fail)
     }
 
-    /// Get retry configuration if available
-    ///
-    /// Returns None if strategy is not Retry or retry config is missing.
+    /// Returns the retry settings, or `None` if none are set.
     #[inline]
     pub fn retry_config(&self) -> Option<&RetryConfig> {
         self.retry.as_ref()
     }
 
-    /// Get DLQ configuration if available
-    ///
-    /// Returns None if strategy is not Dlq or DLQ config is missing.
+    /// Returns the DLQ settings, or `None` if none are set. They can be set for
+    /// the `Retry` strategy as well as `Dlq`.
     #[inline]
     pub fn dlq_config(&self) -> Option<&DlqConfig> {
         self.dlq.as_ref()
     }
 
-    /// Get fail configuration if available
-    ///
-    /// Returns None if strategy is not Fail or fail config is missing.
+    /// Returns the fail settings, or `None` if none are set.
     #[inline]
     pub fn fail_config(&self) -> Option<&FailConfig> {
         self.fail.as_ref()
     }
 
-    /// Check if error logging is enabled at the given level
+    /// Returns true if a message at `level` is at or above the configured level.
     pub fn should_log(&self, level: LogLevel) -> bool {
-        // Simple level comparison (could be enhanced with proper ordering)
         match self.log_level {
-            LogLevel::Debug => true, // Log everything
+            LogLevel::Debug => true,
             LogLevel::Info => !matches!(level, LogLevel::Debug),
             LogLevel::Warn => matches!(level, LogLevel::Warn | LogLevel::Error),
             LogLevel::Error => matches!(level, LogLevel::Error),
@@ -275,10 +269,8 @@ impl ErrorConfig {
 }
 
 impl Default for ErrorConfig {
-    /// Default error configuration:
-    /// - Strategy: Drop
-    /// - Log level: Warn
-    /// - No retry/dlq/fail config
+    /// Returns the `Drop` strategy at `Warn` level, with no retry, DLQ or fail
+    /// settings.
     fn default() -> Self {
         Self {
             strategy: ErrorStrategy::Drop,
@@ -331,7 +323,6 @@ mod tests {
     #[test]
     fn test_fail_config_new() {
         let config = FailConfig::new();
-        // Just ensure it creates successfully
         assert!(format!("{:?}", config).contains("FailConfig"));
     }
 
@@ -444,7 +435,8 @@ mod tests {
 
     #[test]
     fn test_error_config_from_flat_config_retry_with_dlq_stream() {
-        // retry + error.dlq.stream: exhausted retries go to the DLQ
+        // With retry plus error.dlq.stream, events whose retries run out go to
+        // the DLQ.
         let mut config = FlatConfig::new();
         config.set("error.strategy", "retry", PropertySource::SqlWith);
         config.set("error.dlq.stream", "ErrorStream", PropertySource::SqlWith);

@@ -15,30 +15,30 @@
  * limitations under the License.
  */
 
-// Pattern processing foundation (Phase 1)
-pub mod logical_post_state_processor;
-pub mod logical_pre_state_processor; // AND/OR PreStateProcessor implementation
-pub mod post_state_processor; // Pattern match handling interface (trait)
-pub mod pre_state_processor; // Core pattern matching interface (trait)
-pub mod shared_processor_state; // Lock-free shared state between Pre/Post processors
-pub mod stream_post_state_processor; // Base implementation of PostStateProcessor
-pub mod stream_pre_state; // Three-list state management for pattern processing
-pub mod stream_pre_state_processor; // Base implementation of PreStateProcessor // AND/OR PostStateProcessor implementation
+// Core pattern processors
+pub mod logical_post_state_processor; // AND/OR PostStateProcessor
+pub mod logical_pre_state_processor; // AND/OR PreStateProcessor
+pub mod post_state_processor; // Trait for the step that handles a match
+pub mod pre_state_processor; // Trait for the step that matches events
+pub mod shared_processor_state; // Changed flag a pre and post processor share without locks
+pub mod stream_post_state_processor; // Default PostStateProcessor
+pub mod stream_pre_state; // The new, pending and every state lists of one step
+pub mod stream_pre_state_processor; // Default PreStateProcessor
 
-// Pattern processing Phase 2: Count Quantifiers
-pub mod count_post_state_processor; // Count quantifier validation
-pub mod count_pre_state_processor; // Count quantifier patterns (A{n}, A{m,n}, A+, A*)
-pub mod pattern_chain_builder; // Pattern chain factory for multi-processor chains
+// Count quantifiers
+pub mod count_post_state_processor; // Forwards count matches
+pub mod count_pre_state_processor; // Count quantifiers (A{n}, A{m,n}, A+, A*, A?)
+pub mod pattern_chain_builder; // Builds and wires multi step processor chains
 
-// Runtime infrastructure (Week 6)
-pub mod inner_state_runtime; // InnerStateRuntime trait for processor lifecycle
-pub mod receiver;
-pub mod state_stream_runtime; // StateStreamRuntime wrapper for InnerStateRuntime
-pub mod stream_inner_state_runtime; // Basic InnerStateRuntime implementation // Stream receivers for Pattern/Sequence processing
+// Runtime
+pub mod inner_state_runtime; // InnerStateRuntime trait for the chain lifecycle
+pub mod receiver; // Stream receivers for patterns and sequences
+pub mod state_stream_runtime; // StateStreamRuntime, which wraps an InnerStateRuntime
+pub mod stream_inner_state_runtime; // Default InnerStateRuntime
 
-// Utility components (preserved from cleanup)
-pub mod timers; // timer_wheel for Phase 3 absent patterns (NOT operator)
-pub mod util; // event_store for memory optimization (commit after profiling)
+// Helpers not used by the engine yet
+pub mod timers; // TimerWheel, meant for absent patterns (NOT operator)
+pub mod util; // EventStore, meant to cut memory use. Not wired in yet.
 
 // Re-export pattern processing types
 pub use logical_post_state_processor::LogicalPostStateProcessor;
@@ -50,7 +50,7 @@ pub use stream_post_state_processor::StreamPostStateProcessor;
 pub use stream_pre_state::StreamPreState;
 pub use stream_pre_state_processor::{StateType, StreamPreStateProcessor};
 
-// Re-export Phase 2 types
+// Re-export count quantifier and chain builder types
 pub use count_post_state_processor::CountPostStateProcessor;
 pub use count_pre_state_processor::CountPreStateProcessor;
 pub use pattern_chain_builder::{PatternChainBuilder, PatternStepConfig, ProcessorChain};

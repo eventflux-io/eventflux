@@ -17,10 +17,10 @@
 
 // src/core/distributed/grpc/simple_transport.rs
 
-//! Simplified gRPC Transport Implementation
+//! Simple gRPC transport.
 //!
-//! This is a working, simplified gRPC transport implementation that demonstrates
-//! the core concepts without the full complexity of the unified transport interface.
+//! A small gRPC client that calls the transport service directly. It does not
+//! implement the shared `Transport` trait.
 
 use super::{CompressionType, HeartbeatRequest, HeartbeatResponse, MessageType, TransportMessage};
 use crate::core::distributed::transport::Message;
@@ -33,14 +33,16 @@ use tokio::sync::RwLock;
 use tonic::transport::Channel;
 use tonic::Request;
 
-/// Simplified gRPC transport configuration
+/// Settings for [`SimpleGrpcTransport`].
 #[derive(Debug, Clone)]
 pub struct SimpleGrpcConfig {
-    /// Connection timeout in milliseconds
+    /// Request timeout in milliseconds, set on the channel. Default 10000.
     pub connection_timeout_ms: u64,
-    /// Enable compression
+    /// When true, outgoing messages are tagged `Zstd`. The payload is not
+    /// compressed here. Default true.
     pub enable_compression: bool,
-    /// Server address
+    /// Server address. Default `127.0.0.1:50051`. Not read by the client, which
+    /// takes the endpoint on each call.
     pub server_address: String,
 }
 
@@ -54,11 +56,10 @@ impl Default for SimpleGrpcConfig {
     }
 }
 
-/// Simplified gRPC transport
+/// Simple gRPC client transport.
 pub struct SimpleGrpcTransport {
-    /// Configuration
     config: SimpleGrpcConfig,
-    /// Client connections
+    /// Connected clients, keyed by endpoint.
     clients: Arc<RwLock<HashMap<String, super::transport_client::TransportClient<Channel>>>>,
 }
 
@@ -69,7 +70,7 @@ impl Default for SimpleGrpcTransport {
 }
 
 impl SimpleGrpcTransport {
-    /// Create a new simple gRPC transport
+    /// Create a transport with the default settings.
     pub fn new() -> Self {
         Self {
             config: SimpleGrpcConfig::default(),
@@ -77,7 +78,7 @@ impl SimpleGrpcTransport {
         }
     }
 
-    /// Create with custom configuration
+    /// Create a transport with the given settings.
     pub fn with_config(config: SimpleGrpcConfig) -> Self {
         Self {
             config,
@@ -85,7 +86,14 @@ impl SimpleGrpcTransport {
         }
     }
 
-    /// Connect to a gRPC server
+    /// Connect to a gRPC server over `http://` and keep the client for later calls.
+    ///
+    /// Replaces any client already stored for the endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if the endpoint is not a valid URI or the connection
+    /// fails.
     pub async fn connect(&self, endpoint: &str) -> DistributedResult<()> {
         let channel = Channel::from_shared(format!("http://{}", endpoint))
             .map_err(|e| DistributedError::TransportError {
@@ -106,7 +114,12 @@ impl SimpleGrpcTransport {
         Ok(())
     }
 
-    /// Send a message via gRPC
+    /// Send a message and return the server reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if [`connect`](Self::connect) was not called for the
+    /// endpoint, or the gRPC call fails.
     pub async fn send_message(
         &self,
         endpoint: &str,
@@ -132,7 +145,12 @@ impl SimpleGrpcTransport {
         Ok(response_message)
     }
 
-    /// Send heartbeat
+    /// Send a heartbeat for `node_id` and return the server reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if [`connect`](Self::connect) was not called for the
+    /// endpoint, or the gRPC call fails.
     pub async fn heartbeat(
         &self,
         endpoint: &str,
@@ -151,7 +169,7 @@ impl SimpleGrpcTransport {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as i64,
-            status: None, // Simplified for now
+            status: None, // node status is not reported yet
         });
 
         let response = client.clone().heartbeat(request).await.map_err(|e| {
@@ -163,7 +181,10 @@ impl SimpleGrpcTransport {
         Ok(response.into_inner())
     }
 
-    /// Convert local message to protobuf message
+    /// Convert a local message to its protobuf form.
+    ///
+    /// Stamps the current time in milliseconds and reads `source_node` and
+    /// `target_node` from the headers. Priority is always 5.
     pub fn to_proto_message(&self, message: &Message) -> TransportMessage {
         TransportMessage {
             id: message.id.clone(),
@@ -193,7 +214,7 @@ impl SimpleGrpcTransport {
         }
     }
 
-    /// Convert protobuf message to local message
+    /// Convert a protobuf message back to a local message.
     pub fn decode_proto_message(&self, proto_msg: &TransportMessage) -> Message {
         Message {
             id: proto_msg.id.clone(),
@@ -203,7 +224,7 @@ impl SimpleGrpcTransport {
         }
     }
 
-    /// Convert message type
+    /// Map a local message type to the protobuf type.
     fn to_proto_message_type(
         &self,
         msg_type: &crate::core::distributed::transport::MessageType,
@@ -218,7 +239,8 @@ impl SimpleGrpcTransport {
         }
     }
 
-    /// Convert protobuf message type to local message type
+    /// Map a protobuf message type to the local type. Types with no local match
+    /// become `Event`.
     fn decode_proto_message_type(
         &self,
         proto_type: i32,

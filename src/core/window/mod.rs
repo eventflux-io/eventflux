@@ -15,9 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/window/mod.rs
-
-//! Window related runtime structures.
+//! Runtime types for named windows.
 
 pub mod window_runtime;
 

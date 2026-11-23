@@ -17,9 +17,9 @@
 
 //! # File Source
 //!
-//! Observes one file and delivers each complete line as one payload. The
-//! source never finishes: reaching EOF only means "nothing new yet" — it
-//! keeps polling and delivers whatever other applications append later.
+//! Watches one file and delivers each complete line as one payload. The source
+//! never finishes. Reaching EOF only means nothing new has arrived yet. It keeps
+//! polling and delivers whatever other programs append later.
 //!
 //! ## Architecture
 //!
@@ -30,15 +30,16 @@
 //!   → SourceCallback → mapper → junction
 //! ```
 //!
-//! Rotation handling follows the `tail -F` contract: when the path points
-//! at a different file (new device/inode, or creation time elsewhere), the
-//! renamed-away file's remaining lines are first drained through the
-//! still-open handle, then reading reopens from offset 0 and re-applies
-//! `file.skip.lines`; a size shrink (truncation) reopens without salvage. A
-//! missing file is awaited, not an error. Transient read errors resume at
-//! the last consumed offset instead of replaying, and an unterminated line
-//! beyond an 8 MiB safety cap is dropped with a resync at the next
-//! terminator.
+//! Rotation works like `tail -F`. When the path points at a different file
+//! (a new device and inode on Unix, or a new creation time elsewhere), the
+//! lines left in the renamed file are first read through the handle that is
+//! still open. Then reading reopens the path from offset 0 and applies
+//! `file.skip.lines` again. If the file shrinks (truncation), it is reopened
+//! without reading the old handle. A missing file is waited for, not treated as
+//! an error. After a short lived read error, reading picks up at the last
+//! consumed offset instead of starting over. A line with no terminator that
+//! grows past an 8 MiB safety cap is dropped, and reading picks up again after
+//! the next newline.
 
 use super::{sleep_while_running, Source, SourceCallback, SourceWorker};
 use crate::core::error::source_support::{
@@ -57,32 +58,41 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Where to begin on the initially-present file
+/// Where to start reading the file that exists at startup. A file that
+/// appears later is always read from the beginning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartPosition {
-    /// Deliver existing content first, then follow appends (default)
+    /// Deliver the existing content first, then follow appends. The default.
     Beginning,
-    /// Only lines appended after startup
+    /// Deliver only lines appended after startup
     End,
 }
 
 /// File source configuration
 #[derive(Debug, Clone)]
 pub struct FileSourceConfig {
-    /// Path of the file to observe
+    /// Path of the file to watch (`file.path`)
     pub path: PathBuf,
-    /// Where to begin on the initially-present file
+    /// Where to start on the file present at startup (`file.start.position`)
     pub start_position: StartPosition,
-    /// Poll cadence (interruptible; default 500)
+    /// Time between polls in ms. Stop does not wait for it. Default 500.
     pub poll_interval_ms: u64,
-    /// Lines to skip whenever reading starts from offset 0 (e.g. CSV header)
+    /// Lines to skip each time reading starts from offset 0, such as a CSV
+    /// header. Default 0.
     pub skip_lines: u64,
-    /// Fail fast at startup when the file is absent (default: await it)
+    /// Fail at startup when the file is missing. Default false, which waits
+    /// for the file to appear.
     pub require_exists: bool,
 }
 
 impl FileSourceConfig {
-    /// Parse configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `file.path` is missing or blank, when
+    /// `file.start.position` is not `beginning` or `end`, or when a number or
+    /// bool does not parse.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let path = crate::core::stream::connector_util::parse_required(properties, "file.path")?;
 
@@ -110,8 +120,9 @@ impl FileSourceConfig {
     }
 }
 
-/// Identity of the file behind a path, used to detect rename-over rotation.
-/// Inode on Unix; creation time elsewhere (best effort).
+/// Identity of the file behind a path, used to spot rotation, where a new file
+/// is renamed over the path. Device and inode on Unix. Creation time elsewhere,
+/// which is best effort.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FileIdentity {
     #[cfg(unix)]
@@ -141,39 +152,40 @@ impl FileIdentity {
     }
 }
 
-/// Open file being followed, with read progress and the held partial line
+/// The open file being followed, with read progress and the held partial line
 struct TailReader {
     file: File,
     identity: FileIdentity,
-    /// Bytes consumed from the file so far (including any held partial line).
-    /// The OS cursor stays in lockstep: the only seek happens at open, and a
-    /// read error discards the whole reader.
+    /// Bytes read from the file so far, including any held partial line.
+    /// The OS cursor always matches it. The only seek is at open, and a read
+    /// error throws away the whole reader.
     offset: u64,
-    /// Bytes after the last `\n` — held until the line is terminated
+    /// Bytes after the last `\n`, held until the line gets its terminator
     partial: Vec<u8>,
-    /// Set when `partial` blew past [`MAX_HELD_LINE_BYTES`]: the oversized
-    /// line's remainder is discarded until the next terminator resyncs
+    /// Set when `partial` grew past [`MAX_HELD_LINE_BYTES`]. The rest of that
+    /// line is thrown away until the next newline.
     discarding: bool,
-    /// Remaining `file.skip.lines` budget for this open-from-zero
+    /// How many `file.skip.lines` are still left to skip since this reader
+    /// started at offset 0
     lines_to_skip: u64,
-    /// Reusable read buffer (allocated once per open)
+    /// Read buffer, allocated once per open and reused
     buf: Box<[u8]>,
 }
 
-/// Safety cap on a held unterminated line (a delimiter-less file — e.g. a
-/// binary pointed at by mistake — must not accrete into memory without
-/// bound). The oversized line is dropped and reading resyncs at the next
-/// terminator. A configurable `file.max.line.bytes` is a planned follow-up.
+/// Safety cap on a held line with no terminator. A file with no newlines, such
+/// as a binary picked by mistake, must not grow in memory without limit. The
+/// long line is dropped and reading picks up after the next newline. A
+/// `file.max.line.bytes` setting is planned but not added yet.
 const MAX_HELD_LINE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Running totals for the shutdown summary log
+/// Running totals for the log line written at shutdown
 #[derive(Default)]
 struct DeliveryStats {
     delivered: u64,
     failed: u64,
 }
 
-/// File source observing a single file (see module docs)
+/// Source that watches a single file. See the module docs.
 #[derive(Debug)]
 pub struct FileSource {
     config: FileSourceConfig,
@@ -185,8 +197,8 @@ impl Clone for FileSource {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            worker: self.worker.clone(), // the clone is a new worker that has not started
+            // New context with the same strategy and DLQ, and runtime counters reset
             error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
@@ -201,7 +213,7 @@ impl FileSource {
         }
     }
 
-    /// Create a file source from properties
+    /// Creates a file source from properties.
     ///
     /// # Required Properties
     /// - `file.path`
@@ -209,7 +221,11 @@ impl FileSource {
     /// # Optional Properties
     /// - `file.start.position`, `file.poll.interval.ms`, `file.skip.lines`,
     ///   `file.require.exists`
-    /// - `error.*`: Error handling properties (see SourceErrorContext)
+    /// - `error.*`: error handling properties (see SourceErrorContext)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file config or the error config is invalid.
     pub fn from_properties(
         properties: &HashMap<String, String>,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
@@ -225,19 +241,23 @@ impl FileSource {
     }
 }
 
-/// A continuation point stashed when a read error drops the reader: the
-/// file's identity, the offset of the first unconsumed byte (held partial
-/// excluded, so no line gets truncated), and the unspent skip budget.
+/// Where to pick up after a read error drops the reader. Holds the file
+/// identity, the offset of the first byte not yet used, and the number of lines
+/// still to skip. The offset leaves out the held partial line, so that line is
+/// read again in full and not cut short.
 type ResumeMarker = (FileIdentity, u64, u64);
 
-/// Open the file and position per the rules: `at_end` seeks to the current
-/// end (initial `start.position = 'end'` only); a `resume` marker matching
-/// the opened file continues after a transient read error — at its offset,
-/// with its remaining skip budget — instead of replaying from 0; otherwise
-/// offset 0 with the full skip-lines budget.
+/// Opens the file and picks where to start reading.
 ///
-/// Identity is taken from the OPENED handle's metadata, so it can never
-/// diverge from the file actually being read (no path-vs-handle race).
+/// - `at_end` seeks to the current end. Only used for the startup file when
+///   `file.start.position` is `end`.
+/// - A `resume` marker that matches the opened file, and whose offset is not
+///   past its end, continues at that offset with its remaining skip count,
+///   instead of starting over from 0.
+/// - Otherwise it starts at offset 0 and skips `skip_lines` lines.
+///
+/// The identity comes from the metadata of the opened handle, so it always
+/// matches the file being read, even if the path changes in between.
 fn open_reader(
     path: &std::path::Path,
     at_end: bool,
@@ -252,8 +272,8 @@ fn open_reader(
         (file.seek(SeekFrom::End(0))?, 0)
     } else {
         match resume {
-            // Same file as before the error — continue where reading left
-            // off with the skip budget that was still unspent there
+            // Same file as before the error. Continue where reading stopped,
+            // with the lines still left to skip at that point.
             Some((resume_identity, resume_offset, resume_skip))
                 if resume_identity == identity && resume_offset <= meta.len() =>
             {
@@ -274,8 +294,8 @@ fn open_reader(
     })
 }
 
-/// Deliver one complete line (skip-lines budget and empty lines are handled
-/// here). `Break` means an unrecoverable delivery failure.
+/// Delivers one complete line. Lines still to be skipped and empty lines are
+/// not delivered. Returns `Break` when delivery failed and the source must stop.
 fn handle_line(
     line: &[u8],
     lines_to_skip: &mut u64,
@@ -288,7 +308,7 @@ fn handle_line(
         return std::ops::ControlFlow::Continue(());
     }
     if line.is_empty() {
-        return std::ops::ControlFlow::Continue(()); // nothing to deliver
+        return std::ops::ControlFlow::Continue(());
     }
 
     match deliver_with_error_handling(callback, line, error_ctx, "FileSource") {
@@ -303,11 +323,16 @@ fn handle_line(
     std::ops::ControlFlow::Continue(())
 }
 
-/// Read newly appended bytes and deliver each complete line zero-copy.
+/// Reads newly appended bytes and delivers each complete line without copying
+/// it. A trailing `\r` is removed from each line.
 ///
-/// Complete lines inside a read chunk are delivered as slices of the reused
-/// buffer; only a fragment spanning chunk boundaries touches the `partial`
-/// buffer. `Break` propagates an unrecoverable delivery failure.
+/// A line that sits fully inside one read chunk is delivered as a slice of the
+/// reused buffer. Only a line split across chunks is copied into `partial`.
+/// Returns `Break` when delivery failed and the source must stop.
+///
+/// # Errors
+///
+/// Returns the I/O error from a failed read.
 fn drain_new_lines(
     reader: &mut TailReader,
     running: &std::sync::atomic::AtomicBool,
@@ -315,9 +340,9 @@ fn drain_new_lines(
     error_ctx: &mut Option<SourceErrorContext>,
     stats: &mut DeliveryStats,
 ) -> std::io::Result<std::ops::ControlFlow<()>> {
-    // The chunk loop checks `running` so stop() stays bounded even while
-    // draining a multi-GB backlog — the worker must never outlive its
-    // grace period mid-drain
+    // Check `running` on every chunk so stop() returns quickly even while a
+    // backlog of many GB is being read. The worker must not run past its
+    // grace period in the middle of a read.
     while running.load(Ordering::SeqCst) {
         let read = reader.file.read(&mut reader.buf)?;
         if read == 0 {
@@ -329,16 +354,16 @@ fn drain_new_lines(
         while let Some(pos) = reader.buf[start..read].iter().position(|b| *b == b'\n') {
             let end = start + pos;
             let flow = if reader.discarding {
-                // Remainder of an oversized dropped line — this terminator
-                // resyncs reading onto real line boundaries. The dropped
-                // line still counts against the skip budget: skipping the
-                // wrong (real) line later would be worse.
+                // End of a dropped long line. This newline puts reading back on
+                // real line boundaries. The dropped line still counts as a
+                // skipped line, because skipping a real line later would be
+                // worse.
                 reader.discarding = false;
                 reader.partial.clear();
                 reader.lines_to_skip = reader.lines_to_skip.saturating_sub(1);
                 std::ops::ControlFlow::Continue(())
             } else if reader.partial.is_empty() {
-                // Whole line inside the chunk — deliver without copying
+                // Whole line inside the chunk, so deliver it without copying
                 let mut line = &reader.buf[start..end];
                 if line.last() == Some(&b'\r') {
                     line = &line[..line.len() - 1];
@@ -366,9 +391,9 @@ fn drain_new_lines(
             start = end + 1;
         }
 
-        // Unterminated tail (usually empty) — hold until completed, bounded
-        // by the safety cap; beyond it the line is dropped and reading
-        // resyncs at the next terminator
+        // Hold the unfinished end of the chunk (usually empty) until its line
+        // completes. Past the safety cap the line is dropped and reading picks
+        // up after the next newline.
         if !reader.discarding {
             reader.partial.extend_from_slice(&reader.buf[start..read]);
             if reader.partial.len() > MAX_HELD_LINE_BYTES {
@@ -376,7 +401,7 @@ fn drain_new_lines(
                     "[FileSource] Dropping unterminated line exceeding {MAX_HELD_LINE_BYTES} \
                      bytes — resyncing at the next line terminator"
                 );
-                reader.partial = Vec::new(); // also releases the capacity
+                reader.partial = Vec::new(); // a new Vec also frees the memory
                 reader.discarding = true;
             }
         }
@@ -384,10 +409,10 @@ fn drain_new_lines(
     Ok(std::ops::ControlFlow::Continue(()))
 }
 
-/// Best-effort final drain of a file that went away (unlinked, rotated, or
-/// replaced by a directory): the open fd still reads to EOF. `Break` means
-/// an unrecoverable delivery failure; read errors forfeit only the
-/// remaining tail and are logged.
+/// Best effort final read of a file that went away because it was deleted,
+/// rotated, or replaced by a directory. The open fd can still read it to EOF.
+/// Returns `Break` when delivery failed and the source must stop. A read error
+/// is logged and loses only the rest of that file.
 fn salvage_tail(
     old: &mut TailReader,
     what: &str,
@@ -421,11 +446,11 @@ impl Source for FileSource {
             }
             let interval = Duration::from_millis(config.poll_interval_ms);
             let mut reader: Option<TailReader> = None;
-            // start.position applies only to the file present at startup; a
-            // file that appears later is new and reads from the beginning
+            // start.position applies only to the file present at startup. A
+            // file that appears later is new and is read from the beginning.
             let mut initial = true;
-            // Set on a transient read error so the reopen continues at the
-            // last consumed offset instead of replaying the whole file
+            // Set on a read error so the reopen continues at the last consumed
+            // offset instead of reading the whole file again
             let mut resume: Option<ResumeMarker> = None;
             let mut stats = DeliveryStats::default();
 
@@ -440,9 +465,9 @@ impl Source for FileSource {
 
                 match std::fs::metadata(&config.path) {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        // Missing is awaited, not an error (tail -F). The
-                        // unlinked file stays readable through the open fd —
-                        // salvage its last lines before letting it go
+                        // A missing file is waited for, not an error, like
+                        // tail -F. The deleted file can still be read through
+                        // the open fd, so deliver its last lines first.
                         if let Some(mut old) = reader.take() {
                             log::info!(
                                 "[FileSource] '{}' disappeared — awaiting recreation",
@@ -465,17 +490,17 @@ impl Source for FileSource {
                         initial = false;
                     }
                     Err(e) => {
-                        // A real stat failure (EACCES, EIO, …) — keep the
-                        // reader (the open fd may be fine) and `initial`
-                        // (nothing about the file was decided), and route
-                        // the error through the strategy like open errors
+                        // A real stat failure such as EACCES or EIO. Keep the
+                        // reader, since the open fd may still be fine. Keep
+                        // `initial`, since nothing about the file was decided.
+                        // Send the error to the error strategy like open errors.
                         io_error = Some(e);
                     }
                     Ok(meta) if meta.is_dir() => {
-                        // A directory can never become the startup file —
-                        // whatever real file appears later is new. The
-                        // previously-followed file (if any) was replaced;
-                        // its tail is still readable through the open fd.
+                        // A directory can never be the startup file, so any
+                        // real file that appears later is new. The file being
+                        // followed before, if any, was replaced. Its last lines
+                        // can still be read through the open fd.
                         if let Some(mut old) = reader.take() {
                             if salvage_tail(
                                 &mut old,
@@ -509,9 +534,9 @@ impl Source for FileSource {
                                 "[FileSource] '{}' was rotated — reopening",
                                 config.path.display()
                             );
-                            // The renamed-away file is still readable through
-                            // the old fd — deliver its tail before switching
-                            // (the tail -F contract)
+                            // The renamed file can still be read through the
+                            // old fd. Deliver its last lines before switching,
+                            // like tail -F does.
                             if let Some(mut old) = reader.take() {
                                 if salvage_tail(
                                     &mut old,
@@ -532,16 +557,16 @@ impl Source for FileSource {
                                 "[FileSource] '{}' was truncated — reopening",
                                 config.path.display()
                             );
-                            // Same file object — the overwritten content is
-                            // gone; nothing to salvage
+                            // Same file, so the cut content is gone and there
+                            // is nothing left to read from the old handle
                             reader = None;
                         }
 
                         if reader.is_none() {
                             let at_end = initial && config.start_position == StartPosition::End;
-                            // `resume` is only cleared on a successful open —
-                            // a transient open failure must not burn the
-                            // marker and force a replay later
+                            // Clear `resume` only after a successful open. A
+                            // failed open must not lose the marker and force
+                            // the file to be read again from the start.
                             match open_reader(&config.path, at_end, config.skip_lines, resume) {
                                 Ok(r) => {
                                     reader = Some(r);
@@ -549,15 +574,15 @@ impl Source for FileSource {
                                     initial = false;
                                 }
                                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                    // Lost a race with an rm/rename between
-                                    // the metadata check and the open — back
-                                    // to awaiting, not an error
+                                    // The file was removed or renamed between
+                                    // the metadata check and the open. Go back
+                                    // to waiting. This is not an error.
                                     initial = false;
                                 }
                                 Err(e) => {
-                                    // Transient (e.g. EACCES): keep `initial`
-                                    // so start.position=end still holds once
-                                    // the file finally opens
+                                    // Possibly short lived, such as EACCES.
+                                    // Keep `initial` so start.position=end
+                                    // still applies once the file opens.
                                     io_error = Some(e);
                                 }
                             }
@@ -565,10 +590,10 @@ impl Source for FileSource {
                             initial = false;
                         }
 
-                        // Only read when there are new bytes — idle polls
-                        // stay syscall-free after the metadata check. (An
-                        // identity mismatch means the handle is newer than
-                        // the path metadata — drain it regardless.)
+                        // Read only when there are new bytes, so an idle poll
+                        // makes no system call after the metadata check. If
+                        // the identity does not match, the handle is newer
+                        // than the path metadata, so read it anyway.
                         if let Some(r) = &mut reader {
                             if meta.len() > r.offset || r.identity != identity {
                                 match drain_new_lines(
@@ -581,14 +606,15 @@ impl Source for FileSource {
                                     Ok(std::ops::ControlFlow::Continue(())) => {}
                                     Ok(std::ops::ControlFlow::Break(())) => break 'poll,
                                     Err(e) => {
-                                        // Stash where reading stopped (held
-                                        // partial excluded, so no line gets
-                                        // truncated): if the same file is
-                                        // still there at reopen, reading
-                                        // resumes instead of replaying. A
-                                        // mid-discard reader gets no marker —
-                                        // the fresh replay re-hits the cap
-                                        // and resyncs the same way.
+                                        // Save where reading stopped, leaving
+                                        // out the held partial line so it is
+                                        // not cut short. If the same file is
+                                        // still there at reopen, reading picks
+                                        // up there instead of starting over.
+                                        // A reader that is dropping a long
+                                        // line saves no marker. The new read
+                                        // hits the cap again and recovers the
+                                        // same way.
                                         if let Some(r) = reader.take() {
                                             if !r.discarding {
                                                 resume = Some((
@@ -620,7 +646,7 @@ impl Source for FileSource {
                     }
                 }
 
-                // Interruptible: a long interval never delays stop()
+                // Wakes early on stop, so a long interval never delays stop()
                 sleep_while_running(&running, interval);
             }
 
@@ -646,7 +672,8 @@ impl Source for FileSource {
         stream_name: &str,
         junction: Arc<Mutex<InputHandler>>,
     ) -> Result<(), EventFluxError> {
-        // Without error.strategy the source drops failures; no DLQ to wire
+        // With no error.strategy the source drops failures, so there is no DLQ
+        // to connect
         if let Some(ref mut ctx) = self.error_ctx {
             ctx.set_dlq_junction(stream_name, junction);
         }
@@ -701,10 +728,10 @@ impl Source for FileSource {
 // File Source Factory
 // ============================================================================
 
-/// Factory for creating file source instances.
+/// Factory for file sources.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// file sources from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build file sources from the
+/// SQL WITH clause config.
 #[derive(Debug, Clone)]
 pub struct FileSourceFactory;
 
@@ -722,8 +749,8 @@ impl SourceFactory for FileSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        // Connector keys + the shared error-handling keys (owned by
-        // SourceErrorContext) — concatenated once, on first use
+        // File keys plus the shared error handling keys owned by
+        // SourceErrorContext. Joined once, on first use.
         static PARAMS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
             [
                 &[
@@ -743,10 +770,10 @@ impl SourceFactory for FileSourceFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
-        // DLQ junction is None initially — the runtime calls
-        // set_error_dlq_junction() on attachment, which also sets the stream
-        // name. Until then the path identifies the stream in error-context
-        // log messages.
+        // The DLQ junction starts as None. The runtime calls
+        // set_error_dlq_junction() when it attaches the source, which also sets
+        // the stream name. Until then the path names the stream in error log
+        // messages.
         let stream_tag = config.get("file.path").cloned().unwrap_or_default();
         FileSource::from_properties(config, None, &stream_tag)
             .map(|source| Box::new(source) as Box<dyn Source>)
@@ -830,15 +857,15 @@ mod tests {
         props.insert("error.strategy".to_string(), "drop".to_string());
         let source = FileSource::from_properties(&props, None, "TestStream").unwrap();
         let cloned = source.clone();
-        // The configured strategy survives cloning (fresh runtime state)
+        // The clone keeps the strategy but starts with reset counters
         let ctx = cloned.error_ctx.expect("clone keeps the error strategy");
         assert_eq!(ctx.error_count(), 0);
     }
 
     #[test]
     fn test_restart_preserves_error_strategy() {
-        // Regression (#142): start() used to take() the context, so a
-        // stop→start cycle silently lost the configured strategy
+        // Regression (#142). start() used to take() the context, so a stop and
+        // start cycle silently lost the configured strategy.
         #[derive(Debug)]
         struct NoopCallback;
         impl crate::core::stream::input::source::SourceCallback for NoopCallback {

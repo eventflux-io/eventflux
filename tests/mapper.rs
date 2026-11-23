@@ -76,10 +76,9 @@ impl SinkMapper for ConcatSinkMapper {
     }
 }
 
-// TODO: NOT PART OF M1 - Old EventFluxQL syntax
-// This test uses "define stream" and old query syntax which is not supported by SQL parser.
-// Source/sink mappers functionality exists but SQL syntax for them is not part of M1.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Ignored because it uses the old EventFluxQL syntax
+// ("define stream"), which the SQL parser does not support. The mappers themselves
+// work. See feat/grammar/GRAMMAR.md for the grammar status.
 #[tokio::test]
 #[ignore = "Old EventFluxQL syntax not part of M1"]
 async fn test_source_and_sink_mapper_usage() {
@@ -99,7 +98,7 @@ async fn test_source_and_sink_mapper_usage() {
         .iter()
         .map(|row| Event::new_with_data(0, row.clone()))
         .collect();
-    // One payload per event (per-event mapper contract)
+    // The sink mapper maps one event at a time, so there is one payload per event
     let sink_mapper = ConcatSinkMapper;
     let payloads: Vec<Vec<u8>> = out_events
         .iter()

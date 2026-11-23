@@ -15,28 +15,26 @@
  * limitations under the License.
  */
 
-// src/core/eventflux_manager.rs
 use crate::core::config::eventflux_context::EventFluxContext;
 use crate::core::eventflux_app_runtime::EventFluxAppRuntime;
 use crate::query_api::eventflux_app::EventFluxApp as ApiEventFluxApp;
-// EventFluxAppContext is created by EventFluxAppRuntime::new or its internal parser logic
+// Not needed here. EventFluxAppRuntime builds its own EventFluxAppContext.
 // use crate::core::config::eventflux_app_context::EventFluxAppContext;
 
-// Use SQL compiler for parsing (sqlparser-rs based)
-use crate::core::executor::ScalarFunctionExecutor; // Added for UDFs
-use crate::core::DataSource;
-// Placeholder for actual persistence store trait/type
 use crate::core::config::eventflux_context::ExtensionClassPlaceholder;
 use crate::core::config::{ApplicationConfig, ConfigManager, EventFluxConfig};
+use crate::core::executor::ScalarFunctionExecutor; // for UDFs
 use crate::core::extension;
 use crate::core::persistence::PersistenceStore;
+use crate::core::DataSource;
 
 use libloading::Library;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 // use rand::Rng; // For generating random app names if not specified
 
-/// Main entry point for managing EventFlux application runtimes.
+/// Main entry point. Creates, tracks and shuts down EventFlux app runtimes, keyed
+/// by app name.
 #[repr(C)]
 pub struct EventFluxManager {
     eventflux_context: Arc<EventFluxContext>,
@@ -49,7 +47,7 @@ pub struct EventFluxManager {
 impl EventFluxManager {
     pub fn new() -> Self {
         Self {
-            eventflux_context: Arc::new(EventFluxContext::new()), // EventFluxContext::new() provides defaults
+            eventflux_context: Arc::new(EventFluxContext::new()), // default context
             eventflux_app_runtime_map: Arc::new(Mutex::new(HashMap::new())),
             loaded_libraries: Arc::new(Mutex::new(Vec::new())),
             config_manager: None,
@@ -57,14 +55,18 @@ impl EventFluxManager {
         }
     }
 
-    /// Create EventFluxManager with a specific configuration
+    /// Builds a manager that uses `config` as its cached configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the config cache mutex is poisoned.
     pub fn new_with_config(config: EventFluxConfig) -> Self {
         let manager = Self::new();
         *manager.cached_config.lock().expect("Mutex poisoned") = Some(config);
         manager
     }
 
-    /// Create EventFluxManager with ConfigManager for dynamic configuration loading
+    /// Builds a manager that loads its configuration through `config_manager` on first use.
     pub fn new_with_config_manager(config_manager: ConfigManager) -> Self {
         Self {
             eventflux_context: Arc::new(EventFluxContext::new()),
@@ -83,16 +85,15 @@ impl EventFluxManager {
         &self,
         eventflux_app_string: &str,
     ) -> Result<Arc<EventFluxAppRuntime>, String> {
-        // 1. Parse SQL string to SqlApplication (using sql_compiler)
+        // 1. Parse the SQL string into a SqlApplication.
         let sql_app = crate::sql_compiler::parse_sql_application(eventflux_app_string)
             .map_err(|e| format!("SQL parse error: {}", e))?;
 
-        // 2. Determine application name
-        // Priority: YAML config > stream-based name > default name
+        // 2. Pick the app name.
+        // Priority: YAML config, then "App_" plus the first stream name, then "EventFluxApp".
         let app_name = if let Some(config_name) = self.get_config_app_name().await {
             config_name
         } else {
-            // Fallback to stream-based naming if no YAML config
             sql_app
                 .catalog
                 .get_stream_names()
@@ -101,13 +102,13 @@ impl EventFluxManager {
                 .unwrap_or_else(|| "EventFluxApp".to_string())
         };
 
-        // 3. Convert to EventFluxApp
+        // 3. Convert to an EventFluxApp.
         let api_eventflux_app = sql_app
             .to_eventflux_app(app_name)
             .map_err(|e| format!("Type inference error: {}", e))?;
         let api_eventflux_app_arc = Arc::new(api_eventflux_app);
 
-        // 4. Create runtime from ApiEventFluxApp
+        // 4. Build the runtime from it.
         self.create_eventflux_app_runtime_from_api(
             api_eventflux_app_arc,
             Some(eventflux_app_string.to_string()),
@@ -115,45 +116,45 @@ impl EventFluxManager {
         .await
     }
 
-    // Added eventflux_app_str_opt for cases where it's available (from string parsing)
-    // or not (when an ApiEventFluxApp is provided directly).
-    /// Create an EventFluxAppRuntime from an API EventFluxApp.
+    // eventflux_app_str_opt is the source SQL when the app came from a string, and
+    // None when an ApiEventFluxApp was passed in directly.
+    /// Creates and registers an EventFluxAppRuntime from an API EventFluxApp.
     ///
-    /// Creates the runtime but does NOT start it automatically. This allows callers to:
+    /// The runtime is NOT started. That lets callers first:
     /// 1. Add callbacks (including for start triggers)
     /// 2. Restore state from checkpoints
-    /// 3. Perform other setup
-    /// 4. Then explicitly call `runtime.start()` when ready
+    /// 3. Do other setup
+    /// 4. Then call `runtime.start()` when ready
     ///
     /// **Important**: Callers MUST call `runtime.start()` to begin processing events.
+    ///
+    /// The map key is the YAML `eventflux.application.name` if set, else the app's
+    /// own name, else a generated UUID name. Errors if loading config fails, an app
+    /// with that name already exists, or building the runtime fails.
     pub async fn create_eventflux_app_runtime_from_api(
         &self,
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_app_str_opt: Option<String>,
     ) -> Result<Arc<EventFluxAppRuntime>, String> {
-        // Load the configuration once for the reads below (get_config()
-        // deep-clones the cached EventFluxConfig per call). A load failure
-        // fails app creation — get_config's error is already self-describing —
-        // because starting a misconfigured engine with silent defaults is
-        // worse than a startup error.
+        // Load the config once for all the reads below, since get_config() deep
+        // clones the cached EventFluxConfig on every call. A load failure fails app
+        // creation, and get_config's error already explains itself. Starting a
+        // misconfigured engine on silent defaults is worse than a startup error.
         let loaded_config = self.get_config().await?;
         let application_global = loaded_config.eventflux.application.as_ref();
 
-        // Determine app name using config-based naming (not annotations)
-        // Priority: YAML config.eventflux.application.name > api_eventflux_app.name > generated UUID
+        // Pick the app name from config, not from annotations.
+        // Priority: YAML eventflux.application.name, then api_eventflux_app.name,
+        // then a generated UUID name.
         let app_name =
             if let Some(config_name) = application_global.and_then(|app| app.name.clone()) {
-                // 1. YAML config has highest priority
                 config_name
             } else if !api_eventflux_app.name.is_empty() {
-                // 2. Use name from SQL application parsing
                 api_eventflux_app.name.clone()
             } else {
-                // 3. Generate UUID-based name as fallback
                 format!("eventflux_app_{}", uuid::Uuid::new_v4().hyphenated())
             };
 
-        // Check if app with this name already exists
         if self
             .eventflux_app_runtime_map
             .lock()
@@ -165,21 +166,20 @@ impl EventFluxManager {
             ));
         }
 
-        // Apply global stream defaults (eventflux.application.async_default)
-        // to the shared context before parsing, so junction creation sees
-        // them. Always resolved (missing key → false) so one config's setting
-        // cannot leak into the next app created on this manager after the
-        // config changes.
+        // Set the global stream default (eventflux.application.async_default) on the
+        // shared context before parsing, so junction creation sees it. Always set,
+        // with a missing key meaning false, so one config's value cannot leak into
+        // the next app created on this manager after the config changes.
         let async_default = application_global
             .and_then(|app| app.async_default)
             .unwrap_or(false);
         self.eventflux_context.set_default_async_mode(async_default);
 
-        // Application-specific configuration from the already-loaded config
-        // (a get_application_config call would re-load and re-clone it all).
+        // Per app config from the config already loaded. Calling
+        // get_application_config would load and clone it all again.
         let app_config = loaded_config.applications.get(&app_name).cloned();
 
-        // EventFluxAppRuntime::new now handles creation of EventFluxAppContext and parsing
+        // The runtime builds its own EventFluxAppContext and parses the app.
         let runtime = Arc::new(EventFluxAppRuntime::new_with_config(
             Arc::clone(&api_eventflux_app),
             Arc::clone(&self.eventflux_context),
@@ -187,7 +187,7 @@ impl EventFluxManager {
             app_config,
         )?);
 
-        // Register runtime in the map (caller is responsible for starting)
+        // Register it. Starting it is up to the caller.
         self.eventflux_app_runtime_map
             .lock()
             .expect("Mutex poisoned")
@@ -198,8 +198,8 @@ impl EventFluxManager {
 
     /// Deprecated: Use `create_eventflux_app_runtime_from_api()` instead.
     ///
-    /// This method is now identical to `create_eventflux_app_runtime_from_api()`
-    /// since the main method no longer auto-starts. Kept for backward compatibility.
+    /// Now the same as `create_eventflux_app_runtime_from_api()`, since that method
+    /// no longer starts the runtime either. Kept so old callers still compile.
     #[deprecated(
         since = "0.1.0",
         note = "Use create_eventflux_app_runtime_from_api() instead - it no longer auto-starts"
@@ -209,7 +209,6 @@ impl EventFluxManager {
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_app_str_opt: Option<String>,
     ) -> Result<Arc<EventFluxAppRuntime>, String> {
-        // Delegate to main method (which no longer auto-starts)
         self.create_eventflux_app_runtime_from_api(api_eventflux_app, eventflux_app_str_opt)
             .await
     }
@@ -231,11 +230,11 @@ impl EventFluxManager {
             .collect()
     }
 
+    // Removes the app and shuts it down. Returns false if no app has that name.
     pub fn shutdown_app_runtime(&self, app_name: &str) -> bool {
-        // Bind the removal before shutting down: shutdown() can block on the
-        // junction drain (up to its timeout), and an `if let` on the locked
-        // map would hold the guard across that wait, blocking every other
-        // manager operation.
+        // Remove it into a local first. shutdown() can block on the junction drain
+        // up to its timeout, and an `if let` on the locked map would hold the lock
+        // through that wait, blocking every other manager call.
         let runtime = self
             .eventflux_app_runtime_map
             .lock()
@@ -251,8 +250,8 @@ impl EventFluxManager {
     }
 
     pub fn shutdown_all_app_runtimes(&self) {
-        // Take the runtimes out under the lock, shut them down without it —
-        // shutdown() can block on the junction drain.
+        // Take the runtimes out under the lock, then shut them down without it,
+        // since shutdown() can block on the junction drain.
         let runtimes: Vec<_> = self
             .eventflux_app_runtime_map
             .lock()
@@ -265,9 +264,12 @@ impl EventFluxManager {
         }
     }
 
-    // --- Setters for EventFluxContext components (placeholders) ---
-    // `set_extension` typically refers to general extensions (FunctionExecutor, StreamProcessor etc.)
-    // For scalar functions, we use `add_scalar_function_factory`.
+    // --- Register extensions and factories on the EventFluxContext ---
+    // Loads a shared library from `library_path` and calls each register function it
+    // exports (extensions, windows, functions, sources, sinks, stores and mappers).
+    // `name` is only used in the log line. The library is never unloaded, so the
+    // registered code stays valid. Errors if the library cannot be loaded. To add a
+    // single scalar function, use `add_scalar_function_factory`.
     pub fn set_extension(
         &self,
         name: &str,
@@ -303,7 +305,6 @@ impl EventFluxManager {
         Ok(())
     }
 
-    // Specific method for adding scalar function factories
     pub fn add_scalar_function_factory(
         &self,
         name: String,
@@ -380,7 +381,6 @@ impl EventFluxManager {
         self.eventflux_context.add_table_factory(name, factory);
     }
 
-    // Specific method for adding data sources
     pub fn add_data_source(
         &self,
         name: String,
@@ -389,7 +389,7 @@ impl EventFluxManager {
         self.eventflux_context.add_data_source(name, data_source)
     }
 
-    // set_data_source was a placeholder, replaced by add_data_source
+    // set_data_source was an early placeholder. add_data_source replaced it.
     // pub fn set_data_source(&self, name: &str, ds_placeholder: DataSourcePlaceholder) -> Result<(), String> { ... }
 
     pub fn set_persistence_store(
@@ -399,10 +399,12 @@ impl EventFluxManager {
         self.eventflux_context.set_persistence_store(store)
     }
 
-    /// Set the configuration manager for dynamic configuration loading
+    /// Sets the ConfigManager used to load configuration.
+    ///
+    /// Clears the cached config so the next read loads it again. Errors if the
+    /// cache mutex is poisoned.
     pub fn set_config_manager(&mut self, config_manager: ConfigManager) -> Result<(), String> {
         self.config_manager = Some(Arc::new(config_manager));
-        // Clear cached config to force reload on next access
         *self
             .cached_config
             .lock()
@@ -410,9 +412,12 @@ impl EventFluxManager {
         Ok(())
     }
 
-    /// Get the current configuration, loading it if necessary
+    /// Returns a clone of the current configuration, loading and caching it on first use.
+    ///
+    /// Loads through the ConfigManager when one is set, otherwise caches and returns
+    /// `EventFluxConfig::default()`. Errors if loading fails or the cache mutex is
+    /// poisoned.
     pub async fn get_config(&self) -> Result<EventFluxConfig, String> {
-        // Check if we have a cached config
         {
             let cached = self
                 .cached_config
@@ -423,14 +428,12 @@ impl EventFluxManager {
             }
         }
 
-        // Load configuration using ConfigManager if available
         if let Some(ref config_manager) = self.config_manager {
             let config = config_manager
                 .load_unified_config()
                 .await
                 .map_err(|e| format!("Failed to load configuration: {}", e))?;
 
-            // Cache the loaded configuration
             *self
                 .cached_config
                 .lock()
@@ -438,7 +441,6 @@ impl EventFluxManager {
 
             Ok(config)
         } else {
-            // Return default configuration if no ConfigManager is set
             let default_config = EventFluxConfig::default();
             *self
                 .cached_config
@@ -448,7 +450,7 @@ impl EventFluxManager {
         }
     }
 
-    /// Get application-specific configuration by name
+    /// Returns the config for one app by name, or None if the config has no entry for it.
     pub async fn get_application_config(
         &self,
         app_name: &str,
@@ -457,10 +459,9 @@ impl EventFluxManager {
         Ok(config.applications.get(app_name).cloned())
     }
 
-    /// Get the application name from YAML configuration
+    /// Returns `eventflux.application.name` from the YAML config.
     ///
-    /// Returns the application name from `eventflux.application.name` if configured,
-    /// otherwise returns None.
+    /// Returns None if it is not set or the config fails to load.
     async fn get_config_app_name(&self) -> Option<String> {
         if let Ok(config) = self.get_config().await {
             config
@@ -474,12 +475,12 @@ impl EventFluxManager {
     }
 
     // --- Validation ---
+    // Parses the SQL and checks it through validate_eventflux_app_api. The app is
+    // named "App_" plus the first stream name, or "EventFluxApp".
     pub fn validate_eventflux_app_string(&self, eventflux_app_string: &str) -> Result<(), String> {
-        // Parse SQL string to SqlApplication
         let sql_app = crate::sql_compiler::parse_sql_application(eventflux_app_string)
             .map_err(|e| format!("SQL parse error: {}", e))?;
 
-        // Convert to EventFluxApp
         let app_name = sql_app
             .catalog
             .get_stream_names()
@@ -496,38 +497,42 @@ impl EventFluxManager {
         )
     }
 
+    // Validates an app by building a temporary runtime, starting it and shutting it
+    // down. The runtime is not added to the manager's map. Starting it is real, so
+    // sources and sinks attached from SQL WITH or config will connect.
     pub fn validate_eventflux_app_api(
         &self,
         api_eventflux_app: &Arc<ApiEventFluxApp>,
         eventflux_app_str_opt: Option<String>,
     ) -> Result<(), String> {
-        // Create a temporary runtime to validate
-        // Note: This doesn't add it to the main eventflux_app_runtime_map
         let temp_runtime = EventFluxAppRuntime::new(
             Arc::clone(api_eventflux_app),
             Arc::clone(&self.eventflux_context),
             eventflux_app_str_opt,
         )?;
 
-        // Capture the result but always shutdown to prevent resource leaks
         let result = temp_runtime.start().map_err(|e| e.to_string());
 
-        // Always clean up, even if start() failed (may have partial components running)
+        // Always shut down, even if start() failed, since some parts may be running.
         temp_runtime.shutdown();
 
         result
     }
 
     // --- Persistence ---
-    /// Persist an EventFlux application's state
+    /// Persists the state of one app.
     ///
     /// # Returns
     ///
-    /// * `Ok(revision_id)` - All components persisted successfully
-    /// * `Err(String)` - Critical failure or partial persistence failure
+    /// * `Ok(revision_id)` - Every part persisted
+    /// * `Err(String)` - The app is not found, persist failed, or some parts failed
     ///
-    /// This method returns an error if any components failed to persist, making
-    /// it clear to callers that the persistence was incomplete.
+    /// Any part failing gives an error, so callers can tell the persist was
+    /// incomplete. Holds the manager's map lock while persisting.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the runtime map mutex is poisoned.
     pub fn persist_app(&self, app_name: &str) -> Result<String, String> {
         let map = self
             .eventflux_app_runtime_map
@@ -538,7 +543,6 @@ impl EventFluxManager {
             .ok_or_else(|| format!("EventFluxApp '{app_name}' not found"))?;
         let report = rt.persist()?;
 
-        // Return error if there were any failures
         if report.failure_count > 0 {
             return Err(format!(
                 "Partial persistence failure: {} component(s) failed to persist (revision: {}). Failed: {}",
@@ -566,10 +570,9 @@ impl EventFluxManager {
         rt.restore_revision(revision)
     }
 
-    /// Persist all running EventFlux applications
+    /// Persists every registered app and logs the result for each.
     ///
-    /// Attempts to persist each application, logging any failures.
-    /// Does not stop on first failure - continues to persist remaining applications.
+    /// Keeps going after a failure. Apps removed while this runs are skipped.
     pub fn persist_all(&self) {
         let app_names: Vec<String> = self
             .eventflux_app_runtime_map
@@ -612,6 +615,8 @@ impl EventFluxManager {
         }
     }
 
+    // Restores each app's last persisted revision, if it has a persistence store and a
+    // revision. Restore errors are ignored.
     pub fn restore_all_last_state(&self) {
         for runtime in self
             .eventflux_app_runtime_map
@@ -629,10 +634,12 @@ impl EventFluxManager {
         }
     }
 
-    /// Level 3 API: Create EventFluxAppRuntime from SQL application string
+    /// Level 3 API: builds an EventFluxAppRuntime straight from a SQL app string.
     ///
-    /// This is the high-level API for creating a runtime directly from SQL.
-    /// Internally uses the SQL compiler to parse and convert to EventFluxApp.
+    /// Parses the SQL, converts it to an EventFluxApp named `app_name` (default
+    /// "SqlApp"), then calls `create_eventflux_app_runtime_from_api`. A YAML
+    /// `eventflux.application.name` still wins as the registered name. The runtime
+    /// is not started.
     ///
     /// # Example
     /// ```rust,ignore
@@ -653,17 +660,14 @@ impl EventFluxManager {
         sql: &str,
         app_name: Option<String>,
     ) -> Result<Arc<EventFluxAppRuntime>, String> {
-        // Parse SQL application
         let sql_app = crate::sql_compiler::parse_sql_application(sql)
             .map_err(|e| format!("SQL parse error: {}", e))?;
 
-        // Convert to EventFluxApp
         let app_name = app_name.unwrap_or_else(|| "SqlApp".to_string());
         let eventflux_app = sql_app
             .to_eventflux_app(app_name)
             .map_err(|e| format!("Type inference error: {}", e))?;
 
-        // Create runtime using existing method
         self.create_eventflux_app_runtime_from_api(Arc::new(eventflux_app), Some(sql.to_string()))
             .await
     }
@@ -687,8 +691,8 @@ impl std::fmt::Debug for EventFluxManager {
     }
 }
 
-// Helper on ApiEventFluxApp for getting name (if not already part of query_api)
-// This is more robust than assuming api_eventflux_app.name
+// Reads the app name from the info annotation's name element, if present.
+// Unused today.
 impl ApiEventFluxApp {
     #[allow(dead_code)]
     fn get_name(&self) -> Option<String> {

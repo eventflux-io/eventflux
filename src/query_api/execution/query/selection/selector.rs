@@ -22,12 +22,12 @@ use crate::query_api::expression::constant::{Constant, ConstantValueWithFloat as
 use crate::query_api::expression::Expression;
 use crate::query_api::expression::Variable;
 
-/// Handles the SELECT part of a query, including projections, group by, etc.
-#[derive(Clone, Debug, PartialEq)] // Default is implemented manually
+/// The SELECT part of a query. The select list, GROUP BY, HAVING, ORDER BY, LIMIT and
+/// OFFSET.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Selector {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Selector fields
     pub selection_list: Vec<OutputAttribute>,
     pub group_by_list: Vec<Variable>,
     pub having_expression: Option<Expression>,
@@ -49,15 +49,17 @@ impl Selector {
         }
     }
 
-    // Static factory `selector()`
+    /// Same as `new`. Starts a builder chain.
     #[allow(clippy::self_named_constructors)]
     pub fn selector() -> Self {
         Self::new()
     }
 
-    // Builder methods with validation
+    // The select builders below never reject a duplicate. They add it and print a
+    // warning to stderr.
+
+    /// Add `expression AS rename` to the select list.
     pub fn select(mut self, rename: String, expression: Expression) -> Self {
-        // Check for duplicate rename and print warning
         if self
             .selection_list
             .iter()
@@ -74,8 +76,9 @@ impl Selector {
         self
     }
 
+    /// Add a variable under its own name. Warns if a selected variable already has the
+    /// same attribute name.
     pub fn select_variable(mut self, variable: Variable) -> Self {
-        // Check for duplicate variable names and print warning
         let var_name = variable.get_attribute_name();
         if self
             .selection_list
@@ -96,11 +99,11 @@ impl Selector {
         self
     }
 
+    /// Append a whole list. Warns on names already selected and on names repeated
+    /// inside the new list. A name repeated inside the list warns once per copy.
     pub fn add_selection_list(mut self, projection_list: Vec<OutputAttribute>) -> Self {
-        // Check for duplicates and print warnings
         for new_attr in &projection_list {
             if let Some(new_rename) = new_attr.get_rename() {
-                // Check against existing selections
                 if self
                     .selection_list
                     .iter()
@@ -112,7 +115,6 @@ impl Selector {
                     );
                 }
 
-                // Check against other items in the same list
                 if projection_list
                     .iter()
                     .filter(|attr| attr.get_rename().as_ref() == Some(new_rename))
@@ -163,6 +165,9 @@ impl Selector {
         self
     }
 
+    /// # Errors
+    ///
+    /// Returns an error unless the constant is an Int or Long.
     pub fn limit(mut self, constant: Constant) -> Result<Self, String> {
         match constant.value {
             ConstantValue::Int(_) | ConstantValue::Long(_) => {
@@ -173,6 +178,9 @@ impl Selector {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error unless the constant is an Int or Long.
     pub fn offset(mut self, constant: Constant) -> Result<Self, String> {
         match constant.value {
             ConstantValue::Int(_) | ConstantValue::Long(_) => {
@@ -183,7 +191,6 @@ impl Selector {
         }
     }
 
-    // Getter methods
     pub fn get_selection_list(&self) -> &Vec<OutputAttribute> {
         &self.selection_list
     }
@@ -215,7 +222,7 @@ impl Default for Selector {
     }
 }
 
-// EventFluxElement is composed. Access via self.eventflux_element.
+// Read the query positions through the public eventflux_element field.
 
 #[cfg(test)]
 mod tests {
@@ -257,9 +264,8 @@ mod tests {
         let var = Variable::new("attr1".to_string());
         let s = Selector::selector().select_variable(var.clone());
         assert_eq!(s.get_selection_list().len(), 1);
-        // OutputAttribute::new_from_variable creates an expression from the variable
-        // and uses variable name as rename if not specified.
-        // Let's assume OutputAttribute has get_rename() and get_expression()
+        // new_from_variable wraps the variable as the expression and uses its attribute
+        // name as the rename.
         assert_eq!(
             s.get_selection_list()[0].get_rename().as_ref().unwrap(),
             "attr1"
@@ -381,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_selector_duplicate_detection() {
-        // Test duplicate column name detection - now just warns
+        // A duplicate column name only warns. Both entries are kept.
         let expr1 = Expression::Constant(Constant::string("val1".to_string()));
         let expr2 = Expression::Constant(Constant::string("val2".to_string()));
 
@@ -391,7 +397,7 @@ mod tests {
 
         assert_eq!(result.get_selection_list().len(), 2); // Both added but warned
 
-        // Test duplicate variable detection - now just warns
+        // A duplicate variable only warns. Both entries are kept.
         let var1 = Variable::new("attr1".to_string());
         let var2 = Variable::new("attr1".to_string());
 

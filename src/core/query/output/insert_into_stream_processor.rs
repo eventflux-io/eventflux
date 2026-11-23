@@ -16,19 +16,20 @@
  */
 
 // src/core/query/output/insert_into_stream_processor.rs
-// This is a conceptual equivalent to part of EventFlux's output handling logic,
-// specifically for INSERT INTO clauses. Java doesn't have a direct one-to-one class
-// with this name; output handling is often part of OutputCallback or specific Sink logic.
+// Handles INSERT INTO a stream. The Java code has no class with this name. There the
+// work is split across OutputCallback and the sink classes.
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::eventflux_query_context::EventFluxQueryContext;
-use crate::core::event::complex_event::ComplexEvent; // Trait
+use crate::core::event::complex_event::ComplexEvent;
 use crate::core::query::processor::{CommonProcessorMeta, ProcessingMode, Processor};
 use crate::core::stream::stream_junction::StreamJunction;
 use std::sync::{Arc, Mutex};
 
+/// Last processor of a query with INSERT INTO a stream. Sends each chunk to the output
+/// stream's junction.
 #[derive(Debug)]
 pub struct InsertIntoStreamProcessor {
-    meta: CommonProcessorMeta, // Contains eventflux_app_context, query_name. Next_processor is None for this typically.
+    meta: CommonProcessorMeta, // next_processor stays None, nothing follows this processor
     output_stream_junction: Arc<Mutex<StreamJunction>>,
     // is_fault_stream: bool, // If this processor specifically handles fault stream insertion
 }
@@ -40,7 +41,7 @@ impl InsertIntoStreamProcessor {
         query_ctx: Arc<EventFluxQueryContext>,
         // query_name parameter removed as it's in query_ctx
     ) -> Self {
-        // next_processor in CommonProcessorMeta will be None for a terminal processor like this.
+        // next_processor in CommonProcessorMeta stays None, since this is the last processor
         let common_meta = CommonProcessorMeta::new(app_ctx, query_ctx);
         Self {
             meta: common_meta,
@@ -52,10 +53,10 @@ impl InsertIntoStreamProcessor {
 
 impl Processor for InsertIntoStreamProcessor {
     fn process(&self, complex_event_chunk: Option<Box<dyn ComplexEvent>>) {
-        // One guard for the send AND the error handling. Re-locking the
-        // junction in the error arm would self-deadlock: the scrutinee
-        // temporary of an `if let` lives until the end of the whole
-        // statement, so the first guard would still be held.
+        // Hold one guard for both the send and the error handling. Locking the
+        // junction again in the error arm would deadlock, because the temporary in an
+        // `if let` condition lives until the end of the whole statement, so the first
+        // guard would still be held. Panics if the junction mutex is poisoned.
         let junction = self
             .output_stream_junction
             .lock()
@@ -63,9 +64,9 @@ impl Processor for InsertIntoStreamProcessor {
         match junction.send_complex_event_chunk(complex_event_chunk) {
             Ok(()) => {}
             Err(crate::core::exception::error::EventFluxError::ShutdownRejected { count }) => {
-                // Fire-and-forget edge: nobody upstream retries, so events
-                // rejected by a shutting-down junction would vanish from the
-                // delivered/dropped ledger unless counted here.
+                // Nobody upstream retries this send, so events rejected by a junction
+                // that is shutting down would be missing from the delivered and dropped
+                // counts unless counted here.
                 junction.record_cascade_drop(count as u64);
                 log::debug!(
                     "[{}] dropped {count} query-output event(s): junction is shutting down",
@@ -82,12 +83,12 @@ impl Processor for InsertIntoStreamProcessor {
     }
 
     fn next_processor(&self) -> Option<Arc<Mutex<dyn Processor>>> {
-        None // This is typically a terminal processor in a query's chain
+        None // last processor in the query chain
     }
 
     fn set_next_processor(&mut self, _next: Option<Arc<Mutex<dyn Processor>>>) {
-        // No operation, as this is a terminal processor for its query path.
-        // Its "next" is effectively the StreamJunction it writes to.
+        // Ignored. This is the last processor, and the StreamJunction it writes to
+        // takes the place of a next processor.
         if _next.is_some() {
             // log_warn!("InsertIntoStreamProcessor is a terminal processor; set_next_processor has no effect.");
         }
@@ -99,8 +100,8 @@ impl Processor for InsertIntoStreamProcessor {
     ) -> Box<dyn Processor> {
         Box::new(Self::new(
             Arc::clone(&self.output_stream_junction),
-            Arc::clone(&self.meta.eventflux_app_context), // Clone AppContext from meta
-            Arc::clone(eventflux_query_context), // Use the new QueryContext for the cloned instance
+            Arc::clone(&self.meta.eventflux_app_context),
+            Arc::clone(eventflux_query_context), // the clone takes the new query context
         ))
     }
 
@@ -113,21 +114,21 @@ impl Processor for InsertIntoStreamProcessor {
     }
 
     fn get_processing_mode(&self) -> ProcessingMode {
-        // Usually determined by upstream processors (e.g., window, aggregation)
-        // For a simple insert, it might be considered DEFAULT or pass-through.
+        // The real mode comes from processors earlier in the chain, such as windows.
+        // The placeholder always returns DEFAULT.
         self.meta
             .eventflux_query_context
             .processing_mode_placeholder()
     }
 
     fn is_stateful(&self) -> bool {
-        false // InsertIntoStreamProcessor itself is typically stateless
+        false
     }
 }
 
-// Adding placeholder to EventFluxQueryContext for processing_mode for now
+// Stand in for a processing mode on EventFluxQueryContext
 impl EventFluxQueryContext {
-    // TODO: This should be a proper field determined during query parsing.
+    // TODO: make this a real field set while the query is parsed. Always DEFAULT for now.
     pub fn processing_mode_placeholder(&self) -> ProcessingMode {
         ProcessingMode::DEFAULT
     }

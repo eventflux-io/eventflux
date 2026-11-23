@@ -17,7 +17,8 @@
 
 // Type Validation Tests
 //
-// Tests for all 10 type validation features from SIDDHI_ONLY.md Priority 1:
+// Tests for all 10 type validation features from Priority 1 of SIDDHI_ONLY.md.
+// That doc is no longer in the repo.
 // 1.1 Boolean Comparison Type Validation
 // 1.2 String Comparison Type Validation
 // 1.3 Non-Existing Attribute Validation
@@ -25,9 +26,9 @@
 // 1.5 Invalid Filter Condition Validation
 // 1.6 Non-Boolean Filter Expression Validation (NOT)
 // 1.7 Direct Table Query Prevention
-// 1.8 Direct Aggregation Query Prevention (infrastructure ready)
+// 1.8 Direct Aggregation Query Prevention (the error type exists, the test is ignored)
 // 1.9 Every Keyword with Table Prevention
-// 1.10 Every Keyword with Aggregation Prevention (infrastructure ready)
+// 1.10 Every Keyword with Aggregation Prevention (the error type exists, the test is ignored)
 
 use eventflux::core::event::value::AttributeValue;
 use eventflux::core::executor::condition::compare_expression_executor::CompareExpressionExecutor;
@@ -39,12 +40,12 @@ use eventflux::sql_compiler::parse;
 
 // ============================================================================
 // 1.1 Boolean Comparison Type Validation
-// Prevents boolean comparison with numeric types using >, <, >=, <=
+// Rejects ordering comparisons (>, <, >=, <=) on BOOL values
 // ============================================================================
 
 #[test]
 fn test_1_1_boolean_greater_than_rejected() {
-    // BOOL > BOOL should be rejected (only == and != allowed for BOOL)
+    // BOOL > BOOL must be rejected. Only == and != are allowed for BOOL.
     let left = Box::new(ConstantExpressionExecutor::new(
         AttributeValue::Bool(true),
         AttributeType::BOOL,
@@ -141,7 +142,7 @@ fn test_1_1_boolean_not_equal_allowed() {
 
 // ============================================================================
 // 1.2 String Comparison Type Validation
-// Prevents string comparison with numeric types
+// Rejects comparing a string with a number
 // ============================================================================
 
 #[test]
@@ -207,7 +208,7 @@ fn test_1_2_string_string_comparison_allowed() {
         AttributeType::STRING,
     ));
 
-    // String-to-string comparison is allowed (lexicographic ordering)
+    // Comparing two strings is allowed and uses dictionary order
     let result = CompareExpressionExecutor::new(left, right, CompareOperator::LessThan);
     assert!(
         result.is_ok(),
@@ -217,7 +218,7 @@ fn test_1_2_string_string_comparison_allowed() {
 
 // ============================================================================
 // 1.3 Non-Existing Attribute Validation
-// Throws exception when query references undefined attribute
+// Returns an error when a query refers to an attribute that is not defined
 // ============================================================================
 
 #[test]
@@ -249,7 +250,7 @@ fn test_1_3_undefined_attribute_in_where_rejected() {
         WHERE nonexistent > 100;\n";
 
     let result = parse(sql);
-    // Undefined attribute should be detected at parse time
+    // The undefined attribute must be caught at parse time
     assert!(
         result.is_err(),
         "Undefined attribute 'nonexistent' in WHERE should be rejected. Got: {:?}",
@@ -282,7 +283,7 @@ fn test_1_3_valid_attributes_allowed() {
 
 // ============================================================================
 // 1.4 Duplicate Stream Definition Validation
-// Throws exception for duplicate stream definition
+// Returns an error when the same stream is defined twice
 // ============================================================================
 
 #[test]
@@ -327,7 +328,7 @@ fn test_1_4_different_streams_allowed() {
 
 // ============================================================================
 // 1.5 Invalid Filter Condition Validation
-// Throws exception when filter condition contains non-boolean expression
+// Returns an error when a filter condition is not a boolean expression
 // ============================================================================
 
 #[test]
@@ -340,7 +341,7 @@ fn test_1_5_non_boolean_where_rejected() {
         WHERE price;\n";
 
     let result = parse(sql);
-    // This should be rejected because price is DOUBLE, not BOOL
+    // Must be rejected because price is DOUBLE, not BOOL
     assert!(
         result.is_err(),
         "Non-boolean expression 'price' (DOUBLE) in WHERE should be rejected. Got: {:?}",
@@ -364,7 +365,7 @@ fn test_1_5_arithmetic_in_where_rejected() {
         WHERE price + 10;\n";
 
     let result = parse(sql);
-    // Arithmetic expression in WHERE should be rejected
+    // An arithmetic expression in WHERE must be rejected
     assert!(
         result.is_err(),
         "Arithmetic expression 'price + 10' in WHERE should be rejected. Got: {:?}",
@@ -414,12 +415,12 @@ fn test_1_5_comparison_where_allowed() {
 
 // ============================================================================
 // 1.6 Non-Boolean Filter Expression Validation (NOT)
-// Throws exception for `not(price)` where price is non-boolean
+// Returns an error for `not(price)` when price is not boolean
 // ============================================================================
 
 #[test]
 fn test_1_6_not_non_boolean_rejected() {
-    // NOT operator requires BOOL operand
+    // NOT needs a BOOL operand
     let int_exec = Box::new(ConstantExpressionExecutor::new(
         AttributeValue::Int(42),
         AttributeType::INT,
@@ -471,12 +472,12 @@ fn test_1_6_not_boolean_allowed() {
 
 // ============================================================================
 // 1.7 Direct Table Query Prevention
-// Throws error for `FROM TableName SELECT *` without JOIN
+// Returns an error for `FROM TableName SELECT *` without a JOIN
 // ============================================================================
 
 #[test]
 fn test_1_7_direct_table_query_rejected() {
-    // Tables are identified by having 'extension' in WITH clause
+    // A table is recognised by 'extension' in its WITH clause
     let sql = "\
         CREATE STREAM Events (id INT, data STRING);\n\
         CREATE TABLE Lookup (id INT, name STRING) WITH ('extension' = 'cache');\n\
@@ -503,7 +504,7 @@ fn test_1_7_direct_table_query_rejected() {
 
 #[test]
 fn test_1_7_table_with_join_allowed() {
-    // Tables are identified by having 'extension' in WITH clause
+    // A table is recognised by 'extension' in its WITH clause
     let sql = "\
         CREATE STREAM Events (id INT, data STRING);\n\
         CREATE TABLE Lookup (id INT, name STRING) WITH ('extension' = 'cache');\n\
@@ -537,15 +538,15 @@ fn test_1_7_stream_direct_query_allowed() {
 
 // ============================================================================
 // 1.8 Direct Aggregation Query Prevention
-// Note: Aggregation support is not yet fully implemented in SQL compiler.
-// The error type is defined but validation will be added when aggregations
-// are supported. This test documents the expected behavior.
+// The SQL compiler does not fully support aggregations yet. The error type
+// exists, but the check will only be added once aggregations are supported.
+// The ignored test below records the expected behaviour.
 // ============================================================================
 
 #[test]
 #[ignore = "Aggregation definitions not yet supported in SQL compiler"]
 fn test_1_8_direct_aggregation_query_rejected() {
-    // When aggregation definitions are supported, this should be rejected
+    // Once aggregation definitions are supported, this must be rejected
     let sql = "\
         CREATE STREAM Stock (symbol STRING, price DOUBLE, timestamp LONG);\n\
         CREATE AGGREGATION StockAgg\n\
@@ -558,7 +559,7 @@ fn test_1_8_direct_aggregation_query_rejected() {
         FROM StockAgg;\n";
 
     let result = parse(sql);
-    // Expected: Direct aggregation query should be rejected
+    // A direct query on an aggregation must be rejected
     assert!(result.is_err(), "Expected invalid SQL to be rejected");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -575,7 +576,7 @@ fn test_1_8_direct_aggregation_query_rejected() {
 
 #[test]
 fn test_1_9_every_table_in_pattern_rejected() {
-    // Tables are identified by having 'extension' in WITH clause
+    // A table is recognised by 'extension' in its WITH clause
     let sql = "\
         CREATE STREAM Events (id INT, data STRING);\n\
         CREATE TABLE Lookup (id INT, name STRING) WITH ('extension' = 'cache');\n\
@@ -584,7 +585,7 @@ fn test_1_9_every_table_in_pattern_rejected() {
         FROM PATTERN (EVERY e=Events -> l=Lookup);\n";
 
     let result = parse(sql);
-    // Table in pattern should be rejected
+    // A table inside a pattern must be rejected
     assert!(
         result.is_err(),
         "Table 'Lookup' in PATTERN should be rejected. Got: {:?}",
@@ -618,13 +619,13 @@ fn test_1_9_stream_in_pattern_allowed() {
 
 // ============================================================================
 // 1.10 Every Keyword with Aggregation Prevention
-// Note: Aggregation support not yet implemented in SQL compiler.
+// The SQL compiler does not support aggregations yet, so the test is ignored.
 // ============================================================================
 
 #[test]
 #[ignore = "Aggregation definitions not yet supported in SQL compiler"]
 fn test_1_10_every_aggregation_in_pattern_rejected() {
-    // When aggregation definitions are supported, this should be rejected
+    // Once aggregation definitions are supported, this must be rejected
     let sql = "\
         CREATE STREAM Stock (symbol STRING, price DOUBLE, timestamp LONG);\n\
         CREATE AGGREGATION StockAgg ...;\n\
@@ -633,7 +634,7 @@ fn test_1_10_every_aggregation_in_pattern_rejected() {
         SELECT agg.symbol;\n";
 
     let result = parse(sql);
-    // Expected: Aggregation in pattern should be rejected
+    // An aggregation inside a pattern must be rejected
     assert!(result.is_err(), "Expected invalid SQL to be rejected");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -649,7 +650,7 @@ fn test_1_10_every_aggregation_in_pattern_rejected() {
 
 #[test]
 fn test_numeric_type_comparison_allowed() {
-    // Different numeric types can be compared (with type promotion)
+    // Different numeric types can be compared. The narrower type is widened first.
     let int_exec = Box::new(ConstantExpressionExecutor::new(
         AttributeValue::Int(42),
         AttributeType::INT,

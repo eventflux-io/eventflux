@@ -20,9 +20,9 @@
 //! Requires building with the `http` feature:
 //! `cargo test --features http --test http_integration`
 //!
-//! Unlike the broker-backed connectors, these tests are self-hosting — the
-//! webhook source receives the sink's output, and poll tests use in-process
-//! `tiny_http` responders — so nothing is `#[ignore]`d and no external
+//! Unlike the connectors that need a broker, these tests host themselves. The
+//! webhook source receives the sink's output, and poll tests use `tiny_http`
+//! responders inside the test process. So nothing is `#[ignore]`d and no outside
 //! service is needed.
 
 #![cfg(feature = "http")]
@@ -53,14 +53,14 @@ fn webhook_props(port: u16, path: &str) -> HashMap<String, String> {
 fn sink_props(url: &str) -> HashMap<String, String> {
     let mut props = HashMap::new();
     props.insert("http.url".to_string(), url.to_string());
-    // Fast tests: minimal backoff
+    // Minimal backoff so the tests stay fast
     props.insert("http.retry.initial-delay-ms".to_string(), "20".to_string());
     props.insert("http.retry.max-delay-ms".to_string(), "50".to_string());
     props
 }
 
-/// In-process responder: serves the given (status, body) sequence, repeating
-/// the last entry, and counts requests. Returns (url, hit counter, stopper).
+/// Responder inside the test process. Serves the given (status, body) sequence,
+/// repeats the last entry, and counts requests. Returns (url, hit counter, stopper).
 fn spawn_responder(
     responses: Vec<(u16, &'static str)>,
 ) -> (String, Arc<AtomicUsize>, impl FnOnce()) {
@@ -94,7 +94,7 @@ fn spawn_responder(
 }
 
 // ============================================================================
-// Round trip: HTTP sink → webhook source (public API end to end)
+// Round trip, HTTP sink → webhook source, through the public API end to end
 // ============================================================================
 
 #[test]
@@ -155,8 +155,8 @@ fn test_webhook_concurrent_requests_all_delivered() {
 }
 
 // ============================================================================
-// Webhook protocol behavior (asserted with a direct ureq client so the
-// expectations are numeric response statuses)
+// Webhook protocol behaviour, checked with a plain ureq client so the
+// expectations are numeric response statuses
 // ============================================================================
 
 #[test]
@@ -172,8 +172,8 @@ fn test_webhook_rejections() {
     source.start(Arc::new(callback.clone()));
     wait_listening(port);
 
-    // Direct client so protocol assertions are numeric response statuses,
-    // decoupled from the HTTP sink's error-message wording
+    // A plain client, so the checks are on numeric response statuses and do not
+    // depend on the wording of the HTTP sink's error messages
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .build()
@@ -208,8 +208,8 @@ fn test_webhook_rejections() {
         .unwrap();
     assert_eq!(status.status().as_u16(), 413);
 
-    // Oversized AND unauthenticated → 401: auth is checked before the body
-    // is buffered, so unauthenticated floods cannot consume memory
+    // Oversized AND unauthenticated → 401. Auth is checked before the body is
+    // buffered, so a flood of unauthenticated requests cannot use up memory.
     let status = agent
         .post(format!("{base}/hook"))
         .send(&[0u8; 128][..])
@@ -230,7 +230,7 @@ fn test_webhook_rejections() {
 }
 
 // ============================================================================
-// Poll mode (in-process canned responders)
+// Poll mode, against canned responders inside the test process
 // ============================================================================
 
 #[test]
@@ -277,8 +277,8 @@ fn test_poll_source_skips_empty_and_not_modified() {
 
 #[test]
 fn test_poll_empty_body_respects_interval() {
-    // Regression: an empty 2xx body must NOT skip the inter-poll sleep —
-    // that would busy-loop against the endpoint at full speed
+    // Regression. An empty 2xx body must NOT skip the sleep between polls,
+    // or the source would hit the endpoint in a tight loop at full speed.
     let (url, hits, stop) = spawn_responder(vec![(204, "")]);
 
     let mut props = HashMap::new();
@@ -294,7 +294,7 @@ fn test_poll_empty_body_respects_interval() {
     source.stop();
     stop();
 
-    // ~6 polls fit in the window; a busy loop would rack up thousands
+    // About 6 polls fit in the window. A tight loop would make thousands.
     let polls = hits.load(Ordering::SeqCst);
     assert!(
         polls <= 10,
@@ -364,9 +364,9 @@ fn test_sink_does_not_retry_4xx() {
 
 #[test]
 fn test_sink_does_not_follow_redirects() {
-    // Following a 302 would rewrite the POST to a body-less GET and the
-    // final 200 would count a dropped payload as delivered — redirects
-    // must surface as permanent errors instead
+    // Following a 302 would turn the POST into a GET with no body, and the final
+    // 200 would count a dropped payload as delivered. Redirects must come back
+    // as permanent errors instead.
     let (url, hits, stop) = spawn_responder(vec![(302, "")]);
 
     let sink = HttpSink::from_properties(&sink_props(&url)).unwrap();
@@ -401,7 +401,7 @@ fn test_sink_retries_exhausted() {
 
 #[test]
 fn test_validate_connectivity() {
-    // Any HTTP response — even 404 — proves reachability
+    // Any HTTP response, even 404, proves the endpoint is reachable
     let (url, _hits, stop) = spawn_responder(vec![(404, "")]);
     let sink = HttpSink::from_properties(&sink_props(&url)).unwrap();
     sink.validate_connectivity().unwrap();
@@ -412,7 +412,7 @@ fn test_validate_connectivity() {
     let sink = HttpSink::from_properties(&sink_props(&dead)).unwrap();
     assert!(sink.validate_connectivity().is_err());
 
-    // Webhook validation fails fast on an occupied port
+    // Webhook validation fails right away on a port already in use
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let source = HttpSource::from_properties(&webhook_props(port, "/"), None, "Test").unwrap();
@@ -439,7 +439,7 @@ fn test_webhook_source_stops_promptly() {
         "graceful shutdown must complete promptly"
     );
 
-    // The port is released after shutdown (retry briefly for OS cleanup)
+    // The port is released after shutdown. Retry briefly while the OS cleans up.
     let deadline = Instant::now() + Duration::from_secs(5);
     while TcpListener::bind(("127.0.0.1", port)).is_err() {
         assert!(Instant::now() < deadline, "port not released after stop()");

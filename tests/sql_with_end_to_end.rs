@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-//! End-to-End Tests for SQL WITH Configuration
+//! End to end tests for SQL WITH configuration
 //!
-//! These tests verify that SQL WITH properties flow correctly from parsing
-//! through to runtime initialization, completing the end-to-end chain:
+//! SQL WITH properties must carry through from parsing to runtime start, along
+//! this whole path
 //!
 //! SQL WITH → StreamDefinition.with_config → StreamTypeConfig → Factory.create_initialized()
 
@@ -45,8 +45,8 @@ async fn test_sql_with_timer_source_basic() {
     let manager = EventFluxManager::new();
     manager.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
 
-    // SQL WITH configuration for timer source
-    // Note: Timer source uses binary passthrough format (no format specification needed)
+    // SQL WITH configuration for the timer source.
+    // The timer source uses the binary passthrough format, so no format is given.
     let sql = r#"
         CREATE STREAM TimerInput (tick STRING) WITH (
             type = 'source',
@@ -60,7 +60,7 @@ async fn test_sql_with_timer_source_basic() {
         SELECT tick FROM TimerInput;
     "#;
 
-    // Create runtime using AppRunner with the manager, collect from output stream
+    // AppRunner with this manager, collecting from the output stream
     let runner = AppRunner::new_with_manager(manager, sql, "TimerOutput").await;
 
     // Wait for timer to generate events (100ms interval × 5 = 500ms)
@@ -68,7 +68,7 @@ async fn test_sql_with_timer_source_basic() {
 
     let out = runner.shutdown();
 
-    // Should have received ~5 timer events
+    // About 5 timer events. 3 to 7 are accepted to allow for timing.
     assert!(
         out.len() >= 3 && out.len() <= 7,
         "Expected 3-7 timer events, got {}",
@@ -88,7 +88,7 @@ async fn test_sql_with_timer_source_basic() {
 /// - Source configured via SQL WITH
 /// - Sink configured via SQL WITH
 /// - Events flow through the entire pipeline
-/// - Both source and sink handlers are auto-attached
+/// - Both source and sink handlers are attached on their own
 #[tokio::test]
 async fn test_sql_with_timer_to_log_full_flow() {
     let manager = EventFluxManager::new();
@@ -129,14 +129,14 @@ async fn test_sql_with_timer_to_log_full_flow() {
     );
 }
 
-/// Test 2b: COMPLETE End-to-End Flow - Timer Source → Query → Log Sink
+/// Test 2b: COMPLETE End to End Flow, Timer Source → Query → Log Sink
 ///
-/// This is the REAL complete test: ALL configured via SQL WITH
+/// The full test, with ALL parts configured through SQL WITH.
 /// Verifies the ENTIRE chain:
-/// - SQL WITH configures timer source (with custom interval)
-/// - SQL WITH configures log sink (with custom prefix)
-/// - Events flow: Timer → Query Processing → Log Sink
-/// - Tests the complete integration from parser → runtime → factories → execution
+/// - SQL WITH configures the timer source, with a custom interval
+/// - SQL WITH configures the log sink, with a custom prefix
+/// - Events flow Timer → Query Processing → Log Sink
+/// - The whole path parser → runtime → factories → execution works
 #[tokio::test]
 async fn test_sql_with_timer_filter_log_complete() {
     let manager = EventFluxManager::new();
@@ -144,7 +144,7 @@ async fn test_sql_with_timer_filter_log_complete() {
     manager.add_sink_factory("log".to_string(), Box::new(LogSinkFactory));
     manager.add_sink_mapper_factory("csv".to_string(), Box::new(CsvSinkMapperFactory));
 
-    // COMPLETE flow: All configured via SQL WITH!
+    // COMPLETE flow, all configured through SQL WITH
     let sql = r#"
         CREATE STREAM TimerInput (tick STRING) WITH (
             type = 'source',
@@ -224,12 +224,13 @@ async fn test_sql_with_multiple_streams_independent() {
 
     let runner = AppRunner::new_with_manager(manager, sql, "FastTimer").await;
 
-    // Wait 400ms: FastTimer should produce ~8 events, SlowTimer ~2 (but we're only collecting from FastTimer)
+    // Wait 400 ms. FastTimer should give about 8 events and SlowTimer about 2,
+    // but only FastTimer is collected.
     sleep(Duration::from_millis(400)).await;
 
     let out = runner.shutdown();
 
-    // FastTimer interval is 50ms, so in 400ms should get ~8 events
+    // FastTimer fires every 50 ms, so 400 ms should give about 8 events
     assert!(
         out.len() >= 5 && out.len() <= 10,
         "Expected 5-10 events from FastTimer, got {}",
@@ -237,18 +238,18 @@ async fn test_sql_with_multiple_streams_independent() {
     );
 }
 
-/// Test 4: Error Handling - Missing Extension Property
+/// Test 4: Error Handling, Missing Extension Property
 ///
 /// Verifies:
-/// - Missing required property 'extension' is handled gracefully
-/// - Runtime logs error but doesn't crash
-/// - Stream is NOT attached
+/// - A missing required 'extension' property does not crash anything
+/// - Either creation fails, or the runtime starts without attaching the stream
+/// - The stream is NOT attached
 #[tokio::test]
 async fn test_sql_with_missing_extension_error() {
     let manager = EventFluxManager::new();
     manager.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
 
-    // Missing 'extension' property - this should fail at parse-time validation
+    // No 'extension' property. Validation at parse time should reject this.
     let sql = r#"
         CREATE STREAM BadStream (tick STRING) WITH (
             type = 'source'
@@ -257,16 +258,15 @@ async fn test_sql_with_missing_extension_error() {
         SELECT tick FROM BadStream;
     "#;
 
-    // Parse-time validation should catch missing extension for source streams
     let runtime_result = manager.create_eventflux_app_runtime_from_string(sql).await;
 
-    // Should either fail at parse time OR succeed but not attach the stream
+    // Either creation fails at parse time, OR it succeeds and the stream is not attached
     match runtime_result {
         Err(_) => {
-            // Parse-time validation caught it - good!
+            // Caught by validation at parse time
         }
         Ok(runtime) => {
-            // Runtime created, but stream should not be attached
+            // The runtime exists, but the stream must not be attached
             runtime.start().expect("Failed to start runtime");
             assert!(
                 runtime.get_source_handler("BadStream").is_none(),
@@ -277,16 +277,15 @@ async fn test_sql_with_missing_extension_error() {
     }
 }
 
-/// Test 5: Error Handling - Invalid Factory (Extension Not Registered)
+/// Test 5: Error Handling, Extension Not Registered
 ///
 /// Verifies:
-/// - Requesting unregistered extension is handled gracefully
-/// - Runtime logs error but continues
-/// - Source is NOT attached
+/// - Creating the runtime still succeeds with an extension that is not registered
+/// - start() then fails with an error that names the problem
 #[tokio::test]
 async fn test_sql_with_unregistered_extension() {
     let manager = EventFluxManager::new();
-    // Note: NOT registering 'kafka' factory
+    // The 'kafka' factory is NOT registered on purpose
 
     let sql = r#"
         CREATE STREAM KafkaStream (value STRING) WITH (
@@ -300,15 +299,14 @@ async fn test_sql_with_unregistered_extension() {
         SELECT value FROM KafkaStream;
     "#;
 
-    // Runtime creation succeeds (no auto-start anymore)
-    // but runtime.start() should FAIL when using unregistered extension
+    // Creation succeeds because the runtime no longer starts on its own.
+    // runtime.start() must FAIL because the extension is not registered.
     let runtime_result = manager.create_eventflux_app_runtime_from_string(sql).await;
     assert!(
         runtime_result.is_ok(),
         "Runtime creation should succeed (errors happen at start time now)"
     );
 
-    // Starting the runtime should fail with unregistered extension
     let runtime = runtime_result.unwrap();
     let start_result = runtime.start();
     assert!(
@@ -316,7 +314,6 @@ async fn test_sql_with_unregistered_extension() {
         "Runtime start should fail with unregistered extension"
     );
 
-    // Verify error message indicates the unregistered extension
     let err_msg = start_result.unwrap_err().to_string();
     assert!(
         err_msg.contains("kafka") || err_msg.contains("not found") || err_msg.contains("extension"),
@@ -333,9 +330,9 @@ async fn test_sql_with_unregistered_extension() {
 /// - Runtime uses YAML global config (thread pool, buffer size, etc.)
 /// - Timer source configured via SQL WITH generates events properly
 ///
-/// Note: This test loads YAML config with runtime settings and uses SQL WITH
-/// for stream configuration, demonstrating the integration between YAML config
-/// loading and SQL-defined streams.
+/// The test loads YAML config with runtime settings and uses SQL WITH for the
+/// stream configuration, to show that YAML config and streams defined in SQL
+/// work together.
 #[tokio::test]
 async fn test_sql_with_priority_over_yaml() {
     use eventflux::core::config::ConfigManager;
@@ -372,11 +369,10 @@ async fn test_sql_with_priority_over_yaml() {
 
     let out = runner.shutdown();
 
-    // Should have received ~6 timer events (100ms interval)
-    // This proves that:
-    // 1. YAML config was loaded successfully (runtime settings applied)
-    // 2. SQL WITH configuration was used for the timer stream
-    // 3. The timer interval from SQL (100ms) is what's actually used
+    // About 6 timer events at the 100 ms interval. This shows that
+    // 1. The YAML config loaded and its runtime settings were applied
+    // 2. The SQL WITH configuration was used for the timer stream
+    // 3. The 100 ms timer interval from SQL is the one actually used
     assert!(
         out.len() >= 4 && out.len() <= 8,
         "Expected 4-8 timer events with 100ms interval, got {}. \
@@ -403,7 +399,7 @@ async fn test_sql_with_priority_over_yaml() {
 /// Verifies:
 /// - Streams without WITH clause work normally
 /// - with_config is None for internal streams
-/// - No auto-attach is attempted
+/// - Nothing tries to attach a connector
 #[tokio::test]
 async fn test_sql_internal_stream_no_with() {
     let manager = EventFluxManager::new();
@@ -441,8 +437,8 @@ async fn test_sql_internal_stream_no_with() {
 /// Test 8: Empty WITH Clause
 ///
 /// Verifies:
-/// - Empty WITH clause is handled gracefully
-/// - Stream is treated as internal (no type specified)
+/// - An empty WITH clause does not cause an error
+/// - The stream is treated as internal because no type is given
 #[tokio::test]
 async fn test_sql_with_empty_clause() {
     let manager = EventFluxManager::new();
@@ -490,7 +486,7 @@ async fn test_sql_with_properties_reach_factory() {
         }
 
         fn supported_formats(&self) -> &[&str] {
-            // No format required - uses passthrough (returns TimerSource internally)
+            // No format needed. It uses passthrough and returns a TimerSource inside.
             &[]
         }
 
@@ -554,13 +550,13 @@ async fn test_sql_with_properties_reach_factory() {
     runner.shutdown();
 }
 
-/// A source attached from its resolved config (SQL WITH merged over YAML)
-/// must be skipped by the YAML-only pass before its YAML is re-parsed.
+/// A source attached from its resolved config, where SQL WITH is merged over
+/// YAML, must be skipped by the pass that handles YAML only, before its YAML is
+/// parsed again.
 ///
-/// The YAML-only converter (`extract_connection_config`) rejects nested
-/// mappings that the resolver accepts, so re-parsing an already attached
-/// stream used to fail `start()` with "Invalid connection config" on every
-/// attempt.
+/// The YAML only converter (`extract_connection_config`) rejects nested
+/// mappings that the resolver accepts. So parsing an already attached stream
+/// again used to make `start()` fail with "Invalid connection config" every time.
 #[tokio::test]
 async fn test_yaml_source_pass_skips_stream_attached_from_sql() {
     use eventflux::core::config::types::global_config::ApplicationGlobalConfig;
@@ -614,8 +610,8 @@ streams:
     );
 }
 
-/// A DLQ on a source that cannot dead-letter (the timer source) must fail
-/// start() instead of being silently ignored (#207)
+/// A DLQ on a source that cannot send to a DLQ, here the timer source, must make
+/// start() fail instead of being quietly ignored (#207)
 #[tokio::test]
 async fn test_sql_with_dlq_on_source_without_dlq_support_fails_start() {
     let manager = EventFluxManager::new();

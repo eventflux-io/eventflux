@@ -15,34 +15,27 @@
  * limitations under the License.
  */
 
-// Corresponds to package io.eventflux.query.api.execution.query.input.store
+// Store inputs for on demand queries. Reads from tables, windows and aggregations.
 
 pub mod aggregation_input_store;
 pub mod condition_input_store;
-pub mod input_store; // Interface, will be a trait or enum
+pub mod input_store; // the InputStore enum and InputStoreTrait
 #[allow(clippy::module_inception)]
-pub mod store; // This is a BasicSingleInputStream that also implements InputStore
+pub mod store; // Store, a SingleInputStream that names the store
 
-// Re-export key types
 pub use self::aggregation_input_store::AggregationInputStore;
 pub use self::condition_input_store::ConditionInputStore;
-pub use self::input_store::InputStore; // This will be the main enum for different store input types
-pub use self::store::Store; // The Store struct that acts as a specific InputStore type.
+pub use self::input_store::InputStore;
+pub use self::store::Store;
 
-// InputStore will likely be an enum:
+// An early sketch of the enum, kept for reference. The real InputStore enum in
+// input_store.rs also has a Store variant.
 // pub enum InputStoreType { // Renaming from InputStore to avoid conflict if InputStore is a trait
 //     Condition(ConditionInputStore),
 //     Aggregation(AggregationInputStore),
 //     // Store itself is a kind of BasicSingleInputStream, so it might not be a variant here
 //     // if ConditionInputStore and AggregationInputStore directly embed Store.
 // }
-// The InputStore.java interface has static factory methods for `Store`.
-// It also has getStoreReferenceId() and getStoreId().
-// Store.java extends BasicSingleInputStream and implements InputStore.
-// It has methods `on(Expression)` returning ConditionInputStore, and `on(Within, Per)` returning AggregationInputStore.
-// This suggests Store is the primary entry point.
-
-// Let's define InputStore as a trait for now.
-// ConditionInputStore and AggregationInputStore will implement it.
-// Store struct will also implement it.
-// The methods on(Expression) etc. on Store struct will then return these concrete types.
+// Store is the starting point. Its on_condition() returns a ConditionInputStore and its
+// on_aggregation_* methods return an AggregationInputStore. Store, ConditionInputStore and
+// AggregationInputStore all implement InputStoreTrait, which gives the store id and alias.

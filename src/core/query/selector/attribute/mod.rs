@@ -21,9 +21,9 @@ pub mod output_attribute_processor;
 pub use self::aggregator::*;
 pub use self::output_attribute_processor::OutputAttributeProcessor;
 
-// aggregator/ and processor/ sub-packages from Java would be modules here if their contents are ported.
+// The Java aggregator and processor packages map to modules here. aggregator is ported
+// above. There is no `processor` module. Java's selector.attribute.processor
+// AttributeProcessor became OutputAttributeProcessor, so it is not confused with the
+// query Processor trait.
 // pub mod aggregator;
 // pub mod processor; // This name might conflict with core::query::processor if not careful with paths.
-// Java has ...selector.attribute.processor.AttributeProcessor
-// and ...query.processor.Processor (interface)
-// The prompt names this OutputAttributeProcessor, which is good for distinction.

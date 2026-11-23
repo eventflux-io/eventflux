@@ -15,51 +15,47 @@
  * limitations under the License.
  */
 
-// Corresponds to package io.eventflux.query.api.execution.query.input
+// The FROM side of a query. Input streams, their handlers, pattern states and stores.
 
 pub mod handler;
 pub mod state;
 pub mod store;
 pub mod stream;
 
-// Re-export key elements from the stream module as it defines the main InputStream enum/struct
 pub use self::stream::{
     InputStream,
-    JoinEventTrigger, // Enum from JoinInputStream
+    JoinEventTrigger,
     JoinInputStream,
-    // BasicSingleInputStream, // Removed
-    // AnonymousInputStream, // Removed
-    JoinType, // Enum from JoinInputStream
+    // BasicSingleInputStream, // merged into SingleInputStream
+    // AnonymousInputStream, // removed
+    JoinType,
     SingleInputStream,
     StateInputStream,
-    StateInputStreamType, // Enum from StateInputStream
+    StateInputStreamType,
 };
 
-// Re-export key elements from handler module
 pub use self::handler::{
     Filter,
     StreamFunction,
-    StreamHandler, // Enum or Trait
-    WindowHandler, // Use the already aliased WindowHandler from handler/mod.rs
+    StreamHandler, // enum
+    WindowHandler, // handler::Window, renamed in handler/mod.rs
 };
 
-// Re-export key elements from state module
 pub use self::state::{
     AbsentStreamStateElement,
     CountStateElement,
     EveryStateElement,
     LogicalStateElement,
-    LogicalStateElementType, // Enum from LogicalStateElement
+    LogicalStateElementType, // logical_state_element::Type
     NextStateElement,
-    State,        // Utility struct with static methods
-    StateElement, // Enum or Trait
+    State,        // holds factory functions only
+    StateElement, // enum
     StreamStateElement,
 };
 
-// Re-export key elements from store module
 pub use self::store::{
     AggregationInputStore,
     ConditionInputStore,
-    InputStore, // Trait
+    InputStore, // enum
     Store,
 };

@@ -2,10 +2,10 @@
 -- EventFlux Kafka Source/Sink Example
 -- ============================================================================
 --
--- This example demonstrates end-to-end stream processing with Kafka:
---   1. Kafka Source: Consumes JSON events from a topic
---   2. EventFlux Query: Filters by volume and adds price_category via CASE
---   3. Kafka Sink: Publishes processed events to another topic
+-- This example runs a full stream pipeline with Kafka.
+--   1. Kafka source. Reads JSON events from a topic.
+--   2. EventFlux query. Filters by volume and adds price_category with CASE.
+--   3. Kafka sink. Publishes the results to another topic.
 --
 -- ============================================================================
 -- PREREQUISITES
@@ -16,11 +16,11 @@
 --    cargo build --release --features kafka
 --    (Docker images include all connectors already)
 --
--- 1. Start a single-node Kafka broker with Docker:
+-- 1. Start a single node Kafka broker with Docker:
 --
 --    docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.1
 --
--- 2. Create the topics (EventFlux validates they exist at startup):
+-- 2. Create the topics. EventFlux checks that they exist at startup.
 --
 --    docker exec kafka /opt/kafka/bin/kafka-topics.sh --create \
 --      --bootstrap-server localhost:9092 --topic trades-in
@@ -31,8 +31,8 @@
 --
 --    cargo run --features kafka --bin run_eventflux examples/kafka.eventflux
 --
--- 4. In another terminal, produce a test message (pipe it into the
---    console producer — it reads messages from stdin):
+-- 4. In another terminal, send a test message. Pipe it into the
+--    console producer, which reads messages from stdin.
 --
 --    echo '{"symbol":"AAPL","price":150.25,"volume":1000}' | \
 --      docker exec -i kafka /opt/kafka/bin/kafka-console-producer.sh \
@@ -57,7 +57,8 @@ CREATE STREAM TradeInput (
     "kafka.topic" = 'trades-in',
     "kafka.group.id" = 'eventflux-trades',
     "kafka.auto.offset.reset" = 'earliest',
-    -- At-least-once: commit offsets only after pipeline delivery
+    -- At least once delivery. Offsets are committed only after the pipeline
+    -- delivers the event.
     "kafka.enable.auto.commit" = 'false'
 );
 

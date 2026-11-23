@@ -18,7 +18,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// Minimal test to reproduce the serialization hang
+// Small standalone program to reproduce a hang seen when serializing session window state.
+// The types below mirror the session state shape with just enough fields to trigger it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum TestSerializableAttributeValue {
     String(String),
@@ -66,7 +67,7 @@ struct TestSerializableSessionState {
 fn main() {
     println!("Creating test data...");
 
-    // Create simple test data
+    // One session holding one event, plus empty previous and expired chunks.
     let event = TestSerializableStreamEvent {
         timestamp: 1000,
         before_window_data: vec![

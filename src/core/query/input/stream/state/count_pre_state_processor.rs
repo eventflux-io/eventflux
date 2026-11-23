@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// count_pre_state_processor.rs - Count quantifier pattern matching (A{n}, A{m,n}, A+, A*)
+// count_pre_state_processor.rs - count quantifier matching (A{n}, A{m,n}, A+, A*, A?)
 
 use super::post_state_processor::PostStateProcessor;
 use super::pre_state_processor::PreStateProcessor;
@@ -27,9 +27,13 @@ use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
 use std::sync::{Arc, Mutex};
 
-/// Count quantifier patterns: A{3}, A{2,5}, A+, A*, A?
+/// Pre processor for count quantifier steps such as A{3}, A{2,5}, A+, A* and A?.
 ///
-/// Extends StreamPreStateProcessor with event chaining and backtracking logic.
+/// Wraps a StreamPreStateProcessor. Each arriving event is chained onto every pending
+/// StateEvent at this position. A StateEvent is sent to the post processor each time
+/// its count is in `[min_count, max_count]`, and it leaves the pending list once it
+/// reaches `max_count`. At an EVERY start state, each new event also opens its own
+/// overlapping window.
 pub struct CountPreStateProcessor {
     min_count: usize,
     max_count: usize,
@@ -67,26 +71,24 @@ impl CountPreStateProcessor {
         self.max_count
     }
 
-    /// Count events in chain at this state_id position
+    /// Count the StreamEvents chained at this processor's `state_id` position.
     ///
-    /// Used internally to check if max_count has been reached.
+    /// Returns 0 when the position is empty. Used to check the count against
+    /// `min_count` and `max_count`.
     fn count_events_in_chain(&self, state_event: &StateEvent) -> usize {
         use crate::core::event::stream::stream_event::StreamEvent;
 
         let state_id = self.stream_processor.state_id();
 
-        // Get first event in chain at this position
         let mut current = match state_event.get_stream_event(state_id) {
             Some(se) => se,
             None => return 0,
         };
 
-        let mut count = 1; // First event
+        let mut count = 1;
 
-        // Walk the chain counting events
         while let Some(next) = current.get_next() {
             count += 1;
-            // Check if next is a StreamEvent
             if let Some(se) = next.as_any().downcast_ref::<StreamEvent>() {
                 current = se;
             } else {
@@ -100,7 +102,6 @@ impl CountPreStateProcessor {
 
 impl PreStateProcessor for CountPreStateProcessor {
     fn process(&mut self, chunk: Option<Box<dyn ComplexEvent>>) -> Option<Box<dyn ComplexEvent>> {
-        // Delegate to process_and_return for count logic
         self.process_and_return(chunk)
     }
 
@@ -109,26 +110,21 @@ impl PreStateProcessor for CountPreStateProcessor {
     }
 
     fn add_state(&mut self, state_event: StateEvent) {
-        // For count quantifiers, don't mark state as changed when adding
-        // Only mark state changed when we've accumulated enough events (min_count)
+        // Unlike the plain stream processor, adding a state does not mark the state as
+        // changed. process_and_return does that only when a count reaches max_count.
         let mut state = self.stream_processor.state.lock().unwrap();
         state.add_to_new_list(state_event);
-        // Note: NOT calling mark_state_changed() or shared_state.mark_state_changed()
-        // This will only be called in process_and_return when count == max_count
     }
 
     fn add_every_state(&mut self, state_event: StateEvent) {
-        // EVERY loopback: When a completed pattern loops back, clear all existing
-        // sliding windows at the start position. This implements "pattern restart"
-        // semantics where after a complete match, the pattern starts fresh.
-        //
-        // Without this, leftover sliding windows from the previous pattern instance
-        // would mix with events from the new instance, causing incorrect matches.
+        // When a completed EVERY match loops back, drop all open windows at the start
+        // position so the pattern starts fresh. Otherwise leftover windows from the
+        // last match would mix with events from the next one.
         //
         // Example: EVERY (A{3} -> B)
-        // - First match: A1,A2,A3 -> B4 (sliding windows [A2,A3], [A3] remain)
-        // - Without clear: A5 would combine with [A2,A3] to form [A2,A3,A5] (wrong!)
-        // - With clear: A5 starts a fresh window [A5] (correct)
+        // - First match: A1,A2,A3 -> B4 leaves windows [A2,A3] and [A3] open
+        // - Without the clear, A5 would join [A2,A3] and form [A2,A3,A5], which is wrong
+        // - With the clear, A5 starts a fresh window [A5]
         if self.stream_processor.is_start_state() {
             let mut state = self.stream_processor.state.lock().unwrap();
             state.clear_pending();
@@ -149,7 +145,6 @@ impl PreStateProcessor for CountPreStateProcessor {
         &mut self,
         chunk: Option<Box<dyn ComplexEvent>>,
     ) -> Option<Box<dyn ComplexEvent>> {
-        // Get incoming StreamEvent from chunk
         let stream_event = match chunk.as_ref() {
             Some(c) => c
                 .as_any()
@@ -157,160 +152,135 @@ impl PreStateProcessor for CountPreStateProcessor {
             None => return None,
         };
 
-        // Get state_id for this processor
         let state_id = self.stream_processor.state_id();
 
-        // Check if this is EVERY pattern start state
         let is_every_start =
             self.stream_processor.is_start_state() && self.stream_processor.is_every_pattern();
 
-        // Access pending states - clone the list to avoid borrow conflicts
+        // Take a copy of the pending list and empty it. The loop below pushes back
+        // every state that stays open.
         let mut pending_states: Vec<StateEvent> = {
             let mut state_guard = self.stream_processor.state.lock().unwrap();
             let cloned: Vec<StateEvent> = state_guard.get_pending_list().iter().cloned().collect();
-            // Clear pending list - we'll rebuild it with updated states
             state_guard.get_pending_list_mut().clear();
             cloned
         };
 
-        // EVERY pattern optimization: Filter out completed states at start position
-        // Completed states have events at positions beyond this state_id
-        // These came from loopback and can't be used for new instances
+        // At an EVERY start state, drop states that already hold events at later
+        // positions, such as StateEvent{A(1), B(2)}. They are finished matches that
+        // came back through the loopback and cannot start a new instance.
         if is_every_start && !pending_states.is_empty() {
             pending_states.retain(|state_event| {
-                // Keep only states that don't have events at later positions
-                // This filters out completed StateEvent{A(1), B(2)} from loopback
                 for pos in (state_id + 1)..state_event.stream_event_count() {
                     if state_event.get_stream_event(pos).is_some() {
-                        return false; // Has event at later position - completed state, discard
+                        return false;
                     }
                 }
-                true // No events at later positions - valid for accumulation
+                true
             });
         }
 
-        // For EVERY sliding window: Check if any existing window has events at this position
-        // IMPORTANT: This check must be AFTER the retain filter to avoid spurious spawns
-        // from completed loopback states that get filtered out.
-        // - Empty initial state: no events → don't spawn (this is the first window starting)
-        // - State with [A1]: has events → spawn new window when A2 arrives
+        // Decides below whether to open a new overlapping EVERY window. It must run
+        // after the filter above, or finished loopback states would open spurious windows.
+        // - An empty initial state has no events here, so no window opens. This event
+        //   starts the first window.
+        // - A state holding [A1] has events here, so A2 opens a new window.
         let any_existing_had_events = pending_states
             .iter()
             .any(|se| se.get_stream_event(state_id).is_some());
 
-        // If pending is empty after filtering, create a fresh StateEvent for EVERY start states
-        // This allows new pattern instances to begin
+        // With nothing pending, an EVERY start state begins a new instance. Any other
+        // state has nothing to extend and returns.
         if pending_states.is_empty() {
             if is_every_start {
-                // Create fresh empty StateEvent for new pattern instance
-                // Just create an empty StateEvent - it will be populated with events as they arrive
-                // and will auto-expand as needed
-                let new_state = StateEvent::new(1, 0); // Size 1 is enough, will expand
+                // StateEvent grows as events are added, so size 1 is enough
+                let new_state = StateEvent::new(1, 0);
                 pending_states.push(new_state);
             } else {
                 return None;
             }
         }
 
-        // Get stream event cloner - clone it to avoid borrow conflicts
+        // Clone the cloner so self is not borrowed inside the loop
         let stream_cloner = self.stream_processor.get_stream_event_cloner().clone();
 
-        // Get post processor for validation
+        // Returns None with no post processor wired, after the pending list was emptied
         let post_processor = self.stream_processor.get_this_state_post_processor()?;
 
         let mut any_state_completed = false;
 
-        // Process each pending state with count quantifier logic
         for mut state_event in pending_states {
-            // Clone incoming StreamEvent and add to chain at this position
             let cloned_stream = stream_cloner.copy_stream_event(stream_event);
             state_event.add_event(state_id, cloned_stream);
 
-            // Count events in chain to validate
             let count = self.count_events_in_chain(&state_event);
 
-            // Check if count is in valid range [min, max]
             if count >= self.min_count && count <= self.max_count {
-                // Valid count range - send to PostStateProcessor for forwarding
                 if let Ok(mut post_guard) = post_processor.lock() {
                     post_guard.process(Some(Box::new(state_event.clone())));
                 }
 
-                // Check if we've reached max_count
                 if count == self.max_count {
-                    // Max reached, this state is complete - don't add back to pending
-                    // Mark that at least one state completed
+                    // Full. Drop it from pending.
                     any_state_completed = true;
                 } else {
-                    // count < max_count - can still accept more events
-                    // Add back to pending for further accumulation
+                    // Room for more events. Keep it pending.
                     let mut state_guard = self.stream_processor.state.lock().unwrap();
                     state_guard.get_pending_list_mut().push_back(state_event);
                 }
             } else if count < self.min_count {
-                // Not enough events yet - keep accumulating
-                // Add back to pending list with the accumulated events
+                // Too few events yet. Keep it pending.
                 let mut state_guard = self.stream_processor.state.lock().unwrap();
                 state_guard.get_pending_list_mut().push_back(state_event);
             } else {
-                // count > max_count - shouldn't normally happen, but handle gracefully
-                // CRITICAL: Preserve the state after trimming, don't discard it!
-                // Without re-queuing, we lose the entire match chain and future events
-                // can never reach min_count (no overlapping matches possible)
+                // count > max_count should not happen. Remove the new event and keep the
+                // state pending. Dropping it would lose the whole chain, and later events
+                // could never reach min_count.
                 state_event.remove_last_event(state_id);
 
-                // Re-queue the trimmed state so it can continue forming matches
-                // After trimming, count should be exactly max_count
+                // After the trim the count should be exactly max_count
                 let mut state_guard = self.stream_processor.state.lock().unwrap();
                 state_guard.get_pending_list_mut().push_back(state_event);
             }
         }
 
-        // EVERY SLIDING WINDOW: Spawn a new StateEvent for overlapping windows
-        // This enables patterns like EVERY A{2,3} -> B to produce overlapping matches
+        // Open a new overlapping window at an EVERY start state, so EVERY A{2,3} -> B
+        // can produce overlapping matches. `every A{2,3}` means "for every A that could
+        // start a match, try to match 2 to 3 As", so each new A starts its own window.
         //
-        // Semantic: In CEP, `every A{2,3}` means "for every potential starting A,
-        // try to match 2-3 As". Each incoming A event should start a new window.
+        // A window opens only when:
+        // 1. is_every_start is true, so this is the start state of an EVERY pattern
+        // 2. any_existing_had_events is true, so earlier windows already held events
+        //    here. If they were empty, this is the first event and nothing overlaps yet.
         //
-        // Conditions for spawning:
-        // 1. is_every_start: This is an EVERY pattern at start state
-        // 2. any_existing_had_events: Existing windows already had events at this position
-        //    (if windows were empty, this is the first event - no overlap possible yet)
-        //
-        // The new window contains ONLY the current event (count=1)
-        // It will accumulate future events independently from existing windows
+        // The new window holds only this event (count 1) and then grows on its own.
         if is_every_start && any_existing_had_events {
-            // Spawn a new StateEvent starting from this event
-            // This creates an overlapping window that begins at this event
-            // Size 1 is enough - StateEvent will auto-expand as needed
+            // StateEvent grows as events are added, so size 1 is enough
             let mut new_window = StateEvent::new(1, 0);
             let cloned_for_new_window = stream_cloner.copy_stream_event(stream_event);
             new_window.add_event(state_id, cloned_for_new_window);
 
-            // The new window has count=1 (just this event)
-            // Check if it should output immediately (when min_count=1)
+            // Emits right away only when min_count is 0 or 1
             let new_window_count = 1;
             if new_window_count >= self.min_count && new_window_count <= self.max_count {
-                // Output this window immediately
                 if let Ok(mut post_guard) = post_processor.lock() {
                     post_guard.process(Some(Box::new(new_window.clone())));
                 }
             }
 
-            // Add to pending if window can still grow (count < max)
             if new_window_count < self.max_count {
                 let mut state_guard = self.stream_processor.state.lock().unwrap();
                 state_guard.get_pending_list_mut().push_back(new_window);
             }
         }
 
-        // Only signal state_changed if at least one state completed (reached max_count)
-        // This means the state was removed from pending and is done
+        // Mark the state changed only when some state reached max_count and left pending
         if any_state_completed {
             self.stream_processor.state_changed();
         }
 
-        None // CountPreStateProcessor doesn't output directly
+        // Matches go out through the post processor, never through the return value
+        None
     }
 
     fn set_within_time(&mut self, within_time: i64) {
@@ -395,7 +365,6 @@ mod tests {
         use crate::core::event::stream::stream_event_factory::StreamEventFactory;
         use crate::query_api::eventflux_app::EventFluxApp;
 
-        // Create contexts
         let eventflux_context = Arc::new(EventFluxContext::new());
         let app = Arc::new(EventFluxApp::new("TestApp".to_string()));
         let app_ctx = Arc::new(EventFluxAppContext::new(
@@ -410,7 +379,6 @@ mod tests {
             None,
         ));
 
-        // Create processors
         let mut pre_processor = CountPreStateProcessor::new(
             min,
             max,
@@ -422,12 +390,11 @@ mod tests {
         );
         let post_processor = Arc::new(Mutex::new(CountPostStateProcessor::new(min, max, 0)));
 
-        // Wire Pre -> Post
         pre_processor
             .stream_processor
             .set_this_state_post_processor(post_processor.clone());
 
-        // Initialize cloners with proper factories
+        // Give both cloners real factories
         use crate::query_api::definition::stream_definition::StreamDefinition;
         let stream_def = Arc::new(StreamDefinition::new("TestStream".to_string()));
         let meta_stream = MetaStreamEvent::new_for_single_input(stream_def);
@@ -448,7 +415,7 @@ mod tests {
         (pre_processor, post_processor)
     }
 
-    // Basic tests (19 tests)
+    // Basic tests
 
     #[test]
     fn test_count_processor_creation() {
@@ -608,7 +575,7 @@ mod tests {
         assert!(state_guard.is_initialized());
     }
 
-    // Integration tests (24 tests)
+    // Integration tests
 
     #[test]
     fn test_integration_exactly_3_with_3_events() {
@@ -738,8 +705,7 @@ mod tests {
         pre_proc.add_state(initial_state);
         pre_proc.update_state();
 
-        // Don't send any events - A* should match with 0 events
-        // But we need to send at least one event to trigger processing
+        // A* allows 0 events, but processing only runs when an event arrives, so send one
         let event = StreamEvent::new(100, 0, 0, 0);
         let _result = pre_proc.process_and_return(Some(Box::new(event)));
 
@@ -1095,7 +1061,7 @@ mod tests {
 
         let (mut pre_proc, _post_proc) = create_wired_processors(2, 5); // A{2,5}
 
-        // Set within time constraint (e.g., 1000ms)
+        // WITHIN 1000 ms
         pre_proc.set_within_time(1000);
 
         let initial_state = StateEvent::new(1, 0);
@@ -1542,8 +1508,7 @@ mod tests {
                 let mut count = 0;
                 while let Some(evt) = current_opt {
                     if count < timestamps.len() {
-                        // Timestamp should match original
-                        // Note: The chain contains ALL events up to this point
+                        // The chain holds every event so far, in arrival order
                         let expected_ts = timestamps[count];
                         assert_eq!(
                             evt.timestamp, expected_ts,
@@ -1551,7 +1516,7 @@ mod tests {
                             count, idx
                         );
                     }
-                    // get_next() returns Option<&dyn ComplexEvent>, need to downcast
+                    // get_next() returns Option<&dyn ComplexEvent>, so downcast it
                     current_opt = evt
                         .get_next()
                         .and_then(|ce| ce.as_any().downcast_ref::<StreamEvent>());
@@ -1569,17 +1534,9 @@ mod tests {
         pre_proc.add_state(initial_state);
         pre_proc.update_state();
 
-        // Don't send any events
-        // For A?, min=0 means it should match with 0 events
-
-        // Initial state should be valid (count=0 is >= min=0)
-        // But we need an event to trigger processing
-
-        // CRITICAL QUESTION: How does A? with 0 events work?
-        // The pending state has count=0, which is >= min=0
-        // But process_and_return() only called when event arrives
-
-        // Current behavior: No output until event arrives
+        // No events are sent. For A?, min=0 means zero events is a valid match, and the
+        // pending state has count 0, which is >= min. But the count check only runs in
+        // process_and_return(), which needs an arriving event. So nothing is emitted.
         assert_eq!(
             tracker.get_output_count(),
             0,
@@ -2101,6 +2058,7 @@ mod tests {
             pre_proc.process_and_return(Some(Box::new(event)));
         }
 
+        // Per window:
         // Window 1 (starts A1): outputs at A2,A3,A4,A5 (4 outputs, closes at A5=max)
         // Window 2 (starts A2): outputs at A3,A4,A5,A6 (4 outputs, closes at A6)
         // Window 3 (starts A3): outputs at A4,A5,A6 (3 outputs)
@@ -2108,7 +2066,7 @@ mod tests {
         // Window 5 (starts A5): outputs at A6 (1 output)
         // Window 6 (starts A6): no output yet (count=1 < min=2)
         //
-        // Actually let's trace more carefully:
+        // Per event:
         // A1: pending=[SE([A1])], outputs=0
         // A2: pending=[SE([A1,A2]), SE([A2])], outputs=1 ([A1,A2])
         // A3: pending=[SE([A1,A2,A3]), SE([A2,A3]), SE([A3])], outputs=2 ([A1,A2,A3], [A2,A3])

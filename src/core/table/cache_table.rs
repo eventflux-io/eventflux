@@ -31,6 +31,8 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
+// In memory table that keeps at most `max_size` rows. Inserting past the limit drops
+// the oldest rows first.
 #[derive(Debug)]
 pub struct CacheTable {
     rows: RwLock<VecDeque<Vec<AttributeValue>>>,
@@ -51,13 +53,16 @@ impl CacheTable {
         }
     }
 
-    /// Helper for tests to access all rows
+    /// Returns a copy of every row, oldest first. Mainly for tests.
     #[allow(dead_code)]
     pub fn all_rows(&self) -> Vec<Vec<AttributeValue>> {
         self.rows.read().unwrap().iter().cloned().collect()
     }
 
-    /// Update rows using already compiled condition and update set.
+    /// Replaces every row equal to `condition.values` with `update_set.values`.
+    ///
+    /// A row matches only when the whole row equals the condition values. Returns
+    /// true if any row changed.
     pub fn update_compiled(
         &self,
         condition: &InMemoryCompiledCondition,
@@ -74,7 +79,7 @@ impl CacheTable {
         updated
     }
 
-    /// Delete rows matching the compiled condition.
+    /// Deletes every row equal to `condition.values`. Returns true if any row was removed.
     pub fn delete_compiled(&self, condition: &InMemoryCompiledCondition) -> bool {
         let mut rows = self.rows.write().unwrap();
         let orig_len = rows.len();
@@ -82,7 +87,7 @@ impl CacheTable {
         orig_len != rows.len()
     }
 
-    /// Find a row matching the compiled condition.
+    /// Returns a copy of the first row equal to `condition.values`, oldest first.
     pub fn find_compiled(
         &self,
         condition: &InMemoryCompiledCondition,
@@ -95,7 +100,7 @@ impl CacheTable {
             .cloned()
     }
 
-    /// Check if any row matches the compiled condition.
+    /// Returns true if any row equals `condition.values`.
     pub fn contains_compiled(&self, condition: &InMemoryCompiledCondition) -> bool {
         self.rows
             .read()
@@ -234,6 +239,7 @@ impl Table for CacheTable {
     }
 }
 
+// Builds a CacheTable. Needs a numeric `max_size` property.
 #[derive(Debug, Clone)]
 pub struct CacheTableFactory;
 

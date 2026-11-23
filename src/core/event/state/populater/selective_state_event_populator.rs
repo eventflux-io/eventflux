@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/event/state/populater/selective_state_event_populator.rs
 use super::{
     state_event_populator::StateEventPopulator, state_mapping_element::StateMappingElement,
 };

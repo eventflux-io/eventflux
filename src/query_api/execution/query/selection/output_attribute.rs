@@ -19,17 +19,18 @@ use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 use crate::query_api::expression::Variable;
 
-// Corrected structure (previous duplicate removed):
+/// One item in a SELECT list. An expression and its optional output name.
+///
+/// Has no `Default` because the expression is required.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputAttribute {
     pub eventflux_element: EventFluxElement,
+    /// The AS name, or `None` when there is none.
     pub rename: Option<String>,
     pub expression: Expression,
 }
 
 impl OutputAttribute {
-    // Constructor for `OutputAttribute(String rename, Expression expression)`
-    // Making rename Option<String> as per prompt and current code.
     pub fn new(rename: Option<String>, expression: Expression) -> Self {
         OutputAttribute {
             eventflux_element: EventFluxElement::default(),
@@ -38,10 +39,11 @@ impl OutputAttribute {
         }
     }
 
-    // Constructor for `OutputAttribute(Variable variable)`
+    /// Select a variable under its own attribute name. The query positions are not copied
+    /// from `variable`.
     pub fn new_from_variable(variable: Variable) -> Self {
         OutputAttribute {
-            eventflux_element: EventFluxElement::default(), // Or copy from variable.eventflux_element?
+            eventflux_element: EventFluxElement::default(),
             rename: Some(variable.attribute_name.clone()),
             expression: Expression::Variable(variable),
         }
@@ -55,5 +57,3 @@ impl OutputAttribute {
         &self.expression
     }
 }
-
-// No Default derive.

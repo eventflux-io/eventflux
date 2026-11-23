@@ -20,12 +20,10 @@ mod common;
 use common::AppRunner;
 use eventflux::core::event::value::AttributeValue;
 
-// TODO: NOT PART OF M1 - Pattern/Sequence matching not in M1
-// This test uses pattern sequence syntax ("from A -> B") which is an advanced CEP feature.
-// M1 covers: Basic queries, Windows, Joins, GROUP BY, HAVING, ORDER BY, LIMIT
-// Pattern matching and sequence processing will be implemented in Phase 2.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
-// NOTE: Tests using programmatic API (not parser) like kleene_star_pattern still work.
+// TODO: NOT PART OF M1. Ignored because it uses the old EventFluxQL pattern syntax
+// ("define stream" and "from A -> B"). The SQL form is FROM PATTERN (...), which the
+// SQL based tests further down use. Tests that use the programmatic API instead of
+// the parser, like kleene_star_pattern_rejected, still run.
 #[tokio::test]
 #[ignore = "Requires PATTERN/SEQUENCE syntax - Not part of M1"]
 async fn sequence_basic() {
@@ -49,12 +47,8 @@ async fn sequence_basic() {
     );
 }
 
-// TODO: NOT PART OF M1 - Pattern/Sequence matching not in M1
-// This test uses pattern sequence syntax ("from every A -> B") which is an advanced CEP feature.
-// M1 covers: Basic queries, Windows, Joins, GROUP BY, HAVING, ORDER BY, LIMIT
-// Pattern matching and sequence processing will be implemented in Phase 2.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
-// NOTE: Tests using programmatic API (not parser) like kleene_star_pattern still work.
+// TODO: NOT PART OF M1. Ignored for the same reason as sequence_basic. It uses the old
+// syntax ("from every A -> B") instead of FROM PATTERN (...).
 #[tokio::test]
 #[ignore = "Requires PATTERN/SEQUENCE syntax - Not part of M1"]
 async fn every_sequence() {
@@ -94,9 +88,9 @@ use eventflux::query_api::execution::ExecutionElement;
 use eventflux::query_api::expression::{constant::TimeUtil, variable::Variable, Expression};
 use std::sync::Arc;
 
-/// Test that zero-count patterns (A*, A?, A{0,n}) are rejected with a clear error.
-/// These patterns are explicitly not supported because they can match zero events,
-/// which creates ambiguity in pattern semantics.
+/// Test that patterns that allow zero events (A*, A?, A{0,n}) are rejected with a
+/// clear error. They are not supported on purpose, because a step that can match
+/// zero events makes the meaning of a pattern unclear.
 #[tokio::test]
 #[should_panic(expected = "Zero-count patterns (A*, A?, A{0,n}) are not supported")]
 async fn kleene_star_pattern_rejected() {
@@ -115,7 +109,7 @@ async fn kleene_star_pattern_rejected() {
 
     let a_si = SingleInputStream::new_basic("A".to_string(), false, false, None, Vec::new());
     let b_si = SingleInputStream::new_basic("B".to_string(), false, false, None, Vec::new());
-    // State::zero_or_many creates A* pattern (min_count=0)
+    // State::zero_or_many builds an A* pattern (min_count=0)
     let pattern = State::next(
         State::zero_or_many(State::stream(a_si)),
         State::stream_element(b_si),
@@ -147,7 +141,7 @@ async fn kleene_star_pattern_rejected() {
     app.execution_element_list
         .push(ExecutionElement::Query(query));
 
-    // This should panic with the zero-count pattern error
+    // Must panic with the error for patterns that allow zero events
     let _runner = AppRunner::new_from_api(app, "Out").await;
 }
 
@@ -382,7 +376,7 @@ async fn pattern_alias_two_streams() {
     );
 }
 
-/// Test pattern alias resolution for same stream (self-join pattern)
+/// Test pattern alias resolution when both steps read the same stream
 /// Pattern: e1=RawTrades -> e2=RawTrades
 /// SELECT e1.price, e2.price
 #[tokio::test]
@@ -455,7 +449,7 @@ async fn pattern_alias_same_stream() {
             AttributeValue::String("AAPL".to_string()),
         ],
     );
-    // Send second trade - this should complete the pattern
+    // The second trade completes the pattern
     runner.send(
         "RawTrades",
         vec![
@@ -473,14 +467,12 @@ async fn pattern_alias_same_stream() {
     );
 }
 
-/// Test N-element patterns (3+ elements like A -> B -> C)
-/// Pattern: e1=A -> e2=B -> e3=C
+/// Test patterns with 3 or more elements, such as A -> B -> C.
+/// Pattern e1=A -> e2=B -> e3=C
 /// SELECT e1.val, e2.val, e3.val
 ///
-/// NOTE: N-element pattern support foundation is in place (TerminalPostStateProcessor,
-/// PatternChainBuilder integration, PreStateProcessorAdapters). Full pattern matching
-/// requires additional PatternChainBuilder debugging - the chain is wired but pattern
-/// completion logic needs work. The 2-element patterns work correctly.
+/// Built through the programmatic API. The chain uses TerminalPostStateProcessor,
+/// PatternChainBuilder and PreStateProcessorAdapters, and must produce one full match.
 #[tokio::test]
 async fn n_element_pattern_three_streams() {
     use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
@@ -513,7 +505,7 @@ async fn n_element_pattern_three_streams() {
     app.stream_definition_map
         .insert("Out".to_string(), Arc::new(out_def));
 
-    // Create 3-element pattern: A -> B -> C (N-element pattern)
+    // 3 element pattern A -> B -> C
     let a_si = SingleInputStream::new_basic("A".to_string(), false, false, None, Vec::new())
         .as_ref("e1".to_string());
     let b_si = SingleInputStream::new_basic("B".to_string(), false, false, None, Vec::new())
@@ -555,7 +547,6 @@ async fn n_element_pattern_three_streams() {
     app.execution_element_list
         .push(ExecutionElement::Query(query));
 
-    // Use AppRunner to test the N-element pattern
     let runner = AppRunner::new_from_api(app, "Out").await;
 
     // Send events in sequence: A, B, C
@@ -576,7 +567,7 @@ async fn n_element_pattern_three_streams() {
     );
 }
 
-/// Test 4-element N-element pattern: A -> B -> C -> D
+/// Test a 4 element pattern, A -> B -> C -> D
 #[tokio::test]
 async fn n_element_pattern_four_streams() {
     use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
@@ -613,7 +604,7 @@ async fn n_element_pattern_four_streams() {
     app.stream_definition_map
         .insert("Out".to_string(), Arc::new(out_def));
 
-    // Create 4-element pattern: A -> B -> C -> D
+    // 4 element pattern A -> B -> C -> D
     let a_si = SingleInputStream::new_basic("A".to_string(), false, false, None, Vec::new())
         .as_ref("e1".to_string());
     let b_si = SingleInputStream::new_basic("B".to_string(), false, false, None, Vec::new())
@@ -683,7 +674,7 @@ async fn n_element_pattern_four_streams() {
     );
 }
 
-/// Test 5-element N-element pattern: A -> B -> C -> D -> E
+/// Test a 5 element pattern, A -> B -> C -> D -> E
 #[tokio::test]
 async fn n_element_pattern_five_streams() {
     use eventflux::query_api::definition::{attribute::Type as AttrType, StreamDefinition};
@@ -724,7 +715,7 @@ async fn n_element_pattern_five_streams() {
     app.stream_definition_map
         .insert("Out".to_string(), Arc::new(out_def));
 
-    // Create 5-element pattern: A -> B -> C -> D -> E
+    // 5 element pattern A -> B -> C -> D -> E
     let a_si = SingleInputStream::new_basic("A".to_string(), false, false, None, Vec::new())
         .as_ref("e1".to_string());
     let b_si = SingleInputStream::new_basic("B".to_string(), false, false, None, Vec::new())
@@ -804,16 +795,14 @@ async fn n_element_pattern_five_streams() {
 }
 
 // ============================================================================
-// SQL-Based Pattern Tests (using EventFlux SQL syntax via FROM PATTERN)
+// SQL Pattern Tests, using EventFlux SQL syntax through FROM PATTERN
 // ============================================================================
 
-/// Test 2-element pattern with SQL syntax: e1=A -> e2=B
-/// Uses EventFlux SQL parser, not programmatic API
+/// Test a 2 element pattern in SQL syntax, e1=A -> e2=B.
+/// Uses the EventFlux SQL parser, not the programmatic API.
 ///
-/// NOTE: Currently uses stream names (A.val, B.val) in SELECT due to
-/// pattern alias resolution not yet implemented in SQL type inference.
-/// Pattern aliases (e1, e2) are set on SingleInputStream but not registered
-/// with the SQL catalog for column resolution.
+/// SELECT refers to stream names (A.val, B.val) rather than the aliases. Alias
+/// references such as e1.val are covered by the tests further down.
 #[tokio::test]
 async fn pattern_two_streams_sql() {
     let app = "\
@@ -833,8 +822,8 @@ async fn pattern_two_streams_sql() {
     );
 }
 
-/// Test 3-element N-element pattern with SQL syntax: e1=A -> e2=B -> e3=C
-/// This tests that the SQL parser correctly handles N-element patterns
+/// Test a 3 element pattern in SQL syntax, e1=A -> e2=B -> e3=C.
+/// The SQL parser must handle patterns with more than 2 elements.
 #[tokio::test]
 async fn pattern_three_streams_sql() {
     let app = "\
@@ -861,7 +850,7 @@ async fn pattern_three_streams_sql() {
     );
 }
 
-/// Test 4-element N-element pattern with SQL syntax: e1=A -> e2=B -> e3=C -> e4=D
+/// Test a 4 element pattern in SQL syntax, e1=A -> e2=B -> e3=C -> e4=D
 #[tokio::test]
 async fn pattern_four_streams_sql() {
     let app = "\
@@ -890,7 +879,7 @@ async fn pattern_four_streams_sql() {
     );
 }
 
-/// Test 5-element N-element pattern with SQL syntax: e1=A -> e2=B -> e3=C -> e4=D -> e5=E
+/// Test a 5 element pattern in SQL syntax, e1=A -> e2=B -> e3=C -> e4=D -> e5=E
 #[tokio::test]
 async fn pattern_five_streams_sql() {
     let app = "\
@@ -922,8 +911,8 @@ async fn pattern_five_streams_sql() {
     );
 }
 
-/// Test pattern with same stream appearing multiple times (self-join pattern)
-/// Pattern: e1=Trades -> e2=Trades (two consecutive events from same stream)
+/// Test a pattern where the same stream appears more than once
+/// Pattern e1=Trades -> e2=Trades, two back to back events from one stream
 /// Uses pattern aliases (e1, e2) to disambiguate and AS to avoid duplicate output columns
 #[tokio::test]
 async fn pattern_same_stream_sql() {
@@ -958,7 +947,7 @@ async fn pattern_same_stream_sql() {
     );
 }
 
-/// Test 3-element pattern with same stream (triple self-join)
+/// Test a 3 element pattern where every step reads the same stream
 /// Pattern: e1=Trades -> e2=Trades -> e3=Trades
 /// Uses pattern aliases to disambiguate and AS to create unique output columns
 #[tokio::test]
@@ -999,14 +988,14 @@ async fn pattern_three_streams_with_noise_sql() {
         SELECT A.val AS aval, B.val AS bval, C.val AS cval\n\
         FROM PATTERN (e1=A -> e2=B -> e3=C);\n";
     let runner = AppRunner::new(app, "Out").await;
-    // Send events with "noise" interleaved - pattern should still match
+    // Unrelated events are mixed in, and the pattern must still match
     runner.send("A", vec![AttributeValue::Int(1)]);
     runner.send("Noise", vec![AttributeValue::Int(999)]);
     runner.send("B", vec![AttributeValue::Int(2)]);
     runner.send("Noise", vec![AttributeValue::Int(888)]);
     runner.send("C", vec![AttributeValue::Int(3)]);
     let out = runner.shutdown();
-    // PATTERN mode ignores non-matching events
+    // PATTERN mode skips events that do not match
     assert_eq!(
         out,
         vec![vec![
@@ -1018,7 +1007,7 @@ async fn pattern_three_streams_with_noise_sql() {
 }
 
 /// Test that incomplete pattern produces no output
-/// Send A -> B but no C - pattern should not complete
+/// Send A -> B but no C, so the pattern cannot complete
 #[tokio::test]
 async fn pattern_incomplete_no_output_sql() {
     let app = "\
@@ -1030,12 +1019,12 @@ async fn pattern_incomplete_no_output_sql() {
         SELECT A.val AS aval, B.val AS bval, C.val AS cval\n\
         FROM PATTERN (e1=A -> e2=B -> e3=C);\n";
     let runner = AppRunner::new(app, "Out").await;
-    // Only send A and B - C never arrives
+    // Only A and B are sent. C never arrives.
     runner.send("A", vec![AttributeValue::Int(1)]);
     runner.send("B", vec![AttributeValue::Int(2)]);
-    // No C sent - pattern never completes
+    // No C is sent, so the pattern never completes
     let out = runner.shutdown();
-    // Expect no output since pattern didn't complete
+    // No output, because the pattern did not complete
     assert_eq!(out, Vec::<Vec<AttributeValue>>::new());
 }
 
@@ -1056,13 +1045,13 @@ async fn pattern_single_match_without_every_sql() {
     runner.send("A", vec![AttributeValue::Int(1)]);
     runner.send("B", vec![AttributeValue::Int(2)]);
     runner.send("C", vec![AttributeValue::Int(3)]);
-    // Second complete sequence - will NOT match without EVERY
+    // A second complete sequence will NOT match without EVERY
     runner.send("A", vec![AttributeValue::Int(10)]);
     runner.send("B", vec![AttributeValue::Int(20)]);
     runner.send("C", vec![AttributeValue::Int(30)]);
     let out = runner.shutdown();
-    // Without EVERY, pattern only matches once (first complete sequence)
-    // This is standard CEP pattern behavior - EVERY is needed for continuous matching
+    // Without EVERY the pattern matches only once, on the first complete sequence.
+    // This is standard CEP behaviour. EVERY is needed to keep matching.
     assert_eq!(
         out,
         vec![vec![
@@ -1089,7 +1078,7 @@ async fn pattern_logical_and_toplevel_sql() {
         SELECT e1.val AS aval, e2.val AS bval\n\
         FROM PATTERN (e1=A AND e2=B);\n";
     let runner = AppRunner::new(app, "Out").await;
-    // For AND, both A and B must arrive (order doesn't matter for AND)
+    // For AND, both A and B must arrive, in any order
     runner.send("A", vec![AttributeValue::Int(1)]);
     runner.send("B", vec![AttributeValue::Int(2)]);
     let out = runner.shutdown();
@@ -1117,9 +1106,9 @@ async fn pattern_logical_or_toplevel_sql() {
     assert_eq!(out, vec![vec![AttributeValue::Int(1),]]);
 }
 
-/// Test logical AND pattern with sequence: (e1=A AND e2=B) -> e3=C
-/// NOTE: This is currently not supported - the runtime needs to be extended
-/// to handle logical groups within sequence patterns.
+/// Test a logical AND inside a sequence, (e1=A AND e2=B) -> e3=C.
+/// Not supported yet. The runtime has to be extended to handle logical groups
+/// inside sequence patterns.
 #[tokio::test]
 #[ignore = "Requires runtime extension for logical groups in sequences - See ROADMAP.md"]
 async fn pattern_logical_and_sequence_sql() {
@@ -1132,7 +1121,7 @@ async fn pattern_logical_and_sequence_sql() {
         SELECT e1.val AS aval, e2.val AS bval, e3.val AS cval\n\
         FROM PATTERN ((e1=A AND e2=B) -> e3=C);\n";
     let runner = AppRunner::new(app, "Out").await;
-    // For AND, both A and B must arrive (order doesn't matter for AND), then C
+    // For AND, both A and B must arrive in any order, then C
     runner.send("A", vec![AttributeValue::Int(1)]);
     runner.send("B", vec![AttributeValue::Int(2)]);
     runner.send("C", vec![AttributeValue::Int(3)]);
@@ -1147,9 +1136,9 @@ async fn pattern_logical_and_sequence_sql() {
     );
 }
 
-/// Test logical OR pattern with sequence: (e1=A OR e2=B) -> e3=C
-/// NOTE: This is currently not supported - the runtime needs to be extended
-/// to handle logical groups within sequence patterns.
+/// Test a logical OR inside a sequence, (e1=A OR e2=B) -> e3=C.
+/// Not supported yet. The runtime has to be extended to handle logical groups
+/// inside sequence patterns.
 #[tokio::test]
 #[ignore = "Requires runtime extension for logical groups in sequences - See ROADMAP.md"]
 async fn pattern_logical_or_sequence_sql() {
@@ -1172,8 +1161,8 @@ async fn pattern_logical_or_sequence_sql() {
     );
 }
 
-/// Test same-stream logical AND pattern: e1=Trades AND e2=Trades
-/// Tests both logical patterns AND same-stream alias resolution together
+/// Test a logical AND where both sides read the same stream, e1=Trades AND e2=Trades.
+/// Covers logical patterns and alias resolution on one stream together.
 #[tokio::test]
 async fn pattern_logical_and_same_stream_sql() {
     let app = "\
@@ -1183,7 +1172,7 @@ async fn pattern_logical_and_same_stream_sql() {
         SELECT e1.price AS p1, e2.price AS p2\n\
         FROM PATTERN (e1=Trades AND e2=Trades);\n";
     let runner = AppRunner::new(app, "Out").await;
-    // For AND pattern with same stream: first two trades satisfy AND
+    // With one stream on both sides, the first two trades satisfy the AND
     runner.send("Trades", vec![AttributeValue::Double(100.0)]);
     runner.send("Trades", vec![AttributeValue::Double(110.0)]);
     let out = runner.shutdown();

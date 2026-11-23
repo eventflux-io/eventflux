@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/event/state/populater/state_event_populator_factory.rs
 use super::{
     selective_state_event_populator::SelectiveStateEventPopulator,
     skip_state_event_populator::SkipStateEventPopulator,
@@ -27,7 +26,7 @@ use crate::core::event::stream::meta_stream_event::MetaStreamEvent;
 
 pub fn construct_event_populator(meta: &MetaStateEvent) -> Box<dyn StateEventPopulator> {
     if meta.stream_event_count() == 1 {
-        // Single stream events don't need population
+        // With a single stream there is nothing to copy across streams.
         Box::new(SkipStateEventPopulator)
     } else {
         let mut mappings = Vec::new();

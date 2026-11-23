@@ -16,7 +16,7 @@
  */
 
 // src/core/query/input/stream/state/logical_post_state_processor.rs
-// LogicalPostStateProcessor for handling AND/OR pattern match results
+// LogicalPostStateProcessor, which applies the AND or OR rule to a matched StateEvent
 
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
@@ -29,22 +29,22 @@ use crate::core::query::input::stream::state::stream_post_state_processor::Strea
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// LogicalPostStateProcessor handles successful AND/OR pattern matches.
+/// Post processor for one side of an AND or OR pattern.
 ///
-/// **Purpose**: After LogicalPreStateProcessor matches an event, it forwards the
-/// StateEvent to its LogicalPostStateProcessor. This processor applies AND/OR logic
-/// before forwarding to the next stage.
+/// LogicalPreStateProcessor sends each matched StateEvent here. This processor
+/// applies the AND or OR rule before passing it on.
 ///
-/// **AND Logic**:
-/// - Only forwards if BOTH sides of the AND have matched
-/// - Checks if partner's position in StateEvent is filled
-/// - If partner not matched yet: marks state as changed, but doesn't forward
-/// - If partner matched: forwards normally via base StreamPostStateProcessor
+/// **AND**:
+/// - Forwards only when the partner's position in the StateEvent is also filled
+/// - With no partner pre processor set, it never forwards
+/// - When the partner is not filled yet, it marks this side's state as changed and
+///   waits
+/// - When both are filled, it forwards through the wrapped StreamPostStateProcessor
 ///
-/// **OR Logic**:
-/// - Always forwards (either side matching is sufficient)
-/// - Special handling: if this side matches, mark partner's PostStateProcessor
-///   as "event returned" too (since OR is satisfied)
+/// **OR**:
+/// - Always forwards, since either side is enough
+/// - Then, if the partner post processor has a next processor, sets the partner's
+///   `is_event_returned` flag too, since the OR is already satisfied
 ///
 /// **Example - AND**:
 /// ```text
@@ -78,25 +78,25 @@ use std::sync::{Arc, Mutex};
 ///   - YES: skip (OR already satisfied)
 /// ```
 pub struct LogicalPostStateProcessor {
-    /// The underlying StreamPostStateProcessor for basic pattern match handling
+    /// Wrapped stream post processor that does the forwarding
     base_processor: StreamPostStateProcessor,
 
-    /// Type of logical operation (AND or OR)
     logical_type: LogicalType,
 
-    /// Reference to partner's PreStateProcessor (for AND logic checking)
+    /// Partner's pre processor. AND reads its `state_id` to find the partner position.
     partner_pre_processor: Option<Arc<Mutex<LogicalPreStateProcessor>>>,
 
-    /// Reference to partner's PostStateProcessor (for OR logic coordination)
+    /// Partner's post processor. OR sets its `is_event_returned` flag, and the next
+    /// state setters copy their target to it.
     partner_post_processor: Option<Arc<Mutex<LogicalPostStateProcessor>>>,
 }
 
 impl LogicalPostStateProcessor {
-    /// Create a new LogicalPostStateProcessor
+    /// Create one side's post processor.
     ///
     /// # Arguments
-    /// * `state_id` - Position in the StateEvent for this processor
-    /// * `logical_type` - AND or OR logic
+    /// * `state_id` - Position of this side in the StateEvent
+    /// * `logical_type` - AND or OR
     pub fn new(state_id: usize, logical_type: LogicalType) -> Self {
         Self {
             base_processor: StreamPostStateProcessor::new(state_id),
@@ -106,24 +106,22 @@ impl LogicalPostStateProcessor {
         }
     }
 
-    /// Get the logical type
     pub fn logical_type(&self) -> LogicalType {
         self.logical_type
     }
 
-    /// Set the partner PreStateProcessor
-    /// Used for AND logic to check if partner's event is present
+    /// Set the partner's pre processor. AND needs it to find the partner position.
     pub fn set_partner_pre_processor(&mut self, partner: Arc<Mutex<LogicalPreStateProcessor>>) {
         self.partner_pre_processor = Some(partner);
     }
 
-    /// Set the partner PostStateProcessor
-    /// Used for OR logic to coordinate event returned flag
+    /// Set the partner's post processor. OR needs it to set the partner's
+    /// `is_event_returned` flag.
     pub fn set_partner_post_processor(&mut self, partner: Arc<Mutex<LogicalPostStateProcessor>>) {
         self.partner_post_processor = Some(partner);
     }
 
-    /// Set the associated PreStateProcessor
+    /// Set the pre processor paired with this post processor
     pub fn set_this_state_pre_processor(
         &mut self,
         pre_processor: Arc<Mutex<dyn PreStateProcessor>>,
@@ -132,18 +130,16 @@ impl LogicalPostStateProcessor {
             .set_this_state_pre_processor(pre_processor);
     }
 
-    /// Process a matched StateEvent with AND/OR logic
+    /// Apply the AND or OR rule to a matched StateEvent
     fn process_with_logic(&mut self, state_event: &StateEvent) {
         match self.logical_type {
             LogicalType::And => {
-                // AND: only proceed if partner's event is also present
                 let mut should_process = false;
 
                 if let Some(ref partner_pre) = self.partner_pre_processor {
                     if let Ok(partner_guard) = partner_pre.lock() {
                         let partner_state_id = partner_guard.state_id();
 
-                        // Check if partner's position has an event
                         if state_event.get_stream_event(partner_state_id).is_some() {
                             should_process = true;
                         }
@@ -151,11 +147,9 @@ impl LogicalPostStateProcessor {
                 }
 
                 if should_process {
-                    // Both sides matched, forward normally
                     self.base_processor.process_state_event(state_event);
                 } else {
-                    // Partner not matched yet, just mark state changed
-                    // Don't forward yet - waiting for both sides
+                    // Partner side not filled yet. Mark the state changed and wait.
                     if let Some(this_pre) = self.base_processor.this_state_pre_processor.as_ref() {
                         if let Ok(guard) = this_pre.lock() {
                             guard.state_changed();
@@ -164,13 +158,12 @@ impl LogicalPostStateProcessor {
                 }
             }
             LogicalType::Or => {
-                // OR: always forward (either side is sufficient)
                 self.base_processor.process_state_event(state_event);
 
-                // Mark partner as "event returned" too
+                // The OR is satisfied, so mark the partner as returned too. Only done
+                // when the partner has a next processor.
                 if let Some(ref partner_post) = self.partner_post_processor {
                     if let Ok(mut partner_guard) = partner_post.lock() {
-                        // Check if partner has output processor
                         if partner_guard.base_processor.get_next_processor().is_some() {
                             partner_guard.base_processor.is_event_returned = true;
                         }
@@ -181,7 +174,6 @@ impl LogicalPostStateProcessor {
     }
 }
 
-// Manual Debug implementation
 impl Debug for LogicalPostStateProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogicalPostStateProcessor")
@@ -197,10 +189,10 @@ impl PostStateProcessor for LogicalPostStateProcessor {
     fn process(&mut self, chunk: Option<Box<dyn ComplexEvent>>) -> Option<Box<dyn ComplexEvent>> {
         if let Some(event) = chunk {
             if let Some(state_event) = event.as_any().downcast_ref::<StateEvent>() {
-                // Apply AND/OR logic
                 self.process_with_logic(state_event);
 
-                // If we have a next processor, forward
+                // Hand the chunk back only when a next processor is set. This happens
+                // even when the AND rule held the event back.
                 if self.base_processor.get_next_processor().is_some() {
                     return Some(event);
                 }
@@ -228,7 +220,7 @@ impl PostStateProcessor for LogicalPostStateProcessor {
         self.base_processor
             .set_next_state_pre_processor(next_state_pre_processor.clone());
 
-        // Also set for partner (coordination)
+        // Both sides lead to the same next step, so set it on the partner too
         if let Some(ref partner_post) = self.partner_post_processor {
             if let Ok(mut partner_guard) = partner_post.lock() {
                 partner_guard
@@ -245,7 +237,7 @@ impl PostStateProcessor for LogicalPostStateProcessor {
         self.base_processor
             .set_next_every_state_pre_processor(next_every_state_pre_processor.clone());
 
-        // Also set for partner (coordination)
+        // Both sides lead to the same next step, so set it on the partner too
         if let Some(ref partner_post) = self.partner_post_processor {
             if let Ok(mut partner_guard) = partner_post.lock() {
                 partner_guard

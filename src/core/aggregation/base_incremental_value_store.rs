@@ -78,8 +78,10 @@ impl BaseIncrementalValueStore {
         out
     }
 
-    /// Drain all grouped values returning the timestamp and the values.
-    /// This clears the internal storage.
+    /// Takes all grouped values and leaves the store empty.
+    ///
+    /// Returns the timestamp of the last processed event (-1 if none) and the
+    /// values keyed by group.
     pub fn drain_grouped_values(&self) -> (i64, HashMap<String, Vec<AttributeValue>>) {
         let mut map = self.grouped_values.lock().unwrap();
         let ts = *self.timestamp.lock().unwrap();

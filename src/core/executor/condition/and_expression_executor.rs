@@ -15,19 +15,20 @@
  * limitations under the License.
  */
 
-// src/core/executor/condition/and_expression_executor.rs
 // Corresponds to io.eventflux.core.executor.condition.AndConditionExpressionExecutor
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
-use crate::core::event::complex_event::ComplexEvent; // Trait
+use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum
-use std::sync::Arc; // For EventFluxAppContext in clone_executor // For clone_executor
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
+use std::sync::Arc;
 
-#[derive(Debug)] // Cannot Clone/Default easily due to Box<dyn ExpressionExecutor>
+/// Logical AND of two BOOL conditions. Short circuits when the left side is not true.
+///
+/// NULL, no value, or a non BOOL result on either side counts as false, so the
+/// result is always a BOOL.
+#[derive(Debug)] // No Clone or Default because of the Box<dyn ExpressionExecutor> fields
 pub struct AndExpressionExecutor {
-    // In Java, these extend ConditionExpressionExecutor, which itself is an ExpressionExecutor.
-    // So, the composed executors here are the left and right conditions.
     left_executor: Box<dyn ExpressionExecutor>,
     right_executor: Box<dyn ExpressionExecutor>,
 }
@@ -37,7 +38,7 @@ impl AndExpressionExecutor {
         left: Box<dyn ExpressionExecutor>,
         right: Box<dyn ExpressionExecutor>,
     ) -> Result<Self, String> {
-        // Java constructor checks if both return BOOL.
+        // Both sides must return BOOL, as in the Java constructor
         if left.get_return_type() != ApiAttributeType::BOOL {
             return Err(format!(
                 "Left operand for AND executor returns {:?} instead of BOOL",
@@ -63,26 +64,25 @@ impl ExpressionExecutor for AndExpressionExecutor {
 
         match left_val {
             Some(AttributeValue::Bool(true)) => {
-                // Left is true, result depends on right
+                // Left is true, so the right side decides
                 let right_val = self.right_executor.execute(event);
                 match right_val {
                     Some(AttributeValue::Bool(b)) => Some(AttributeValue::Bool(b)),
-                    Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // null in boolean context is false
-                    None => Some(AttributeValue::Bool(false)), // Or propagate None if an error/no-value occurred
+                    Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // NULL counts as false
+                    None => Some(AttributeValue::Bool(false)), // No value counts as false
                     _ => {
-                        // Type error: right operand did not return a Bool or Null
-                        // This should ideally be caught by constructor validation or return Err.
-                        // For now, treating as false as per some interpretations of boolean logic with non-booleans.
-                        // More robust: return None or Err(ExecutionError::TypeError)
+                        // Right side returned something other than BOOL or NULL. The
+                        // constructor checks the declared type, but a wrong runtime value
+                        // still counts as false here rather than raising an error.
                         Some(AttributeValue::Bool(false))
                     }
                 }
             }
-            Some(AttributeValue::Bool(false)) => Some(AttributeValue::Bool(false)), // Left is false, so AND is false
-            Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // null AND anything is false
-            None => Some(AttributeValue::Bool(false)), // Error/no-value from left, effectively false for AND
+            Some(AttributeValue::Bool(false)) => Some(AttributeValue::Bool(false)),
+            Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // NULL AND anything is false
+            None => Some(AttributeValue::Bool(false)), // No value from the left counts as false
             _ => {
-                // Type error: left operand did not return a Bool or Null
+                // Left side returned something other than BOOL or NULL
                 Some(AttributeValue::Bool(false))
             }
         }
@@ -102,6 +102,6 @@ impl ExpressionExecutor for AndExpressionExecutor {
                 self.right_executor.clone_executor(eventflux_app_context),
             )
             .expect("Cloning AndExpressionExecutor failed"),
-        ) // Assumes new won't fail if original was valid
+        ) // Cannot fail, since the original passed the same type checks
     }
 }

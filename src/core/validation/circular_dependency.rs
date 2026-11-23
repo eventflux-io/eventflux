@@ -17,24 +17,27 @@
 
 //! Circular Dependency Detection
 //!
-//! Implements Phase 1 validation to detect circular dependencies in stream definitions.
-//! Uses Depth-First Search (DFS) to detect cycles in the dependency graph.
+//! Phase 1 check that finds streams whose queries depend on each other in a loop.
+//! Walks the dependency graph depth first to find cycles.
 
 use crate::core::exception::{EventFluxError, EventFluxResult};
 use std::collections::{HashMap, HashSet};
 
-/// Detect circular dependencies in query definitions
+/// Check that no stream depends on itself through any chain of queries
 ///
-/// Uses DFS to detect cycles in the dependency graph where:
-/// - Nodes are target streams
-/// - Edges are dependencies (FROM and JOIN sources)
+/// Walks the dependency graph depth first, where:
+/// - Nodes are streams
+/// - Edges go from a target stream to each stream it reads (FROM, JOIN and pattern
+///   sources)
 ///
 /// # Arguments
 /// * `dependencies` - Map of target_stream → [source_streams]
 ///
 /// # Returns
-/// * `Ok(())` if no cycles detected
-/// * `Err(EventFluxError)` with cycle path if circular dependency found
+/// * `Ok(())` if there is no cycle
+/// * `Err(EventFluxError)` from `validation_failed` at the first cycle found. The
+///   message shows the walk from its start node to the repeated node, so it can begin
+///   with nodes that lead into the cycle but are not part of it.
 ///
 /// # Example Cycle Detection
 /// ```text
@@ -46,15 +49,14 @@ use std::collections::{HashMap, HashSet};
 pub fn detect_circular_dependencies(
     dependencies: &HashMap<String, HashSet<String>>,
 ) -> EventFluxResult<()> {
-    // Track globally visited nodes (completed DFS)
+    // Nodes whose whole subgraph is already checked and has no cycle
     let mut visited_global = HashSet::new();
 
-    // Check each node as potential cycle start
     for start_node in dependencies.keys() {
         if !visited_global.contains(start_node) {
-            // Track nodes in current DFS path (for cycle detection)
+            // Nodes on the current walk. Meeting one again means a cycle.
             let mut visited_path = HashSet::new();
-            // Track path for error reporting
+            // The current walk in order, for the error message
             let mut path = Vec::new();
 
             dfs_check_cycle(
@@ -67,18 +69,17 @@ pub fn detect_circular_dependencies(
         }
     }
 
-    // ✅ No cycles detected
     Ok(())
 }
 
-/// DFS traversal to detect cycles
+/// Visit `node` and everything it depends on, failing if the walk loops back
 ///
 /// # Arguments
-/// * `node` - Current node being visited
+/// * `node` - Node being visited
 /// * `dependencies` - Dependency graph
-/// * `visited_global` - Nodes that completed DFS (no cycles from them)
-/// * `visited_path` - Nodes in current DFS path (cycle if revisited)
-/// * `path` - Current path for error reporting
+/// * `visited_global` - Nodes already fully checked with no cycle below them
+/// * `visited_path` - Nodes on the current walk. Visiting one again is a cycle.
+/// * `path` - The current walk in order, for the error message
 fn dfs_check_cycle(
     node: &String,
     dependencies: &HashMap<String, HashSet<String>>,
@@ -86,7 +87,7 @@ fn dfs_check_cycle(
     visited_path: &mut HashSet<String>,
     path: &mut Vec<String>,
 ) -> EventFluxResult<()> {
-    // If node already in current path → CYCLE DETECTED
+    // Back on a node from this walk, so there is a cycle
     if visited_path.contains(node) {
         path.push(node.clone());
         let cycle_path = path.join(" → ");
@@ -96,27 +97,25 @@ fn dfs_check_cycle(
         )));
     }
 
-    // If already visited in previous DFS, skip (already validated)
+    // Already checked by an earlier walk
     if visited_global.contains(node) {
         return Ok(());
     }
 
-    // Mark as visited in current path
     visited_path.insert(node.clone());
     path.push(node.clone());
 
-    // Visit all dependencies
     if let Some(deps) = dependencies.get(node) {
         for dep in deps {
             dfs_check_cycle(dep, dependencies, visited_global, visited_path, path)?;
         }
     }
 
-    // Backtrack: remove from current path
+    // Step back off this node before trying sibling branches
     visited_path.remove(node);
     path.pop();
 
-    // Mark as globally visited (completed DFS from this node)
+    // Everything below this node is checked, so later walks can skip it
     visited_global.insert(node.clone());
 
     Ok(())
@@ -199,9 +198,9 @@ mod tests {
 
     #[test]
     fn test_complex_graph_with_cycle() {
-        // A → B → C → D
-        //     ↓       ↑
-        //     E ------+ (cycle: B → E → D → C → B)
+        // Collecting into a HashMap keeps only the last entry for each key, so
+        // ("B", ["C"]) and ("C", ["D"]) are replaced. The graph that is checked is
+        // A → B → E → D → C → B, with the cycle B → E → D → C → B.
         let deps = create_dependencies(vec![
             ("A", vec!["B"]),
             ("B", vec!["C"]),

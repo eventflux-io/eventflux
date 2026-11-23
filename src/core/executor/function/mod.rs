@@ -15,8 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/function/mod.rs
-
 pub mod builtin_wrapper;
 pub mod cast_function_executor;
 pub mod coalesce_function_executor;

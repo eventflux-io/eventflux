@@ -17,22 +17,25 @@
 
 //! Configuration Manager
 //!
-//! Central orchestrator for configuration loading, merging, and validation.
+//! Loads configuration from every registered source, merges it in priority order and
+//! validates the result.
 //!
 //! ## Configuration Reload Strategy
 //!
-//! **Important**: This configuration system does not support hot reload functionality.
-//! If you need to reload configuration changes:
+//! **Important**: Configuration cannot be reloaded while an application runs.
+//! To apply changes:
 //!
-//! 1. **Ensure State Persistence**: Enable state persistence before stopping the application
-//! 2. **Graceful Shutdown**: Stop the current EventFlux application runtime gracefully  
-//! 3. **Update Configuration**: Modify your configuration files or environment variables
-//! 4. **Restart with New Config**: Start a new EventFlux application runtime with the updated configuration
-//! 5. **State Recovery**: The application will automatically restore from persisted state and continue
-//!    processing from where it left off
+//! 1. **Ensure State Persistence**: Turn on state persistence before stopping the application
+//! 2. **Graceful Shutdown**: Stop the current EventFlux application runtime cleanly
+//! 3. **Update Configuration**: Change your configuration files or environment variables
+//! 4. **Restart with New Config**: Start a new EventFlux application runtime with the new
+//!    configuration
+//! 5. **State Recovery**: Restore the last persisted revision, for example with
+//!    `EventFluxManager::restore_all_last_state()`, so processing continues where it
+//!    stopped. A new runtime does not do this by itself.
 //!
-//! This approach ensures data consistency and prevents configuration conflicts while providing
-//! reliable state recovery across restarts.
+//! Restarting keeps the data consistent and avoids running with a half applied
+//! configuration.
 
 use crate::core::config::{
     loader::{
@@ -51,22 +54,22 @@ use tokio::sync::RwLock;
 
 /// Configuration Manager
 ///
-/// Orchestrates configuration loading from multiple sources with proper precedence
-/// and validation.
+/// Loads configuration from several sources and merges them so that a higher priority
+/// source wins. Validates the result unless validation is turned off.
 #[derive(Debug)]
 pub struct ConfigManager {
-    /// Registered configuration loaders in priority order
+    /// Registered loaders, sorted by priority from lowest to highest
     loaders: Vec<Box<dyn ConfigLoader>>,
 
-    /// Cached configuration
+    /// Last loaded configuration
     cached_config: Arc<RwLock<Option<EventFluxConfig>>>,
 
-    /// Configuration validation enabled
+    /// Whether loaded configuration is validated. Defaults to true.
     validation_enabled: bool,
 }
 
 impl ConfigManager {
-    /// Create a new configuration manager with default loaders
+    /// Create a manager with the default loaders. See `register_default_loaders`.
     pub fn new() -> Self {
         let mut manager = Self {
             loaders: Vec::new(),
@@ -74,12 +77,14 @@ impl ConfigManager {
             validation_enabled: true,
         };
 
-        // Register default loaders in priority order
         manager.register_default_loaders();
         manager
     }
 
-    /// Create a configuration manager for a specific file
+    /// Create a manager for one required YAML file.
+    ///
+    /// `EVENTFLUX_` environment variables are also loaded, at priority 110, so they
+    /// override the file.
     pub fn from_file<P: Into<PathBuf>>(path: P) -> Self {
         let mut manager = Self {
             loaders: Vec::new(),
@@ -87,28 +92,30 @@ impl ConfigManager {
             validation_enabled: true,
         };
 
-        // Register only YAML file loader for the specific file
         manager.add_loader(Box::new(YamlConfigLoader::from_file(path)));
 
-        // Add environment variable loader with highest priority for overrides
+        // Above the explicit file (100) so the environment overrides it
         manager.add_loader(Box::new(EnvironmentConfigLoaderWithPriority::new(110)));
 
         manager
     }
 
-    /// Register default configuration loaders
+    /// Register the default loaders.
+    ///
+    /// These are a TOML search (45), a YAML search (50), a Kubernetes ConfigMap named
+    /// `eventflux-config` when built with the `kubernetes` feature and running in a pod
+    /// (70), and `EVENTFLUX_` environment variables (80).
     fn register_default_loaders(&mut self) {
-        // Add loaders in reverse priority order (highest priority last)
+        // add_loader sorts by priority, so the order here does not matter
 
-        // TOML file loader (medium priority, for stream-specific configs)
+        // Its load() always returns None. Stream and table TOML configs are read
+        // through TomlConfigLoader directly.
         self.add_loader(Box::new(TomlConfigLoader::new()));
 
-        // YAML file loader (medium priority)
         self.add_loader(Box::new(YamlConfigLoader::new()));
 
         #[cfg(feature = "kubernetes")]
         {
-            // Kubernetes ConfigMap loader (high priority in containerized environments)
             if self.is_kubernetes_environment() {
                 self.add_loader(Box::new(
                     KubernetesConfigMapLoader::new("eventflux-config")
@@ -117,14 +124,13 @@ impl ConfigManager {
             }
         }
 
-        // Environment variables loader (highest priority)
         self.add_loader(Box::new(EnvironmentConfigLoader::new()));
     }
 
-    /// Add a configuration loader
+    /// Add a loader and keep the list sorted by priority.
     pub fn add_loader(&mut self, loader: Box<dyn ConfigLoader>) {
         self.loaders.push(loader);
-        // Sort loaders by priority (ascending order, so highest priority is last)
+        // Lowest first, so the highest priority loader merges last and wins
         self.loaders.sort_by_key(|loader| loader.priority());
     }
 
@@ -133,19 +139,27 @@ impl ConfigManager {
         self.validation_enabled = enabled;
     }
 
-    /// Check if running in Kubernetes environment
+    /// Check if running inside a Kubernetes pod
     #[allow(dead_code)]
     fn is_kubernetes_environment(&self) -> bool {
         std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
     }
 
-    /// Load configuration from all sources with proper precedence
+    /// Load and merge configuration from every available loader.
+    ///
+    /// Starts from `EventFluxConfig::default()` and merges each loader from lowest to
+    /// highest priority. A loader that fails to load or merge is skipped and its error
+    /// is printed as a warning at the end. Caches the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InternalError` if nothing loaded and at least one loader failed, and
+    /// `ValidationFailed` if validation is on and the merged config is invalid.
     pub async fn load_unified_config(&self) -> ConfigResult<EventFluxConfig> {
         let mut final_config = EventFluxConfig::default();
         let mut loaded_any = false;
         let mut errors = Vec::new();
 
-        // Load from each source in priority order (lowest to highest)
         for loader in &self.loaders {
             if !loader.is_available() {
                 continue;
@@ -153,7 +167,6 @@ impl ConfigManager {
 
             match loader.load().await {
                 Ok(Some(config)) => {
-                    // Merge this configuration into the final config
                     if let Err(e) = final_config.merge(config) {
                         errors.push(format!(
                             "Failed to merge config from {}: {}",
@@ -166,7 +179,7 @@ impl ConfigManager {
                     println!("Loaded configuration from: {}", loader.description());
                 }
                 Ok(None) => {
-                    // No configuration from this source, continue
+                    // This source has nothing to add
                     continue;
                 }
                 Err(e) => {
@@ -180,7 +193,7 @@ impl ConfigManager {
             }
         }
 
-        // If no configuration was loaded and we have errors, report them
+        // With no source loaded and no errors, the defaults are used as is
         if !loaded_any && !errors.is_empty() {
             return Err(ConfigError::internal_error(format!(
                 "No configuration could be loaded. Errors: {}",
@@ -188,18 +201,15 @@ impl ConfigManager {
             )));
         }
 
-        // Validate the final configuration if validation is enabled
         if self.validation_enabled {
             self.validate_config(&final_config)?;
         }
 
-        // Update cache
         {
             let mut cache = self.cached_config.write().await;
             *cache = Some(final_config.clone());
         }
 
-        // Log configuration summary
         println!(
             "Configuration loaded successfully: {}",
             final_config.summary()
@@ -211,14 +221,20 @@ impl ConfigManager {
         Ok(final_config)
     }
 
-    /// Load configuration from a specific file
+    /// Load one YAML file, ignoring the registered loaders.
+    ///
+    /// `EVENTFLUX_` environment variables are still merged on top. Caches the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the YAML loading errors, any environment loader error, `MergeConflict`
+    /// if the merge fails, and `ValidationFailed` if validation is on and fails.
     pub async fn load_from_file<P: AsRef<Path>>(&self, path: P) -> ConfigResult<EventFluxConfig> {
         let path = path.as_ref();
         let yaml_loader = YamlConfigLoader::from_file(path);
 
         let mut config = yaml_loader.load_file(path).await?;
 
-        // Still apply environment variable overrides
         let env_loader = EnvironmentConfigLoader::new();
         if let Some(env_config) = env_loader.load().await? {
             config
@@ -226,12 +242,10 @@ impl ConfigManager {
                 .map_err(|e| ConfigError::MergeConflict { message: e })?;
         }
 
-        // Validate if enabled
         if self.validation_enabled {
             self.validate_config(&config)?;
         }
 
-        // Update cache
         {
             let mut cache = self.cached_config.write().await;
             *cache = Some(config.clone());
@@ -242,7 +256,7 @@ impl ConfigManager {
         Ok(config)
     }
 
-    /// Get cached configuration if available
+    /// Get a copy of the last loaded configuration, if any
     pub async fn get_cached_config(&self) -> Option<EventFluxConfig> {
         let cache = self.cached_config.read().await;
         cache.clone()
@@ -254,9 +268,9 @@ impl ConfigManager {
         *cache = None;
     }
 
-    /// Validate configuration
+    /// Run `EventFluxConfig::validate` and wrap each message as a `CustomValidation`
+    /// error on the field "config".
     fn validate_config(&self, config: &EventFluxConfig) -> ConfigResult<()> {
-        // Basic validation
         if let Err(errors) = config.validate() {
             return Err(ConfigError::validation_failed(
                 errors
@@ -266,15 +280,14 @@ impl ConfigManager {
             ));
         }
 
-        // Implementation pending: Comprehensive configuration validation
-        // - Connectivity validation for external services
-        // - Resource validation
-        // - Dependency validation
+        // Not done yet: checking that external services are reachable, that resources
+        // exist, and that dependencies line up
 
         Ok(())
     }
 
-    /// List all available loaders and their status
+    /// List every registered loader with its priority and whether it is available,
+    /// lowest priority first
     pub fn list_loaders(&self) -> Vec<LoaderInfo> {
         self.loaders
             .iter()
@@ -286,7 +299,7 @@ impl ConfigManager {
             .collect()
     }
 
-    /// Create a configuration manager builder for advanced configuration
+    /// Start a builder that registers only the loaders you choose
     pub fn builder() -> ConfigManagerBuilder {
         ConfigManagerBuilder::new()
     }
@@ -312,6 +325,8 @@ pub struct LoaderInfo {
 }
 
 /// Configuration Manager Builder
+///
+/// Starts with no loaders and validation on.
 #[derive(Debug)]
 pub struct ConfigManagerBuilder {
     loaders: Vec<Box<dyn ConfigLoader>>,
@@ -319,7 +334,7 @@ pub struct ConfigManagerBuilder {
 }
 
 impl ConfigManagerBuilder {
-    /// Create a new builder
+    /// Create a builder with no loaders and validation on
     pub fn new() -> Self {
         Self {
             loaders: Vec::new(),
@@ -333,27 +348,29 @@ impl ConfigManagerBuilder {
         self
     }
 
-    /// Add YAML file loader
+    /// Add a loader for one required YAML file
     pub fn with_yaml_file<P: Into<PathBuf>>(self, path: P) -> Self {
         self.add_loader(Box::new(YamlConfigLoader::from_file(path)))
     }
 
-    /// Add YAML search path loader
+    /// Add a YAML loader that searches the default paths
     pub fn with_yaml_search(self) -> Self {
         self.add_loader(Box::new(YamlConfigLoader::new()))
     }
 
-    /// Add TOML file loader
+    /// Add a loader for one required TOML file. Its `load` adds nothing to the merged
+    /// config, see [`TomlConfigLoader`].
     pub fn with_toml_file<P: Into<PathBuf>>(self, path: P) -> Self {
         self.add_loader(Box::new(TomlConfigLoader::from_file(path)))
     }
 
-    /// Add TOML search path loader
+    /// Add a TOML loader that searches the default paths. Its `load` adds nothing to
+    /// the merged config, see [`TomlConfigLoader`].
     pub fn with_toml_search(self) -> Self {
         self.add_loader(Box::new(TomlConfigLoader::new()))
     }
 
-    /// Add environment variable loader
+    /// Add a loader for `EVENTFLUX_` environment variables
     pub fn with_environment_vars(self) -> Self {
         self.add_loader(Box::new(EnvironmentConfigLoader::new()))
     }
@@ -364,7 +381,7 @@ impl ConfigManagerBuilder {
     }
 
     #[cfg(feature = "kubernetes")]
-    /// Add Kubernetes ConfigMap loader
+    /// Add a Kubernetes ConfigMap loader with the default namespace and key
     pub fn with_kubernetes_configmap(self, name: impl Into<String>) -> Self {
         self.add_loader(Box::new(KubernetesConfigMapLoader::new(name)))
     }
@@ -398,7 +415,7 @@ impl ConfigManagerBuilder {
             validation_enabled: self.validation_enabled,
         };
 
-        // Sort loaders by priority
+        // Lowest first, same order as ConfigManager::add_loader keeps
         manager.loaders.sort_by_key(|loader| loader.priority());
 
         manager
@@ -450,7 +467,7 @@ apiVersion: eventflux.io/v1
 kind: EventFluxConfig
 metadata:
   name: test-config
-  
+
 eventflux:
   runtime:
     mode: single-node
@@ -494,7 +511,7 @@ apiVersion: eventflux.io/v1
 kind: EventFluxConfig
 metadata:
   name: base-config
-  
+
 eventflux:
   runtime:
     mode: single-node
@@ -581,7 +598,7 @@ eventflux:
 
         assert!(!loaders.is_empty());
 
-        // Should have environment loader (always available if no env vars set)
+        // The environment loader is always registered, even when no variables are set
         assert!(loaders
             .iter()
             .any(|l| l.description.contains("Environment variables")));
@@ -597,7 +614,7 @@ eventflux:
         let mut manager = ConfigManager::new();
         manager.set_validation_enabled(false);
 
-        // Should be able to load even with invalid config (when validation is off)
+        // Loading must succeed with validation off
         let config = manager.load_unified_config().await.unwrap();
         assert!(!config.api_version.is_empty());
     }

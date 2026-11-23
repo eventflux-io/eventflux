@@ -15,21 +15,25 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.state.CountStateElement
 use super::stream_state_element::StreamStateElement;
 use crate::query_api::eventflux_element::EventFluxElement;
 
-// Constant for ANY count, from Java's CountStateElement.ANY = -1
+/// Count value that means no bound on that side.
 pub const ANY_COUNT: i32 = -1;
 
-#[derive(Clone, Debug, PartialEq)] // Default is not straightforward
+/// A pattern step that matches a stream between `min_count` and `max_count` times, as in
+/// `A{2:5}`.
+///
+/// Has no `Default` because the stream element is required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct CountStateElement {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // CountStateElement fields
     pub stream_state_element: Box<StreamStateElement>,
-    pub min_count: i32, // Using i32 and ANY_COUNT to represent optionality, like Java
-    pub max_count: i32, // Using i32 and ANY_COUNT
+    /// Lowest match count, or `ANY_COUNT` for no lower bound.
+    pub min_count: i32,
+    /// Highest match count, or `ANY_COUNT` for no upper bound.
+    pub max_count: i32,
 }
 
 impl CountStateElement {
@@ -43,9 +47,8 @@ impl CountStateElement {
     }
 }
 
-// No Default derive due to required StreamStateElement and specific count logic.
-// A user would typically construct this with specific counts or ANY_COUNT.
-// Defaulting min/max to ANY_COUNT might be an option if StreamStateElement was Default.
+// A possible Default with both counts unbounded. StreamStateElement does implement
+// Default, so this would compile, but an element with no real stream is of little use.
 // impl Default for CountStateElement {
 //     fn default() -> Self {
 //         Self {

@@ -15,30 +15,31 @@
  * limitations under the License.
  */
 
-//! Pattern Validation Module
+//! Pattern validation.
 //!
-//! Validates pattern expressions according to EventFlux grammar rules.
-//! This validation occurs after parsing but before conversion to Query API.
+//! Checks pattern expressions against the EventFlux grammar rules. Runs after parsing and
+//! before conversion to the Query API.
 
 use sqlparser::ast::{PatternExpression, PatternMode};
 use std::fmt;
 
-/// Pattern validation error types
+/// A broken pattern rule.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternValidationError {
-    /// EVERY keyword used in SEQUENCE mode
+    /// EVERY used in SEQUENCE mode.
     EveryInSequenceMode,
-    /// EVERY keyword not at top level (nested in sequence or logical)
+    /// EVERY not at the top level. `context` says where it was found, such as
+    /// "sequence" or "logical combination".
     EveryNotAtTopLevel { context: String },
-    /// Multiple EVERY keywords in pattern
+    /// A top level EVERY with another EVERY inside it.
     MultipleEvery,
-    /// Count quantifier with min_count < 1
+    /// Count quantifier with a min of 0.
     ZeroCountPattern { min_count: u32 },
-    /// Count quantifier with unbounded max (not supported)
+    /// Count quantifier with no upper bound. Not supported.
     UnboundedCountPattern,
-    /// Count quantifier with max < min
+    /// Count quantifier whose max is below its min.
     InvalidCountRange { min_count: u32, max_count: u32 },
-    /// Absent pattern used in logical combination
+    /// Absent pattern (NOT ... FOR) used directly inside AND or OR.
     AbsentInLogical,
 }
 
@@ -106,18 +107,23 @@ impl fmt::Display for PatternValidationError {
 
 impl std::error::Error for PatternValidationError {}
 
-/// Pattern validator
+/// Checks pattern expressions. Holds no data.
 pub struct PatternValidator;
 
 impl PatternValidator {
-    /// Validate a pattern expression according to grammar rules
+    /// Check a pattern expression against the grammar rules.
     ///
-    /// This validates:
+    /// The rules:
     /// 1. EVERY only in PATTERN mode
-    /// 2. EVERY only at top level
-    /// 3. No multiple EVERY keywords
-    /// 4. Count quantifiers have valid bounds
-    /// 5. Absent patterns not in logical combinations
+    /// 2. EVERY only at the top level
+    /// 3. No more than one EVERY
+    /// 4. Count quantifiers have a min of at least 1, an explicit max, and max >= min
+    /// 5. Absent patterns not directly inside AND or OR
+    ///
+    /// # Errors
+    ///
+    /// Returns every broken rule found, not just the first. One pattern can give several
+    /// errors.
     pub fn validate(
         mode: &PatternMode,
         pattern: &PatternExpression,
@@ -134,10 +140,10 @@ impl PatternValidator {
         // Rule 2 & 3: EVERY position and count
         Self::validate_every_position(pattern, &mut errors);
 
-        // Rule 4: Count quantifier validation
+        // Rule 4: Count quantifier bounds
         Self::validate_count_quantifiers(pattern, &mut errors);
 
-        // Rule 5: Absent patterns not in logical
+        // Rule 5: Absent patterns not inside AND or OR
         Self::validate_absent_not_in_logical(pattern, &mut errors);
 
         if errors.is_empty() {
@@ -147,7 +153,7 @@ impl PatternValidator {
         }
     }
 
-    /// Check if pattern contains EVERY at any level
+    /// Whether EVERY appears anywhere in the pattern.
     fn contains_every(pattern: &PatternExpression) -> bool {
         match pattern {
             PatternExpression::Every { .. } => true,
@@ -164,33 +170,37 @@ impl PatternValidator {
         }
     }
 
-    /// Validate EVERY is only at top level and appears at most once
+    /// Check that EVERY appears only at the top level and at most once.
+    ///
+    /// Only the outermost node counts as the top level. An EVERY wrapped in parentheses
+    /// (a Grouped node) is treated as nested.
     fn validate_every_position(
         pattern: &PatternExpression,
         errors: &mut Vec<PatternValidationError>,
     ) {
         match pattern {
             PatternExpression::Every { pattern: inner } => {
-                // EVERY at top level is OK, but check inner pattern has no EVERY
+                // A top level EVERY is fine, but nothing inside it may have another one.
                 if Self::contains_every(inner) {
                     errors.push(PatternValidationError::MultipleEvery);
                 }
             }
             _ => {
-                // Not EVERY at top - ensure NO EVERY anywhere in this pattern
                 Self::validate_no_nested_every(pattern, errors);
             }
         }
     }
 
-    /// Recursively check that EVERY doesn't appear nested
+    /// Report any EVERY found below the top level.
+    ///
+    /// Inside a sequence or logical node it reports once per side that has an EVERY,
+    /// without looking deeper on that side.
     fn validate_no_nested_every(
         pattern: &PatternExpression,
         errors: &mut Vec<PatternValidationError>,
     ) {
         match pattern {
             PatternExpression::Every { .. } => {
-                // EVERY found nested - this is an error
                 errors.push(PatternValidationError::EveryNotAtTopLevel {
                     context: "pattern".to_string(),
                 });
@@ -201,7 +211,6 @@ impl PatternValidator {
                 Self::validate_no_nested_every(pattern, errors);
             }
             PatternExpression::Sequence { first, second } => {
-                // Check if EVERY is nested in sequence
                 if Self::contains_every(first) {
                     errors.push(PatternValidationError::EveryNotAtTopLevel {
                         context: "sequence".to_string(),
@@ -214,7 +223,6 @@ impl PatternValidator {
                 }
             }
             PatternExpression::Logical { left, right, .. } => {
-                // Check if EVERY is nested in logical
                 if Self::contains_every(left) {
                     errors.push(PatternValidationError::EveryNotAtTopLevel {
                         context: "logical combination".to_string(),
@@ -232,7 +240,7 @@ impl PatternValidator {
         }
     }
 
-    /// Validate count quantifiers have valid bounds
+    /// Check the bounds of every count quantifier in the pattern.
     fn validate_count_quantifiers(
         pattern: &PatternExpression,
         errors: &mut Vec<PatternValidationError>,
@@ -243,19 +251,17 @@ impl PatternValidator {
                 min_count,
                 max_count,
             } => {
-                // Rule: min_count >= 1
                 if *min_count == 0 {
                     errors.push(PatternValidationError::ZeroCountPattern {
                         min_count: *min_count,
                     });
                 }
 
-                // Rule: max_count must be explicit (we use u32::MAX as sentinel for unbounded)
+                // The parser stores an open upper bound as u32::MAX.
                 if *max_count == u32::MAX {
                     errors.push(PatternValidationError::UnboundedCountPattern);
                 }
 
-                // Rule: max >= min
                 if *max_count < *min_count && *max_count != u32::MAX {
                     errors.push(PatternValidationError::InvalidCountRange {
                         min_count: *min_count,
@@ -263,7 +269,6 @@ impl PatternValidator {
                     });
                 }
 
-                // Recurse into inner pattern
                 Self::validate_count_quantifiers(inner, errors);
             }
             PatternExpression::Stream { .. } => {}
@@ -285,18 +290,17 @@ impl PatternValidator {
         }
     }
 
-    /// Validate absent patterns are not used in logical combinations
+    /// Report each AND or OR node that has an absent pattern as a direct side. Reports
+    /// once per node even when both sides are absent.
     fn validate_absent_not_in_logical(
         pattern: &PatternExpression,
         errors: &mut Vec<PatternValidationError>,
     ) {
         match pattern {
             PatternExpression::Logical { left, right, .. } => {
-                // Check if either side is an absent pattern
                 if Self::is_absent(left) || Self::is_absent(right) {
                     errors.push(PatternValidationError::AbsentInLogical);
                 }
-                // Recurse into children
                 Self::validate_absent_not_in_logical(left, errors);
                 Self::validate_absent_not_in_logical(right, errors);
             }
@@ -318,7 +322,7 @@ impl PatternValidator {
         }
     }
 
-    /// Check if a pattern is an absent pattern (possibly wrapped in Grouped)
+    /// Whether the pattern is an absent pattern, looking through any parentheses.
     fn is_absent(pattern: &PatternExpression) -> bool {
         match pattern {
             PatternExpression::Absent { .. } => true,
@@ -584,9 +588,8 @@ mod tests {
 
     #[test]
     fn test_multiple_errors_collected() {
-        // Pattern with multiple issues:
-        // EVERY(A{0,MAX} -> B) in SEQUENCE mode with EVERY nested
-        // This should collect multiple errors
+        // EVERY(A{0,MAX} -> B) in SEQUENCE mode breaks several rules at once, and all of
+        // them should be reported.
         let inner = sequence(count(stream("A"), 0, u32::MAX), stream("B"));
         let pattern = every(inner);
 

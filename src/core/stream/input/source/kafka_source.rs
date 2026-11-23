@@ -17,15 +17,15 @@
 
 //! # Kafka Source
 //!
-//! Consumes records from Kafka topics and delivers their payloads to the
+//! Reads records from Kafka topics and delivers their payloads to the
 //! EventFlux pipeline.
 //!
 //! ## Architecture
 //!
-//! Unlike the RabbitMQ/WebSocket sources, no tokio runtime is needed:
-//! librdkafka runs its own background threads (network I/O, reconnection),
-//! and the synchronous `BaseConsumer` poll loop maps directly onto the
-//! [`SourceWorker`] thread:
+//! Unlike the RabbitMQ and WebSocket sources, this needs no tokio runtime.
+//! librdkafka runs its own background threads for network I/O and reconnects,
+//! and the blocking `BaseConsumer` poll loop runs straight on the
+//! [`SourceWorker`] thread.
 //!
 //! ```text
 //! Kafka topic → BaseConsumer::poll(100ms) → bytes → SourceCallback → SourceMapper → Events
@@ -34,14 +34,14 @@
 //! ## Delivery semantics
 //!
 //! - `kafka.enable.auto.commit = true` (default): librdkafka stores and
-//!   commits offsets on its own — commits can precede processing
-//!   (approximately at-most-once).
-//! - `kafka.enable.auto.commit = false`: an offset enters the commit path
-//!   only after the pipeline accepted the record (or the error strategy
-//!   explicitly disposed of it via drop/DLQ) — at-least-once. Commits flush
-//!   every `auto.commit.interval.ms` (librdkafka default 5s, tunable via
-//!   `kafka.rdkafka.auto.commit.interval.ms`) plus synchronously on
-//!   rebalance and shutdown.
+//!   commits offsets on its own. A commit can happen before the record is
+//!   processed, so this is roughly at-most-once.
+//! - `kafka.enable.auto.commit = false`: an offset can be committed only after
+//!   the pipeline accepted the record, or the error strategy dropped it or sent
+//!   it to the DLQ. This is at-least-once. Commits go out every
+//!   `auto.commit.interval.ms` (librdkafka default 5s, set it with
+//!   `kafka.rdkafka.auto.commit.interval.ms`), and also as a blocking commit
+//!   when partitions are revoked in a rebalance and at shutdown.
 //!
 //! ## Example Usage
 //!
@@ -73,9 +73,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// librdkafka settings owned by first-class config fields — rejected when
-/// passed through the `kafka.rdkafka.*` escape hatch to avoid two sources of
-/// truth for the same knob.
+/// librdkafka settings that have their own config field. They are rejected
+/// when passed through the raw `kafka.rdkafka.*` keys, so one setting is never
+/// set in two places.
 const RESERVED_RDKAFKA_KEYS: &[&str] = &[
     "bootstrap.servers",
     "group.id",
@@ -87,28 +87,35 @@ const RESERVED_RDKAFKA_KEYS: &[&str] = &[
 /// Configuration for Kafka source
 #[derive(Debug, Clone)]
 pub struct KafkaSourceConfig {
-    /// Broker connection + security settings (shared with the sink)
+    /// Broker connection and security settings, shared with the sink
     pub connection: KafkaConnectionConfig,
-    /// Topics to consume (parsed from comma-separated `kafka.topic`)
+    /// Topics to read, from the comma separated `kafka.topic`
     pub topics: Vec<String>,
-    /// Consumer group id (default: `eventflux-<first-topic>`, deterministic
-    /// so committed offsets survive restarts)
+    /// Consumer group id. Default `eventflux-<first-topic>`, which stays the
+    /// same across restarts so committed offsets are kept.
     pub group_id: String,
-    /// Where to start when no committed offset exists (`earliest`/`latest`)
+    /// Where to start when there is no committed offset, `earliest` or
+    /// `latest`. Default `latest`.
     pub auto_offset_reset: String,
-    /// true: librdkafka commits periodically (~at-most-once).
-    /// false: commit after successful pipeline delivery (at-least-once).
+    /// true: librdkafka commits on a timer, roughly at-most-once. The default.
+    /// false: commit only after the pipeline accepted the record (at-least-once).
     pub enable_auto_commit: bool,
-    /// Poll timeout; bounds shutdown latency (default 100ms)
+    /// Poll timeout in ms. Also the longest stop has to wait. Default 100.
     pub poll_timeout_ms: u64,
 }
 
 impl KafkaSourceConfig {
-    /// Parse configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection config is invalid or uses a
+    /// reserved `kafka.rdkafka.*` key, `kafka.topic` is missing or empty,
+    /// `kafka.auto.offset.reset` is not `earliest` or `latest`, or a value
+    /// does not parse.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let connection = KafkaConnectionConfig::from_properties(properties, RESERVED_RDKAFKA_KEYS)?;
 
-        // Required: topic(s)
         let topics: Vec<String> = properties
             .get("kafka.topic")
             .ok_or("Missing required property: kafka.topic")?
@@ -120,7 +127,8 @@ impl KafkaSourceConfig {
             return Err("kafka.topic cannot be empty".to_string());
         }
 
-        // Deterministic default group id keeps committed offsets across restarts
+        // A default group id that never changes keeps committed offsets across
+        // restarts
         let group_id = properties
             .get("kafka.group.id")
             .cloned()
@@ -149,19 +157,18 @@ impl KafkaSourceConfig {
         })
     }
 
-    /// Build the librdkafka client configuration
+    /// Builds the librdkafka client config.
     ///
-    /// Offset semantics follow the canonical librdkafka at-least-once
-    /// pattern: the internal auto-committer is ALWAYS on (it periodically
-    /// flushes the local offset store, commits on rebalance, and commits on
-    /// close). What `kafka.enable.auto.commit` really controls is what goes
-    /// INTO that store:
+    /// Offsets follow the standard librdkafka at-least-once pattern. The
+    /// built in committer is ALWAYS on. It sends the local offset store to the
+    /// broker on a timer, on rebalance, and on close. What
+    /// `kafka.enable.auto.commit` really controls is what goes INTO that store.
     ///
-    /// - `true` (default): librdkafka auto-stores every polled offset —
-    ///   commits can precede processing (~at-most-once)
-    /// - `false`: auto-store is disabled and the consume loop stores an
-    ///   offset only AFTER the pipeline accepted the record — every commit,
-    ///   from any path, covers only processed records (at-least-once)
+    /// - `true` (default): librdkafka stores every polled offset itself. A
+    ///   commit can happen before processing, so roughly at-most-once.
+    /// - `false`: automatic storing is off, and the consume loop stores an
+    ///   offset only AFTER the pipeline accepted the record. Every commit, from
+    ///   any path, covers only processed records (at-least-once).
     pub fn to_client_config(&self) -> rdkafka::config::ClientConfig {
         let mut config = rdkafka::config::ClientConfig::new();
         config
@@ -177,8 +184,8 @@ impl KafkaSourceConfig {
     }
 }
 
-/// Consumer context that logs rebalance events and, in manual-commit mode,
-/// sync-commits pending offsets before partitions are revoked
+/// Consumer context that logs rebalance events. In manual commit mode it also
+/// commits stored offsets, blocking, before partitions are revoked.
 struct KafkaSourceContext {
     /// true when `kafka.enable.auto.commit = false`
     manual_commit: bool,
@@ -190,12 +197,12 @@ impl ConsumerContext for KafkaSourceContext {
     fn pre_rebalance(&self, consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         log::debug!("[KafkaSource] Pre-rebalance: {rebalance:?}");
 
-        // In manual-commit mode, flush pending async commits before losing
-        // the partitions — otherwise a commit that races the revoke is
-        // dropped and the records are redelivered (duplicate outputs).
+        // In manual commit mode, commit stored offsets before the partitions
+        // go away. Otherwise a commit that lands after the revoke is dropped,
+        // and the records are delivered again (duplicate outputs).
         if self.manual_commit && matches!(rebalance, Rebalance::Revoke(_)) {
             if let Err(e) = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync) {
-                // "No offset stored" simply means nothing pending
+                // "No offset stored" just means nothing was waiting
                 log::debug!("[KafkaSource] Commit on revoke: {e}");
             }
         }
@@ -206,13 +213,13 @@ impl ConsumerContext for KafkaSourceContext {
     }
 }
 
-/// Mark a record as processed in manual-commit mode.
+/// Marks a record as processed in manual commit mode.
 ///
-/// The offset goes into librdkafka's local store; the internal committer
-/// (plus the revoke/shutdown sync commits) flushes it to the broker. Only
-/// offsets stored here are ever committed, which is what makes the
-/// at-least-once guarantee hold on every commit path. In auto-commit mode
-/// librdkafka stores offsets itself, so this is a no-op.
+/// The offset goes into librdkafka's local store. The built in committer, and
+/// the blocking commits on revoke and shutdown, send it to the broker. Only
+/// offsets stored here are ever committed, which keeps the at-least-once
+/// promise on every commit path. In auto commit mode librdkafka stores offsets
+/// itself, so this does nothing.
 fn store_processed_offset(
     consumer: &BaseConsumer<KafkaSourceContext>,
     msg: &rdkafka::message::BorrowedMessage<'_>,
@@ -222,31 +229,30 @@ fn store_processed_offset(
         return;
     }
     if let Err(e) = consumer.store_offset_from_message(msg) {
-        // Typically the partition was just revoked — the record will be
-        // redelivered to its new owner (at-least-once)
+        // Usually the partition was just revoked. The record will be delivered
+        // again to its new owner (at-least-once).
         log::warn!("[KafkaSource] Failed to store offset: {e}");
     }
 }
 
-/// Kafka source that consumes records from one or more topics
+/// Kafka source that reads records from one or more topics.
 ///
-/// This implementation:
-/// - Uses the sync `BaseConsumer` poll loop on a [`SourceWorker`] thread —
-///   no tokio runtime needed; librdkafka handles I/O and reconnection
-/// - Supports at-least-once delivery via commit-after-success
-/// - Integrates with the `error.*` handling strategies
+/// - Runs the blocking `BaseConsumer` poll loop on a [`SourceWorker`] thread.
+///   No tokio runtime is needed, since librdkafka handles I/O and reconnects.
+/// - Gives at-least-once delivery by committing only after success, when
+///   `kafka.enable.auto.commit` is false
+/// - Uses the `error.*` handling strategies
 #[derive(Debug)]
 pub struct KafkaSource {
-    /// Configuration
     config: KafkaSourceConfig,
-    /// Worker thread lifecycle (spawn, signal, join on stop)
+    /// Runs the worker thread. Starts it, signals it, and joins it on stop.
     worker: SourceWorker,
     /// Optional error handling context
     error_ctx: Option<SourceErrorContext>,
 }
 
 impl KafkaSource {
-    /// Create a new Kafka source without error handling
+    /// Creates a Kafka source with no error handling
     pub fn new(config: KafkaSourceConfig) -> Self {
         Self {
             config,
@@ -255,20 +261,24 @@ impl KafkaSource {
         }
     }
 
-    /// Create a Kafka source from properties
+    /// Creates a Kafka source from properties.
     ///
     /// # Required Properties
-    /// - `kafka.bootstrap.servers`: Comma-separated broker list
-    /// - `kafka.topic`: Topic(s) to consume, comma-separated for multiple
+    /// - `kafka.bootstrap.servers`: comma separated broker list
+    /// - `kafka.topic`: topics to read, comma separated
     ///
     /// # Optional Properties
-    /// - `kafka.group.id`: Consumer group (default: `eventflux-<first-topic>`)
-    /// - `kafka.auto.offset.reset`: `earliest`/`latest` (default: `latest`)
-    /// - `kafka.enable.auto.commit`: default `true`; `false` = at-least-once
-    /// - `kafka.poll.timeout.ms`: Poll timeout (default: 100)
+    /// - `kafka.group.id`: consumer group (default `eventflux-<first-topic>`)
+    /// - `kafka.auto.offset.reset`: `earliest` or `latest` (default `latest`)
+    /// - `kafka.enable.auto.commit`: default `true`. `false` gives at-least-once
+    /// - `kafka.poll.timeout.ms`: poll timeout in ms (default 100)
     /// - `kafka.security.protocol`, `kafka.sasl.*`, `kafka.ssl.ca.location`
-    /// - `kafka.rdkafka.<prop>`: Verbatim librdkafka overrides
-    /// - `error.*`: Error handling properties (see SourceErrorContext)
+    /// - `kafka.rdkafka.<prop>`: raw librdkafka settings passed as is
+    /// - `error.*`: error handling properties (see SourceErrorContext)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Kafka config or the error config is invalid.
     pub fn from_properties(
         properties: &HashMap<String, String>,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
@@ -288,8 +298,8 @@ impl Clone for KafkaSource {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            worker: self.worker.clone(), // the clone is a new worker that has not started
+            // New context with the same strategy and DLQ, and runtime counters reset
             error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
@@ -304,7 +314,8 @@ impl Source for KafkaSource {
             if let Some(ctx) = &mut error_ctx {
                 ctx.bind_cancellation(Arc::clone(&running));
             }
-            // Setup failures (create/subscribe) are all reported the same way
+            // Setup failures in create and subscribe are reported the same way
+            // and end the worker
             let report_fatal = |error_ctx: &mut Option<SourceErrorContext>, err: EventFluxError| {
                 if let Some(ctx) = error_ctx {
                     ctx.handle_error(None, &err);
@@ -313,7 +324,6 @@ impl Source for KafkaSource {
                 }
             };
 
-            // Create consumer inside the worker thread
             let context = KafkaSourceContext {
                 manual_commit: !config.enable_auto_commit,
             };
@@ -351,16 +361,16 @@ impl Source for KafkaSource {
             );
 
             let poll_timeout = Duration::from_millis(config.poll_timeout_ms);
-            // Only the worker thread touches these — plain integers suffice
+            // Only the worker thread touches these, so plain integers are enough
             let mut records_received: u64 = 0;
             let mut records_failed: u64 = 0;
 
             'poll: while running.load(Ordering::SeqCst) {
                 match consumer.poll(poll_timeout) {
-                    None => continue, // Timeout — re-check running flag
+                    None => continue, // timed out, so check the running flag again
                     Some(Err(e)) => {
-                        // librdkafka retries transient broker errors internally;
-                        // errors surfacing here go through the error strategy.
+                        // librdkafka retries short lived broker errors itself.
+                        // Errors that reach here go through the error strategy.
                         let err = EventFluxError::ConnectionUnavailable {
                             message: format!("Kafka consumer error: {e}"),
                             source: Some(Box::new(e)),
@@ -374,9 +384,9 @@ impl Source for KafkaSource {
                         }
                     }
                     Some(Ok(msg)) => {
-                        // Tombstones / empty payloads carry no event data,
-                        // but still count as consumed — store their offset
-                        // so commits advance past them.
+                        // Tombstones and empty payloads carry no event data,
+                        // but still count as read. Store their offset so
+                        // commits move past them.
                         let Some(payload) = msg.payload().filter(|p| !p.is_empty()) else {
                             log::debug!(
                                 "[KafkaSource] Skipping empty payload at {}:{}@{}",
@@ -402,15 +412,15 @@ impl Source for KafkaSource {
                                 if verdict == DeliveryVerdict::Disposed {
                                     records_failed += 1;
                                 }
-                                // Delivered, dropped, or routed to DLQ — the
-                                // record is consumed: store its offset so the
-                                // committer advances past it (at-least-once).
+                                // Delivered, dropped, or sent to the DLQ. The
+                                // record is done, so store its offset and let
+                                // the committer move past it.
                                 store_processed_offset(&consumer, &msg, config.enable_auto_commit);
                             }
                             DeliveryVerdict::Fail => {
-                                // Do NOT store — no commit path can advance
-                                // past this record, so it is redelivered
-                                // after restart.
+                                // Do NOT store it. No commit can move past
+                                // this record, so it is delivered again after
+                                // a restart (manual commit mode only).
                                 records_failed += 1;
                                 log::error!("[KafkaSource] Unrecoverable error, stopping");
                                 break 'poll;
@@ -420,12 +430,13 @@ impl Source for KafkaSource {
                 }
             }
 
-            // Final synchronous commit of the stored (= processed) offsets so
-            // graceful restarts resume exactly where processing left off
+            // One last blocking commit of the stored offsets, which are the
+            // processed ones, so a clean restart picks up exactly where
+            // processing stopped
             if !config.enable_auto_commit {
                 if let Err(e) = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync)
                 {
-                    // "No offset stored" simply means nothing to commit
+                    // "No offset stored" just means there was nothing to commit
                     log::debug!("[KafkaSource] Final commit: {e}");
                 }
             }
@@ -451,7 +462,8 @@ impl Source for KafkaSource {
         stream_name: &str,
         junction: Arc<Mutex<InputHandler>>,
     ) -> Result<(), EventFluxError> {
-        // Without error.strategy the source drops failures; no DLQ to wire
+        // With no error.strategy the source drops failures, so there is no DLQ
+        // to connect
         if let Some(ref mut ctx) = self.error_ctx {
             ctx.set_dlq_junction(stream_name, junction);
         }
@@ -459,7 +471,8 @@ impl Source for KafkaSource {
     }
 
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
-        // The consumer client validates the exact config start() will use
+        // Build the client from the exact config start() will use, so this
+        // checks that config too
         let consumer: BaseConsumer = self.config.to_client_config().create().map_err(|e| {
             EventFluxError::ConnectionUnavailable {
                 message: format!("Failed to create Kafka consumer: {e}"),
@@ -480,10 +493,10 @@ impl Source for KafkaSource {
 // Kafka Source Factory
 // ============================================================================
 
-/// Factory for creating Kafka source instances.
+/// Factory for Kafka sources.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// Kafka sources from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build Kafka sources from the
+/// SQL WITH clause config.
 #[derive(Debug, Clone)]
 pub struct KafkaSourceFactory;
 
@@ -501,8 +514,8 @@ impl SourceFactory for KafkaSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        // Connector keys + the shared error-handling keys (owned by
-        // SourceErrorContext) — concatenated once, on first use
+        // Kafka keys plus the shared error handling keys owned by
+        // SourceErrorContext. Joined once, on first use.
         static PARAMS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
             [
                 &[
@@ -515,7 +528,7 @@ impl SourceFactory for KafkaSourceFactory {
                     "kafka.sasl.username",
                     "kafka.sasl.password",
                     "kafka.ssl.ca.location",
-                    // kafka.rdkafka.<prop> passthrough is also accepted
+                    // kafka.rdkafka.<prop> keys are also accepted
                 ][..],
                 crate::core::error::source_support::SOURCE_ERROR_PARAMETERS,
             ]
@@ -528,10 +541,10 @@ impl SourceFactory for KafkaSourceFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
-        // DLQ junction is None initially — the runtime calls
-        // set_error_dlq_junction() on attachment, which also sets the stream
-        // name. Until then the first topic identifies the stream in
-        // error-context log messages.
+        // The DLQ junction starts as None. The runtime calls
+        // set_error_dlq_junction() when it attaches the source, which also sets
+        // the stream name. Until then the first topic names the stream in error
+        // log messages.
         let stream_name = config
             .get("kafka.topic")
             .and_then(|t| t.split(',').next())
@@ -570,7 +583,7 @@ mod tests {
         let config = KafkaSourceConfig::from_properties(&base_props()).unwrap();
         assert_eq!(config.connection.bootstrap_servers, "localhost:9092");
         assert_eq!(config.topics, vec!["events"]);
-        assert_eq!(config.group_id, "eventflux-events"); // deterministic default
+        assert_eq!(config.group_id, "eventflux-events"); // fixed default
         assert_eq!(config.auto_offset_reset, "latest");
         assert!(config.enable_auto_commit);
         assert_eq!(config.poll_timeout_ms, 100);
@@ -655,7 +668,7 @@ mod tests {
 
     #[test]
     fn test_config_rdkafka_reserved_keys_rejected() {
-        // Consumer-owned settings must go through first-class options
+        // Settings the consumer owns must be set through their own options
         for reserved in RESERVED_RDKAFKA_KEYS {
             let mut props = base_props();
             props.insert(format!("kafka.rdkafka.{reserved}"), "x".to_string());
@@ -684,8 +697,8 @@ mod tests {
             Some("localhost:9092")
         );
         assert_eq!(client_config.get("group.id"), Some("eventflux-events"));
-        // Canonical at-least-once: the internal committer stays on, but only
-        // explicitly stored (= processed) offsets can be committed
+        // Standard at-least-once. The built in committer stays on, but only
+        // offsets stored by hand, which are the processed ones, get committed
         assert_eq!(client_config.get("enable.auto.commit"), Some("true"));
         assert_eq!(client_config.get("enable.auto.offset.store"), Some("false"));
         assert_eq!(client_config.get("fetch.min.bytes"), Some("1024"));
@@ -724,7 +737,7 @@ mod tests {
         let source = KafkaSource::from_properties(&props, None, "TestStream").unwrap();
         let cloned = source.clone();
         assert_eq!(cloned.config.topics, vec!["events"]);
-        // The configured strategy survives cloning (fresh runtime state)
+        // The clone keeps the strategy but starts with reset counters
         let ctx = cloned.error_ctx.expect("clone keeps the error strategy");
         assert_eq!(ctx.error_count(), 0); // runtime state not cloned
     }

@@ -15,46 +15,40 @@
  * limitations under the License.
  */
 
-//! Error strategy definitions for EventFlux error handling system.
+//! Error strategies.
 //!
-//! This module defines the available error handling strategies that can be applied
-//! when processing failures occur in sources, sinks, or during event processing.
+//! The choices for what to do when an event fails.
 
-/// Error handling strategy for failed events
+/// What to do with an event that fails.
 ///
-/// Determines what action to take when an event processing failure occurs.
-/// Strategies can be configured per stream/source/sink via configuration.
+/// Set through the `error.strategy` property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStrategy {
-    /// Log error and discard event (default)
+    /// Log the error and discard the event. The default.
     ///
-    /// The event is dropped and processing continues normally.
-    /// A log entry is created with the error details.
+    /// Processing continues with the next event.
     Drop,
 
-    /// Retry with exponential backoff
+    /// Retry with backoff.
     ///
-    /// The operation is retried with increasing delays between attempts.
-    /// After max attempts are exhausted, falls back to the configured strategy.
+    /// The delay pattern comes from `error.retry.backoff`. When retries run out, or
+    /// the error cannot be retried, the event goes to the DLQ if `error.dlq.stream`
+    /// is set and is dropped otherwise.
     Retry,
 
-    /// Send to dead-letter queue stream
+    /// Send the event to a dead letter queue (DLQ) stream for later inspection.
     ///
-    /// Failed events are forwarded to a designated DLQ stream for later analysis.
-    /// The DLQ stream must be properly configured in the application.
+    /// Needs `error.dlq.stream` to name a stream that exists in the application.
     Dlq,
 
-    /// Fail application immediately
+    /// Stop the source on the first error.
     ///
-    /// Terminates the EventFlux application on first error.
-    /// Use this for critical failures where continuing would be unsafe.
+    /// Use when carrying on after an error would be unsafe.
     Fail,
 }
 
 impl ErrorStrategy {
-    /// Convert error strategy to string representation
-    ///
-    /// Returns the canonical lowercase string representation of the strategy.
+    /// Returns the lowercase name, such as `"drop"`.
     #[inline]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -65,13 +59,14 @@ impl ErrorStrategy {
         }
     }
 
-    /// Check if this strategy requires retry configuration
+    /// Returns true for `Retry`, the only strategy that needs retry settings.
     #[inline]
     pub const fn requires_retry_config(&self) -> bool {
         matches!(self, ErrorStrategy::Retry)
     }
 
-    /// Check if this strategy requires DLQ configuration
+    /// Returns true for `Dlq`. `Retry` can also use DLQ settings but does not
+    /// need them.
     #[inline]
     pub const fn requires_dlq_config(&self) -> bool {
         matches!(self, ErrorStrategy::Dlq)
@@ -79,7 +74,7 @@ impl ErrorStrategy {
 }
 
 impl Default for ErrorStrategy {
-    /// Default error strategy is Drop
+    /// Returns `Drop`.
     #[inline]
     fn default() -> Self {
         ErrorStrategy::Drop
@@ -89,14 +84,14 @@ impl Default for ErrorStrategy {
 impl std::str::FromStr for ErrorStrategy {
     type Err = String;
 
-    /// Parse error strategy from string (case-insensitive)
+    /// Parse a strategy name, ignoring case.
     ///
     /// # Arguments
-    /// * `s` - String representation of error strategy
+    /// * `s` - One of `drop`, `retry`, `dlq` or `fail`.
     ///
     /// # Returns
-    /// * `Ok(ErrorStrategy)` - Successfully parsed strategy
-    /// * `Err(String)` - Parse error with message
+    /// * `Ok(ErrorStrategy)` - The parsed strategy.
+    /// * `Err(String)` - A message listing the valid names, for any other input.
     ///
     /// # Examples
     /// ```

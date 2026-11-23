@@ -15,12 +15,11 @@
  * limitations under the License.
  */
 
-// TODO: NOT PART OF M1 - Dynamic extension loading test
-// This test uses old EventFluxQL syntax and tests dynamic extension loading.
-// While extension system exists, SQL syntax for custom extensions is not in M1.
-// M1 focuses on: Basic queries, Windows, Joins, GROUP BY, HAVING, ORDER BY, LIMIT
-// Dynamic extension SQL syntax will be implemented in Phase 2.
-// See feat/grammar/GRAMMAR_STATUS.md for M1 feature list.
+// TODO: NOT PART OF M1. Tests dynamic extension loading and is ignored because it
+// uses the old EventFluxQL syntax ("define stream"). The extension system exists, but
+// SQL syntax for custom extensions is not in M1. M1 covers basic queries, windows,
+// joins, GROUP BY, HAVING, ORDER BY and LIMIT. Dynamic extension SQL syntax is planned
+// for Phase 2. See feat/grammar/GRAMMAR.md for the grammar status.
 
 #[path = "common/mod.rs"]
 mod common;

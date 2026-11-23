@@ -15,15 +15,15 @@
  * limitations under the License.
  */
 
-//! Integration tests for Collection Aggregations with Counting Patterns
+//! Integration tests for collection aggregations with counting patterns
 //!
-//! These tests verify the full flow:
+//! These tests cover the whole flow
 //! 1. StateEvent event chaining (add_event -> get_event_chain)
-//! 2. CountPreStateProcessor produces StateEvents with correct chains
-//! 3. Collection aggregation executors work on pattern-generated StateEvents
+//! 2. CountPreStateProcessor produces StateEvents with the right chains
+//! 3. Collection aggregation executors work on StateEvents produced by patterns
 //!
-//! This fills the testing gap between unit tests (which manually construct StateEvents)
-//! and actual pattern query execution.
+//! They sit between the unit tests, which build StateEvents by hand, and real
+//! pattern query execution.
 
 use eventflux::core::event::complex_event::ComplexEvent;
 use eventflux::core::event::state::state_event::StateEvent;
@@ -434,7 +434,7 @@ mod collection_aggregation_on_chains {
     #[test]
     fn test_stddev_on_chain() {
         let mut state = StateEvent::new(1, 0);
-        // Values: [2, 4, 4, 4, 5, 5, 7, 9] -> mean=5, stddev=2
+        // Values [2, 4, 4, 4, 5, 5, 7, 9] -> mean=5, stddev=2
         for v in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
             state.add_event(0, create_event_with_value(*v));
         }
@@ -455,7 +455,7 @@ mod collection_aggregation_on_chains {
 
     #[test]
     fn test_all_aggregations_on_same_chain() {
-        // Simulate: SELECT count(e1), sum(e1.v), avg(e1.v), min(e1.v), max(e1.v)
+        // SimulatesSELECT count(e1), sum(e1.v), avg(e1.v), min(e1.v), max(e1.v)
         let mut state = StateEvent::new(1, 0);
         state.add_event(0, create_event_with_value(10.0));
         state.add_event(0, create_event_with_value(20.0));
@@ -512,15 +512,15 @@ mod collection_aggregation_on_chains {
 
     #[test]
     fn test_aggregation_on_second_position() {
-        // Simulate: e1{2} -> e2{3}
-        // Query: SELECT sum(e2.value)
+        // Simulatese1{2} -> e2{3}
+        // Query SELECT sum(e2.value)
         let mut state = StateEvent::new(2, 0);
 
-        // Position 0: e1 events (irrelevant for this test)
+        // Position 0 holds e1 events, which this test does not use
         state.add_event(0, create_event_with_value(1.0));
         state.add_event(0, create_event_with_value(2.0));
 
-        // Position 1: e2 events (target for aggregation)
+        // Position 1 holds e2 events, the ones aggregated
         state.add_event(1, create_event_with_value(100.0));
         state.add_event(1, create_event_with_value(200.0));
         state.add_event(1, create_event_with_value(300.0));
@@ -542,8 +542,8 @@ mod collection_aggregation_on_chains {
 
     #[test]
     fn test_aggregation_on_second_attribute() {
-        // Events have: [id, value] at positions [0, 1]
-        // Query: SELECT sum(e1.value) where value is at index 1
+        // Events hold [id, value] at positions [0, 1].
+        // Query SELECT sum(e1.value), where value is at index 1.
         let mut state = StateEvent::new(1, 0);
 
         state.add_event(
@@ -922,7 +922,7 @@ mod edge_cases {
         state.add_event(0, create_event_with_values(vec![AttributeValue::Null]));
         state.add_event(0, create_event_with_values(vec![AttributeValue::Null]));
 
-        // count still returns 3 (counts events, not non-null values)
+        // count still returns 3 because it counts events, not values that are set
         let count_exec = CollectionCountExecutor::new(0);
         assert_eq!(
             count_exec.execute(Some(&state as &dyn ComplexEvent)),
@@ -952,14 +952,14 @@ mod edge_cases {
 }
 
 // ============================================================================
-// Part 4: End-to-End CountPreStateProcessor → Collection Aggregation Tests
+// Part 4: End to End CountPreStateProcessor → Collection Aggregation Tests
 // ============================================================================
 //
-// These tests verify the FULL runtime flow:
+// These tests follow the FULL runtime flow
 // 1. CountPreStateProcessor receives StreamEvents
-// 2. Builds StateEvent with proper event chains via add_event()
-// 3. Forwards to CountPostStateProcessor when count is valid
-// 4. Output StateEvent is captured
+// 2. It builds a StateEvent with event chains through add_event()
+// 3. It forwards to CountPostStateProcessor once the count is in range
+// 4. The output StateEvent is captured
 // 5. Collection aggregation executors process the output correctly
 
 mod end_to_end_processor_tests {
@@ -981,8 +981,8 @@ mod end_to_end_processor_tests {
 
     use eventflux::query_api::EventFluxApp;
 
-    /// CapturingPreStateProcessor - captures StateEvents via add_state()
-    /// This is wired as next_state_pre_processor to capture pattern output
+    /// Captures every StateEvent passed to add_state(). It is wired in as
+    /// next_state_pre_processor so it receives the pattern output.
     #[derive(Debug)]
     struct CapturingPreStateProcessor {
         state_id: usize,
@@ -1075,10 +1075,11 @@ mod end_to_end_processor_tests {
         }
     }
 
-    /// Create fully wired CountPreStateProcessor with output capture
+    /// Builds a fully wired CountPreStateProcessor whose output is captured.
     ///
-    /// Wire pattern: Pre -> Post -> CapturingPre (via next_state_pre_processor)
-    /// The CapturingPreStateProcessor captures StateEvents via add_state()
+    /// Wiring is Pre -> Post -> CapturingPre, the last link through
+    /// next_state_pre_processor. CapturingPreStateProcessor records StateEvents
+    /// passed to add_state().
     fn create_wired_count_processor(
         min: usize,
         max: usize,
@@ -1111,25 +1112,25 @@ mod end_to_end_processor_tests {
 
         let mut post_processor = CountPostStateProcessor::new(min, max, 0);
 
-        // Create capturing pre-processor (captures via add_state)
+        // Pre processor that captures what is passed to add_state
         let captured = Arc::new(Mutex::new(Vec::new()));
         let capturing_processor = Arc::new(Mutex::new(CapturingPreStateProcessor::new(
             1, // next state_id would be 1
             captured.clone(),
         )));
 
-        // Wire: Post -> Capturing output via next_state_pre_processor
-        // This is how pattern events are forwarded in the pattern processing chain
+        // Wire Post -> Capturing through next_state_pre_processor.
+        // This is how a pattern chain forwards events to its next step.
         post_processor.set_next_state_pre_processor(capturing_processor);
 
-        // Wire: Pre -> Post
+        // Wire Pre -> Post
         pre_processor
             .stream_processor
             .set_this_state_post_processor(Arc::new(Mutex::new(post_processor)));
 
-        // Initialize cloners with proper factories
-        // Use from_event to create cloner that matches our event structure
-        let template_event = create_price_event(0.0); // Template with correct before_window_data size
+        // Set up the cloners. from_event builds a cloner that matches the
+        // layout of the template event.
+        let template_event = create_price_event(0.0); // right before_window_data size
         let stream_cloner = StreamEventCloner::from_event(&template_event);
         pre_processor
             .stream_processor
@@ -1148,7 +1149,7 @@ mod end_to_end_processor_tests {
         let initial_state = StateEvent::new(1, 0);
         pre_processor.add_state(initial_state);
 
-        // Move state from new to pending (required before processing)
+        // Move the state from new to pending, which must happen before processing
         pre_processor.update_state();
 
         (pre_processor, captured)
@@ -1165,24 +1166,24 @@ mod end_to_end_processor_tests {
     // End-to-End Tests: Pattern e1{{N}} with aggregations
     // =========================================================================
     //
-    // NOTE: These tests are currently disabled due to an issue with the
-    // CountPreStateProcessor → CountPostStateProcessor → CapturingPreStateProcessor
-    // wiring producing double outputs. This appears to be a test setup issue
-    // rather than a bug in the aggregation logic itself.
+    // All of these tests except test_e2e_insufficient_events_no_output are ignored.
+    // The CountPreStateProcessor → CountPostStateProcessor → CapturingPreStateProcessor
+    // wiring produces double outputs. This looks like a problem in the test setup
+    // rather than a bug in the aggregation logic.
     //
-    // The core functionality is validated by the 28 tests in the other modules:
-    // - state_event_chaining: Proves add_event → get_event_chain works
-    // - collection_aggregation_on_chains: Proves aggregators work on chains
-    // - edge_cases: Proves boundary conditions are handled
+    // The core behaviour is covered by the 28 tests in the other modules
+    // - state_event_chaining shows add_event → get_event_chain works
+    // - collection_aggregation_on_chains shows the aggregators work on chains
+    // - edge_cases shows boundary conditions are handled
     //
-    // TODO: Investigate the double output issue in processor wiring
-    // The issue manifests as add_state being called twice during pattern
-    // completion, even though the code path analysis shows only one call.
+    // TODO: Find the cause of the double output in the processor wiring.
+    // add_state is called twice when a pattern completes, even though reading
+    // the code suggests only one call.
 
     #[test]
     #[ignore = "E2E processor wiring produces double outputs - needs investigation"]
     fn test_e2e_exact_count_3_with_sum() {
-        // Simulates: PATTERN (e1=Trade{{3}}) SELECT sum(e1.price)
+        // SimulatesPATTERN (e1=Trade{{3}}) SELECT sum(e1.price)
         let (mut processor, captured) = create_wired_count_processor(3, 3);
 
         // Send exactly 3 events with prices: 100, 200, 300
@@ -1226,7 +1227,7 @@ mod end_to_end_processor_tests {
     #[test]
     #[ignore = "E2E processor wiring produces double outputs - needs investigation"]
     fn test_e2e_exact_count_3_with_all_aggregations() {
-        // Simulates: PATTERN (e1=Trade{{3}})
+        // SimulatesPATTERN (e1=Trade{{3}})
         // SELECT count(e1), sum(e1.price), avg(e1.price), min(e1.price), max(e1.price)
         let (mut processor, captured) = create_wired_count_processor(3, 3);
 
@@ -1295,7 +1296,7 @@ mod end_to_end_processor_tests {
     #[test]
     #[ignore = "E2E processor wiring produces double outputs - needs investigation"]
     fn test_e2e_range_count_2_to_4_produces_multiple_outputs() {
-        // Simulates: PATTERN (e1=Trade{{2,4}}) SELECT sum(e1.price)
+        // SimulatesPATTERN (e1=Trade{{2,4}}) SELECT sum(e1.price)
         // Should output at count=2, count=3, count=4
         let (mut processor, captured) = create_wired_count_processor(2, 4);
 
@@ -1372,8 +1373,8 @@ mod end_to_end_processor_tests {
     #[test]
     #[ignore = "E2E processor wiring produces double outputs - needs investigation"]
     fn test_e2e_stddev_on_processor_output() {
-        // Simulates: PATTERN (e1=Trade{{8}}) SELECT stdDev(e1.price)
-        // Values: [2, 4, 4, 4, 5, 5, 7, 9] -> mean=5, stddev=2
+        // SimulatesPATTERN (e1=Trade{{8}}) SELECT stdDev(e1.price)
+        // Values [2, 4, 4, 4, 5, 5, 7, 9] -> mean=5, stddev=2
         let (mut processor, captured) = create_wired_count_processor(8, 8);
 
         for price in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
@@ -1399,7 +1400,7 @@ mod end_to_end_processor_tests {
 
     #[test]
     fn test_e2e_insufficient_events_no_output() {
-        // Simulates: PATTERN (e1=Trade{{5}}) but only send 4 events
+        // SimulatesPATTERN (e1=Trade{{5}}) but only send 4 events
         let (mut processor, captured) = create_wired_count_processor(5, 5);
 
         // Send only 4 events (less than required 5)
@@ -1418,7 +1419,7 @@ mod end_to_end_processor_tests {
     #[test]
     #[ignore = "E2E processor wiring produces double outputs - needs investigation"]
     fn test_e2e_min_1_produces_output_on_first_event() {
-        // Simulates: PATTERN (e1=Trade{{1,3}}) - should output starting from first event
+        // Simulates PATTERN (e1=Trade{{1,3}}), which outputs from the first event on
         let (mut processor, captured) = create_wired_count_processor(1, 3);
 
         processor.process(Some(Box::new(create_price_event(100.0)))); // Output 1

@@ -15,37 +15,35 @@
  * limitations under the License.
  */
 
-// src/core/mod.rs
-
-// Top-level files from Java io.eventflux.core
-pub mod eventflux_app_runtime; // For EventFluxAppRuntime.java (and Impl)
+// Top level files, ported from the Java core package
+pub mod eventflux_app_runtime; // Java EventFluxAppRuntime and its Impl
 pub mod eventflux_app_runtime_builder;
-pub mod eventflux_manager; // For EventFluxManager.java // Declare the module
+pub mod eventflux_manager; // Java EventFluxManager
 
-// Sub-packages, corresponding to Java packages
+// Sub packages, matching the Java packages
 pub mod aggregation;
 pub mod config;
 pub mod data_source;
 pub mod debugger;
-pub mod distributed; // Added for distributed processing
-pub mod error; // M5: Error Handling & DLQ System
+pub mod distributed; // distributed processing
+pub mod error; // error handling and DLQ
 pub mod event;
-pub mod exception; // For custom core-specific error types
+pub mod exception; // core error types
 pub mod executor;
 pub mod extension;
-pub mod function; // For UDFs like Script.java
+pub mod function; // UDFs, like the Java Script
 pub mod partition;
-pub mod persistence; // Added
+pub mod persistence;
 pub mod query;
 pub mod store;
 pub mod stream;
 pub mod table;
 pub mod trigger;
 pub mod util;
-pub mod validation; // M4: 3-Phase Validation System
+pub mod validation; // app validation, including DLQ and circular dependency checks
 pub mod window;
 
-// Re-export key public-facing structs from core
+// Re-export the main public types from core.
 pub use self::data_source::{DataSource, DataSourceConfig, SqliteDataSource};
 pub use self::error::{
     create_dlq_event, BackoffStrategy, DlqConfig, DlqFallbackStrategy, ErrorAction, ErrorConfig,
@@ -54,11 +52,11 @@ pub use self::error::{
 };
 pub use self::eventflux_app_runtime::EventFluxAppRuntime;
 pub use self::eventflux_app_runtime_builder::EventFluxAppRuntimeBuilder;
-pub use self::eventflux_manager::EventFluxManager; // Added
+pub use self::eventflux_manager::EventFluxManager;
 pub use self::exception::{EventFluxError, EventFluxResult};
 pub use self::validation::{
     detect_circular_dependencies, validate_dlq_reference, validate_dlq_schema,
     validate_dlq_stream_name, validate_no_recursive_dlq, validate_source_dlq_configs,
     QuerySourceExtractor,
 };
-// Other important re-exports will be added as these modules are built out.
+// More re-exports can be added here as modules grow.

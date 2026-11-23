@@ -17,10 +17,15 @@
 
 // src/core/persistence/incremental/recovery_engine.rs
 
-//! Recovery Engine Implementation
+//! Recovery engine.
 //!
-//! Advanced recovery engine for reconstructing state from incremental checkpoints
-//! with parallel recovery, dependency resolution, and point-in-time recovery capabilities.
+//! Rebuilds component state from a full checkpoint, or from a full checkpoint
+//! plus a chain of incremental ones, and picks a checkpoint close to a point in
+//! time.
+//!
+//! Recovery runs one step at a time, not in parallel. The checkpoint info cache
+//! that incremental recovery and point in time lookup rely on is never filled
+//! outside tests, and applying incremental changes is still a stand in.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -33,41 +38,43 @@ use crate::core::persistence::state_holder::{
     CheckpointId, ComponentId, StateError, StateSnapshot,
 };
 
-/// Advanced recovery engine with parallel processing
+/// Recovery engine that loads checkpoints from a backend.
 #[allow(dead_code)]
 pub struct AdvancedRecoveryEngine {
-    /// Persistence backend for loading checkpoints
     backend: Arc<dyn PersistenceBackend>,
 
-    /// Checkpoint merger for reconstruction
+    /// Not used yet.
     merger: Arc<dyn CheckpointMerger>,
 
-    /// Recovery configuration
     config: RecoveryConfig,
 
-    /// Checkpoint metadata cache
+    /// Info about known checkpoints, keyed by id. Starts empty and is only
+    /// filled by the unused `build_checkpoint_cache` or by tests.
     checkpoint_cache: HashMap<CheckpointId, CheckpointInfo>,
 
-    /// Recovery statistics
+    /// Never updated yet.
     stats: RecoveryStatistics,
 }
 
-/// Configuration for recovery engine
+/// Recovery engine settings.
+///
+/// Only `verification_level` is passed along, and it does not change the checks
+/// yet. The other fields are not read.
 #[derive(Debug, Clone)]
 pub struct RecoveryConfig {
-    /// Maximum parallel recovery threads
+    /// Most recovery threads. Default 4.
     pub max_parallel_threads: usize,
 
-    /// Timeout for recovery operations
+    /// Default 5 minutes.
     pub recovery_timeout: Duration,
 
-    /// Enable optimistic recovery (continue on component failures)
+    /// Keep going when one component fails. Default true.
     pub optimistic_recovery: bool,
 
-    /// Prefetch strategy for checkpoints
+    /// Default `Adaptive`.
     pub prefetch_strategy: PrefetchStrategy,
 
-    /// Recovery verification level
+    /// Default `Standard`.
     pub verification_level: VerificationLevel,
 }
 
@@ -75,7 +82,7 @@ impl Default for RecoveryConfig {
     fn default() -> Self {
         Self {
             max_parallel_threads: 4,
-            recovery_timeout: Duration::from_secs(300), // 5 minutes
+            recovery_timeout: Duration::from_secs(300),
             optimistic_recovery: true,
             prefetch_strategy: PrefetchStrategy::Adaptive,
             verification_level: VerificationLevel::Standard,
@@ -83,59 +90,56 @@ impl Default for RecoveryConfig {
     }
 }
 
-/// Prefetch strategy for checkpoint loading
+/// When to load checkpoints ahead of time. Not used yet.
 #[derive(Debug, Clone)]
 pub enum PrefetchStrategy {
-    /// No prefetching
     None,
 
-    /// Prefetch next checkpoint in chain
+    /// Load the next checkpoint in the chain.
     Sequential,
 
-    /// Prefetch based on access patterns
+    /// Load based on past access.
     Adaptive,
 
-    /// Prefetch all checkpoints in recovery path
+    /// Load every checkpoint on the recovery path.
     Aggressive,
 }
 
-/// Level of verification during recovery
+/// How much to check during recovery.
+///
+/// Every level currently runs the same checksum check on each result.
 #[derive(Debug, Clone)]
 pub enum VerificationLevel {
-    /// Basic checksum verification
+    /// Checksums only.
     Basic,
 
-    /// Standard verification with integrity checks
+    /// Checksums plus integrity checks.
     Standard,
 
-    /// Full verification with dependency validation
+    /// Everything, including dependency checks.
     Full,
 }
 
-/// Information about a checkpoint for recovery planning
+/// What the engine knows about one checkpoint, for planning.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct CheckpointInfo {
-    /// Checkpoint identifier
     pub checkpoint_id: CheckpointId,
 
-    /// Checkpoint type
     pub checkpoint_type: CheckpointType,
 
-    /// Creation timestamp (microseconds since UNIX epoch)
+    /// Creation time in microseconds since the Unix epoch.
     pub created_at: u64,
 
-    /// Size in bytes
     pub size_bytes: usize,
 
-    /// Dependencies
+    /// Checkpoints this one builds on.
     pub dependencies: Vec<CheckpointId>,
 
-    /// Components included
+    /// Components included.
     pub components: HashSet<ComponentId>,
 }
 
-/// Type of checkpoint
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum CheckpointType {
@@ -143,83 +147,74 @@ enum CheckpointType {
     Incremental { base: CheckpointId },
 }
 
-/// Recovery operation statistics
+/// Recovery counters. Never updated yet.
 #[derive(Debug, Default)]
 pub struct RecoveryStatistics {
-    /// Total recoveries performed
     pub total_recoveries: u64,
 
-    /// Average recovery time
     pub avg_recovery_time: Duration,
 
-    /// Total data recovered (bytes)
+    /// Bytes recovered.
     pub total_data_recovered: u64,
 
-    /// Failed recoveries
     pub failed_recoveries: u64,
 
-    /// Point-in-time recoveries
     pub point_in_time_recoveries: u64,
 
-    /// Parallel recovery efficiency
     pub parallel_efficiency: f64,
 }
 
-/// Recovery plan for a set of components
+/// Steps to recover a set of components.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct RecoveryPlan {
-    /// Recovery stages (can be executed in parallel)
+    /// One stage per checkpoint in the chain, oldest first. Run one at a time.
     pub stages: Vec<RecoveryStage>,
 
-    /// Total estimated time
+    /// Rough estimate.
     pub estimated_duration: Duration,
 
-    /// Total data size to process
+    /// Bytes to process.
     pub total_size: usize,
 
-    /// Checkpoints involved
+    /// The checkpoint chain, oldest first.
     pub checkpoints_needed: Vec<CheckpointId>,
 }
 
-/// Single recovery stage
+/// One recovery step, which applies one checkpoint.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct RecoveryStage {
-    /// Components to recover in this stage
     pub components: Vec<ComponentId>,
 
-    /// Checkpoint to load
     pub checkpoint_id: CheckpointId,
 
-    /// Dependencies resolved
+    /// Checkpoints this stage builds on.
     pub dependencies: Vec<CheckpointId>,
 
-    /// Estimated stage duration
+    /// Rough estimate.
     pub estimated_duration: Duration,
 }
 
-/// Recovery context for tracking progress
+/// Progress of one recovery run.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct RecoveryContext {
-    /// Target components
     pub target_components: HashSet<ComponentId>,
 
-    /// Already recovered components
+    /// Components already restored from a full checkpoint.
     pub recovered_components: HashSet<ComponentId>,
 
-    /// Loaded checkpoints cache
+    /// Checkpoints loaded so far, so each is loaded once.
     pub loaded_checkpoints: HashMap<CheckpointId, CachedCheckpoint>,
 
-    /// Recovery start time
     pub start_time: Instant,
 
-    /// Intermediate results
+    /// State rebuilt so far for each component.
     pub intermediate_results: HashMap<ComponentId, StateSnapshot>,
 }
 
-/// Cached checkpoint data
+/// A loaded checkpoint.
 #[derive(Debug, Clone)]
 enum CachedCheckpoint {
     Full(StateSnapshot),
@@ -227,7 +222,7 @@ enum CachedCheckpoint {
 }
 
 impl AdvancedRecoveryEngine {
-    /// Create a new recovery engine
+    /// Create an engine with an empty checkpoint info cache.
     pub fn new(
         backend: Arc<dyn PersistenceBackend>,
         merger: Arc<dyn CheckpointMerger>,
@@ -242,22 +237,24 @@ impl AdvancedRecoveryEngine {
         }
     }
 
-    /// Build checkpoint information cache
+    /// Fill the checkpoint info cache from the backend's checkpoint list.
+    ///
+    /// Not called anywhere yet. Every entry is guessed. It is marked full,
+    /// stamped with the current time, and given a size of 1000 bytes.
     #[allow(dead_code)]
     fn build_checkpoint_cache(&mut self) -> Result<(), StateError> {
         let checkpoint_ids = self.backend.list_checkpoints()?;
 
         for checkpoint_id in checkpoint_ids {
-            // Try to determine checkpoint type and metadata
-            // In a real implementation, this would be more sophisticated
+            // TODO: read the real type and metadata from the backend.
             let info = CheckpointInfo {
                 checkpoint_id,
-                checkpoint_type: CheckpointType::Full, // Simplified
+                checkpoint_type: CheckpointType::Full, // guessed
                 created_at: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_micros() as u64,
-                size_bytes: 1000, // Estimated
+                size_bytes: 1000, // guessed
                 dependencies: Vec::new(),
                 components: HashSet::new(),
             };
@@ -268,21 +265,20 @@ impl AdvancedRecoveryEngine {
         Ok(())
     }
 
-    /// Create a recovery plan for the given components and target checkpoint
+    /// Plan one stage for each checkpoint in the chain that ends at the target.
+    ///
+    /// Each stage is estimated at 1 ms per 1000 bytes.
     fn create_recovery_plan(
         &self,
         target_checkpoint_id: CheckpointId,
         components: &[ComponentId],
     ) -> Result<RecoveryPlan, StateError> {
-        // Find the checkpoint chain leading to the target
         let checkpoint_chain = self.find_checkpoint_chain(target_checkpoint_id)?;
 
-        // Estimate recovery stages
         let mut stages = Vec::new();
         let mut total_size = 0;
         let mut estimated_duration = Duration::default();
 
-        // For each checkpoint in the chain, create a recovery stage
         for &checkpoint_id in &checkpoint_chain {
             if let Some(checkpoint_info) = self.checkpoint_cache.get(&checkpoint_id) {
                 let stage = RecoveryStage {
@@ -291,7 +287,7 @@ impl AdvancedRecoveryEngine {
                     dependencies: checkpoint_info.dependencies.clone(),
                     estimated_duration: Duration::from_millis(
                         checkpoint_info.size_bytes as u64 / 1000,
-                    ), // Rough estimate
+                    ), // rough estimate
                 };
 
                 total_size += checkpoint_info.size_bytes;
@@ -308,7 +304,12 @@ impl AdvancedRecoveryEngine {
         })
     }
 
-    /// Find the chain of checkpoints needed to reach the target
+    /// Returns the checkpoints needed to reach the target, oldest first.
+    ///
+    /// Walks back through incremental bases from the target until it reaches a
+    /// full checkpoint or an id missing from the cache. A missing id ends the
+    /// chain early without an error, and a target missing from the cache gives an
+    /// empty chain. Loops forever if the bases form a cycle.
     fn find_checkpoint_chain(
         &self,
         target_checkpoint_id: CheckpointId,
@@ -316,28 +317,24 @@ impl AdvancedRecoveryEngine {
         let mut chain = Vec::new();
         let mut current_id = target_checkpoint_id;
 
-        // Walk backwards through the checkpoint chain
         while let Some(checkpoint_info) = self.checkpoint_cache.get(&current_id) {
             chain.push(current_id);
 
             match &checkpoint_info.checkpoint_type {
                 CheckpointType::Full => {
-                    // Reached a full checkpoint, stop here
                     break;
                 }
                 CheckpointType::Incremental { base } => {
-                    // Continue with the base checkpoint
                     current_id = *base;
                 }
             }
         }
 
-        // Reverse to get forward chain
         chain.reverse();
         Ok(chain)
     }
 
-    /// Execute recovery plan with parallel processing
+    /// Run the plan stages one after another and return the rebuilt states.
     fn execute_recovery_plan(
         &self,
         plan: &RecoveryPlan,
@@ -351,22 +348,24 @@ impl AdvancedRecoveryEngine {
             intermediate_results: HashMap::new(),
         };
 
-        // Execute stages sequentially (in practice, would be more sophisticated)
+        // One stage at a time. Stages are not run in parallel yet.
         for stage in &plan.stages {
             self.execute_recovery_stage(stage, &mut context)?;
         }
 
-        // Return final results
         Ok(context.intermediate_results)
     }
 
-    /// Execute a single recovery stage
+    /// Load the stage's checkpoint, if not loaded yet, and apply it to each
+    /// target component.
+    ///
+    /// A full checkpoint sets a component's state once. An incremental one
+    /// applies its changes on top of the state built so far.
     fn execute_recovery_stage(
         &self,
         stage: &RecoveryStage,
         context: &mut RecoveryContext,
     ) -> Result<(), StateError> {
-        // Load checkpoint if not already loaded
         if let std::collections::hash_map::Entry::Vacant(e) =
             context.loaded_checkpoints.entry(stage.checkpoint_id)
         {
@@ -374,8 +373,7 @@ impl AdvancedRecoveryEngine {
             e.insert(cached_checkpoint);
         }
 
-        // Process the checkpoint for target components
-        // Clone checkpoint to avoid borrow checker issues
+        // Cloned so `context` can be borrowed mutably below.
         let cached_checkpoint = context
             .loaded_checkpoints
             .get(&stage.checkpoint_id)
@@ -384,12 +382,10 @@ impl AdvancedRecoveryEngine {
 
         match cached_checkpoint {
             CachedCheckpoint::Full(snapshot) => {
-                // For full checkpoints, extract component data
                 for component_id in &stage.components {
                     if context.target_components.contains(component_id)
                         && !context.recovered_components.contains(component_id)
                     {
-                        // Extract component state from full snapshot
                         let component_snapshot =
                             self.extract_component_state(&snapshot, component_id)?;
                         context
@@ -400,7 +396,6 @@ impl AdvancedRecoveryEngine {
                 }
             }
             CachedCheckpoint::Incremental(incremental) => {
-                // For incremental checkpoints, apply changes
                 for component_id in &stage.components {
                     if context.target_components.contains(component_id) {
                         self.apply_incremental_changes(&incremental, component_id, context)?;
@@ -412,30 +407,39 @@ impl AdvancedRecoveryEngine {
         Ok(())
     }
 
-    /// Load a checkpoint from the backend
+    /// Load a checkpoint, trying it as a full checkpoint first and then as an
+    /// incremental one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the incremental load error when both fail. The full load error is
+    /// dropped.
     fn load_checkpoint(&self, checkpoint_id: CheckpointId) -> Result<CachedCheckpoint, StateError> {
-        // Try loading as full checkpoint first
         match self.backend.load_full_checkpoint(checkpoint_id) {
             Ok(snapshot) => Ok(CachedCheckpoint::Full(snapshot)),
             Err(_) => {
-                // Try loading as incremental checkpoint
                 let incremental = self.backend.load_incremental_checkpoint(checkpoint_id)?;
                 Ok(CachedCheckpoint::Incremental(incremental))
             }
         }
     }
 
-    /// Extract component state from a full snapshot
+    /// Returns one component's state from a full snapshot.
+    ///
+    /// A stand in that returns the whole snapshot for every component.
     fn extract_component_state(
         &self,
         snapshot: &StateSnapshot,
         _component_id: &ComponentId,
     ) -> Result<StateSnapshot, StateError> {
-        // Simplified implementation - in practice would extract specific component data
+        // TODO: pull out only this component's data.
         Ok(snapshot.clone())
     }
 
-    /// Apply incremental changes to a component
+    /// Apply an incremental checkpoint's changes for one component.
+    ///
+    /// Does nothing when the checkpoint has no changes for the component, or the
+    /// component has no state built yet.
     fn apply_incremental_changes(
         &self,
         incremental: &IncrementalCheckpoint,
@@ -443,21 +447,18 @@ impl AdvancedRecoveryEngine {
         context: &mut RecoveryContext,
     ) -> Result<(), StateError> {
         if let Some(changes) = incremental.component_changes.get(component_id) {
-            // Get base state from context or previous checkpoint
             let base_state = context.intermediate_results.get(component_id);
 
             if let Some(base_state) = base_state {
-                // Apply changes to existing state
                 let mut updated_state = base_state.clone();
 
-                // FIXME: Placeholder — each operation in the changelog must be properly
-                // deserialized and applied to the state. Currently appends dummy bytes,
-                // which means incremental recovery produces incorrect state.
+                // FIXME: stand in. Each operation in the change log must be
+                // decoded and applied to the state. This appends fixed dummy
+                // bytes instead, so incremental recovery gives wrong state.
                 for _operation in &changes.operations {
-                    updated_state.data.extend_from_slice(&[1, 2, 3]); // Placeholder
+                    updated_state.data.extend_from_slice(&[1, 2, 3]); // dummy bytes
                 }
 
-                // Update checksum
                 updated_state.checksum =
                     crate::core::persistence::state_holder::StateSnapshot::calculate_checksum(
                         &updated_state.data,
@@ -472,13 +473,17 @@ impl AdvancedRecoveryEngine {
         Ok(())
     }
 
-    /// Verify recovery results
+    /// Check every result's checksum. The verification level is ignored for now.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChecksumMismatch` for the first result whose data does not match
+    /// its checksum.
     fn verify_recovery_results(
         &self,
         results: &HashMap<ComponentId, StateSnapshot>,
         _verification_level: &VerificationLevel,
     ) -> Result<(), StateError> {
-        // Verify checksums
         for snapshot in results.values() {
             let calculated_checksum =
                 crate::core::persistence::state_holder::StateSnapshot::calculate_checksum(
@@ -489,13 +494,16 @@ impl AdvancedRecoveryEngine {
             }
         }
 
-        // Additional verifications would go here based on verification level
+        // TODO: extra checks for the Standard and Full levels.
 
         Ok(())
     }
 }
 
 impl RecoveryEngine for AdvancedRecoveryEngine {
+    /// Load a full checkpoint and return its state for each component.
+    ///
+    /// Every component gets a copy of the whole snapshot for now.
     fn recover_from_full(
         &self,
         checkpoint_id: CheckpointId,
@@ -503,21 +511,17 @@ impl RecoveryEngine for AdvancedRecoveryEngine {
     ) -> Result<HashMap<ComponentId, StateSnapshot>, StateError> {
         let start_time = Instant::now();
 
-        // Load the full checkpoint
         let snapshot = self.backend.load_full_checkpoint(checkpoint_id)?;
 
-        // Extract component states
         let mut results = HashMap::new();
         for component_id in components {
             let component_snapshot = self.extract_component_state(&snapshot, component_id)?;
             results.insert(component_id.clone(), component_snapshot);
         }
 
-        // Verify results
         self.verify_recovery_results(&results, &self.config.verification_level)?;
 
-        // Update statistics
-        // In practice, would update self.stats
+        // TODO: update self.stats.
 
         println!(
             "Recovered {} components from full checkpoint {} in {:?}",
@@ -529,6 +533,11 @@ impl RecoveryEngine for AdvancedRecoveryEngine {
         Ok(results)
     }
 
+    /// Rebuild state by walking the checkpoint chain that ends at the target.
+    ///
+    /// The chain comes from the checkpoint info cache, which is empty unless
+    /// filled, so the result is empty in that case. `base_checkpoint_id` is only
+    /// printed. The chain's own full checkpoint is used as the base.
     fn recover_from_incrementals(
         &self,
         base_checkpoint_id: CheckpointId,
@@ -537,17 +546,13 @@ impl RecoveryEngine for AdvancedRecoveryEngine {
     ) -> Result<HashMap<ComponentId, StateSnapshot>, StateError> {
         let start_time = Instant::now();
 
-        // Create recovery plan
         let plan = self.create_recovery_plan(target_checkpoint_id, components)?;
 
-        // Execute recovery
         let results = self.execute_recovery_plan(&plan, components)?;
 
-        // Verify results
         self.verify_recovery_results(&results, &self.config.verification_level)?;
 
-        // Update statistics
-        // In practice, would update self.stats
+        // TODO: update self.stats.
 
         println!(
             "Recovered {} components from incremental chain {} to {} in {:?}",
@@ -560,17 +565,26 @@ impl RecoveryEngine for AdvancedRecoveryEngine {
         Ok(results)
     }
 
+    /// Pick the cached checkpoint created closest to `target_time`, before or
+    /// after it.
+    ///
+    /// The incremental chain is always empty, and the duration and size are
+    /// rough guesses of 100 ms and 1000 bytes per component.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CheckpointNotFound` with id 0 if the cache is empty, which it is
+    /// unless filled.
     fn find_recovery_path(
         &self,
         target_time: Instant,
         components: &[ComponentId],
     ) -> Result<RecoveryPath, StateError> {
-        // Find the best checkpoint for the target time
         let mut best_checkpoint = None;
         let mut best_distance = Duration::from_secs(u64::MAX);
 
-        // Convert target_time to timestamp for comparison
-        // Since Instant doesn't have a known epoch, we'll use the current time as reference
+        // An Instant has no fixed epoch, so map it to wall clock time through the
+        // current time.
         let now = Instant::now();
         let now_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -601,17 +615,15 @@ impl RecoveryEngine for AdvancedRecoveryEngine {
         let base_checkpoint =
             best_checkpoint.ok_or(StateError::CheckpointNotFound { checkpoint_id: 0 })?;
 
-        // Find incremental chain if needed
         let incremental_chain = if best_distance == Duration::ZERO {
             Vec::new()
         } else {
-            // In practice, would find the optimal incremental chain
+            // TODO: find the incremental chain from the base to the target time.
             Vec::new()
         };
 
-        // Estimate recovery parameters
         let estimated_duration = Duration::from_millis(components.len() as u64 * 100);
-        let total_size = components.len() * 1000; // Rough estimate
+        let total_size = components.len() * 1000; // rough estimate
 
         Ok(RecoveryPath {
             base_checkpoint,
@@ -660,11 +672,9 @@ mod tests {
         let engine =
             AdvancedRecoveryEngine::new(backend.clone(), merger, RecoveryConfig::default());
 
-        // Store a checkpoint
         let snapshot = create_test_snapshot(1);
         backend.store_full_checkpoint(1, &snapshot).unwrap();
 
-        // Recover components
         let components = vec!["component1".to_string(), "component2".to_string()];
         let results = engine.recover_from_full(1, &components).unwrap();
 
@@ -680,7 +690,7 @@ mod tests {
         let mut engine =
             AdvancedRecoveryEngine::new(backend.clone(), merger, RecoveryConfig::default());
 
-        // Add some checkpoint info to cache
+        // The cache is not filled automatically, so add an entry by hand.
         let checkpoint_info = CheckpointInfo {
             checkpoint_id: 1,
             checkpoint_type: CheckpointType::Full,
@@ -694,7 +704,6 @@ mod tests {
         };
         engine.checkpoint_cache.insert(1, checkpoint_info);
 
-        // Find recovery path
         let components = vec!["component1".to_string()];
         let path = engine
             .find_recovery_path(Instant::now(), &components)
@@ -710,7 +719,7 @@ mod tests {
         let merger = Arc::new(AdvancedCheckpointMerger::new(Default::default()));
         let mut engine = AdvancedRecoveryEngine::new(backend, merger, RecoveryConfig::default());
 
-        // Set up checkpoint chain: 1 (full) -> 2 (incremental) -> 3 (incremental)
+        // Chain: 1 is full, 2 builds on 1, and 3 builds on 2.
         engine.checkpoint_cache.insert(
             1,
             CheckpointInfo {
@@ -756,7 +765,6 @@ mod tests {
             },
         );
 
-        // Find chain for checkpoint 3
         let chain = engine.find_checkpoint_chain(3).unwrap();
 
         assert_eq!(chain, vec![1, 2, 3]);
@@ -768,7 +776,6 @@ mod tests {
         let merger = Arc::new(AdvancedCheckpointMerger::new(Default::default()));
         let mut engine = AdvancedRecoveryEngine::new(backend, merger, RecoveryConfig::default());
 
-        // Add checkpoint info
         engine.checkpoint_cache.insert(
             1,
             CheckpointInfo {
@@ -784,7 +791,6 @@ mod tests {
             },
         );
 
-        // Create recovery plan
         let components = vec!["component1".to_string()];
         let plan = engine.create_recovery_plan(1, &components).unwrap();
 

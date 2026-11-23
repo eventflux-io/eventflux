@@ -17,12 +17,12 @@
 
 //! Tests for EVERY pattern with overlapping instances
 //!
-//! EVERY patterns enable multi-instance matching where completed patterns
-//! restart from the beginning, allowing overlapping instances.
+//! EVERY lets several instances of a pattern run at once. A completed pattern
+//! starts again from the beginning, so instances can overlap.
 //!
-//! Example: EVERY (A -> B)
-//! Events: A(1) → A(2) → B(3)
-//! Expected: 2 matches (A1-B3 AND A2-B3)
+//! Example EVERY (A -> B)
+//! Events A(1) → A(2) → B(3)
+//! Expected 2 matches, A1-B3 AND A2-B3
 
 use eventflux::core::event::stream::stream_event::StreamEvent;
 use eventflux::core::event::value::AttributeValue;
@@ -38,13 +38,13 @@ use common::pattern_chain_test_utils::{
     create_stream_definition, create_test_contexts, OutputCollector,
 };
 
-/// Test EVERY pattern - pattern restarts after each match
+/// Test an EVERY pattern, which restarts after each match
 ///
 /// Pattern: EVERY (e1=A{1} -> e2=B{1})
 /// Events: A(1) → B(2) → A(3) → B(4)
 /// Expected: 2 matches
-///   - Match 1: A(1) - B(2)  (pattern completes, restarts via EVERY loopback)
-///   - Match 2: A(3) - B(4)  (pattern matches again)
+///   - Match 1: A(1), B(2)  (pattern completes and restarts through the EVERY loopback)
+///   - Match 2: A(3), B(4)  (pattern matches again)
 #[test]
 fn test_every_pattern_overlapping_instances() {
     let (app_ctx, query_ctx) = create_test_contexts();
@@ -83,7 +83,7 @@ fn test_every_pattern_overlapping_instances() {
     let wrapped = Arc::new(Mutex::new(collector.create_wrapper(original_last)));
     chain.post_processors[last_idx] = wrapped.clone() as Arc<Mutex<dyn PostStateProcessor>>;
 
-    // Re-wire the last pre-processor to use the wrapped post processor
+    // Wire the last pre processor to the wrapped post processor instead
     chain.pre_processors_concrete[last_idx]
         .lock()
         .unwrap()
@@ -125,7 +125,7 @@ fn test_every_pattern_overlapping_instances() {
         collector.get_outputs().len()
     );
 
-    // Send A(3) - with EVERY loopback, pattern should restart
+    // Send A(3). With the EVERY loopback the pattern restarts.
     chain.pre_processors[0]
         .lock()
         .unwrap()
@@ -200,11 +200,11 @@ fn test_every_pattern_overlapping_instances() {
     println!("Test passed: EVERY pattern restart produces 2 matches correctly");
 }
 
-/// Test that without EVERY, overlapping instances don't occur
+/// Test that without EVERY, instances do not overlap
 ///
 /// Pattern: e1=A{1} -> e2=B{1} (no EVERY)
 /// Events: A(1) → A(2) → B(3)
-/// Expected: 1 match (A2-B3 only, A1 is cleared when A2 arrives)
+/// Expected: 1 match, A1-B3. A(2) is ignored because A(1) already used the start state.
 #[test]
 fn test_pattern_without_every_no_overlapping() {
     let (app_ctx, query_ctx) = create_test_contexts();
@@ -276,10 +276,10 @@ fn test_pattern_without_every_no_overlapping() {
         .process(Some(Box::new(b3)));
     chain.update_state();
 
-    // Without EVERY, should only get 1 match - the first complete sequence
-    // When A(1) arrives, it starts a pattern instance
-    // When B(3) arrives, it completes that instance (A(1) -> B(3))
-    // A(2) arrives after A(1) already consumed the initial state, so A(2) is ignored
+    // Without EVERY there is only 1 match, the first complete sequence.
+    // A(1) starts a pattern instance.
+    // B(3) completes that instance, A(1) -> B(3).
+    // A(2) arrives after A(1) already used the start state, so A(2) is ignored.
     let collected = collector.get_outputs();
     assert_eq!(
         collected.len(),
@@ -288,7 +288,7 @@ fn test_pattern_without_every_no_overlapping() {
         collected.len()
     );
 
-    // Verify it's the A(1) - B(3) match (first complete sequence)
+    // It must be the A(1) to B(3) match, the first complete sequence
     let match1 = &collected[0];
     if let Some(e1) = match1.get_stream_event(0) {
         if let Some(AttributeValue::Long(val)) = e1.before_window_data.first() {
@@ -446,11 +446,10 @@ fn test_every_with_count_quantifiers() {
 /// Pattern: EVERY (e1=A{1} -> e2=B{1}) WITHIN 5 seconds
 /// Events: A(1)@t0, B(2)@t1 (within), A(3)@t2, B(4)@t10 (timeout)
 ///
-/// NOTE: Current behavior produces 2 matches. This test documents a known
-/// limitation where WITHIN timing expiration might not be fully integrated
-/// with EVERY pattern restart. Expected behavior would be 1 match with the
-/// second timing out. This requires further investigation of the expiration
-/// mechanism interaction with EVERY loopback.
+/// Today this gives 2 matches. The test records a known limitation, where WITHIN
+/// expiry may not be fully wired into the EVERY restart. The expected result is
+/// 1 match, with the second one timing out. How expiry interacts with the EVERY
+/// loopback still needs looking into.
 #[test]
 fn test_every_with_within() {
     let (app_ctx, query_ctx) = create_test_contexts();
@@ -540,8 +539,8 @@ fn test_every_with_within() {
         collector.get_outputs().len()
     );
 
-    // Current behavior: both sequences match (WITHIN expiration not fully integrated)
-    // TODO: Investigate timing expiration with EVERY restart - should be 1 match
+    // Today both sequences match, because WITHIN expiry is not fully wired in.
+    // TODO: Look into expiry with the EVERY restart. This should give 1 match.
     let collected = collector.get_outputs();
     assert_eq!(
         collected.len(),
@@ -683,7 +682,7 @@ fn test_every_with_longer_chain() {
     println!("Test passed: EVERY with longer chain (A->B->C) produces 2 matches");
 }
 
-/// Test EVERY memory leak - stress test with many restarts
+/// Stress test that many EVERY restarts do not leak memory
 ///
 /// Pattern: EVERY (e1=A{1} -> e2=B{1})
 /// Events: 100 sequences of A->B
@@ -777,27 +776,28 @@ fn test_every_memory_leak_stress() {
 
 /// TEST FOR TRUE OVERLAPPING INSTANCES (THE ACTUAL EVERY SEMANTICS)
 ///
-/// This test exposes the critical bug in the current EVERY implementation.
+/// This test was written to expose a bug in the EVERY implementation and now
+/// guards against it coming back.
 ///
 /// Pattern: EVERY (e1=A{1} -> e2=B{1})
 /// Events: A(1) → A(2) → B(3)
 ///
-/// EXPECTED (True EVERY semantics):
-///   When A1 arrives → Instance 1 starts, waiting for B
-///   When A2 arrives → Instance 2 starts, Instance 1 STILL waiting
-///   When B3 arrives → BOTH instances complete!
-///   Result: 2 matches
+/// EXPECTED, true EVERY behaviour
+///   When A1 arrives → Instance 1 starts and waits for B
+///   When A2 arrives → Instance 2 starts, and Instance 1 is STILL waiting
+///   When B3 arrives → BOTH instances complete
+///   Result is 2 matches
 ///     - Match 1: A(1) -> B(3)
 ///     - Match 2: A(2) -> B(3)
 ///
-/// ACTUAL (Current broken implementation):
-///   When A1 arrives → Instance 1 starts, waiting for B
-///   When A2 arrives → A2 REPLACES A1 (only 1 pending state)
+/// The old, broken behaviour
+///   When A1 arrives → Instance 1 starts and waits for B
+///   When A2 arrives → A2 REPLACES A1, since there was only 1 pending state
 ///   When B3 arrives → Only Instance 2 (A2) matches
-///   Result: 1 match (A2-B3 only)
+///   Result was 1 match, A2-B3 only
 ///
-/// This is the fundamental difference between "pattern restart" (sequential)
-/// and "true overlapping instances" (concurrent).
+/// This is the difference between restarting the pattern one at a time and
+/// running truly overlapping instances at once.
 #[test]
 fn test_true_every_overlapping_multiple_a_before_b() {
     let (app_ctx, query_ctx) = create_test_contexts();
@@ -846,11 +846,11 @@ fn test_true_every_overlapping_multiple_a_before_b() {
     let mut a1 = StreamEvent::new(1000, 1, 0, 0);
     a1.before_window_data = vec![AttributeValue::Long(1)];
 
-    // Event 2: A(2) at timestamp 2000 - ANOTHER A before B!
+    // Event 2: A(2) at timestamp 2000, ANOTHER A before B
     let mut a2 = StreamEvent::new(2000, 1, 0, 0);
     a2.before_window_data = vec![AttributeValue::Long(2)];
 
-    // Event 3: B(3) at timestamp 3000 - should match BOTH A1 and A2
+    // Event 3: B(3) at timestamp 3000, which must match BOTH A1 and A2
     let mut b3 = StreamEvent::new(3000, 1, 0, 0);
     b3.before_window_data = vec![AttributeValue::Long(3)];
 
@@ -865,7 +865,7 @@ fn test_true_every_overlapping_multiple_a_before_b() {
         collector.get_outputs().len()
     );
 
-    // Send A(2) to first processor - THIS IS THE KEY: another A before B
+    // Send A(2) to the first processor. THIS IS THE KEY, another A before B.
     chain.pre_processors[0]
         .lock()
         .unwrap()
@@ -887,7 +887,7 @@ fn test_true_every_overlapping_multiple_a_before_b() {
         pre1_pending
     );
 
-    // Send B(3) - should complete BOTH A1-B3 AND A2-B3
+    // Send B(3), which must complete BOTH A1-B3 AND A2-B3
     chain.pre_processors[1]
         .lock()
         .unwrap()
@@ -947,8 +947,8 @@ fn test_true_every_overlapping_multiple_a_before_b() {
         collected.len()
     );
 
-    // Verify both matches are correct by checking timestamps
-    // (before_window_data may not be cloned properly, but timestamps are)
+    // Check both matches by timestamp. before_window_data may not be cloned
+    // properly, but timestamps are.
     let mut found_a1_b3 = false;
     let mut found_a2_b3 = false;
 
@@ -981,9 +981,9 @@ fn test_true_every_overlapping_multiple_a_before_b() {
     println!("This confirms true overlapping instances are working correctly!");
 }
 
-/// ULTRA-EXPLICIT test that traces through every step to prove overlapping works
+/// Very explicit test that traces every step to prove overlapping works
 ///
-/// This test checks pending counts at EVERY step to prove multiple states are maintained.
+/// It checks pending counts at EVERY step to prove several states are kept at once.
 #[test]
 fn test_ultra_explicit_overlapping_proof() {
     let (app_ctx, query_ctx) = create_test_contexts();
@@ -1166,7 +1166,7 @@ fn test_ultra_explicit_overlapping_proof() {
         }
     }
 
-    // Final assertion - must have 2 matches
+    // Final assertion, there must be 2 matches
     assert_eq!(
         collected.len(),
         2,
@@ -1208,11 +1208,13 @@ fn test_ultra_explicit_overlapping_proof() {
 ///   - Instance 3: [A3, A4, A5] waits for B
 ///   - When B6 arrives: 3 matches
 ///
-/// This is the sliding window behavior described in PATTERN_GRAMMAR_V1.2_TEST_SPEC.md Test 2.9
+/// This is the sliding window behaviour described in PATTERN_GRAMMAR_V1.2_TEST_SPEC.md
+/// Test 2.9. That file no longer exists. Test 2.9 is now in
+/// feat/pattern_processing/PATTERN_TEST_SPEC.md.
 ///
-/// **STATUS**: This test documents P1 future work - sliding window with count quantifiers
-/// The basic EVERY overlapping (A->B with A1,A2,B3) works correctly.
-/// This advanced sliding window feature needs additional implementation.
+/// **STATUS**: Ignored. This test records P1 future work, a sliding window with
+/// count quantifiers. Basic EVERY overlapping (A->B with A1, A2, B3) works.
+/// This sliding window feature still needs to be built.
 #[test]
 #[ignore = "P1 Future Work: Sliding window with count quantifiers not yet implemented"]
 fn test_true_every_overlapping_count_quantifier_sliding_window() {
@@ -1305,7 +1307,7 @@ fn test_true_every_overlapping_count_quantifier_sliding_window() {
     );
 
     // TRUE EVERY with count quantifier should produce sliding window matches
-    // Per PATTERN_GRAMMAR_V1.2_TEST_SPEC.md Test 2.9
+    // See Test 2.9, now in feat/pattern_processing/PATTERN_TEST_SPEC.md
     assert_eq!(
         collected.len(),
         3,

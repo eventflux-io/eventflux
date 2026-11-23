@@ -15,15 +15,14 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.condition.And
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq)] // Removed Default
+/// Logical AND of two conditions.
+#[derive(Clone, Debug, PartialEq)]
 pub struct And {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // And specific fields
     pub left_expression: Box<Expression>,
     pub right_expression: Box<Expression>,
 }

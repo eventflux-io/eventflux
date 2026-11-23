@@ -17,9 +17,9 @@
 
 //! # M5 Error Handling Integration Tests
 //!
-//! Comprehensive integration tests for the error handling and DLQ system.
+//! Integration tests for error handling and the dead letter queue (DLQ).
 //!
-//! ## Test Coverage
+//! ## What is covered
 //!
 //! 1. **Retry Strategy Tests**
 //!    - Exponential backoff calculation
@@ -28,7 +28,7 @@
 //!    - Successful retry after transient error
 //!
 //! 2. **DLQ Strategy Tests**
-//!    - DLQ event schema compliance
+//!    - DLQ events match the DLQ schema
 //!    - DLQ event delivery
 //!    - Original event serialization
 //!    - Metadata accuracy
@@ -38,7 +38,7 @@
 //!    - Retry fallback when DLQ unavailable
 //!    - Fail fallback when DLQ unavailable
 //!
-//! 4. **End-to-End Integration Tests**
+//! 4. **End to End Integration Tests**
 //!    - Source with retry strategy
 //!    - Source with DLQ strategy
 //!    - Source with fail strategy
@@ -53,7 +53,7 @@ use eventflux::core::exception::EventFluxError;
 use std::time::{Duration, Instant};
 
 // ============================================================================
-// Test 1: Retry Strategy with Exponential Backoff
+// Test 1. Retry Strategy with Exponential Backoff
 // ============================================================================
 
 #[test]
@@ -65,7 +65,7 @@ fn test_retry_exponential_backoff_calculation() {
         max_delay: Duration::from_secs(10),
     };
 
-    // Test exponential growth: 100ms, 200ms, 400ms, 800ms, 1600ms
+    // The delay doubles each time, 100 ms, 200 ms, 400 ms, 800 ms, 1600 ms
     assert_eq!(retry_config.calculate_delay(1), Duration::from_millis(100));
     assert_eq!(retry_config.calculate_delay(2), Duration::from_millis(200));
     assert_eq!(retry_config.calculate_delay(3), Duration::from_millis(400));
@@ -82,7 +82,7 @@ fn test_retry_exponential_backoff_max_delay_cap() {
         max_delay: Duration::from_secs(5),
     };
 
-    // After many attempts, should cap at max_delay (5 seconds)
+    // After many attempts the delay stops at max_delay, 5 seconds
     let delay = retry_config.calculate_delay(50);
     assert!(
         delay <= Duration::from_secs(5),
@@ -99,7 +99,7 @@ fn test_retry_handler_consecutive_errors() {
     let retry_config = RetryConfig {
         max_attempts: 3,
         backoff: BackoffStrategy::Fixed,
-        initial_delay: Duration::from_millis(1), // Short for testing
+        initial_delay: Duration::from_millis(1), // short so the test runs fast
         max_delay: Duration::from_secs(1),
     };
 
@@ -135,7 +135,8 @@ fn test_retry_handler_consecutive_errors() {
         );
     }
 
-    // Third error should drop (max attempts reached - retry strategy drops after exhausting retries)
+    // The third error drops the event. max_attempts is reached, and the retry
+    // strategy drops once its retries are used up.
     let action = handler.handle_error(Some(&event), &error);
     assert!(
         matches!(action, ErrorAction::Drop),
@@ -209,7 +210,7 @@ fn test_retry_timing_validation() {
         source: None,
     };
 
-    // First retry: 50ms delay
+    // First retry, 50 ms delay
     let start = Instant::now();
     match handler.handle_error(Some(&event), &error) {
         ErrorAction::Retry { delay } => {
@@ -224,7 +225,7 @@ fn test_retry_timing_validation() {
         "Should wait at least 45ms"
     );
 
-    // Second retry: 100ms delay
+    // Second retry, 100 ms delay
     match handler.handle_error(Some(&event), &error) {
         ErrorAction::Retry { delay } => {
             assert_eq!(delay, Duration::from_millis(100));
@@ -234,7 +235,7 @@ fn test_retry_timing_validation() {
 }
 
 // ============================================================================
-// Test 2: DLQ Strategy - Event Delivery and Schema
+// Test 2. DLQ Strategy, Event Delivery and Schema
 // ============================================================================
 
 #[test]
@@ -255,7 +256,7 @@ fn test_dlq_event_schema_compliance() {
 
     let dlq_event = create_dlq_event(&original_event, &error, 3, "InputStream");
 
-    // Verify schema: 6 attributes in specific order
+    // The DLQ schema has 6 attributes in a fixed order
     let data = dlq_event.get_data();
     assert_eq!(data.len(), 6, "DLQ event should have exactly 6 attributes");
 
@@ -307,13 +308,13 @@ fn test_dlq_event_schema_compliance() {
     }
 }
 
-// Note: Full DLQ event delivery tests are in timer_source.rs tests
-// These tests focus on DLQ event creation and schema compliance
+// Full DLQ delivery is tested in the timer_source.rs tests.
+// These tests cover building DLQ events and matching the DLQ schema.
 
 #[test]
 fn test_dlq_event_delivery_action() {
-    // Test that DLQ strategy returns correct action when DLQ is unavailable
-    // (actual delivery tested in source integration tests)
+    // The DLQ strategy must return the fallback action when there is no DLQ.
+    // Real delivery is tested in the source integration tests.
     let dlq_config = DlqConfig {
         stream: "ErrorStream".to_string(),
         fallback_strategy: DlqFallbackStrategy::Log,
@@ -329,7 +330,7 @@ fn test_dlq_event_delivery_action() {
     )
     .unwrap();
 
-    // No DLQ junction provided - should use fallback
+    // No DLQ junction is given, so the fallback is used
     let mut handler = ErrorHandler::new(error_config, None, "InputStream".to_string());
 
     let event = Event::new_with_data(123, vec![AttributeValue::String("data".to_string())]);
@@ -385,12 +386,12 @@ fn test_dlq_preserves_original_event_data() {
 }
 
 // ============================================================================
-// Test 3: DLQ Fallback Strategies
+// Test 3. DLQ Fallback Strategies
 // ============================================================================
 
 #[test]
 fn test_dlq_fallback_log_when_dlq_unavailable() {
-    // No DLQ junction provided (simulating unavailable DLQ stream)
+    // No DLQ junction is given, which stands in for a DLQ stream that is unavailable
     let dlq_config = DlqConfig {
         stream: "ErrorStream".to_string(),
         fallback_strategy: DlqFallbackStrategy::Log,
@@ -478,9 +479,9 @@ fn test_dlq_fallback_retry_when_dlq_unavailable() {
     let event = Event::new_with_data(123, vec![AttributeValue::Int(42)]);
     let error = EventFluxError::Other("Test error".to_string());
 
-    // The DLQ send itself is retried inside the handler (the event is not
-    // handed back to the source as a `Retry`): with max_attempts = 2, one
-    // resend after a 10ms backoff, then drop once the budget is spent
+    // The handler retries the DLQ send itself and does not hand the event back
+    // to the source as a `Retry`. With max_attempts = 2 there is one resend after
+    // a 10 ms backoff, then the event is dropped once the budget is used up.
     let mut waits = Vec::new();
     let action = handler.handle_error_with_backoff(Some(&event), &error, &mut |delay| {
         waits.push(delay);
@@ -495,7 +496,7 @@ fn test_dlq_fallback_retry_when_dlq_unavailable() {
 }
 
 // ============================================================================
-// Test 4: End-to-End Integration with SourceErrorContext
+// Test 4. End to End Integration with SourceErrorContext
 // ============================================================================
 
 #[test]
@@ -579,7 +580,7 @@ fn test_source_error_context_retry_and_reset() {
     assert_eq!(ctx.error_count(), 1);
 }
 
-// Note: Full DLQ delivery with SourceErrorContext tested in timer_source.rs
+// Full DLQ delivery with SourceErrorContext is tested in timer_source.rs
 
 #[test]
 fn test_source_error_context_with_dlq_fallback() {
@@ -598,7 +599,7 @@ fn test_source_error_context_with_dlq_fallback() {
     )
     .unwrap();
 
-    // No DLQ junction - should use fallback
+    // No DLQ junction, so the fallback is used
     let mut ctx = SourceErrorContext::new(error_config, None, "InputStream".to_string());
 
     let event = Event::new_with_data(123, vec![AttributeValue::String("data".to_string())]);
@@ -607,7 +608,7 @@ fn test_source_error_context_with_dlq_fallback() {
         source: None,
     };
 
-    // Should continue processing (fallback handles error)
+    // Processing continues because the fallback handles the error
     assert!(
         ctx.handle_error(Some(&event), &error),
         "Should continue with fallback strategy"
@@ -615,12 +616,12 @@ fn test_source_error_context_with_dlq_fallback() {
 }
 
 // ============================================================================
-// Test 5: Error Retriability Classification
+// Test 5. Which Errors Can Be Retried
 // ============================================================================
 
 #[test]
 fn test_error_retriability_classification() {
-    // Retriable errors (transient)
+    // Errors that can be retried because they are temporary
     assert!(EventFluxError::ConnectionUnavailable {
         message: "".to_string(),
         source: None
@@ -642,7 +643,7 @@ fn test_error_retriability_classification() {
     ))
     .is_retriable());
 
-    // Non-retriable errors (permanent/configuration)
+    // Errors that cannot be retried because they are permanent or config errors
     assert!(!EventFluxError::Configuration {
         message: "".to_string(),
         config_key: None,

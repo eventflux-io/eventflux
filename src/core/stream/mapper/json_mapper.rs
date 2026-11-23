@@ -17,32 +17,35 @@
 
 //! JSON Mapper Implementation
 //!
-//! Provides bidirectional mapping between JSON and EventFlux events.
+//! Maps JSON to EventFlux events and back.
 //!
 //! ## Source Mapping (JSON → Events)
 //!
-//! ### Auto-Mapping (No `mapping.*` properties)
+//! ### Auto Mapping (no `mapping.*` properties)
 //! ```json
 //! {"orderId": "123", "amount": 100.0}
 //! ```
-//! Maps all top-level fields by name.
+//! Maps the top level fields. By schema field name when the schema is known,
+//! otherwise in JSON key order.
 //!
-//! ### Explicit Mapping (With `mapping.*` properties)
+//! ### Explicit Mapping (with `mapping.*` properties)
 //! ```toml
 //! json.mapping.orderId = "$.order.id"
 //! json.mapping.amount = "$.order.total"
 //! ```
-//! Extracts nested fields using JSONPath.
+//! Reads nested fields with JSONPath.
 //!
 //! ## Sink Mapping (Events → JSON)
 //!
-//! ### Simple Serialization (No template)
-//! Converts events to JSON objects with field names from schema.
+//! ### Plain Output (no template)
+//! Turns each event into a JSON object keyed by the schema field names.
 //!
-//! ### Template-Based (With template)
+//! ### Template Output (with a template)
 //! ```toml
 //! json.template = "{\"eventType\":\"ORDER\",\"id\":\"{{orderId}}\",\"amount\":{{amount}}}"
 //! ```
+//! Note that `render_template` only fills `{{field_N}}` (by index) and
+//! `{{_timestamp}}`. Named placeholders like the ones above are left as is.
 
 use super::{
     alphabetical_mappings, ensure_unique_field_names, match_field_names, now_millis,
@@ -53,31 +56,32 @@ use crate::core::exception::EventFluxError;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
-/// Source mapper for JSON format
+/// Source mapper for JSON format. Each JSON payload becomes one event with the
+/// current time as its timestamp.
 #[derive(Debug, Clone)]
 pub struct JsonSourceMapper {
-    /// Field name → JSONPath mappings
-    /// Empty = auto-map all top-level fields
+    /// Field name to JSONPath. Empty means auto map the top level fields.
     mappings: HashMap<String, String>,
-    /// Whether to ignore parse errors (continue processing)
+    /// Return no events for JSON that does not parse, instead of an error
     ignore_parse_errors: bool,
-    /// Optional date format for parsing timestamps
+    /// Optional chrono date format for parsing timestamps
     date_format: Option<String>,
-    /// Maximum input size in bytes (default: 10 MB)
+    /// Largest input in bytes. Default 10 MB.
     max_input_size: usize,
-    /// Maximum JSONPath nesting depth (default: 32)
+    /// Deepest JSONPath allowed. Default 32.
     max_nesting_depth: usize,
-    /// Stream schema field names in schema order; never `Some(empty)`.
-    /// Enables name-based auto-mapping (see `auto_map`).
+    /// Stream schema field names in schema order. Never `Some(empty)`.
+    /// Turns on mapping by name in auto mapping (see `auto_map`).
     field_names: Option<Vec<String>>,
     /// Explicit mappings as (field name, JSONPath) in output order.
-    /// Precomputed at configuration time: schema order when field names are
-    /// set, alphabetical otherwise (HashMap iteration is non-deterministic).
+    /// Worked out at config time. Schema order when field names are set,
+    /// otherwise alphabetical, since HashMap order is random.
     ordered_mappings: Vec<(String, String)>,
 }
 
 impl JsonSourceMapper {
-    /// Create a new JSON source mapper with default settings
+    /// Creates a JSON source mapper with default settings: auto mapping,
+    /// 10 MB input limit, and a JSONPath depth limit of 32
     pub fn new() -> Self {
         Self {
             mappings: HashMap::new(),
@@ -90,7 +94,8 @@ impl JsonSourceMapper {
         }
     }
 
-    /// Create a new JSON source mapper with explicit mappings
+    /// Creates a JSON source mapper with explicit JSONPath mappings. Output is
+    /// in alphabetical field order until `set_field_names` is called.
     pub fn with_mappings(mappings: HashMap<String, String>) -> Self {
         let ordered_mappings = alphabetical_mappings(&mappings);
         Self {
@@ -104,20 +109,23 @@ impl JsonSourceMapper {
         }
     }
 
-    /// Set the stream schema field names (in schema order).
+    /// Sets the stream schema field names, in schema order.
     ///
-    /// Enables name-based auto-mapping: each schema field is resolved from the
-    /// JSON object by exact key match, then ASCII case-insensitive match; when
-    /// no schema field matches any JSON key, values fall back to positional
-    /// order. An empty list clears the schema: auto-mapping returns to JSON
-    /// key order and explicit mappings return to alphabetical order.
+    /// Turns on mapping by name in auto mapping. Each schema field is found in
+    /// the JSON object by exact key, then by key ignoring ASCII case. When no
+    /// schema field matches any JSON key, values are taken by position. An
+    /// empty list clears the schema. Auto mapping then goes back to JSON key
+    /// order and explicit mappings go back to alphabetical order.
     ///
-    /// With explicit `mapping.*` properties configured, this validates the
-    /// configuration fail-fast: every schema field must have a mapping
-    /// (matched exactly or case-insensitively) and every mapping key must
-    /// correspond to a schema field. Output follows schema order.
+    /// With explicit `mapping.*` properties, this checks the config right away.
+    /// Every schema field must have a mapping (matched exactly or ignoring
+    /// case) and every mapping key must name a schema field. Output follows
+    /// schema order.
     ///
-    /// On error the mapper is left unchanged.
+    /// # Errors
+    ///
+    /// Returns an error when a field name appears more than once, or the
+    /// fields and mappings do not match. The mapper is then left unchanged.
     pub fn set_field_names(&mut self, names: Vec<String>) -> Result<(), EventFluxError> {
         ensure_unique_field_names(&names, "json")?;
         let ordered_mappings = order_mappings(&names, &self.mappings, "json")?;
@@ -127,15 +135,16 @@ impl JsonSourceMapper {
         Ok(())
     }
 
-    /// Set whether to ignore parse errors
+    /// Sets whether JSON that does not parse gives no events instead of an
+    /// error. Only covers parsing, not mapping errors.
     pub fn set_ignore_parse_errors(&mut self, ignore: bool) {
         self.ignore_parse_errors = ignore;
     }
 
-    /// Set date format for timestamp parsing
+    /// Sets the date format for parsing timestamps.
     ///
-    /// Accepts both Java SimpleDateFormat and chrono format patterns.
-    /// Java patterns are automatically converted to chrono format.
+    /// Accepts Java SimpleDateFormat and chrono patterns. Java patterns are
+    /// turned into chrono patterns. `None` clears it.
     ///
     /// # Examples
     ///
@@ -154,29 +163,34 @@ impl JsonSourceMapper {
         self.date_format = format.map(|f| convert_java_date_format(&f));
     }
 
-    /// Set maximum input size in bytes (for DoS protection)
+    /// Sets the largest input in bytes, to guard against huge inputs
     pub fn set_max_input_size(&mut self, max_size: usize) {
         self.max_input_size = max_size;
     }
 
-    /// Set maximum JSONPath nesting depth (for DoS protection)
+    /// Sets the deepest JSONPath allowed, to guard against costly paths
     pub fn set_max_nesting_depth(&mut self, max_depth: usize) {
         self.max_nesting_depth = max_depth;
     }
 
-    /// Auto-map top-level JSON fields to event attributes.
+    /// Maps the top level JSON fields to event attributes.
     ///
-    /// With schema field names available, each schema field is resolved by
-    /// exact JSON key match, then an unambiguous ASCII case-insensitive match,
-    /// with each JSON key used by at most one field (see `match_field_names`).
-    /// An ambiguous case-only match fails the event instead of guessing.
-    /// When at least one field matches by name, the payload is treated as name-based:
-    /// unmatched fields map to Null (a value is never consumed twice). Only
-    /// when NO field matches by name does the mapper fall back to positional
-    /// order (serde_json's `preserve_order` keeps the incoming key order).
+    /// With schema field names, each field is found by exact JSON key, then by
+    /// one clear match ignoring ASCII case. Each JSON key serves at most one
+    /// field (see `match_field_names`). A match that is ambiguous by case fails
+    /// the event instead of guessing. When at least one field matches by name,
+    /// the payload counts as named, and fields with no match become Null, so a
+    /// value is never used twice. Only when NO field matches by name does it
+    /// take values by position. serde_json's `preserve_order` keeps the
+    /// incoming key order for that.
     ///
-    /// Without schema field names, all top-level fields are mapped in JSON
-    /// insertion order (legacy behavior).
+    /// Without schema field names, all top level fields are mapped in JSON key
+    /// order, which is the older behaviour.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MappingFailed` when the root is not an object, a key match is
+    /// ambiguous, or a value cannot be turned into an attribute.
     fn auto_map(&self, json: &JsonValue) -> Result<Vec<Event>, EventFluxError> {
         let obj = json
             .as_object()
@@ -194,25 +208,31 @@ impl JsonSourceMapper {
             Some(names) => {
                 let matched = match_fields(obj, names)?;
                 if matched.iter().any(Option::is_some) {
-                    // Name-based payload: unmatched fields become Null
+                    // Named payload, so fields with no match become Null
                     matched.into_iter().map(to_attribute).collect()
                 } else {
-                    // No key matched any schema field: positional fallback
+                    // No key matched any schema field, so take values by
+                    // position. Missing values become Null and extras are dropped.
                     let mut values = obj.values();
                     names.iter().map(|_| to_attribute(values.next())).collect()
                 }
             }
-            // No schema available: preserve JSON key order
+            // No schema, so keep the JSON key order
             None => obj.values().map(|v| to_attribute(Some(v))).collect(),
         };
         Ok(vec![Event::new_with_data(now_millis(), event_data?)])
     }
 
-    /// Extract fields using explicit JSONPath mappings
+    /// Reads fields with the explicit JSONPath mappings.
     ///
-    /// Uses the (field, path) order precomputed at configuration time:
-    /// schema order when schema field names were set (validated for
-    /// completeness in `set_field_names`), alphabetical otherwise.
+    /// Uses the (field, path) order worked out at config time. That is schema
+    /// order when schema field names were set (checked for gaps in
+    /// `set_field_names`), otherwise alphabetical.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from `extract_json_path` or from turning a value into
+    /// an attribute.
     fn extract_with_mappings(&self, json: &JsonValue) -> Result<Vec<Event>, EventFluxError> {
         let mut event_data = Vec::with_capacity(self.ordered_mappings.len());
 
@@ -228,10 +248,14 @@ impl JsonSourceMapper {
     }
 }
 
-/// Match schema fields to top-level JSON values using [`match_field_names`].
+/// Matches schema fields to top level JSON values with [`match_field_names`].
 ///
-/// Fast path: when every field matches a key exactly (the common case),
-/// the general matcher and its key list allocation are skipped.
+/// Shortcut: when every field matches a key exactly, which is the usual case,
+/// the general matcher and its key list are skipped.
+///
+/// # Errors
+///
+/// Returns `MappingFailed` when a match ignoring case is ambiguous.
 fn match_fields<'a>(
     obj: &'a serde_json::Map<String, JsonValue>,
     names: &[String],
@@ -261,7 +285,7 @@ impl Default for JsonSourceMapper {
 
 impl SourceMapper for JsonSourceMapper {
     fn map(&self, input: &[u8]) -> Result<Vec<Event>, EventFluxError> {
-        // Check input size to prevent DoS attacks
+        // Reject huge inputs so a sender cannot exhaust memory
         if input.len() > self.max_input_size {
             return Err(EventFluxError::MappingFailed {
                 message: format!(
@@ -273,12 +297,11 @@ impl SourceMapper for JsonSourceMapper {
             });
         }
 
-        // Parse JSON with error handling that respects ignore_parse_errors
         let json: JsonValue = match serde_json::from_slice(input) {
             Ok(v) => v,
             Err(e) => {
                 if self.ignore_parse_errors {
-                    // Skip this event - return empty list
+                    // Skip this payload by returning no events
                     return Ok(Vec::new());
                 } else {
                     return Err(EventFluxError::MappingFailed {
@@ -289,7 +312,7 @@ impl SourceMapper for JsonSourceMapper {
             }
         };
 
-        // Apply all-or-nothing auto-mapping policy
+        // All or nothing. With any explicit mapping, only mapped fields are read.
         if self.mappings.is_empty() {
             self.auto_map(&json)
         } else {
@@ -305,17 +328,18 @@ impl SourceMapper for JsonSourceMapper {
 /// Sink mapper for JSON format
 #[derive(Debug, Clone)]
 pub struct JsonSinkMapper {
-    /// Optional template string for custom JSON output
-    /// Uses {{fieldName}} placeholders
+    /// Optional template for custom JSON output, with `{{field_N}}` and
+    /// `{{_timestamp}}` placeholders (see `render_template`)
     template: Option<String>,
-    /// Whether to pretty-print JSON (with indentation)
+    /// Pretty print the JSON with indentation. Has no effect on template output.
     pretty_print: bool,
-    /// Schema field names for JSON output (uses field_0, field_1 if not set)
+    /// Schema field names used as JSON keys. Without them the keys are
+    /// field_0, field_1, and so on.
     field_names: Option<Vec<String>>,
 }
 
 impl JsonSinkMapper {
-    /// Create a new JSON sink mapper without template (simple serialization)
+    /// Creates a JSON sink mapper with no template, which writes plain JSON objects
     pub fn new() -> Self {
         Self {
             template: None,
@@ -324,7 +348,7 @@ impl JsonSinkMapper {
         }
     }
 
-    /// Create a new JSON sink mapper with a template
+    /// Creates a JSON sink mapper that fills in a template
     pub fn with_template(template: String) -> Self {
         Self {
             template: Some(template),
@@ -333,12 +357,13 @@ impl JsonSinkMapper {
         }
     }
 
-    /// Enable pretty-printing (formatted JSON with indentation)
+    /// Turns pretty printing with indentation on or off. Template output is
+    /// not affected.
     pub fn set_pretty_print(&mut self, pretty: bool) {
         self.pretty_print = pretty;
     }
 
-    /// Set the schema field names for JSON output
+    /// Sets the schema field names used as JSON keys. Not used by template output.
     pub fn set_field_names(&mut self, names: Vec<String>) {
         self.field_names = Some(names);
     }
@@ -353,11 +378,9 @@ impl Default for JsonSinkMapper {
 impl SinkMapper for JsonSinkMapper {
     fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
         if let Some(template) = &self.template {
-            // Use template rendering
             let rendered = render_template(template, event)?;
             Ok(rendered.into_bytes())
         } else {
-            // Simple JSON serialization with optional field names
             let json_value = event_to_json_with_names(event, self.field_names.as_deref())?;
             let json_str = if self.pretty_print {
                 serde_json::to_string_pretty(&json_value)
@@ -381,29 +404,31 @@ impl SinkMapper for JsonSinkMapper {
 // Date Format Conversion
 // ============================================================================
 
-/// Convert Java SimpleDateFormat pattern to chrono format pattern
+/// Turns a Java SimpleDateFormat pattern into a chrono pattern.
 ///
-/// EventFlux configuration uses Java SimpleDateFormat patterns for consistency
-/// with Java-based CEP systems, but the Rust implementation uses chrono.
-/// This function performs automatic conversion.
+/// EventFlux config uses Java SimpleDateFormat patterns to match Java based CEP
+/// systems, but the Rust code uses chrono. This function does the conversion.
+/// A pattern that already holds `%` is taken as chrono and returned as is.
 ///
 /// # Common Pattern Conversions
 ///
 /// | Java Pattern | Chrono Pattern | Description |
 /// |--------------|----------------|-------------|
-/// | `yyyy` | `%Y` | 4-digit year |
-/// | `yy` | `%y` | 2-digit year |
-/// | `MM` | `%m` | 2-digit month (01-12) |
+/// | `yyyy` | `%Y` | 4 digit year |
+/// | `yy` | `%y` | 2 digit year |
+/// | `MM` | `%m` | 2 digit month (01 to 12) |
 /// | `M` | `%-m` | Month without leading zero |
-/// | `dd` | `%d` | 2-digit day (01-31) |
+/// | `dd` | `%d` | 2 digit day (01 to 31) |
 /// | `d` | `%-d` | Day without leading zero |
-/// | `HH` | `%H` | Hour (00-23) |
-/// | `hh` | `%I` | Hour (01-12) |
-/// | `mm` | `%M` | Minute (00-59) |
-/// | `ss` | `%S` | Second (00-59) |
+/// | `HH` | `%H` | Hour (00 to 23) |
+/// | `hh` | `%I` | Hour (01 to 12) |
+/// | `mm` | `%M` | Minute (00 to 59) |
+/// | `ss` | `%S` | Second (00 to 59) |
 /// | `SSS` | `%3f` | Milliseconds |
-/// | `a` | `%p` | AM/PM |
-/// | `'T'` | `T` | Literal character (quotes removed) |
+/// | `a` | `%p` | AM or PM |
+/// | `z` | `%Z` | Time zone name |
+/// | `Z` | `%z` | Time zone offset |
+/// | `'T'` | `T` | Literal text (quotes removed) |
 ///
 /// # Examples
 ///
@@ -426,11 +451,13 @@ impl SinkMapper for JsonSinkMapper {
 ///
 /// # Notes
 ///
-/// - This conversion is **automatic and transparent** - users can use Java patterns
-/// - Already-converted chrono patterns pass through unchanged
-/// - Quotes (`'`) around literal characters are removed
+/// - The conversion happens on its own, so users can write Java patterns
+/// - Patterns already in chrono form pass through unchanged
+/// - Quotes (`'`) around literal text are removed. A doubled quote (`''`) is
+///   not turned into a literal quote.
+/// - Letters not in the table are copied as is
 pub fn convert_java_date_format(java_format: &str) -> String {
-    // If format already looks like chrono format (contains %), pass through unchanged
+    // A `%` means the pattern is already in chrono form
     if java_format.contains('%') {
         return java_format.to_string();
     }
@@ -439,110 +466,103 @@ pub fn convert_java_date_format(java_format: &str) -> String {
     let mut chars = java_format.chars().peekable();
     let mut in_quotes = false;
 
+    // Each letter arm counts how many times the letter repeats in a row and
+    // picks the chrono code from that count
     while let Some(ch) = chars.next() {
         match ch {
             '\'' => {
-                // Toggle quote mode - quotes are removed, content is literal
+                // Quotes turn literal mode on or off and are dropped
                 in_quotes = !in_quotes;
             }
             _ if in_quotes => {
-                // Inside quotes - keep as literal character
                 result.push(ch);
             }
             'y' => {
-                // Count consecutive y's
                 let mut count = 1;
                 while chars.peek() == Some(&'y') {
                     chars.next();
                     count += 1;
                 }
-                // yyyy → %Y (4-digit year), yy → %y (2-digit year)
+                // yyyy (4 or more) gives %Y (4 digit year), fewer give %y (2 digits)
                 result.push_str(if count >= 4 { "%Y" } else { "%y" });
             }
             'M' => {
-                // Count consecutive M's
                 let mut count = 1;
                 while chars.peek() == Some(&'M') {
                     chars.next();
                     count += 1;
                 }
-                // MM → %m (2-digit month), M → %-m (month without leading zero)
+                // MM gives %m (2 digit month), M gives %-m (no leading zero)
                 result.push_str(if count >= 2 { "%m" } else { "%-m" });
             }
             'd' => {
-                // Count consecutive d's
                 let mut count = 1;
                 while chars.peek() == Some(&'d') {
                     chars.next();
                     count += 1;
                 }
-                // dd → %d (2-digit day), d → %-d (day without leading zero)
+                // dd gives %d (2 digit day), d gives %-d (no leading zero)
                 result.push_str(if count >= 2 { "%d" } else { "%-d" });
             }
             'H' => {
-                // Count consecutive H's
                 let mut count = 1;
                 while chars.peek() == Some(&'H') {
                     chars.next();
                     count += 1;
                 }
-                // HH → %H (24-hour with zero-pad), H → %-H (without)
+                // HH gives %H (24 hour, zero padded), H gives %-H (not padded)
                 result.push_str(if count >= 2 { "%H" } else { "%-H" });
             }
             'h' => {
-                // Count consecutive h's
                 let mut count = 1;
                 while chars.peek() == Some(&'h') {
                     chars.next();
                     count += 1;
                 }
-                // hh → %I (12-hour with zero-pad), h → %-I (without)
+                // hh gives %I (12 hour, zero padded), h gives %-I (not padded)
                 result.push_str(if count >= 2 { "%I" } else { "%-I" });
             }
             'm' => {
-                // Count consecutive m's
                 let mut count = 1;
                 while chars.peek() == Some(&'m') {
                     chars.next();
                     count += 1;
                 }
-                // mm → %M (minute with zero-pad), m → %-M (without)
+                // mm gives %M (minute, zero padded), m gives %-M (not padded)
                 result.push_str(if count >= 2 { "%M" } else { "%-M" });
             }
             's' => {
-                // Count consecutive s's
                 let mut count = 1;
                 while chars.peek() == Some(&'s') {
                     chars.next();
                     count += 1;
                 }
-                // ss → %S (second with zero-pad), s → %-S (without)
+                // ss gives %S (second, zero padded), s gives %-S (not padded)
                 result.push_str(if count >= 2 { "%S" } else { "%-S" });
             }
             'S' => {
-                // Count consecutive S's for milliseconds
                 let mut count = 1;
                 while chars.peek() == Some(&'S') {
                     chars.next();
                     count += 1;
                 }
-                // SSS → %3f (milliseconds), SS → %2f, S → %1f
+                // SSS (or more) gives %3f (milliseconds), SS gives %2f, S gives %1f
                 result.push_str(&format!("%{}f", count.min(3)));
             }
             'a' => {
-                // a → %p (AM/PM)
+                // AM or PM
                 result.push_str("%p");
             }
             'z' => {
-                // z → %Z (timezone abbreviation)
+                // Time zone name
                 result.push_str("%Z");
             }
             'Z' => {
-                // Z → %z (timezone offset)
+                // Time zone offset
                 result.push_str("%z");
             }
             _ => {
-                // Keep all other characters as-is (separators, etc.)
+                // Copy everything else as is, such as separators
                 result.push(ch);
             }
         }
@@ -555,20 +575,26 @@ pub fn convert_java_date_format(java_format: &str) -> String {
 // Helper Functions
 // ============================================================================
 
-/// Extract value from JSON using JSONPath expression
+/// Reads a value from JSON with a simple JSONPath and returns a copy of it.
 ///
-/// **Supported JSONPath Syntax**:
-/// - `$.field` - Top-level field
-/// - `$.nested.field` - Nested field
-/// - `$.array[0]` - Array element
-/// - `$.nested.array[0].field` - Complex path
+/// **Supported JSONPath syntax**
+/// - `$.field` - top level field
+/// - `$.nested.field` - nested field
+/// - `$.array[0]` - array element
+/// - `$.nested.array[0].field` - mixed path
 ///
-/// Extract value from JSON using JSONPath
+/// Only one index per path part is supported.
 ///
 /// # Parameters
-/// - `json`: The JSON value to extract from
-/// - `path`: The JSONPath expression (e.g., "$.field" or "$.nested.field")
-/// - `max_depth`: Maximum allowed nesting depth (for DoS protection)
+/// - `json`: the JSON value to read from
+/// - `path`: the JSONPath, such as "$.field" or "$.nested.field"
+/// - `max_depth`: most path parts allowed, to guard against costly paths
+///
+/// # Errors
+///
+/// Returns `MappingFailed` when the path does not start with `$.`, has more
+/// parts than `max_depth`, has a bad array index, names a field that is
+/// missing, or uses an index past the end of the array.
 pub fn extract_json_path(
     json: &JsonValue,
     path: &str,
@@ -583,7 +609,7 @@ pub fn extract_json_path(
 
     let path_parts: Vec<&str> = path[2..].split('.').collect();
 
-    // Check nesting depth to prevent DoS attacks
+    // Reject very deep paths so a config cannot make lookups too costly
     if path_parts.len() > max_depth {
         return Err(EventFluxError::MappingFailed {
             message: format!(
@@ -598,7 +624,8 @@ pub fn extract_json_path(
     let mut current = json;
 
     for part in path_parts {
-        // Handle array indexing: field[index]
+        // Array index in the form field[index]. Takes the text between the
+        // first `[` and the last character as the index.
         if let Some(bracket_idx) = part.find('[') {
             let field_name = &part[..bracket_idx];
             let index_str = &part[bracket_idx + 1..part.len() - 1];
@@ -635,34 +662,39 @@ pub fn extract_json_path(
     Ok(current.clone())
 }
 
-/// Convert JSON value to AttributeValue
-/// Convert JSON value to AttributeValue with optional date parsing
+/// Turns a JSON value into an AttributeValue, with optional date parsing.
 ///
-/// If `date_format` is provided, attempts to parse string values as dates using the format.
-/// If parsing succeeds, returns the timestamp in milliseconds as AttributeValue::Long.
-/// If parsing fails, keeps the value as AttributeValue::String.
+/// When `date_format` is given, every string value is parsed as a date and
+/// time with that format, read as UTC. On success it returns the time in
+/// milliseconds as AttributeValue::Long. On failure it prints a warning to
+/// stderr and keeps the value as AttributeValue::String.
+///
+/// Whole numbers that fit in i32 become Int, larger ones Long, and others
+/// Double. Arrays and objects become their JSON text as a String.
+///
+/// # Errors
+///
+/// Returns `MappingFailed` for a number that fits none of those types, or an
+/// array or object that cannot be written as JSON.
 pub fn json_value_to_attribute(
     value: &JsonValue,
     date_format: Option<&str>,
 ) -> Result<AttributeValue, EventFluxError> {
     match value {
         JsonValue::String(s) => {
-            // Try to parse as date if date_format is configured
             if let Some(format) = date_format {
                 match chrono::NaiveDateTime::parse_from_str(s, format) {
                     Ok(dt) => {
-                        // Convert to timestamp in milliseconds
                         let timestamp = dt.and_utc().timestamp_millis();
                         return Ok(AttributeValue::Long(timestamp));
                     }
                     Err(e) => {
-                        // Log warning when date parsing configured but fails
-                        // This helps debugging - user expects date parsing but gets String instead
+                        // Warn, since the user asked for date parsing and will
+                        // get a String instead
                         eprintln!(
                             "Warning: Failed to parse date '{}' with format '{}': {}. Falling back to String.",
                             s, format, e
                         );
-                        // Fall back to String (keep original value)
                         return Ok(AttributeValue::String(s.clone()));
                     }
                 }
@@ -671,7 +703,6 @@ pub fn json_value_to_attribute(
         }
         JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                // Check if it fits in i32
                 if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
                     Ok(AttributeValue::Int(i as i32))
                 } else {
@@ -689,7 +720,6 @@ pub fn json_value_to_attribute(
         JsonValue::Bool(b) => Ok(AttributeValue::Bool(*b)),
         JsonValue::Null => Ok(AttributeValue::Null),
         JsonValue::Array(_) | JsonValue::Object(_) => {
-            // For complex types, serialize to JSON string
             let json_str =
                 serde_json::to_string(value).map_err(|e| EventFluxError::MappingFailed {
                     message: format!("Failed to serialize complex JSON value: {}", e),
@@ -700,25 +730,32 @@ pub fn json_value_to_attribute(
     }
 }
 
-/// Convert Event to JSON value (legacy - uses generic field names)
+/// Turns an event into a JSON object with keys field_0, field_1, and so on.
+/// The older form, see [`event_to_json_with_names`].
 pub fn event_to_json(event: &Event) -> Result<JsonValue, EventFluxError> {
     event_to_json_with_names(event, None)
 }
 
-/// Convert Event to JSON value with optional schema field names
+/// Turns an event into a JSON object.
+///
+/// The object always has a `_timestamp` key with the event timestamp. Each
+/// value is keyed by its schema field name, or `field_<index>` when no name is
+/// given for that position.
+///
+/// # Errors
+///
+/// Returns `MappingFailed` when a float or double is NaN or infinite.
 pub fn event_to_json_with_names(
     event: &Event,
     field_names: Option<&[String]>,
 ) -> Result<JsonValue, EventFluxError> {
     let mut obj = serde_json::Map::new();
 
-    // Add timestamp
     obj.insert(
         "_timestamp".to_string(),
         JsonValue::Number(event.timestamp.into()),
     );
 
-    // Add event data with schema field names if available
     for (idx, attr_value) in event.data.iter().enumerate() {
         let field_name = if let Some(names) = field_names {
             names
@@ -735,7 +772,13 @@ pub fn event_to_json_with_names(
     Ok(JsonValue::Object(obj))
 }
 
-/// Convert AttributeValue to JSON value
+/// Turns an AttributeValue into a JSON value. Bytes become `<bytes:N>` and
+/// Object becomes `<object>`.
+///
+/// # Errors
+///
+/// Returns `MappingFailed` when a float or double is NaN or infinite, since
+/// JSON cannot hold those.
 pub fn attribute_to_json_value(attr: &AttributeValue) -> Result<JsonValue, EventFluxError> {
     match attr {
         AttributeValue::String(s) => Ok(JsonValue::String(s.clone())),
@@ -760,22 +803,20 @@ pub fn attribute_to_json_value(attr: &AttributeValue) -> Result<JsonValue, Event
     }
 }
 
-/// Render template with event data
+/// Fills in a template with event data.
 ///
-/// **Template Variables**:
-/// - `{{fieldName}}` - Any stream attribute (by index field_0, field_1, etc.)
-/// - `{{_timestamp}}` - Event processing timestamp
-/// - `{{_eventTime}}` - Original event time (if available)
-/// - `{{_streamName}}` - Source stream name (if available)
+/// **Template variables**
+/// - `{{field_0}}`, `{{field_1}}`, and so on - attribute values by index
+/// - `{{_timestamp}}` - the event timestamp
 ///
-/// **Implementation**: Simple text replacement (no complex logic)
+/// Plain text replacement with no other logic. Values are not quoted or
+/// escaped (see `attribute_value_to_string`). Any other placeholder, such as
+/// one with a field name, is left as is. Never returns an error today.
 pub fn render_template(template: &str, event: &Event) -> Result<String, EventFluxError> {
     let mut result = template.to_string();
 
-    // Replace system variables
     result = result.replace("{{_timestamp}}", &event.timestamp.to_string());
 
-    // Replace event attributes (field_0, field_1, etc.)
     for (idx, attr_value) in event.data.iter().enumerate() {
         let field_name = format!("field_{}", idx);
         let placeholder = format!("{{{{{}}}}}", field_name);
@@ -786,7 +827,8 @@ pub fn render_template(template: &str, event: &Event) -> Result<String, EventFlu
     Ok(result)
 }
 
-/// Convert AttributeValue to string for template rendering
+/// Turns an AttributeValue into text for a template. Null becomes `null`,
+/// Bytes becomes `<bytes:N>`, and Object becomes `<object>`.
 pub fn attribute_value_to_string(value: &AttributeValue) -> String {
     match value {
         AttributeValue::String(s) => s.clone(),
@@ -866,11 +908,11 @@ mod tests {
 
     #[test]
     fn test_all_or_nothing_mapping_policy() {
-        // All auto-mapped (no mappings)
+        // No mappings, so everything is auto mapped
         let mapper1 = JsonSourceMapper::new();
         assert!(mapper1.mappings.is_empty());
 
-        // All explicit (any mapping present = all explicit)
+        // Any mapping at all means everything is explicit
         let mut mappings = HashMap::new();
         mappings.insert("field1".to_string(), "$.field1".to_string());
         let mapper2 = JsonSourceMapper::with_mappings(mappings);
@@ -914,24 +956,24 @@ mod tests {
         assert!(json_str.contains("\"value\":99.5"));
     }
 
-    // ERROR CASE TESTS - Testing bug fixes
+    // Error case tests, guarding earlier bug fixes
 
     #[test]
     fn test_ignore_parse_errors_enabled() {
         let mut mapper = JsonSourceMapper::new();
         mapper.set_ignore_parse_errors(true);
 
-        // Malformed JSON should be skipped, not error
+        // Broken JSON must be skipped, not fail
         let result = mapper.map(b"invalid json{{{");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0); // No events, just skipped
+        assert_eq!(result.unwrap().len(), 0); // no events, just skipped
     }
 
     #[test]
     fn test_ignore_parse_errors_disabled() {
         let mapper = JsonSourceMapper::new(); // ignore_parse_errors = false by default
 
-        // Malformed JSON should cause error
+        // Broken JSON must fail
         let result = mapper.map(b"invalid json{{{");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("JSON parse error"));
@@ -946,9 +988,9 @@ mod tests {
         let events = mapper.map(json_str.as_bytes()).unwrap();
 
         assert_eq!(events.len(), 1);
-        // First field (timestamp) should be parsed as Long (milliseconds)
+        // The first field (timestamp) must be parsed as Long milliseconds
         assert!(matches!(events[0].data[0], AttributeValue::Long(_)));
-        // Second field (value) should remain as Int
+        // The second field (value) must stay an Int
         assert!(matches!(events[0].data[1], AttributeValue::Int(100)));
     }
 
@@ -957,12 +999,11 @@ mod tests {
         let mut mapper = JsonSourceMapper::new();
         mapper.set_date_format(Some("%Y-%m-%d".to_string()));
 
-        // Date doesn't match format, should fall back to String
+        // The value does not match the format, so it must stay a String
         let json_str = r#"{"timestamp": "not a date", "value": 100}"#;
         let events = mapper.map(json_str.as_bytes()).unwrap();
 
         assert_eq!(events.len(), 1);
-        // Should keep as String since parsing failed
         assert!(matches!(
             events[0].data[0],
             AttributeValue::String(ref s) if s == "not a date"
@@ -972,9 +1013,9 @@ mod tests {
     #[test]
     fn test_max_input_size_limit() {
         let mut mapper = JsonSourceMapper::new();
-        mapper.set_max_input_size(100); // Set small limit
+        mapper.set_max_input_size(100); // small limit
 
-        // Create JSON larger than limit
+        // Input larger than the limit
         let large_json = format!(r#"{{"data": "{}"}}"#, "x".repeat(200));
         let result = mapper.map(large_json.as_bytes());
 
@@ -988,10 +1029,10 @@ mod tests {
     #[test]
     fn test_max_nesting_depth_limit() {
         let mut mapper = JsonSourceMapper::new();
-        mapper.set_max_nesting_depth(3); // Set small limit
+        mapper.set_max_nesting_depth(3); // small limit
 
         let mut mappings = HashMap::new();
-        // This path has 5 levels: a.b.c.d.e (exceeds limit of 3)
+        // The path a.b.c.d.e has 5 levels, more than the limit of 3
         mappings.insert("field".to_string(), "$.a.b.c.d.e".to_string());
         mapper = JsonSourceMapper::with_mappings(mappings);
         mapper.set_max_nesting_depth(3);
@@ -1008,11 +1049,10 @@ mod tests {
         let mut mapper = JsonSourceMapper::new();
         mapper.set_max_input_size(1024 * 1024); // 1 MB limit
 
-        // Create JSON within limit
         let json = format!(r#"{{"data": "{}"}}"#, "x".repeat(1000));
         let result = mapper.map(json.as_bytes());
 
-        // Should succeed since it's within limit
+        // Within the limit, so it must succeed
         assert!(result.is_ok());
     }
 
@@ -1073,10 +1113,10 @@ mod tests {
 
     #[test]
     fn test_convert_java_date_format_single_vs_double_time() {
-        // Single-char specifiers omit leading zero (Java SimpleDateFormat behavior)
+        // A single letter drops the leading zero, as in Java SimpleDateFormat
         assert_eq!(convert_java_date_format("H:m:s"), "%-H:%-M:%-S");
         assert_eq!(convert_java_date_format("HH:mm:ss"), "%H:%M:%S");
-        // 12-hour format
+        // 12 hour format
         assert_eq!(convert_java_date_format("h:m"), "%-I:%-M");
         assert_eq!(convert_java_date_format("hh:mm"), "%I:%M");
     }
@@ -1103,7 +1143,7 @@ mod tests {
 
     #[test]
     fn test_convert_java_date_format_already_chrono() {
-        // Already chrono format - pass through unchanged
+        // Already in chrono form, so it passes through unchanged
         assert_eq!(convert_java_date_format("%Y-%m-%d"), "%Y-%m-%d");
         assert_eq!(
             convert_java_date_format("%Y-%m-%dT%H:%M:%S"),
@@ -1135,10 +1175,10 @@ mod tests {
     fn test_date_format_integration_with_mapper() {
         let mut mapper = JsonSourceMapper::new();
 
-        // Set Java format - should be auto-converted
+        // A Java pattern must be converted
         mapper.set_date_format(Some("yyyy-MM-dd'T'HH:mm:ss".to_string()));
 
-        // Verify internal format is converted
+        // The stored format is the chrono one
         assert_eq!(mapper.date_format, Some("%Y-%m-%dT%H:%M:%S".to_string()));
     }
 
@@ -1146,10 +1186,10 @@ mod tests {
     fn test_date_format_chrono_passthrough() {
         let mut mapper = JsonSourceMapper::new();
 
-        // Set chrono format - should pass through unchanged
+        // A chrono pattern must pass through unchanged
         mapper.set_date_format(Some("%Y-%m-%d %H:%M:%S".to_string()));
 
-        // Verify internal format is unchanged
+        // The stored format is the same
         assert_eq!(mapper.date_format, Some("%Y-%m-%d %H:%M:%S".to_string()));
     }
 
@@ -1169,10 +1209,10 @@ mod tests {
         let events = mapper.map(json_str.as_bytes()).unwrap();
         assert_eq!(events.len(), 1);
 
-        // First field should be timestamp parsed as Long (milliseconds)
+        // The first field must be the timestamp parsed as Long milliseconds
         match &events[0].data[0] {
             AttributeValue::Long(ts) => {
-                // Verify it's a reasonable timestamp (around October 2025)
+                // Must be a sensible time, around October 2025
                 assert!(*ts > 1_700_000_000_000); // After 2023
                 assert!(*ts < 1_800_000_000_000); // Before 2027
             }
@@ -1180,14 +1220,14 @@ mod tests {
         }
     }
 
-    // P1.9 - Field Ordering Tests
-    // These tests verify that JSON field order is preserved, not alphabetically sorted
+    // P1.9 Field Ordering Tests
+    // These tests check that JSON field order is kept, not sorted alphabetically
 
     #[test]
     fn test_auto_mapping_preserves_json_field_order() {
-        // Test JSON with fields in non-alphabetical order
-        // If alphabetically sorted: amount, symbol, timestamp
-        // If order preserved: symbol, timestamp, amount
+        // JSON fields that are not in alphabetical order
+        // Sorted alphabetically they would be amount, symbol, timestamp
+        // Kept in order they are symbol, timestamp, amount
         let json_str = r#"{"symbol": "AAPL", "timestamp": 1234567890, "amount": 100.5}"#;
         let mapper = JsonSourceMapper::new();
 
@@ -1195,7 +1235,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data.len(), 3);
 
-        // Verify fields are in JSON insertion order (symbol, timestamp, amount)
+        // Fields must be in JSON key order (symbol, timestamp, amount),
         // NOT alphabetical order (amount, symbol, timestamp)
         match &events[0].data[0] {
             AttributeValue::String(s) if s == "AAPL" => {}
@@ -1233,7 +1273,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data.len(), 3);
 
-        // Verify order is: priority, name, id (NOT alphabetical)
+        // Order must be priority, name, id (NOT alphabetical)
         assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
         assert!(matches!(
             events[0].data[1],
@@ -1246,9 +1286,9 @@ mod tests {
     }
 
     // ========================================================================
-    // Schema-Aware Auto-Mapping Tests (#201)
-    // JSON fields must match stream fields by name: exact match first,
-    // then case-insensitive, with positional order only as a fallback.
+    // Auto Mapping Tests That Use the Schema (#201)
+    // JSON fields must match stream fields by name. Exact match first, then
+    // ignoring case, and by position only when nothing matches.
     // ========================================================================
 
     fn schema_mapper(names: &[&str]) -> JsonSourceMapper {
@@ -1261,8 +1301,8 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_exact_name_match() {
-        // Issue #201 repro: schema is (price, symbol, volume) but the JSON
-        // keys arrive in a different order (symbol, price, volume).
+        // Repro for issue #201. The schema is (price, symbol, volume) but the
+        // JSON keys arrive in another order (symbol, price, volume).
         let mapper = schema_mapper(&["price", "symbol", "volume"]);
         let json_str = r#"{"symbol": "AAPL", "price": 185.5, "volume": 5000}"#;
 
@@ -1280,8 +1320,8 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_case_insensitive_match() {
-        // Documented behavior: {"Symbol": ..., "PRICE": ..., "Volume": ...}
-        // still maps correctly due to case-insensitive matching
+        // Documented behaviour. {"Symbol": ..., "PRICE": ..., "Volume": ...}
+        // still maps correctly, since matching can ignore case
         let mapper = schema_mapper(&["symbol", "price", "volume"]);
         let json_str = r#"{"PRICE": 185.5, "Volume": 5000, "Symbol": "AAPL"}"#;
 
@@ -1296,7 +1336,7 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_exact_match_wins_over_case_insensitive() {
-        // When both an exact and a case-variant key exist, exact wins
+        // When both an exact key and one that differs by case exist, exact wins
         let mapper = schema_mapper(&["symbol"]);
         let json_str = r#"{"SYMBOL": "wrong", "symbol": "right"}"#;
 
@@ -1309,15 +1349,15 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_case_variant_fields_do_not_share_a_key() {
-        // Schema (id, ID) with only "id" in the JSON: "id" matches exactly,
-        // and "ID" must NOT reuse the same key case-insensitively
+        // Schema (id, ID) with only "id" in the JSON. "id" matches exactly,
+        // and "ID" must NOT reuse the same key by ignoring case
         let mapper = schema_mapper(&["id", "ID"]);
         let events = mapper.map(br#"{"id": 1}"#).unwrap();
         assert!(matches!(events[0].data[0], AttributeValue::Int(1)));
         assert!(matches!(events[0].data[1], AttributeValue::Null));
 
-        // Same with the case-variant field declared first: the exact match
-        // still wins regardless of schema order
+        // Same with the other case declared first. The exact match still wins
+        // whatever the schema order
         let mapper = schema_mapper(&["ID", "id"]);
         let events = mapper.map(br#"{"id": 1}"#).unwrap();
         assert!(matches!(events[0].data[0], AttributeValue::Null));
@@ -1326,8 +1366,9 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_key_matching_two_fields_by_case_is_rejected() {
-        // Neither field matches exactly and "Id" fits both by case: picking
-        // one would be a guess based on schema order, so the event fails
+        // Neither field matches exactly and "Id" fits both when case is
+        // ignored. Picking one would be a guess from schema order, so the
+        // event fails
         let mapper = schema_mapper(&["id", "ID"]);
         let err = mapper.map(br#"{"Id": 1}"#).unwrap_err();
         assert!(err.to_string().contains("'Id'"), "got: {}", err);
@@ -1340,8 +1381,8 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_field_matching_two_keys_by_case_is_rejected() {
-        // Field "id" has no exact key and fits both "Id" and "iD": the
-        // result must not depend on which key appears first in the payload
+        // Field "id" has no exact key and fits both "Id" and "iD". The result
+        // must not depend on which key comes first in the payload
         let mapper = schema_mapper(&["id"]);
         for payload in [br#"{"Id": 1, "iD": 2}"#, br#"{"iD": 2, "Id": 1}"#] {
             let err = mapper.map(payload).unwrap_err();
@@ -1360,8 +1401,8 @@ mod tests {
 
     #[test]
     fn test_schema_duplicate_field_names_rejected_at_config_time() {
-        // Schema (id, id): {"id": 1} would otherwise fill both positions.
-        // Rejected when the mapper is configured, for auto-mapping...
+        // Schema (id, id). {"id": 1} would otherwise fill both positions.
+        // Rejected when the mapper is set up, for auto mapping...
         let mut mapper = JsonSourceMapper::new();
         let err = mapper
             .set_field_names(vec!["id".to_string(), "id".to_string()])
@@ -1398,7 +1439,7 @@ mod tests {
             .unwrap();
         assert!(matches!(first_two(&mapper).0, AttributeValue::String(_)));
 
-        // Cleared: no stale schema order; alphabetical (amount, symbol)
+        // Cleared, so no old schema order is left. Alphabetical (amount, symbol)
         mapper.set_field_names(Vec::new()).unwrap();
         let (first, second) = first_two(&mapper);
         assert!(matches!(first, AttributeValue::Int(5)), "got {first:?}");
@@ -1433,7 +1474,7 @@ mod tests {
             .set_field_names(vec!["symbol".to_string(), "symbol".to_string()])
             .is_err());
 
-        // ...and the previously configured schema order still applies
+        // ...and the schema order set before still applies
         assert!(matches!(first_two(&mapper).0, AttributeValue::String(_)));
         assert_eq!(
             mapper.field_names,
@@ -1443,7 +1484,7 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_positional_fallback() {
-        // No JSON key matches any schema name: fall back to positional order
+        // No JSON key matches any schema name, so values are taken by position
         let mapper = schema_mapper(&["price", "symbol", "volume"]);
         let json_str = r#"{"p": 185.5, "s": "AAPL", "v": 5000}"#;
 
@@ -1458,15 +1499,15 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_name_mode_is_all_or_nothing() {
-        // Once ANY field matches by name, the payload is treated as
-        // name-based: an unmatched field becomes Null instead of stealing a
-        // positional value (which could consume a value twice)
+        // Once ANY field matches by name, the payload counts as named. A field
+        // with no match becomes Null instead of taking a value by position,
+        // which could use a value twice
         let mapper = schema_mapper(&["price", "symbol"]);
         let json_str = r#"{"symbol": "AAPL", "cost": 185.5}"#;
 
         let events = mapper.map(json_str.as_bytes()).unwrap();
-        // "price" has no name match → Null (NOT positional "AAPL", which is
-        // already consumed by "symbol")
+        // "price" has no name match, so it is Null. It is NOT "AAPL" by
+        // position, since "symbol" already took that value
         assert!(matches!(events[0].data[0], AttributeValue::Null));
         assert!(matches!(
             events[0].data[1],
@@ -1476,8 +1517,8 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_extra_key_does_not_fill_missing_field() {
-        // An extra JSON key must not leak into an unmatched schema field
-        // through the positional fallback
+        // An extra JSON key must not leak into a schema field with no match
+        // by way of position
         let mapper = schema_mapper(&["price", "symbol", "volume"]);
         let json_str = r#"{"price": 1.0, "symbol": "AAPL", "venue": "NYSE"}"#;
 
@@ -1487,14 +1528,14 @@ mod tests {
             events[0].data[1],
             AttributeValue::String(ref s) if s == "AAPL"
         ));
-        // "volume" is absent → Null, not "NYSE"
+        // "volume" is missing, so it is Null and not "NYSE"
         assert!(matches!(events[0].data[2], AttributeValue::Null));
     }
 
     #[test]
     fn test_schema_auto_mapping_missing_field_is_null() {
-        // Schema has more fields than the JSON object provides: the
-        // unmatched trailing field maps to Null, not an error
+        // The schema has more fields than the JSON object gives. The last field,
+        // with no match, maps to Null, not an error
         let mapper = schema_mapper(&["symbol", "price", "volume"]);
         let json_str = r#"{"symbol": "AAPL", "price": 185.5}"#;
 
@@ -1510,7 +1551,7 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_ignores_extra_json_fields() {
-        // JSON carries extra fields the schema doesn't declare — they are skipped
+        // JSON has extra fields the schema does not declare, and they are skipped
         let mapper = schema_mapper(&["symbol", "volume"]);
         let json_str = r#"{"price": 185.5, "symbol": "AAPL", "volume": 5000, "venue": "NYSE"}"#;
 
@@ -1525,14 +1566,14 @@ mod tests {
 
     #[test]
     fn test_schema_explicit_mappings_follow_schema_order() {
-        // Explicit JSONPath mappings must be emitted in schema order,
-        // not alphabetical order
+        // Explicit JSONPath mappings must come out in schema order, not
+        // alphabetical order
         let mut mappings = HashMap::new();
         mappings.insert("symbol".to_string(), "$.trade.sym".to_string());
         mappings.insert("amount".to_string(), "$.trade.total".to_string());
 
-        // Schema order: symbol first, amount second (alphabetical would
-        // put amount first)
+        // Schema order is symbol first, amount second. Alphabetical would put
+        // amount first.
         let mut mapper = JsonSourceMapper::with_mappings(mappings);
         mapper
             .set_field_names(vec!["symbol".to_string(), "amount".to_string()])
@@ -1551,8 +1592,8 @@ mod tests {
     #[test]
     fn test_schema_explicit_mappings_missing_field_fails_at_config_time() {
         // With a schema, every stream field needs a mapping once any
-        // mapping.* property is set (all-or-nothing policy). This must fail
-        // when the mapper is configured, not per event at runtime.
+        // mapping.* property is set (all or nothing). This must fail when the
+        // mapper is set up, not on each event at runtime.
         let mut mappings = HashMap::new();
         mappings.insert("symbol".to_string(), "$.trade.sym".to_string());
 
@@ -1566,7 +1607,7 @@ mod tests {
     #[test]
     fn test_schema_explicit_mappings_match_keys_case_insensitively() {
         // A mapping key that differs from the attribute only by case is
-        // accepted, consistent with auto-mapping's case-insensitive matching
+        // accepted, the same way auto mapping can ignore case
         let mut mappings = HashMap::new();
         mappings.insert("orderid".to_string(), "$.order.id".to_string());
 
@@ -1583,8 +1624,8 @@ mod tests {
 
     #[test]
     fn test_schema_explicit_mappings_case_variant_fields_do_not_share_a_key() {
-        // Schema (foo, FOO) with only mapping.FOO: FOO takes its exact key,
-        // and foo must not reuse it through the case-insensitive fallback
+        // Schema (foo, FOO) with only mapping.FOO. FOO takes its exact key,
+        // and foo must not reuse it by ignoring case
         let mut mappings = HashMap::new();
         mappings.insert("FOO".to_string(), "$.a".to_string());
         let mut mapper = JsonSourceMapper::with_mappings(mappings);
@@ -1608,8 +1649,8 @@ mod tests {
 
     #[test]
     fn test_schema_explicit_mappings_key_matching_two_fields_by_case_is_rejected() {
-        // Neither field matches exactly and "Foo" fits both by case: this is
-        // ambiguous, not "first field in schema order wins"
+        // Neither field matches exactly and "Foo" fits both when case is
+        // ignored. That is ambiguous, not "first field in schema order wins"
         let mut mappings = HashMap::new();
         mappings.insert("Foo".to_string(), "$.a".to_string());
         let mut mapper = JsonSourceMapper::with_mappings(mappings);
@@ -1622,9 +1663,9 @@ mod tests {
 
     #[test]
     fn test_schema_explicit_mappings_case_only_aliases_are_rejected_deterministically() {
-        // Schema (foo, FOO) with keys "Foo" and "fOO": neither key is exact
-        // and each fits both fields. Greedy assignment would depend on
-        // HashMap order; it must be rejected, every time.
+        // Schema (foo, FOO) with keys "Foo" and "fOO". Neither key is exact
+        // and each fits both fields. Taking the first fit would depend on
+        // HashMap order, so it must be rejected every time.
         for _ in 0..32 {
             let mut mappings = HashMap::new();
             mappings.insert("Foo".to_string(), "$.a".to_string());
@@ -1639,7 +1680,7 @@ mod tests {
 
     #[test]
     fn test_schema_explicit_mappings_unambiguous_case_match_still_works() {
-        // One field, one case-variant key: unambiguous, so it is accepted
+        // One field and one key that differs only by case is clear, so it is accepted
         let mut mappings = HashMap::new();
         mappings.insert("ORDERID".to_string(), "$.id".to_string());
         mappings.insert("amount".to_string(), "$.amt".to_string());
@@ -1657,8 +1698,8 @@ mod tests {
 
     #[test]
     fn test_schema_explicit_mappings_stray_key_fails_at_config_time() {
-        // A mapping key matching no stream field (typo, stale entry) is a
-        // configuration error, not a silently dead key
+        // A mapping key that matches no stream field (a typo or an old entry)
+        // is a config error, not a key that silently does nothing
         let mut mappings = HashMap::new();
         mappings.insert("symbol".to_string(), "$.sym".to_string());
         mappings.insert("trade_ts".to_string(), "$.T".to_string());
@@ -1672,8 +1713,8 @@ mod tests {
 
     #[test]
     fn test_set_field_names_empty_means_no_schema() {
-        // Empty schema is canonicalized to "unset": legacy insertion-order
-        // behavior applies
+        // An empty schema is stored as "unset", so the older JSON key order
+        // behaviour applies
         let mut mapper = JsonSourceMapper::new();
         mapper.set_field_names(Vec::new()).unwrap();
         assert!(mapper.field_names.is_none());
@@ -1686,7 +1727,7 @@ mod tests {
 
     #[test]
     fn test_schema_auto_mapping_with_date_format() {
-        // Name-matched values still go through date parsing
+        // Values matched by name still go through date parsing
         let mut mapper = schema_mapper(&["value", "timestamp"]);
         mapper.set_date_format(Some("%Y-%m-%d %H:%M:%S".to_string()));
 

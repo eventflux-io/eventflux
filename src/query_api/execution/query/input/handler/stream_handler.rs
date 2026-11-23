@@ -15,30 +15,31 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.handler.StreamHandler
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-// Import specific handler types
 use super::filter::Filter;
 use super::stream_function::StreamFunction;
-use super::window::Window as WindowHandler; // Renamed to avoid conflict
+use super::window::Window as WindowHandler;
 
-// Trait for common methods from Java's StreamHandler interface
+/// Methods shared by all stream handlers.
 pub trait StreamHandlerTrait {
-    // Removed : EventFluxElement as EventFluxElement is directly implemented by the enum
-    fn get_parameters_as_option_vec(&self) -> Option<Vec<&Expression>>; // Renamed for clarity
+    /// The handler's parameter expressions. A filter always gives its one condition.
+    /// A function or window gives `None` when it has no parameters.
+    fn get_parameters_as_option_vec(&self) -> Option<Vec<&Expression>>;
 }
 
+/// One handler applied to an input stream.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StreamHandler {
     Filter(Filter),
     Function(StreamFunction),
-    Window(Box<WindowHandler>), // Window can be larger, boxing it.
+    // Boxed because Window is larger than the other variants.
+    Window(Box<WindowHandler>),
 }
 
 impl StreamHandler {
-    // Accessing the composed eventflux_element from the variants
+    // The EventFluxElement of whichever handler this wraps. Unused for now.
     #[allow(dead_code)]
     fn eventflux_element_ref(&self) -> &EventFluxElement {
         match self {
@@ -58,11 +59,9 @@ impl StreamHandler {
     }
 }
 
-// Implement the common get_parameters method
 impl StreamHandlerTrait for StreamHandler {
     fn get_parameters_as_option_vec(&self) -> Option<Vec<&Expression>> {
         match self {
-            // Assuming Filter, StreamFunction, WindowHandler have a method like `get_internal_parameters_ref()`
             StreamHandler::Filter(f) => Some(f.get_parameters_ref_internal()),
             StreamHandler::Function(sf) => sf.get_parameters_ref_internal(),
             StreamHandler::Window(w) => w.get_parameters_ref_internal(),
@@ -70,12 +69,5 @@ impl StreamHandlerTrait for StreamHandler {
     }
 }
 
-// The `impl EventFluxElement for StreamHandler` block was removed because EventFluxElement is a struct, not a trait.
-// Access to the underlying EventFluxElement's fields can be done via methods on StreamHandler
-// that use eventflux_element_ref() or eventflux_element_mut_ref() if needed.
-
-// Note: Individual structs (Filter, StreamFunction, WindowHandler) will need to:
-// 1. Compose `eventflux_element: EventFluxElement`.
-// 2. Provide a method like `get_parameters_ref_internal()` for the StreamHandlerTrait dispatch.
-//    (e.g., for Filter, it would be `vec![&self.filter_expression]`).
-//    (e.g., for StreamFunction/WindowHandler, it would be `self.parameters.iter().collect()` or None if empty).
+// A new handler type needs an `eventflux_element: EventFluxElement` field and a
+// `get_parameters_ref_internal()` method for the dispatch above.

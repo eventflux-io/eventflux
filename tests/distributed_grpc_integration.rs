@@ -15,15 +15,15 @@
  * limitations under the License.
  */
 
-// Integration test for gRPC transport in distributed mode
+// Integration tests for the gRPC transport used in distributed mode
 
 use eventflux::core::distributed::grpc::simple_transport::{SimpleGrpcConfig, SimpleGrpcTransport};
 use eventflux::core::distributed::transport::{Message, MessageType};
 
 #[tokio::test]
 async fn test_simple_grpc_transport_creation() {
+    // Passes if neither constructor panics
     let _transport = SimpleGrpcTransport::new();
-    // Transport created successfully
 
     let custom_config = SimpleGrpcConfig {
         connection_timeout_ms: 5000,
@@ -31,7 +31,6 @@ async fn test_simple_grpc_transport_creation() {
         server_address: "127.0.0.1:50052".to_string(),
     };
     let _transport_custom = SimpleGrpcTransport::with_config(custom_config);
-    // Custom transport created successfully
 }
 
 #[test]
@@ -107,11 +106,10 @@ fn test_grpc_config_validation() {
 async fn test_grpc_connection_attempt() {
     let transport = SimpleGrpcTransport::new();
 
-    // Test connection to a non-existent endpoint (should fail gracefully)
+    // Port 99999 is out of range, so connect must return an error, not panic
     let result = transport.connect("127.0.0.1:99999").await;
     assert!(result.is_err());
 
-    // Verify error message is meaningful
     if let Err(e) = result {
         let error_msg = format!("{}", e);
         assert!(error_msg.contains("Connection failed"));
@@ -137,7 +135,6 @@ async fn test_grpc_message_serialization_with_headers() {
 
     let proto_message = transport.to_proto_message(&original_message);
 
-    // Verify protobuf fields are set correctly
     assert_eq!(proto_message.id, "test-message-123");
     assert_eq!(proto_message.payload, b"Complex message with headers");
     assert_eq!(
@@ -155,7 +152,7 @@ async fn test_grpc_message_serialization_with_headers() {
     assert!(proto_message.timestamp > 0);
     assert_eq!(proto_message.priority, 5);
 
-    // Test round-trip conversion
+    // Decoding the proto message must give back the original message
     let converted_message = transport.decode_proto_message(&proto_message);
     assert_eq!(original_message.id, converted_message.id);
     assert_eq!(original_message.payload, converted_message.payload);
@@ -168,7 +165,6 @@ async fn test_grpc_message_serialization_with_headers() {
 
 #[test]
 fn test_grpc_compression_settings() {
-    // Test with compression enabled
     let config_compressed = SimpleGrpcConfig {
         enable_compression: true,
         ..Default::default()
@@ -178,13 +174,13 @@ fn test_grpc_compression_settings() {
     let message = Message::event(b"test".to_vec());
     let proto_msg_compressed = transport_compressed.to_proto_message(&message);
 
-    // Should use Zstd compression when enabled
+    // With compression on, the transport marks messages as Zstd.
+    // The test only checks that it is not None.
     assert_ne!(
         proto_msg_compressed.compression,
         eventflux::core::distributed::grpc::CompressionType::None as i32
     );
 
-    // Test with compression disabled
     let config_uncompressed = SimpleGrpcConfig {
         enable_compression: false,
         ..Default::default()

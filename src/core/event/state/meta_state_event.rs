@@ -15,25 +15,21 @@
  * limitations under the License.
  */
 
-// src/core/event/state/meta_state_event.rs
-// Corresponds to io.eventflux.core.event.state.MetaStateEvent
-use crate::core::event::stream::MetaStreamEvent; // Uses MetaStreamEvent
-use crate::query_api::definition::StreamDefinition; // For outputStreamDefinition
-use std::sync::Arc; // If definitions are shared
+// Port of the Java MetaStateEvent.
+use crate::core::event::stream::MetaStreamEvent;
+use crate::query_api::definition::StreamDefinition;
+use std::sync::Arc;
 
-// MetaStateEventAttribute is an inner class in Java, not read yet.
-// For now, assuming output data attributes can be represented by query_api::Attribute
 use crate::core::event::state::MetaStateEventAttribute;
 
 #[derive(Debug, Clone, Default)]
 pub struct MetaStateEvent {
-    // MetaStreamEvent array, size initialized in constructor
+    // One slot per stream in the state event. `new` fills `size` empty slots.
     pub meta_stream_events: Vec<Option<MetaStreamEvent>>, // Java: MetaStreamEvent[]
-    // streamEventCount is just meta_stream_events.len() or a count of Some() variants
+    // Java streamEventCount is stream_event_count(), the slot count including empty slots.
     pub output_stream_definition: Option<Arc<StreamDefinition>>,
 
-    // In Java, outputDataAttributes is `List<MetaStateEventAttribute>`.
-    // The Rust port mirrors this structure.
+    // Java: List<MetaStateEventAttribute> outputDataAttributes
     pub output_data_attributes: Option<Vec<MetaStateEventAttribute>>,
 }
 
@@ -41,7 +37,7 @@ impl MetaStateEvent {
     pub fn new(size: usize) -> Self {
         let mut meta_stream_events = Vec::with_capacity(size);
         for _ in 0..size {
-            meta_stream_events.push(None); // Initialize with None or default MetaStreamEvent
+            meta_stream_events.push(None);
         }
         Self {
             meta_stream_events,
@@ -58,6 +54,7 @@ impl MetaStateEvent {
         self.meta_stream_events.get_mut(position)?.as_mut()
     }
 
+    // Appends a new slot. It does not fill the empty slots made by `new`.
     pub fn add_event(&mut self, meta_stream_event: MetaStreamEvent) {
         self.meta_stream_events.push(Some(meta_stream_event));
     }

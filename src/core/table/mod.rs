@@ -15,58 +15,58 @@
  * limitations under the License.
  */
 
-//! Table storage implementations for EventFlux CEP engine.
+//! Table storage for the EventFlux CEP engine.
 //!
-//! This module provides table storage backends for JOIN enrichment and stateful operations.
+//! Tables back JOIN enrichment and other stateful operations.
 //!
-//! # Architecture Decisions & Known Limitations
+//! # Design choices and known limits
 //!
-//! ## Lock Poisoning Strategy (P3)
+//! ## Poisoned locks (P3)
 //!
-//! All lock operations use `.unwrap()` which will panic if a lock is poisoned (i.e., if
-//! another thread panicked while holding the lock). This is intentional:
+//! Every lock call uses `.unwrap()`, so it panics if the lock is poisoned, meaning
+//! another thread panicked while holding it. This is on purpose:
 //!
-//! - **Data Integrity**: A poisoned lock indicates a thread panicked mid-operation, leaving
-//!   data in an inconsistent state. Continuing could cause data corruption or silent data loss.
-//! - **Fail-Fast**: For a stream processing engine, it's better to crash and restart cleanly
-//!   than to process events against corrupted state.
-//! - **Recovery**: The persistence layer (checkpoints, WAL) ensures state can be recovered
+//! - **Data integrity**: A poisoned lock means a thread panicked in the middle of a
+//!   change, so the data may be half updated. Going on could corrupt or silently lose data.
+//! - **Fail fast**: For a stream engine it is better to crash and restart cleanly than
+//!   to process events against broken state.
+//! - **Recovery**: The persistence layer (checkpoints, WAL) lets state be recovered
 //!   after a restart.
 //!
-//! If graceful degradation is required for specific deployments, consider wrapping table
-//! operations in `std::panic::catch_unwind` at the application boundary.
+//! If a deployment needs to keep running instead, wrap table calls in
+//! `std::panic::catch_unwind` at the application boundary.
 //!
-//! ## Index Key Generation Performance (P2)
+//! ## Cost of index keys (P2)
 //!
-//! The `row_values_to_key` function generates string keys for HashMap indexing. This involves
-//! multiple allocations per row (one String per column, plus the joined result). For
-//! high-throughput scenarios, consider:
+//! `row_values_to_key` builds string keys for the HashMap index. That allocates several
+//! times per row, one String per column plus the joined result. For very high
+//! throughput, options are:
 //!
-//! - Using a `Hasher` (e.g., `FxHasher`) to compute `u64` keys with collision buckets
-//! - Pre-allocated buffer for serialization
-//! - Custom hash implementation for `Vec<AttributeValue>`
+//! - A `Hasher` such as `FxHasher` that computes `u64` keys, with collision buckets
+//! - A reused buffer for building keys
+//! - A custom hash for `Vec<AttributeValue>`
 //!
-//! Current approach prioritizes correctness and debuggability over raw performance.
+//! For now correctness and easy debugging come before raw speed.
 //!
-//! ## Code Duplication in Mutation Methods (P2)
+//! ## Repeated code in the change methods (P2)
 //!
-//! The optimistic locking pattern (read → evaluate → verify-all → write) is repeated in:
+//! The optimistic locking steps (read, evaluate, check all, write) repeat in:
 //! - `update_with_set_executors`
 //! - `upsert_with_set_executors`
 //! - `delete_with_expression`
 //! - `update_with_expression`
 //!
-//! Future refactoring could extract this into a `mutate_with_retry<F, R>` helper. Current
-//! duplication is accepted because:
-//! - Each method has different return types and semantics
-//! - The upsert has unique INSERT fallback logic
-//! - Explicit code is easier to debug and audit for correctness
+//! A `mutate_with_retry<F, R>` helper could hold them later. The repetition is kept
+//! for now because:
+//! - Each method returns something different and behaves differently
+//! - The upsert has its own INSERT fallback
+//! - Plain code is easier to debug and check for correctness
 //!
-//! ## Allocation Rate in Mutation Loops (P2)
+//! ## Allocations while matching rows (P2)
 //!
-//! `StateEvent.stream_events[1] = Some(table_row_event.clone())` allocates per-row during
-//! condition evaluation. This is an architectural constraint: `StateEvent` owns its
-//! `StreamEvent` references. Future optimization: change to `Arc<StreamEvent>` or references.
+//! `StateEvent.stream_events[1] = Some(table_row_event.clone())` allocates once per row
+//! while a condition is checked. `StateEvent` owns its `StreamEvent`s, so this cannot
+//! be avoided today. A later change to `Arc<StreamEvent>` or borrowed events would fix it.
 
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
@@ -91,6 +91,7 @@ use std::any::Any;
 
 use crate::query_api::expression::constant::{Constant, ConstantValueWithFloat};
 
+// Converts a query constant to an AttributeValue. A Time constant becomes a Long.
 pub(crate) fn constant_to_av(c: &Constant) -> AttributeValue {
     match c.get_value() {
         ConstantValueWithFloat::String(s) => AttributeValue::String(s.clone()),
@@ -104,26 +105,27 @@ pub(crate) fn constant_to_av(c: &Constant) -> AttributeValue {
     }
 }
 
-/// Convert row values to a string key for index/grouping purposes.
+/// Turns a row into a string key for indexing and grouping.
 ///
-/// This allows using rows as HashMap keys without requiring Hash trait on AttributeValue.
-/// Used by `InMemoryTable` for maintaining the internal index structure.
+/// Lets rows act as HashMap keys even though AttributeValue has no Hash. Each value
+/// gets a type prefix (such as `S:` or `I:`) and values are joined with `|`.
+/// `InMemoryTable` uses it for its index.
 ///
-/// # ⚠️ LIMITATION: Object Type Columns
+/// # Limitation: OBJECT columns
 ///
-/// **All OBJECT-typed columns hash to the same value "O"**, causing index collisions.
+/// **Every OBJECT column gives the same key part, "O"**, so keys can collide.
 ///
-/// **Impact**:
-/// - Tables where rows differ ONLY by OBJECT columns will have index collisions
-/// - Index lookups won't distinguish between rows that differ only in OBJECT columns
-/// - This is a fundamental limitation: `Box<dyn Any>` cannot be compared or hashed reliably,
-///   and `Object(Some(_))` clones to `Object(None)`, breaking pointer-based keys
+/// **Effect**:
+/// - Rows that differ ONLY in OBJECT columns get the same key
+/// - Index lookups cannot tell such rows apart
+/// - This cannot be fixed here. A `Box<dyn Any>` cannot be compared or hashed, and
+///   `Object(Some(_))` clones to `Object(None)`, so pointer based keys do not work either
 ///
-/// **Recommendation**:
-/// - Ensure tables with OBJECT columns have at least one other column (String, Int, etc.)
-///   that provides uniqueness for index lookups
-/// - For serializable data, consider using `Bytes` type instead of `Object`
-/// - OBJECT columns are best suited for read-heavy or reference data scenarios
+/// **Advice**:
+/// - Give tables with OBJECT columns at least one other column (String, Int and so
+///   on) that makes rows unique
+/// - For data that can be serialized, use `Bytes` instead of `Object`
+/// - OBJECT columns suit data that is mostly read, such as reference data
 fn row_values_to_key(row: &[AttributeValue]) -> String {
     row.iter()
         .map(|v| match v {
@@ -135,40 +137,39 @@ fn row_values_to_key(row: &[AttributeValue]) -> String {
             AttributeValue::Bool(b) => format!("B:{}", b),
             AttributeValue::Bytes(bytes) => format!("Y:{:02x?}", bytes),
             AttributeValue::Null => "N".to_string(),
-            // OBJECT columns all hash to "O" - see function docstring for limitations
+            // Every OBJECT column gives "O". See the doc comment above for the limits.
             AttributeValue::Object(_) => "O".to_string(),
         })
         .collect::<Vec<_>>()
         .join("|")
 }
 
-/// Find table rows matching a mutation condition expression.
+/// Returns the table rows that match a change condition.
 ///
-/// Creates a StateEvent with stream event at position 0 and table row at position 1
-/// for evaluating WHERE/ON conditions that reference both stream and table columns.
+/// Builds a StateEvent with the stream event at position 0 and the table row at
+/// position 1, so WHERE and ON conditions can use both stream and table columns.
+/// A row matches only when the condition returns `Bool(true)`.
 ///
-/// Returns ALL matching rows including duplicates. The caller is responsible for
-/// handling duplicates correctly (e.g., by grouping updates by original value and
-/// reinserting the correct count after delete).
+/// Returns EVERY matching row, duplicates included. The caller must handle
+/// duplicates, for example by grouping updates by original value and inserting the
+/// right count back after a delete.
 ///
-/// # ⚠️ Memory Warning for External Table Implementers
+/// # Memory warning for external table authors
 ///
-/// This function takes `rows: Vec<Vec<AttributeValue>>` which is typically obtained
-/// from `Table::all_rows()`. For external backends (JDBC, Redis, etc.), calling
-/// `all_rows()` loads the **entire table into memory**, which can cause OOM crashes
-/// for large datasets.
+/// `rows` usually comes from `Table::all_rows()`. For external backends (JDBC, Redis
+/// and so on), `all_rows()` loads the **whole table into memory**, which can run out of
+/// memory on large tables.
 ///
-/// **External table implementations MUST override mutation methods** (`update_with_expression`,
+/// **External tables MUST override the change methods** (`update_with_expression`,
 /// `delete_with_expression`, `update_with_set_executors`, `upsert_with_set_executors`)
-/// to push WHERE clauses to the database instead of using this function.
+/// and push the WHERE clause to the database instead of using this function.
 ///
-/// # Performance Note
+/// # Performance
 ///
-/// This function clones a `StreamEvent` for each row to wrap it in a `StateEvent` for
-/// expression evaluation. This is an architectural constraint of the current executor
-/// interface. For very large tables, this creates allocation pressure. The `table_row_event`
-/// structure is reused (values updated in-place), but the clone for `StateEvent` ownership
-/// is unavoidable without changing the executor interface to accept borrowed data.
+/// Clones a `StreamEvent` per row to put it in the `StateEvent` for evaluation. The
+/// executor interface needs owned events, so this cannot be avoided without changing
+/// it to accept borrowed data. `table_row_event` itself is reused and its values are
+/// overwritten each time, but the clone still allocates, which adds up on big tables.
 pub(crate) fn find_matching_rows_for_mutation(
     rows: Vec<Vec<AttributeValue>>,
     stream_event: &StreamEvent,
@@ -180,33 +181,33 @@ pub(crate) fn find_matching_rows_for_mutation(
 
     let mut matched_rows: Vec<Vec<AttributeValue>> = Vec::new();
 
-    // Pre-allocate StateEvent and stream slot outside loop to reduce allocation churn.
-    // Position 0 = stream event (constant), Position 1 = table row (updated per iteration)
+    // Build the StateEvent once, outside the loop, to cut allocations.
+    // Position 0 is the stream event and never changes. Position 1 is the table row,
+    // replaced each time round.
     let mut state_event = StateEvent::new(2, 0);
     state_event.timestamp = stream_event.timestamp;
     state_event.stream_events[0] = Some(stream_event.clone());
 
-    // Pre-allocate table row event with max column count across all rows
+    // Size the reused row event for the widest row.
     let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut table_row_event = StreamEvent::new(stream_event.timestamp, max_cols, 0, 0);
 
     for row in rows {
-        // Reuse table_row_event by updating values in-place
-        // First, reset values beyond this row's length to Null
+        // Reuse table_row_event. Set slots past this row's length to Null, then copy
+        // in this row's values.
         for j in row.len()..table_row_event.before_window_data.len() {
             table_row_event.before_window_data[j] = AttributeValue::Null;
         }
-        // Copy current row values
         for (j, val) in row.iter().enumerate() {
             if j < table_row_event.before_window_data.len() {
                 table_row_event.before_window_data[j] = val.clone();
             }
         }
-        // NOTE: Clone is architecturally required here because StateEvent.stream_events owns its data.
-        // Known allocation hotspot for large tables. Future: use Arc<StreamEvent> or references.
+        // The clone is needed because StateEvent.stream_events owns its events. A
+        // known hot spot on large tables. Arc<StreamEvent> or borrowing would fix it.
         state_event.stream_events[1] = Some(table_row_event.clone());
 
-        // Evaluate condition - include ALL matching rows (duplicates preserved)
+        // Keep EVERY matching row, duplicates included.
         if let Some(AttributeValue::Bool(true)) = condition_executor.execute(Some(&state_event)) {
             matched_rows.push(row);
         }
@@ -224,8 +225,8 @@ pub trait CompiledUpdateSet: Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 }
 
-/// Simple wrapper implementing `CompiledCondition` for tables that do not
-/// perform any special compilation.
+/// Wraps the raw expression as a `CompiledCondition`, for tables that do no
+/// compilation of their own.
 #[derive(Debug, Clone)]
 pub struct SimpleCompiledCondition(pub Expression);
 impl CompiledCondition for SimpleCompiledCondition {
@@ -234,8 +235,8 @@ impl CompiledCondition for SimpleCompiledCondition {
     }
 }
 
-/// Simple wrapper implementing `CompiledUpdateSet` for tables that do not
-/// perform any special compilation.
+/// Wraps the raw update set as a `CompiledUpdateSet`, for tables that do no
+/// compilation of their own.
 #[derive(Debug, Clone)]
 pub struct SimpleCompiledUpdateSet(pub UpdateSet);
 impl CompiledUpdateSet for SimpleCompiledUpdateSet {
@@ -244,10 +245,10 @@ impl CompiledUpdateSet for SimpleCompiledUpdateSet {
     }
 }
 
-/// Compiled condition representation used by [`InMemoryTable`] and [`CacheTable`].
+/// Compiled condition used by [`InMemoryTable`] and [`CacheTable`].
 #[derive(Debug, Clone)]
 pub struct InMemoryCompiledCondition {
-    /// Row of values that must match exactly.
+    /// A row matches only if it equals these values exactly.
     pub values: Vec<AttributeValue>,
 }
 impl CompiledCondition for InMemoryCompiledCondition {
@@ -256,10 +257,10 @@ impl CompiledCondition for InMemoryCompiledCondition {
     }
 }
 
-/// Compiled update set representation used by [`InMemoryTable`] and [`CacheTable`].
+/// Compiled update set used by [`InMemoryTable`] and [`CacheTable`].
 #[derive(Debug, Clone)]
 pub struct InMemoryCompiledUpdateSet {
-    /// New values that should replace a matching row.
+    /// Values that replace a matching row.
     pub values: Vec<AttributeValue>,
 }
 impl CompiledUpdateSet for InMemoryCompiledUpdateSet {
@@ -268,24 +269,24 @@ impl CompiledUpdateSet for InMemoryCompiledUpdateSet {
     }
 }
 
-/// Trait representing a table that can store rows of `AttributeValue`s.
+/// A table that stores rows of `AttributeValue`s.
 pub trait Table: Debug + Send + Sync {
     /// Inserts a row into the table.
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage operation fails (e.g., database error).
+    /// Returns an error if the storage call fails, such as a database error.
     fn insert(
         &self,
         values: &[AttributeValue],
     ) -> Result<(), crate::core::exception::EventFluxError>;
 
-    /// Updates rows matching `condition` using the values from `update_set`.
+    /// Updates rows matching `condition` with the values from `update_set`.
     /// Returns `true` if any row was updated.
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage operation fails (e.g., database error).
+    /// Returns an error if the storage call fails, such as a database error.
     fn update(
         &self,
         condition: &dyn CompiledCondition,
@@ -297,7 +298,7 @@ pub trait Table: Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage operation fails (e.g., database error).
+    /// Returns an error if the storage call fails, such as a database error.
     fn delete(
         &self,
         condition: &dyn CompiledCondition,
@@ -307,7 +308,7 @@ pub trait Table: Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage operation fails (e.g., database error).
+    /// Returns an error if the storage call fails, such as a database error.
     fn find(
         &self,
         condition: &dyn CompiledCondition,
@@ -317,44 +318,49 @@ pub trait Table: Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage operation fails (e.g., database error).
+    /// Returns an error if the storage call fails, such as a database error.
     fn contains(
         &self,
         condition: &dyn CompiledCondition,
     ) -> Result<bool, crate::core::exception::EventFluxError>;
 
-    /// Retrieve all rows currently stored in the table.
+    /// Returns every row in the table.
+    ///
+    /// The default returns an empty list. Tables that hold rows must override it.
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage operation fails (e.g., database error).
+    /// Returns an error if the storage call fails, such as a database error.
     ///
-    /// # Performance Warning
+    /// # Performance warning
     ///
-    /// This method loads all rows into memory and should be used sparingly for external
-    /// backends. For JDBC tables with large datasets, this can cause:
-    /// - Memory exhaustion
-    /// - Network saturation
-    /// - Long query times
+    /// Loads every row into memory, so use it sparingly on external backends. On large
+    /// JDBC tables it can cause:
+    /// - Running out of memory
+    /// - A flooded network
+    /// - Slow queries
     ///
-    /// **JDBC implementers**: Override `update_with_expression()` and `delete_with_expression()`
-    /// to avoid calling this method during mutations. Push WHERE clauses to the database instead.
+    /// **JDBC authors**: Override `update_with_expression()` and `delete_with_expression()`
+    /// so changes do not call this. Push the WHERE clause to the database instead.
     fn all_rows(&self) -> Result<Vec<Vec<AttributeValue>>, crate::core::exception::EventFluxError> {
         Ok(Vec::new())
     }
 
-    /// Find all rows that satisfy either the `compiled_condition` or
-    /// `condition_executor` when evaluated against a joined event composed from
-    /// `stream_event` and each row.
+    /// Returns the rows that join with `stream_event`.
+    ///
+    /// The default ignores `compiled_condition`. For each row it builds a joined event
+    /// whose before window data is the stream's values followed by the row's values,
+    /// and keeps the row if `condition_executor` returns `Bool(true)`. With no executor
+    /// it returns every row.
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying storage operation fails (e.g., database error).
+    /// Returns an error if the storage call fails, such as a database error.
     ///
-    /// # Performance Note for JDBC Implementers
+    /// # Performance note for JDBC authors
     ///
-    /// The default implementation calls `all_rows()` which is inefficient for external
-    /// databases. JDBC tables should override this to push JOIN conditions to SQL:
+    /// The default calls `all_rows()`, which is slow on external databases. JDBC
+    /// tables should override this and push the JOIN condition into SQL:
     ///
     /// ```rust,ignore
     /// fn find_rows_for_join(...) -> Result<Vec<Vec<AttributeValue>>, EventFluxError> {
@@ -391,9 +397,8 @@ pub trait Table: Debug + Send + Sync {
         Ok(matched)
     }
 
-    /// Compile a join condition referencing both stream and table attributes.
-    /// Default implementation does not support join-specific compilation and
-    /// returns `None`.
+    /// Compiles a join condition that uses both stream and table attributes.
+    /// The default has no join compilation and returns `None`.
     fn compile_join_condition(
         &self,
         _cond: Expression,
@@ -403,42 +408,45 @@ pub trait Table: Debug + Send + Sync {
         None
     }
 
-    /// Compile a conditional expression into a table-specific representation.
+    /// Compiles a condition into this table's own form.
     ///
-    /// By default this wraps the expression in [`SimpleCompiledCondition`].
+    /// The default wraps the expression in [`SimpleCompiledCondition`].
     fn compile_condition(&self, cond: Expression) -> Box<dyn CompiledCondition> {
         Box::new(SimpleCompiledCondition(cond))
     }
 
-    /// Compile an update set into a table-specific representation.
+    /// Compiles an update set into this table's own form.
     ///
-    /// By default this wraps the update set in [`SimpleCompiledUpdateSet`].
+    /// The default wraps the update set in [`SimpleCompiledUpdateSet`].
     fn compile_update_set(&self, us: UpdateSet) -> Box<dyn CompiledUpdateSet> {
         Box::new(SimpleCompiledUpdateSet(us))
     }
 
-    /// Update rows matching a condition expression when evaluated against stream event + table row.
+    /// Updates the rows for which the condition, run on the stream event plus the
+    /// table row, is true.
     ///
-    /// This method is used for stream-triggered UPDATE mutations where the condition
-    /// references both stream columns (e.g., `updateStream.symbol`) and table columns
-    /// (e.g., `stockTable.symbol`).
+    /// Used for UPDATE triggered by a stream event, where the condition uses both
+    /// stream columns (such as `updateStream.symbol`) and table columns (such as
+    /// `stockTable.symbol`).
     ///
     /// # Arguments
-    /// * `stream_event` - The triggering event from the source stream
-    /// * `condition_executor` - Expression executor for the WHERE condition
-    /// * `set_column_indices` - Column indices in the table to update (for partial updates)
-    /// * `set_values` - New values for each column in `set_column_indices`
+    /// * `stream_event` - The event from the source stream that triggered the update
+    /// * `condition_executor` - Executor for the WHERE condition
+    /// * `set_column_indices` - Table columns to update. Empty means replace the whole
+    ///   row with `set_values`.
+    /// * `set_values` - New value for each column in `set_column_indices`
     ///
     /// # Returns
-    /// Number of rows updated, or error if operation fails
+    /// Number of rows updated, or an error if the update fails. In the default, each
+    /// distinct matching row value counts once even if it appears several times.
     ///
-    /// # Performance Note for JDBC Implementers
+    /// # Performance note for JDBC authors
     ///
-    /// The default implementation calls `all_rows()` and filters in-memory, which is
-    /// **inefficient for external databases**. JDBC/SQL-backed tables MUST override
-    /// this method to push the WHERE clause to the database.
+    /// The default calls `all_rows()` and filters in memory, which is **slow on external
+    /// databases**. JDBC and other SQL backed tables MUST override this and push the
+    /// WHERE clause to the database.
     ///
-    /// ## Example Override for MySQL/PostgreSQL
+    /// ## Example override for MySQL or PostgreSQL
     ///
     /// ```rust,ignore
     /// fn update_with_expression(
@@ -480,13 +488,12 @@ pub trait Table: Debug + Send + Sync {
 
         let mut updated_count = 0;
         for row in &matched_rows {
-            // Determine new row values
             let new_row = if set_column_indices.is_empty() {
-                // No column indices - full row replacement mode
-                // Use set_values as the complete new row
+                // No column indices, so set_values is the whole new row.
                 set_values.to_vec()
             } else {
-                // Partial update - merge SET values into existing row
+                // Partial update. Copy the SET values into the existing row and skip
+                // indexes that are out of range.
                 let mut row_copy = row.clone();
                 for (idx, &col_idx) in set_column_indices.iter().enumerate() {
                     if col_idx < row_copy.len() && idx < set_values.len() {
@@ -496,7 +503,8 @@ pub trait Table: Debug + Send + Sync {
                 row_copy
             };
 
-            // Use exact row values as condition, new row as update
+            // Match on the exact old row and replace it with the new one. Every copy
+            // of that row changes in one call, so later duplicates return false.
             let cond = InMemoryCompiledCondition {
                 values: row.clone(),
             };
@@ -508,30 +516,32 @@ pub trait Table: Debug + Send + Sync {
         Ok(updated_count)
     }
 
-    /// Update rows with SET expressions that may reference table columns, evaluated per-row.
+    /// Updates rows with SET expressions that can use table columns, run once per row.
     ///
-    /// This method is used for stream-triggered UPDATE mutations where SET expressions
-    /// reference both stream columns and table columns (e.g., `SET price = table.price + stream.delta`).
+    /// Used for UPDATE triggered by a stream event, where SET expressions use both
+    /// stream and table columns, such as `SET price = table.price + stream.delta`.
     ///
     /// # Arguments
-    /// * `stream_event` - The triggering event from the source stream
-    /// * `condition_executor` - Expression executor for the WHERE condition
-    /// * `set_column_indices` - Column indices for each SET clause attribute
-    /// * `set_value_executors` - Expression executors for each SET clause value
+    /// * `stream_event` - The event from the source stream that triggered the update
+    /// * `condition_executor` - Executor for the WHERE condition
+    /// * `set_column_indices` - Table column for each SET clause attribute
+    /// * `set_value_executors` - Executor for each SET clause value
     ///
     /// # Returns
-    /// Number of rows updated, or error if operation fails
+    /// Number of rows updated, or an error if the update fails
     ///
-    /// # ⚠️ IMPORTANT: No Default Implementation
+    /// # IMPORTANT: no safe default
     ///
-    /// This method has no safe default implementation. Table implementations MUST
-    /// override this method with an atomic version that guarantees data integrity:
-    /// - InMemoryTable: Uses in-place updates with held locks
-    /// - JDBC/SQL backends: Should use database transactions or native UPDATE
-    /// - Other backends: Must implement appropriate atomic guarantees
+    /// The default only handles an empty `set_value_executors`, by calling
+    /// `update_with_expression` with no columns and no values. Otherwise it returns
+    /// `OperationNotSupported`. Tables MUST override this with a version that changes
+    /// each row in one step:
+    /// - InMemoryTable: updates rows in place while holding the lock
+    /// - JDBC and SQL backends: should use a transaction or a native UPDATE
+    /// - Other backends: must give the same all or nothing guarantee
     ///
-    /// A non-atomic delete-then-insert pattern would risk data loss if the insert
-    /// fails after the delete succeeds.
+    /// Deleting and then inserting in two steps would lose data if the insert fails
+    /// after the delete succeeds.
     fn update_with_set_executors(
         &self,
         stream_event: &StreamEvent,
@@ -539,16 +549,15 @@ pub trait Table: Debug + Send + Sync {
         _set_column_indices: &[usize],
         set_value_executors: &[Box<dyn ExpressionExecutor>],
     ) -> Result<usize, crate::core::exception::EventFluxError> {
-        // Fallback: If no SET executors (simple case), delegate to update_with_expression
-        // This maintains backward compatibility with existing Table implementations
+        // With no SET executors, hand off to update_with_expression, which most tables
+        // already support. With empty columns and values it replaces each matched row
+        // with an empty row.
         if set_value_executors.is_empty() {
-            // No dynamic SET expressions - can use the simpler update_with_expression
-            // which most Table implementations already support
             return self.update_with_expression(stream_event, condition_executor, &[], &[]);
         }
 
-        // Dynamic SET expressions require table-specific atomic implementation
-        // to prevent data loss from non-atomic delete-then-insert patterns
+        // SET expressions need a table specific version that changes each row in one
+        // step, so a two step delete and insert cannot lose data.
         Err(
             crate::core::exception::EventFluxError::OperationNotSupported {
                 message: "UPDATE with SET expressions referencing table columns requires \
@@ -560,33 +569,33 @@ pub trait Table: Debug + Send + Sync {
         )
     }
 
-    /// Delete rows matching a condition expression when evaluated against stream event + table row.
+    /// Deletes the rows for which the condition, run on the stream event plus the
+    /// table row, is true.
     ///
-    /// This method is used for stream-triggered DELETE mutations where the condition
-    /// references both stream columns and table columns.
+    /// Used for DELETE triggered by a stream event, where the condition uses both
+    /// stream and table columns.
     ///
     /// # Arguments
-    /// * `stream_event` - The triggering event from the source stream
-    /// * `condition_executor` - Expression executor for the WHERE condition
+    /// * `stream_event` - The event from the source stream that triggered the delete
+    /// * `condition_executor` - Executor for the WHERE condition
     ///
     /// # Returns
-    /// Number of rows deleted, or error if operation fails.
+    /// Number of rows deleted, or an error if the delete fails.
     ///
-    /// # ⚠️ Count Accuracy Note
+    /// # Count accuracy
     ///
-    /// For tables with duplicate rows (identical values), the returned count reflects
-    /// the number of **distinct row values** removed, not the total rows removed.
-    /// This is because `Table::delete()` removes ALL copies of a matching row in one
-    /// call and returns `bool`. If accurate row counts are required for metrics,
-    /// the Table implementation should track this internally.
+    /// For tables with duplicate rows (same values), the default counts **distinct row
+    /// values** removed, not total rows removed. `Table::delete()` removes EVERY copy of
+    /// a matching row in one call and only returns a `bool`. If metrics need exact row
+    /// counts, the table must track them itself.
     ///
-    /// # Performance Note for JDBC Implementers
+    /// # Performance note for JDBC authors
     ///
-    /// The default implementation calls `all_rows()` and filters in-memory, which is
-    /// **inefficient for external databases**. JDBC/SQL-backed tables MUST override
-    /// this method to push the WHERE clause to the database.
+    /// The default calls `all_rows()` and filters in memory, which is **slow on external
+    /// databases**. JDBC and other SQL backed tables MUST override this and push the
+    /// WHERE clause to the database.
     ///
-    /// ## Example Override for MySQL/PostgreSQL
+    /// ## Example override for MySQL or PostgreSQL
     ///
     /// ```rust,ignore
     /// fn delete_with_expression(
@@ -616,7 +625,7 @@ pub trait Table: Debug + Send + Sync {
 
         let mut deleted_count = 0;
         for row in &matched_rows {
-            // Use exact row values as condition for deletion
+            // Delete by exact row value. Later duplicates of a deleted row return false.
             let cond = InMemoryCompiledCondition {
                 values: row.clone(),
             };
@@ -627,31 +636,37 @@ pub trait Table: Debug + Send + Sync {
         Ok(deleted_count)
     }
 
-    /// Upsert (update or insert) with SET expressions that may reference table columns.
+    /// Updates a matching row or inserts a new one, with SET expressions that can use
+    /// table columns.
     ///
-    /// This method is used for stream-triggered UPSERT mutations where:
-    /// 1. If a row matches the ON condition: UPDATE that row (optionally using SET expressions)
-    /// 2. If no row matches: INSERT a new row from stream data
+    /// Used for UPSERT triggered by a stream event:
+    /// 1. If a row matches the ON condition, UPDATE it, optionally with SET expressions
+    /// 2. If no row matches, INSERT a new row from the stream data
     ///
     /// # Arguments
-    /// * `stream_event` - The triggering event from the source stream
-    /// * `condition_executor` - Expression executor for the ON condition
-    /// * `set_column_indices` - Column indices for each SET clause attribute (empty for full replacement)
-    /// * `set_value_executors` - Expression executors for each SET clause value (empty for full replacement)
+    /// * `stream_event` - The event from the source stream that triggered the upsert
+    /// * `condition_executor` - Executor for the ON condition
+    /// * `set_column_indices` - Table column for each SET clause attribute. Empty means
+    ///   replace the whole row.
+    /// * `set_value_executors` - Executor for each SET clause value. Empty means
+    ///   replace the whole row.
     ///
     /// # Returns
-    /// Tuple of (rows_updated, rows_inserted), or error if operation fails
+    /// (rows_updated, rows_inserted), or an error if the upsert fails
     ///
-    /// # ⚠️ IMPORTANT: No Default Implementation
+    /// # IMPORTANT: no safe default
     ///
-    /// This method has no safe default implementation. Table implementations MUST
-    /// override this method with an atomic version that guarantees data integrity:
-    /// - InMemoryTable: Uses in-place updates with held locks
-    /// - JDBC/SQL backends: Should use database transactions or native UPSERT/MERGE
-    /// - Other backends: Must implement appropriate atomic guarantees
+    /// The default only handles an empty `set_value_executors`. It takes the new row
+    /// from the stream event's output data, or its before window data if there is none,
+    /// and returns (0, 0) if that row is empty. It then inserts the row, or replaces
+    /// the first match with it. Otherwise it returns `OperationNotSupported`. Tables
+    /// MUST override this with a version that changes each row in one step:
+    /// - InMemoryTable: updates rows in place while holding the lock
+    /// - JDBC and SQL backends: should use a transaction or a native UPSERT or MERGE
+    /// - Other backends: must give the same all or nothing guarantee
     ///
-    /// A non-atomic delete-then-insert pattern would risk data loss if the insert
-    /// fails after the delete succeeds.
+    /// Deleting and then inserting in two steps would lose data if the insert fails
+    /// after the delete succeeds.
     fn upsert_with_set_executors(
         &self,
         stream_event: &StreamEvent,
@@ -659,10 +674,9 @@ pub trait Table: Debug + Send + Sync {
         _set_column_indices: &[usize],
         set_value_executors: &[Box<dyn ExpressionExecutor>],
     ) -> Result<(usize, usize), crate::core::exception::EventFluxError> {
-        // Fallback: If no SET executors (simple UPSERT), try find-then-update/insert pattern
-        // This maintains backward compatibility with existing Table implementations
+        // With no SET executors, find a match and then update it or insert. This keeps
+        // existing Table implementations working. It is not one atomic step.
         if set_value_executors.is_empty() {
-            // Simple UPSERT without SET expressions: check if row exists, then update or insert
             let new_values = if let Some(output) = stream_event.get_output_data() {
                 output.to_vec()
             } else {
@@ -673,16 +687,15 @@ pub trait Table: Debug + Send + Sync {
                 return Ok((0, 0));
             }
 
-            // Find matching rows using the condition
             let matched =
                 find_matching_rows_for_mutation(self.all_rows()?, stream_event, condition_executor);
 
             if matched.is_empty() {
-                // No match - insert
                 self.insert(&new_values)?;
                 return Ok((0, 1));
             } else {
-                // Match found - update first matching row
+                // Replace the first match. Since update matches by value, any
+                // duplicates of that row change too, but the count stays 1.
                 let cond = InMemoryCompiledCondition {
                     values: matched[0].clone(),
                 };
@@ -694,7 +707,7 @@ pub trait Table: Debug + Send + Sync {
             }
         }
 
-        // Dynamic SET expressions require table-specific atomic implementation
+        // SET expressions need a table specific version that changes each row in one step.
         Err(
             crate::core::exception::EventFluxError::OperationNotSupported {
                 message: "UPSERT with SET expressions referencing table columns requires \
@@ -706,29 +719,30 @@ pub trait Table: Debug + Send + Sync {
         )
     }
 
-    /// Clone helper for boxed trait objects.
+    /// Clones the table into a new box. Backs `Clone` for `Box<dyn Table>`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the cloning operation fails (e.g., cannot reconnect to database).
+    /// Returns an error if the clone fails, for example when it cannot reconnect to
+    /// the database.
     fn clone_table(&self) -> Result<Box<dyn Table>, crate::core::exception::EventFluxError>;
 
-    /// Phase 2 validation: Verify connectivity and external resource availability
+    /// Phase 2 validation. Checks that the table's external store is reachable.
     ///
-    /// This method is called during application initialization (Phase 2) to validate
-    /// that external backing stores (databases, caches) are reachable and properly configured.
+    /// Called while the app starts up (Phase 2) to check that external stores, such as
+    /// databases and caches, are reachable and set up correctly.
     ///
-    /// **Fail-Fast Principle**: Application should NOT start if table backing stores are not ready.
+    /// **Fail fast**: The app should NOT start if a table's store is not ready.
     ///
-    /// # Default Implementation
+    /// # Default
     ///
-    /// Returns Ok by default - in-memory tables don't need external validation.
-    /// Tables with external backing stores (MySQL, PostgreSQL, Redis) MUST override this method.
+    /// Returns Ok, since in memory tables have nothing external to check. Tables with
+    /// an external store (MySQL, PostgreSQL, Redis) MUST override this.
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - External backing store is reachable and properly configured
-    /// * `Err(EventFluxError)` - Validation failed, application should not start
+    /// * `Ok(())` - The external store is reachable and set up correctly
+    /// * `Err(EventFluxError)` - The check failed and the app should not start
     ///
     /// # Examples
     ///
@@ -753,10 +767,12 @@ pub trait Table: Debug + Send + Sync {
     /// }
     /// ```
     fn validate_connectivity(&self) -> Result<(), crate::core::exception::EventFluxError> {
-        Ok(()) // Default: no validation needed (in-memory tables)
+        Ok(()) // nothing external to check
     }
 }
 
+// Panics if clone_table fails. That cannot happen for in memory tables, but can for
+// tables backed by an external store.
 impl Clone for Box<dyn Table> {
     fn clone(&self) -> Self {
         self.clone_table()
@@ -764,35 +780,35 @@ impl Clone for Box<dyn Table> {
     }
 }
 
-/// Maximum retry attempts for concurrent modification conflicts
+/// How many times a change is retried when another thread changed the row first.
 const MAX_CONCURRENT_MODIFICATION_RETRIES: u32 = 3;
 
-/// Simple in-memory table storing rows in a vector with HashMap index for O(1) lookups.
+/// In memory table. Rows live in a vector, with a HashMap index for O(1) lookups.
 ///
-/// # Concurrency Model
+/// # Concurrency
 ///
-/// Uses optimistic locking with retry for UPDATE/UPSERT operations:
-/// 1. Read phase: Acquire read lock, find matching rows, capture current values
-/// 2. Evaluate phase: Compute new values (can reference both stream and table data)
-/// 3. Write phase: Acquire write lock, verify rows unchanged, apply updates
+/// UPDATE and UPSERT use optimistic locking with retry:
+/// 1. Read: take the read lock, find matching rows, save their current values
+/// 2. Evaluate: compute new values, which can use stream and table data
+/// 3. Write: take the write lock, check the rows did not change, apply the updates
 ///
-/// If a row was modified between phases, the operation is retried up to
-/// [`MAX_CONCURRENT_MODIFICATION_RETRIES`] times before being skipped.
+/// If a row changed between steps, the change is retried up to
+/// [`MAX_CONCURRENT_MODIFICATION_RETRIES`] times and then skipped.
 ///
-/// # Performance Notes
+/// # Performance
 ///
-/// Row identity verification uses column-by-column comparison, skipping `Object` columns
-/// (since `Box<dyn Any>` cannot be cloned or compared reliably). This is O(data_columns)
-/// per row and could become expensive with very wide tables.
+/// The "did not change" check compares column by column and skips `Object` columns,
+/// since `Box<dyn Any>` cannot be cloned or compared. That costs O(data_columns) per
+/// row and can get slow on very wide tables.
 ///
-/// ## Future Optimization: Row Version Numbers
+/// ## Possible later speedup: row version numbers
 ///
-/// A more efficient approach would store a version/generation counter per row:
-/// - Read: Capture (row_values, version_number)
-/// - Write: Verify version_number unchanged (O(1) integer comparison)
-/// - On match: Increment version and apply update
+/// Faster would be a version counter per row:
+/// - Read: save (row_values, version_number)
+/// - Write: check version_number is the same, an O(1) integer compare
+/// - On match: bump the version and apply the update
 ///
-/// This would change row storage from `Vec<Vec<AttributeValue>>` to something like:
+/// That would change row storage from `Vec<Vec<AttributeValue>>` to something like:
 /// ```ignore
 /// struct VersionedRow {
 ///     version: u64,
@@ -800,21 +816,21 @@ const MAX_CONCURRENT_MODIFICATION_RETRIES: u32 = 3;
 /// }
 /// ```
 ///
-/// Benefits:
-/// - O(1) identity check instead of O(columns)
-/// - Enables ABA problem detection (row changed and changed back)
-/// - Foundation for MVCC (Multi-Version Concurrency Control) if needed
+/// Gains:
+/// - O(1) change check instead of O(columns)
+/// - Catches a row that changed and then changed back (the ABA problem)
+/// - A base for MVCC (keeping several versions of each row) if ever needed
 #[derive(Debug)]
 pub struct InMemoryTable {
     rows: RwLock<Vec<Vec<AttributeValue>>>,
-    // Index: maps serialized row key → Vec of indices in rows Vec (supports duplicates)
+    // Maps a row key to every index in `rows` with that value, so duplicates work.
     index: RwLock<HashMap<String, Vec<usize>>>,
-    /// Counter for updates skipped due to concurrent modifications after all retries exhausted.
-    /// When a row is modified/deleted between read and write phases and retries are exhausted,
-    /// the update is skipped. This counter provides observability for such race conditions.
+    /// Updates skipped because another thread kept changing or deleting the row
+    /// between the read and write steps until all retries ran out. Lets you see how
+    /// often such races happen.
     concurrent_modification_skips: std::sync::atomic::AtomicU64,
-    /// Counter for retry attempts due to concurrent modifications.
-    /// Tracks how often the optimistic locking retry mechanism is triggered.
+    /// Retries caused by another thread changing a row first. Shows how often the
+    /// optimistic locking retry kicks in.
     concurrent_modification_retries: std::sync::atomic::AtomicU64,
 }
 
@@ -834,65 +850,63 @@ impl InMemoryTable {
         }
     }
 
-    /// Returns the count of updates skipped due to concurrent modifications after retries exhausted.
-    /// Useful for monitoring optimistic locking failures in high-concurrency scenarios.
+    /// Returns how many updates were skipped after all retries ran out because another
+    /// thread changed the row. Useful to watch optimistic locking failures under load.
     pub fn concurrent_modification_skips(&self) -> u64 {
         self.concurrent_modification_skips
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Returns the count of retry attempts due to concurrent modifications.
-    /// High values indicate significant contention on this table.
+    /// Returns how many retries happened because another thread changed a row first.
+    /// High values mean heavy contention on this table.
     pub fn concurrent_modification_retries(&self) -> u64 {
         self.concurrent_modification_retries
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Helper function to create a hash key from row values
-    /// This enables O(1) lookups instead of O(n) linear scans
+    /// Builds the index key for a row, so lookups are O(1) instead of a linear scan.
+    /// Same as [`row_values_to_key`].
     fn row_to_key(row: &[AttributeValue]) -> String {
-        // Delegate to the crate-level function to avoid code duplication
         row_values_to_key(row)
     }
 
-    /// Compare two rows for identity, skipping Object columns.
+    /// Checks whether two rows are the same, skipping Object columns.
     ///
-    /// This is necessary because `AttributeValue::Object(Some(_))` clones to `Object(None)`
-    /// (due to `Box<dyn Any>` not being cloneable), and `Object(_) == Object(_)` always
-    /// returns `false` (no way to compare opaque types).
+    /// Needed because `AttributeValue::Object(Some(_))` clones to `Object(None)`, since
+    /// `Box<dyn Any>` cannot be cloned, and `Object(_) == Object(_)` is always `false`,
+    /// since opaque values cannot be compared.
     ///
-    /// For optimistic locking identity checks, we compare only the data columns that can
-    /// be reliably cloned and compared. Object columns are skipped - if only Object columns
-    /// changed, we treat it as "unchanged" for concurrency control purposes.
+    /// The optimistic locking check compares only columns that can be cloned and
+    /// compared. Object columns are skipped, so a row where only Object columns changed
+    /// counts as unchanged.
     ///
-    /// # ⚠️ Concurrency Warning for Object Columns
+    /// # Concurrency warning for Object columns
     ///
-    /// **Lost Update Risk**: If a row is modified (only in its Object fields) by another
-    /// thread between the read and write phases, this function will NOT detect the change.
-    /// The update will proceed, potentially overwriting the concurrent modification.
+    /// **Lost update risk**: If another thread changes only the Object fields of a row
+    /// between the read and write steps, this check will NOT see it. The update goes
+    /// ahead and can overwrite that change.
     ///
-    /// **Mitigations**:
-    /// 1. Ensure tables with Object columns have at least one non-Object column that
-    ///    changes when the row is logically modified (e.g., `last_modified` timestamp)
-    /// 2. For critical data, consider adding a `version` column that increments on each update
-    /// 3. Avoid using Object columns in tables with high concurrent write rates
-    /// 4. For truly opaque data, consider using `Bytes` type instead (can be compared)
+    /// **Ways to reduce the risk**:
+    /// 1. Give tables with Object columns at least one other column that changes on
+    ///    every logical change, such as a `last_modified` timestamp
+    /// 2. For important data, add a `version` column that goes up on each update
+    /// 3. Avoid Object columns in tables with many concurrent writes
+    /// 4. For opaque data, use `Bytes` instead, which can be compared
     ///
     /// # Arguments
-    /// * `a` - First row (typically the cloned snapshot from read phase)
-    /// * `b` - Second row (typically the current row in the table)
+    /// * `a` - First row, usually the copy saved in the read step
+    /// * `b` - Second row, usually the current row in the table
     ///
     /// # Returns
-    /// `true` if all non-Object columns are equal, `false` otherwise
+    /// `true` if the rows have the same length and every non Object column is equal
     fn rows_equal_ignoring_objects(a: &[AttributeValue], b: &[AttributeValue]) -> bool {
         if a.len() != b.len() {
             return false;
         }
         for (av, bv) in a.iter().zip(b.iter()) {
             match (av, bv) {
-                // Skip Object columns - they can't be reliably compared after cloning
+                // Object values cannot be compared after cloning, so skip them.
                 (AttributeValue::Object(_), AttributeValue::Object(_)) => continue,
-                // For all other types, require exact equality
                 _ => {
                     if av != bv {
                         return false;
@@ -918,7 +932,6 @@ impl Table for InMemoryTable {
         let new_index = rows.len();
         rows.push(values.to_vec());
 
-        // Update index: add this row's index to the key's index list
         let mut index = self.index.write().unwrap();
         index.entry(key).or_default().push(new_index);
         Ok(())
@@ -951,7 +964,8 @@ impl Table for InMemoryTable {
         let old_key = Self::row_to_key(&cond.values);
         let new_key = Self::row_to_key(&us.values);
 
-        // Use index to find matching rows (O(1) instead of O(n))
+        // Find matching rows through the index, O(1) instead of O(n). Rows that differ
+        // only in Object columns share a key, so they all get replaced.
         let mut index = self.index.write().unwrap();
         let mut rows = self.rows.write().unwrap();
 
@@ -965,14 +979,13 @@ impl Table for InMemoryTable {
             return Ok(false);
         }
 
-        // Update rows and maintain index
         for &idx in &indices_to_update {
             if let Some(row) = rows.get_mut(idx) {
                 *row = us.values.clone();
             }
         }
 
-        // Update index: remove old key entries, add new key entries
+        // Move the indices from the old key to the new key.
         index.remove(&old_key);
         index.entry(new_key).or_default().extend(indices_to_update);
 
@@ -995,7 +1008,7 @@ impl Table for InMemoryTable {
         let mut index = self.index.write().unwrap();
         let mut rows = self.rows.write().unwrap();
 
-        // Check if any rows match (O(1) index lookup)
+        // Quick O(1) index check before the scan.
         if !index.contains_key(&key) {
             return Ok(false);
         }
@@ -1007,8 +1020,8 @@ impl Table for InMemoryTable {
             return Ok(false);
         }
 
-        // Rebuild index since row indices have shifted after deletion
-        // This is O(n) but delete is less frequent than reads/finds
+        // Rebuild the index, since row positions shifted after the delete. O(n), but
+        // deletes are rarer than reads and finds.
         index.clear();
         for (idx, row) in rows.iter().enumerate() {
             let row_key = Self::row_to_key(row);
@@ -1029,7 +1042,8 @@ impl Table for InMemoryTable {
                 crate::core::exception::EventFluxError::Other("Invalid condition type".to_string())
             })?;
 
-        // O(1) index lookup instead of O(n) linear scan
+        // O(1) index lookup instead of a linear scan. Errors above, instead of
+        // returning None, if the condition is not an InMemoryCompiledCondition.
         let key = Self::row_to_key(&cond.values);
         let index = self.index.read().unwrap();
 
@@ -1054,7 +1068,7 @@ impl Table for InMemoryTable {
             None => return Ok(false),
         };
 
-        // O(1) index lookup instead of O(n) linear scan
+        // O(1) index lookup instead of a linear scan.
         let key = Self::row_to_key(&cond.values);
         let index = self.index.read().unwrap();
         Ok(index.contains_key(&key))
@@ -1111,7 +1125,7 @@ impl Table for InMemoryTable {
     fn clone_table(&self) -> Result<Box<dyn Table>, crate::core::exception::EventFluxError> {
         let rows = self.rows.read().unwrap().clone();
 
-        // Rebuild index for cloned table
+        // Rebuild the index for the copy. Retry counters start at zero.
         let mut index = HashMap::new();
         for (idx, row) in rows.iter().enumerate() {
             let key = Self::row_to_key(row);
@@ -1126,29 +1140,29 @@ impl Table for InMemoryTable {
         }))
     }
 
-    /// Atomic implementation of update_with_set_executors for InMemoryTable.
+    /// update_with_set_executors for InMemoryTable, applying the changes under one
+    /// write lock.
     ///
-    /// This implementation separates read and write phases to prevent potential deadlocks
-    /// that could occur if expression executors (e.g., UDFs) attempt to access this table.
-    /// Updates are applied atomically with incremental index maintenance.
+    /// Reading and writing are separate steps, so expression executors (such as UDFs)
+    /// that read this table cannot deadlock. The updates and index changes are then
+    /// applied together under the write lock.
     ///
-    /// # Concurrent Modification Handling
+    /// # Concurrent changes
     ///
-    /// Uses optimistic locking with retry. If a row is modified between read and write phases,
-    /// the operation retries from the beginning to re-evaluate expressions against current data.
-    /// This prevents "lost updates" for expressions like `SET count = count + 1`.
+    /// Uses optimistic locking with retry. If a row changed between the read and write
+    /// steps, the whole operation starts again and runs the expressions on current
+    /// data. This avoids lost updates for expressions like `SET count = count + 1`.
     ///
-    /// # ⚠️ Performance Warning
+    /// # Performance warning
     ///
-    /// Currently performs O(N) full table scan during the read phase, cloning a StreamEvent
-    /// for each row to wrap in StateEvent for expression evaluation. For tables with 100k+ rows,
-    /// this creates significant allocation pressure (100k+ vector clones per incoming event).
+    /// The read step scans the whole table, O(N), and clones a StreamEvent per row to
+    /// put in the StateEvent for evaluation. With 100k+ rows that is 100k+ vector
+    /// clones for every incoming event.
     ///
-    /// **TODO: Indexed Fast-Path Optimization**
-    /// Implement a fast-path that checks if the condition is a simple equality on indexed
-    /// columns (e.g., `table.id == stream.id`) and use `self.index` for O(1) lookup before
-    /// falling back to full scan. This would dramatically improve performance for the common
-    /// case of keyed updates.
+    /// **TODO: fast path through the index**
+    /// When the condition is a simple equality on indexed columns, such as
+    /// `table.id == stream.id`, look rows up through `self.index` in O(1) before falling
+    /// back to the full scan. That would make the common keyed update much faster.
     fn update_with_set_executors(
         &self,
         stream_event: &StreamEvent,
@@ -1160,33 +1174,34 @@ impl Table for InMemoryTable {
 
         let mut total_updated = 0;
 
-        // Retry loop for handling concurrent modifications
+        // Retry loop for rows changed by another thread.
         for attempt in 0..=MAX_CONCURRENT_MODIFICATION_RETRIES {
-            // Phase 1: Read - collect row data and indices (read lock)
-            // This allows expression evaluation without holding locks
+            // Step 1, read. Under the read lock, collect the matching rows and their
+            // indexes, so the expressions can then run with no lock held.
             let matched_rows: Vec<(usize, Vec<AttributeValue>)> = {
                 let rows = self.rows.read().unwrap();
                 let mut matches = Vec::new();
 
-                // Pre-allocate StateEvent and stream slot outside loop to reduce allocations
+                // Build the StateEvent once, outside the loop, to cut allocations.
                 let mut state_event = StateEvent::new(2, 0);
                 state_event.timestamp = stream_event.timestamp;
                 state_event.stream_events[0] = Some(stream_event.clone());
 
-                // Pre-allocate table row event with max column count (assume consistent schema)
+                // Size the reused row event from the first row. Assumes every row has
+                // the same width.
                 let max_cols = rows.first().map_or(0, |r| r.len());
                 let mut table_row_event = StreamEvent::new(stream_event.timestamp, max_cols, 0, 0);
 
                 for (idx, row) in rows.iter().enumerate() {
-                    // Reuse table_row_event by updating values in-place (avoids full struct allocation)
+                    // Overwrite the reused event's values instead of building a new one.
                     for (j, val) in row.iter().enumerate() {
                         if j < table_row_event.before_window_data.len() {
                             table_row_event.before_window_data[j] = val.clone();
                         }
                     }
-                    // NOTE: Clone is required here because StateEvent.stream_events owns its StreamEvents.
-                    // This is a known allocation hotspot. Future optimization: change StateEvent to use
-                    // Arc<StreamEvent> or references, allowing zero-copy row iteration.
+                    // The clone is needed because StateEvent.stream_events owns its
+                    // StreamEvents. A known allocation hot spot. Arc<StreamEvent> or
+                    // borrowing would allow going through rows with no copies.
                     state_event.stream_events[1] = Some(table_row_event.clone());
 
                     if let Some(AttributeValue::Bool(true)) =
@@ -1196,27 +1211,24 @@ impl Table for InMemoryTable {
                     }
                 }
                 matches
-            }; // Read lock released here
+            }; // read lock released here
 
             if matched_rows.is_empty() {
                 return Ok(total_updated);
             }
 
-            // Phase 2: Evaluate SET expressions (no locks held - prevents deadlock)
-            // If executors access this table, they can acquire locks safely
+            // Step 2, evaluate the SET expressions with no lock held, so executors that
+            // read this table cannot deadlock.
             let mut updates: Vec<(Vec<AttributeValue>, Vec<AttributeValue>)> = Vec::new();
 
-            // Pre-allocate StateEvent outside loop to reduce allocations
             let mut state_event = StateEvent::new(2, 0);
             state_event.timestamp = stream_event.timestamp;
             state_event.stream_events[0] = Some(stream_event.clone());
 
-            // Pre-allocate table row event with max column count
             let max_cols = matched_rows.first().map_or(0, |(_, r)| r.len());
             let mut table_row_event = StreamEvent::new(stream_event.timestamp, max_cols, 0, 0);
 
             for (_idx, row) in &matched_rows {
-                // Reuse table_row_event by updating values in-place
                 for (j, val) in row.iter().enumerate() {
                     if j < table_row_event.before_window_data.len() {
                         table_row_event.before_window_data[j] = val.clone();
@@ -1224,7 +1236,7 @@ impl Table for InMemoryTable {
                 }
                 state_event.stream_events[1] = Some(table_row_event.clone());
 
-                // Evaluate SET expressions
+                // If any SET expression returns None, this row is skipped silently.
                 let mut set_values = Vec::with_capacity(set_value_executors.len());
                 let mut evaluation_failed = false;
                 for executor in set_value_executors {
@@ -1240,7 +1252,7 @@ impl Table for InMemoryTable {
                     continue;
                 }
 
-                // Merge SET values into existing row
+                // Copy the SET values into the existing row.
                 let mut new_row = row.clone();
                 for (i, &col_idx) in set_column_indices.iter().enumerate() {
                     if col_idx < new_row.len() && i < set_values.len() {
@@ -1251,14 +1263,13 @@ impl Table for InMemoryTable {
                 updates.push((row.clone(), new_row));
             }
 
-            // Phase 3: Write - verify all rows first, then apply updates atomically
-            // This prevents the double-update bug where partial application followed by
-            // retry causes already-updated rows to be updated again.
+            // Step 3, write. Check every row first, then apply all updates. Applying
+            // some and then retrying would update those rows twice.
             let mut rows = self.rows.write().unwrap();
             let mut index = self.index.write().unwrap();
 
-            // Step 1: Verify ALL rows exist before applying ANY changes
-            // This ensures atomicity - either all updates succeed or none are applied
+            // Check that EVERY row is still there before changing ANY of them, so
+            // either all updates apply or none do.
             let mut verified_updates: Vec<(usize, String, Vec<AttributeValue>)> = Vec::new();
             let mut verification_failed = false;
             let mut verified_indices = std::collections::HashSet::new();
@@ -1284,20 +1295,20 @@ impl Table for InMemoryTable {
                     verified_indices.insert(idx);
                     verified_updates.push((idx, key, new_row.clone()));
                 } else {
-                    // Any verification failure means we must retry the entire batch
+                    // One failed check means the whole batch must be retried.
                     verification_failed = true;
                     break;
                 }
             }
 
             if verification_failed {
-                // Don't apply any changes - retry if attempts remaining
+                // Apply nothing. Retry if attempts are left.
                 if attempt < MAX_CONCURRENT_MODIFICATION_RETRIES {
                     self.concurrent_modification_retries
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     continue;
                 }
-                // All retries exhausted - return error instead of silently dropping writes
+                // Out of retries. Return an error instead of silently dropping writes.
                 let skipped = updates.len();
                 self.concurrent_modification_skips
                     .fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1314,13 +1325,13 @@ impl Table for InMemoryTable {
                 );
             }
 
-            // Step 2: Apply all updates (all rows verified)
+            // Every row checked out, so apply all updates.
             for (idx, old_key, new_row) in verified_updates {
                 let new_key = Self::row_to_key(&new_row);
                 rows[idx] = new_row;
                 total_updated += 1;
 
-                // Incremental index update (only if key changed)
+                // Fix up the index only when the key changed.
                 if old_key != new_key {
                     if let Some(indices) = index.get_mut(&old_key) {
                         indices.retain(|&i| i != idx);
@@ -1335,26 +1346,27 @@ impl Table for InMemoryTable {
             return Ok(total_updated);
         }
 
-        // Should not reach here - loop always returns
+        // Not reached. Every pass of the loop returns.
         Ok(total_updated)
     }
 
-    /// Atomic implementation of upsert_with_set_executors for InMemoryTable.
+    /// upsert_with_set_executors for InMemoryTable, applying the changes under one
+    /// write lock.
     ///
-    /// This implementation separates read and write phases to prevent potential deadlocks
-    /// that could occur if expression executors (e.g., UDFs) attempt to access this table.
-    /// Updates are applied atomically with incremental index maintenance.
+    /// Reading and writing are separate steps, so expression executors (such as UDFs)
+    /// that read this table cannot deadlock. The updates and index changes are then
+    /// applied together under the write lock.
     ///
-    /// # ⚠️ Performance Warning
+    /// # Performance warning
     ///
-    /// Currently performs O(N) full table scan during the read phase, cloning a StreamEvent
-    /// for each row to wrap in StateEvent for expression evaluation. For tables with 100k+ rows,
-    /// this creates significant allocation pressure (100k+ vector clones per incoming event).
+    /// The read step scans the whole table, O(N), and clones a StreamEvent per row to
+    /// put in the StateEvent for evaluation. With 100k+ rows that is 100k+ vector
+    /// clones for every incoming event.
     ///
-    /// **TODO: Indexed Fast-Path Optimization**
-    /// Implement a fast-path that checks if the ON condition is a simple equality on indexed
-    /// columns (e.g., `table.id == stream.id`) and use `self.index` for O(1) lookup before
-    /// falling back to full scan.
+    /// **TODO: fast path through the index**
+    /// When the ON condition is a simple equality on indexed columns, such as
+    /// `table.id == stream.id`, look rows up through `self.index` in O(1) before falling
+    /// back to the full scan.
     fn upsert_with_set_executors(
         &self,
         stream_event: &StreamEvent,
@@ -1366,24 +1378,24 @@ impl Table for InMemoryTable {
 
         let mut total_updated = 0;
 
-        // Retry loop for handling concurrent modifications in UPDATE path
+        // Retry loop for rows changed by another thread, on the UPDATE path.
         for attempt in 0..=MAX_CONCURRENT_MODIFICATION_RETRIES {
-            // Phase 1: Read - collect matching row data and indices (read lock)
+            // Step 1, read. Under the read lock, collect the matching rows and their indexes.
             let matched_rows: Vec<(usize, Vec<AttributeValue>)> = {
                 let rows = self.rows.read().unwrap();
                 let mut matches = Vec::new();
 
-                // Pre-allocate StateEvent and stream slot outside loop to reduce allocations
+                // Build the StateEvent once, outside the loop, to cut allocations.
                 let mut state_event = StateEvent::new(2, 0);
                 state_event.timestamp = stream_event.timestamp;
                 state_event.stream_events[0] = Some(stream_event.clone());
 
-                // Pre-allocate table row event with max column count (assume consistent schema)
+                // Size the reused row event from the first row. Assumes every row has
+                // the same width.
                 let max_cols = rows.first().map_or(0, |r| r.len());
                 let mut table_row_event = StreamEvent::new(stream_event.timestamp, max_cols, 0, 0);
 
                 for (idx, row) in rows.iter().enumerate() {
-                    // Reuse table_row_event by updating values in-place
                     for (j, val) in row.iter().enumerate() {
                         if j < table_row_event.before_window_data.len() {
                             table_row_event.before_window_data[j] = val.clone();
@@ -1398,30 +1410,28 @@ impl Table for InMemoryTable {
                     }
                 }
                 matches
-            }; // Read lock released here
+            }; // read lock released here
 
             if matched_rows.is_empty() {
-                // No matches found - exit retry loop and proceed to INSERT path
+                // Nothing matched. Leave the loop and go to the INSERT path.
                 break;
             }
 
-            // UPDATE path: Found matching row(s)
-            // Phase 2: Evaluate SET expressions (no locks held - prevents deadlock)
+            // UPDATE path, at least one row matched.
+            // Step 2, evaluate the SET expressions with no lock held, so executors that
+            // read this table cannot deadlock.
             let mut updates: Vec<(Vec<AttributeValue>, Vec<AttributeValue>)> = Vec::new();
 
             if !set_value_executors.is_empty() {
-                // Pre-allocate StateEvent outside loop to reduce allocations
                 let mut state_event = StateEvent::new(2, 0);
                 state_event.timestamp = stream_event.timestamp;
                 state_event.stream_events[0] = Some(stream_event.clone());
 
-                // Pre-allocate table row event with max column count
                 let max_cols = matched_rows.first().map_or(0, |(_, r)| r.len());
                 let mut table_row_event = StreamEvent::new(stream_event.timestamp, max_cols, 0, 0);
 
-                // SET executors present - evaluate per row with table row context
+                // Run the SET executors for each row, with that row in the event.
                 for (_idx, row) in &matched_rows {
-                    // Reuse table_row_event by updating values in-place
                     for (j, val) in row.iter().enumerate() {
                         if j < table_row_event.before_window_data.len() {
                             table_row_event.before_window_data[j] = val.clone();
@@ -1429,7 +1439,7 @@ impl Table for InMemoryTable {
                     }
                     state_event.stream_events[1] = Some(table_row_event.clone());
 
-                    // Evaluate SET expressions
+                    // If any SET expression returns None, this row is skipped silently.
                     let mut set_values = Vec::with_capacity(set_value_executors.len());
                     let mut evaluation_failed = false;
                     for executor in set_value_executors {
@@ -1445,7 +1455,8 @@ impl Table for InMemoryTable {
                         continue;
                     }
 
-                    // Merge SET values into existing row
+                    // With no column indices the SET values are the whole new row.
+                    // Otherwise copy them into the existing row.
                     let updated_row = if set_column_indices.is_empty() {
                         set_values
                     } else {
@@ -1461,7 +1472,9 @@ impl Table for InMemoryTable {
                     updates.push((row.clone(), updated_row));
                 }
             } else {
-                // No SET executors - use stream values for full row replacement
+                // No SET executors. Replace each matched row with the stream values,
+                // output data first, else before window data. An empty value list
+                // updates nothing.
                 let new_values = if let Some(output) = stream_event.get_output_data() {
                     output.to_vec()
                 } else {
@@ -1475,13 +1488,12 @@ impl Table for InMemoryTable {
                 }
             }
 
-            // Phase 3: Write - verify all rows first, then apply updates atomically
-            // This prevents the double-update bug where partial application followed by
-            // retry causes already-updated rows to be updated again.
+            // Step 3, write. Check every row first, then apply all updates. Applying
+            // some and then retrying would update those rows twice.
             let mut rows = self.rows.write().unwrap();
             let mut index = self.index.write().unwrap();
 
-            // Step 1: Verify ALL rows exist before applying ANY changes
+            // Check that EVERY row is still there before changing ANY of them.
             let mut verified_updates: Vec<(usize, String, Vec<AttributeValue>)> = Vec::new();
             let mut verification_failed = false;
             let mut verified_indices = std::collections::HashSet::new();
@@ -1513,13 +1525,13 @@ impl Table for InMemoryTable {
             }
 
             if verification_failed {
-                // Don't apply any changes - retry if attempts remaining
+                // Apply nothing. Retry if attempts are left.
                 if attempt < MAX_CONCURRENT_MODIFICATION_RETRIES {
                     self.concurrent_modification_retries
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     continue;
                 }
-                // All retries exhausted - return error instead of silently dropping writes
+                // Out of retries. Return an error instead of silently dropping writes.
                 let skipped = updates.len();
                 self.concurrent_modification_skips
                     .fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1536,7 +1548,7 @@ impl Table for InMemoryTable {
                 );
             }
 
-            // Step 2: Apply all updates (all rows verified)
+            // Every row checked out, so apply all updates.
             for (idx, old_key, new_row) in verified_updates {
                 let new_key = Self::row_to_key(&new_row);
                 rows[idx] = new_row;
@@ -1556,12 +1568,10 @@ impl Table for InMemoryTable {
             return Ok((total_updated, 0));
         }
 
-        // INSERT path: No matching rows found (or retry loop exited without matches)
-        // Fall through to INSERT logic below
+        // INSERT path. The read step found no matching row.
         {
-            // INSERT path: No matching rows found in Phase 1
-            // CRITICAL: Must re-verify under write lock to prevent race condition where
-            // another thread inserts a matching row between our read and write phases.
+            // CRITICAL: check again under the write lock. Another thread may have
+            // inserted a matching row between our read and write steps.
             let new_values = if let Some(output) = stream_event.get_output_data() {
                 output.to_vec()
             } else {
@@ -1572,9 +1582,9 @@ impl Table for InMemoryTable {
                 let mut rows = self.rows.write().unwrap();
                 let mut index = self.index.write().unwrap();
 
-                // Re-verify: Check if a matching row was inserted by another thread
-                // between Phase 1 (read lock released) and now (write lock acquired).
-                // This prevents duplicate inserts for what should be an upsert.
+                // Look again for a match added by another thread after the read lock
+                // was released, so an upsert does not insert a duplicate. The condition
+                // runs here while the write lock is held.
                 let mut state_event = StateEvent::new(2, 0);
                 state_event.timestamp = stream_event.timestamp;
                 state_event.stream_events[0] = Some(stream_event.clone());
@@ -1595,19 +1605,19 @@ impl Table for InMemoryTable {
                         condition_executor.execute(Some(&state_event))
                     {
                         matching_idx = Some(idx);
-                        break; // Found a match - will update instead of insert
+                        break; // update this row instead of inserting
                     }
                 }
 
                 if let Some(idx) = matching_idx {
-                    // A matching row appeared between read and write phases.
-                    // Update it instead of inserting a duplicate.
+                    // A matching row showed up between the read and write steps.
+                    // Replace it with the stream values instead of inserting a duplicate.
+                    // SET executors are not applied on this path.
                     let old_key = Self::row_to_key(&rows[idx]);
                     let new_key = Self::row_to_key(&new_values);
 
                     rows[idx] = new_values;
 
-                    // Update index if key changed
                     if old_key != new_key {
                         if let Some(indices) = index.get_mut(&old_key) {
                             indices.retain(|&i| i != idx);
@@ -1617,9 +1627,9 @@ impl Table for InMemoryTable {
                         }
                         index.entry(new_key).or_default().push(idx);
                     }
-                    Ok((1, 0)) // Updated, not inserted
+                    Ok((1, 0)) // updated, not inserted
                 } else {
-                    // No match found even under write lock - safe to insert
+                    // Still no match under the write lock, so inserting is safe.
                     let key = Self::row_to_key(&new_values);
                     let new_index = rows.len();
                     rows.push(new_values);
@@ -1632,15 +1642,16 @@ impl Table for InMemoryTable {
         }
     }
 
-    /// Optimized delete_with_expression for InMemoryTable.
+    /// Faster delete_with_expression for InMemoryTable.
     ///
-    /// This override avoids cloning all rows via `all_rows()` and uses proper
-    /// concurrent modification handling with retry logic.
+    /// Does not copy the whole table through `all_rows()`, and retries when rows change
+    /// underneath it. Unlike the default, it counts every deleted row, duplicates
+    /// included. Deleting with swap_remove does not keep row order.
     ///
-    /// # Concurrent Modification Handling
+    /// # Concurrent changes
     ///
-    /// Uses optimistic locking with retry. If rows are modified between read and write phases,
-    /// the operation retries from the beginning to ensure consistency.
+    /// Uses optimistic locking with retry. If rows change between the read and write
+    /// steps, the whole operation starts again. After all retries it returns an error.
     fn delete_with_expression(
         &self,
         stream_event: &StreamEvent,
@@ -1648,24 +1659,22 @@ impl Table for InMemoryTable {
     ) -> Result<usize, crate::core::exception::EventFluxError> {
         use crate::core::event::state::state_event::StateEvent;
 
-        // Retry loop for handling concurrent modifications
+        // Retry loop for rows changed by another thread.
         for attempt in 0..=MAX_CONCURRENT_MODIFICATION_RETRIES {
-            // Phase 1: Read - find matching row indices and values (read lock)
+            // Step 1, read. Under the read lock, find the matching rows and their indexes.
             let matched_rows: Vec<(usize, Vec<AttributeValue>)> = {
                 let rows = self.rows.read().unwrap();
                 let mut matches = Vec::new();
 
-                // Pre-allocate StateEvent and stream slot outside loop
                 let mut state_event = StateEvent::new(2, 0);
                 state_event.timestamp = stream_event.timestamp;
                 state_event.stream_events[0] = Some(stream_event.clone());
 
-                // Pre-allocate table row event with max column count
+                // Size the reused row event from the first row.
                 let max_cols = rows.first().map_or(0, |r| r.len());
                 let mut table_row_event = StreamEvent::new(stream_event.timestamp, max_cols, 0, 0);
 
                 for (idx, row) in rows.iter().enumerate() {
-                    // Reuse table_row_event by updating values in-place
                     for (j, val) in row.iter().enumerate() {
                         if j < table_row_event.before_window_data.len() {
                             table_row_event.before_window_data[j] = val.clone();
@@ -1680,17 +1689,17 @@ impl Table for InMemoryTable {
                     }
                 }
                 matches
-            }; // Read lock released here
+            }; // read lock released here
 
             if matched_rows.is_empty() {
                 return Ok(0);
             }
 
-            // Phase 2: Write - verify all rows exist, then delete atomically
+            // Step 2, write. Check every row, then delete them all.
             let mut rows = self.rows.write().unwrap();
             let mut index = self.index.write().unwrap();
 
-            // Step 1: Verify ALL rows exist before applying ANY changes
+            // Check that EVERY row is still there before changing ANY of them.
             let mut to_delete: Vec<usize> = Vec::new();
             let mut verification_failed = false;
             let mut verified_indices = std::collections::HashSet::new();
@@ -1716,7 +1725,7 @@ impl Table for InMemoryTable {
                     verified_indices.insert(idx);
                     to_delete.push(idx);
                 } else {
-                    // Row was modified or deleted - retry
+                    // The row changed or is gone, so retry.
                     verification_failed = true;
                     break;
                 }
@@ -1728,7 +1737,7 @@ impl Table for InMemoryTable {
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     continue;
                 }
-                // All retries exhausted - return error instead of silently dropping writes
+                // Out of retries. Return an error instead of silently dropping writes.
                 let skipped = matched_rows.len();
                 self.concurrent_modification_skips
                     .fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1745,8 +1754,8 @@ impl Table for InMemoryTable {
                 );
             }
 
-            // Step 2: Delete rows using swap_remove for O(1) per deletion
-            // Sort descending so we process higher indices first (swap_remove won't affect them)
+            // Delete with swap_remove, O(1) each. Go from the highest index down, so a
+            // swap never moves a row that is still waiting to be deleted.
             to_delete.sort_by(|a, b| b.cmp(a));
             let deleted_count = to_delete.len();
 
@@ -1754,7 +1763,7 @@ impl Table for InMemoryTable {
                 let last_idx = rows.len() - 1;
 
                 if idx == last_idx {
-                    // Deleting last element - just pop, no index update needed for moved element
+                    // Last row, so just pop it. No other row moves.
                     let removed = rows.pop().unwrap();
                     let key = Self::row_to_key(&removed);
                     if let Some(indices) = index.get_mut(&key) {
@@ -1764,12 +1773,11 @@ impl Table for InMemoryTable {
                         }
                     }
                 } else {
-                    // swap_remove: swap with last element, then pop
-                    // Only need to update index for the element that moved (was at last_idx, now at idx)
+                    // swap_remove moves the last row into idx. Only that moved row's
+                    // index entry needs fixing, from last_idx to idx.
                     let removed = rows.swap_remove(idx);
                     let removed_key = Self::row_to_key(&removed);
 
-                    // Remove deleted row from index
                     if let Some(indices) = index.get_mut(&removed_key) {
                         indices.retain(|&i| i != idx);
                         if indices.is_empty() {
@@ -1777,7 +1785,6 @@ impl Table for InMemoryTable {
                         }
                     }
 
-                    // Update moved row's index (was at last_idx, now at idx)
                     let moved_key = Self::row_to_key(&rows[idx]);
                     if let Some(indices) = index.get_mut(&moved_key) {
                         for i in indices.iter_mut() {
@@ -1796,16 +1803,17 @@ impl Table for InMemoryTable {
         Ok(0)
     }
 
-    /// Optimized update_with_expression for InMemoryTable.
+    /// Faster update_with_expression for InMemoryTable.
     ///
-    /// This override avoids cloning all rows via `all_rows()` and uses proper
-    /// concurrent modification handling with retry logic.
+    /// Does not copy the whole table through `all_rows()`, and retries when rows change
+    /// underneath it. After all retries it returns an error. Counts every updated
+    /// row, duplicates included.
     ///
     /// # Note
     ///
-    /// This method is for simple updates where SET values are pre-computed.
-    /// For SET expressions that reference table columns (e.g., `SET count = count + 1`),
-    /// use `update_with_set_executors` instead.
+    /// For simple updates where the SET values are already computed. For SET
+    /// expressions that use table columns, such as `SET count = count + 1`, use
+    /// `update_with_set_executors` instead.
     fn update_with_expression(
         &self,
         stream_event: &StreamEvent,
@@ -1817,9 +1825,9 @@ impl Table for InMemoryTable {
 
         let mut total_updated = 0;
 
-        // Retry loop for handling concurrent modifications
+        // Retry loop for rows changed by another thread.
         for attempt in 0..=MAX_CONCURRENT_MODIFICATION_RETRIES {
-            // Phase 1: Read - find matching rows (read lock)
+            // Step 1, read. Under the read lock, find the matching rows.
             let matched_rows: Vec<(usize, Vec<AttributeValue>)> = {
                 let rows = self.rows.read().unwrap();
                 let mut matches = Vec::new();
@@ -1846,21 +1854,21 @@ impl Table for InMemoryTable {
                     }
                 }
                 matches
-            }; // Read lock released here
+            }; // read lock released here
 
             if matched_rows.is_empty() {
                 return Ok(total_updated);
             }
 
-            // Phase 2: Compute new row values (no locks held)
+            // Step 2, compute the new rows with no lock held.
             let mut updates: Vec<(Vec<AttributeValue>, Vec<AttributeValue>)> = Vec::new();
 
             for (_idx, row) in &matched_rows {
                 let new_row = if set_column_indices.is_empty() {
-                    // Full row replacement mode
+                    // No column indices, so set_values is the whole new row.
                     set_values.to_vec()
                 } else {
-                    // Partial update - merge SET values into existing row
+                    // Partial update. Copy the SET values into the existing row.
                     let mut row_copy = row.clone();
                     for (i, &col_idx) in set_column_indices.iter().enumerate() {
                         if col_idx < row_copy.len() && i < set_values.len() {
@@ -1872,11 +1880,11 @@ impl Table for InMemoryTable {
                 updates.push((row.clone(), new_row));
             }
 
-            // Phase 3: Write - verify all rows first, then apply updates atomically
+            // Step 3, write. Check every row first, then apply all updates.
             let mut rows = self.rows.write().unwrap();
             let mut index = self.index.write().unwrap();
 
-            // Step 1: Verify ALL rows exist before applying ANY changes
+            // Check that EVERY row is still there before changing ANY of them.
             let mut verified_updates: Vec<(usize, String, Vec<AttributeValue>)> = Vec::new();
             let mut verification_failed = false;
             let mut verified_indices = std::collections::HashSet::new();
@@ -1913,7 +1921,7 @@ impl Table for InMemoryTable {
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     continue;
                 }
-                // All retries exhausted - return error instead of silently dropping writes
+                // Out of retries. Return an error instead of silently dropping writes.
                 let skipped = updates.len();
                 self.concurrent_modification_skips
                     .fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1930,13 +1938,13 @@ impl Table for InMemoryTable {
                 );
             }
 
-            // Step 2: Apply all updates (all rows verified)
+            // Every row checked out, so apply all updates.
             for (idx, old_key, new_row) in verified_updates {
                 let new_key = Self::row_to_key(&new_row);
                 rows[idx] = new_row;
                 total_updated += 1;
 
-                // Incremental index update (only if key changed)
+                // Fix up the index only when the key changed.
                 if old_key != new_key {
                     if let Some(indices) = index.get_mut(&old_key) {
                         indices.retain(|&i| i != idx);

@@ -16,10 +16,9 @@
  */
 
 // src/core/query/query_runtime.rs
-// Corresponds to io.eventflux.core.query.QueryRuntimeImpl
+// Port of Siddhi's io.siddhi.core.query.QueryRuntimeImpl
 use crate::core::config::eventflux_query_context::EventFluxQueryContext;
-use crate::core::query::processor::Processor; // The Processor trait
-                                              // StreamJunction is referenced in comments but not used in implementation
+use crate::core::query::processor::Processor;
 use crate::query_api::execution::query::Query as ApiQuery;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
@@ -30,28 +29,26 @@ pub trait QueryRuntimeTrait: Debug + Send + Sync {
     fn get_query(&self) -> Option<Arc<ApiQuery>>;
 }
 
-// Represents the runtime of a single query.
-// In Java, QueryRuntimeImpl has fields for queryName, EventFluxQueryContext,
-// StreamJunction (for input), QuerySelector, OutputRateLimiter, and OutputCallback.
-// The processor chain is: InputJunction -> QuerySelector -> OutputRateLimiter -> OutputCallback (e.g., InsertIntoStreamProcessor)
+// Runtime of a single query.
+// In Java, QueryRuntimeImpl has fields for the query name, the query context, the input
+// StreamJunction, QuerySelector, OutputRateLimiter and OutputCallback. Its processor
+// chain is InputJunction -> QuerySelector -> OutputRateLimiter -> OutputCallback, for
+// example InsertIntoStreamProcessor.
 #[derive(Debug)]
 pub struct QueryRuntime {
     pub query_name: String,
     pub api_query: Option<Arc<ApiQuery>>,
     pub eventflux_query_context: Option<Arc<EventFluxQueryContext>>,
-    // The input stream junction this query consumes from.
-    // The QueryRuntime itself doesn't directly "own" the input junction,
-    // but it needs to be registered with it.
-    // Storing it here might be for reference or if it needs to interact with it post-setup.
-    // However, Java QueryRuntimeImpl doesn't store the input StreamJunction directly as a field.
-    // It's passed to QueryParser, which then sets up the links.
-    // The entry point to the query's processor chain is more relevant.
+    // The input junction is not stored. The query is registered with it during setup,
+    // but does not own it. Java QueryRuntimeImpl does not keep it as a field either.
+    // It goes to QueryParser, which links it up. The head of the processor chain is
+    // what matters here.
     // input_stream_junction: Arc<Mutex<StreamJunction>>,
 
-    // The first processor in this query's specific processing chain.
-    // This could be a FilterProcessor, WindowProcessor, QuerySelector, etc.
+    // First processor in this query's chain, such as a FilterProcessor, a window
+    // processor or the selector
     pub processor_chain_head: Option<Arc<Mutex<dyn Processor>>>,
-    // Add other fields as per QueryRuntimeImpl:
+    // Other QueryRuntimeImpl fields, not ported yet:
     // pub eventflux_query_context: Arc<EventFluxQueryContext>,
     // pub query_selector: Option<Arc<Mutex<SelectProcessor>>>, // Or QuerySelector if that's the struct name
     // pub output_rate_limiter: Option<Arc<Mutex<OutputRateLimiterPlaceholder>>>,
@@ -61,8 +58,8 @@ pub struct QueryRuntime {
 }
 
 impl QueryRuntime {
-    // query_name is usually derived from annotations or generated.
-    // input_junction is needed by QueryParser to connect the processor chain.
+    // query_name usually comes from an annotation or is generated. Creates a runtime
+    // with no query, context or processor chain.
     pub fn new(query_name: String) -> Self {
         Self {
             query_name,
@@ -85,7 +82,12 @@ impl QueryRuntime {
         }
     }
 
-    /// Snapshot the current state using the application's `SnapshotService`.
+    /// Take a snapshot through the application's `SnapshotService`. It covers every
+    /// registered state holder in the app, not just this query.
+    ///
+    /// # Errors
+    /// Returns an error message when the query context or the SnapshotService is not
+    /// set.
     pub fn snapshot(&self) -> Result<Vec<u8>, String> {
         let ctx = self
             .eventflux_query_context
@@ -98,7 +100,11 @@ impl QueryRuntime {
         Ok(service.snapshot())
     }
 
-    /// Restore the provided snapshot bytes using the `SnapshotService`.
+    /// Restore the given snapshot bytes through the `SnapshotService`.
+    ///
+    /// # Errors
+    /// Returns an error message when the query context or the SnapshotService is not
+    /// set.
     pub fn restore(&self, snapshot: &[u8]) -> Result<(), String> {
         let ctx = self
             .eventflux_query_context
@@ -112,7 +118,11 @@ impl QueryRuntime {
         Ok(())
     }
 
-    /// Restore a persisted revision via the application's `SnapshotService`.
+    /// Restore a saved revision through the application's `SnapshotService`.
+    ///
+    /// # Errors
+    /// Returns an error message when the query context or the SnapshotService is not
+    /// set, or the error from the SnapshotService.
     pub fn restore_revision(&self, revision: &str) -> Result<(), String> {
         let ctx = self
             .eventflux_query_context
@@ -125,7 +135,8 @@ impl QueryRuntime {
         service.restore_revision(revision)
     }
 
-    /// Flush any buffered events through the processor chain.
+    /// Send an empty chunk (None) to the head of the processor chain, so processors
+    /// that act on it can push out buffered events. Does nothing with no chain.
     pub fn flush(&self) {
         if let Some(head) = &self.processor_chain_head {
             head.lock().unwrap().process(None);

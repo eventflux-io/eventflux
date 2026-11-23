@@ -36,7 +36,7 @@ impl EventTimestampFunctionExecutor {
 impl ExpressionExecutor for EventTimestampFunctionExecutor {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
         if self.event_executor.is_some() {
-            // simplified: not supporting explicit event argument yet
+            // An explicit event argument is not supported yet, so it always gives None
             None
         } else {
             Some(AttributeValue::Long(event?.get_timestamp()))

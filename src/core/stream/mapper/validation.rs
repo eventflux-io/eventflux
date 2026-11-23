@@ -17,18 +17,22 @@
 
 //! Mapper Configuration Validation
 //!
-//! Provides validation functions to ensure source and sink streams
-//! don't use incompatible mapper properties.
+//! Checks that source and sink streams do not use mapper properties meant for
+//! the other side.
 //!
-//! ## Validation Rules
+//! ## Rules
 //!
-//! ### Source Stream Restrictions
-//! - **Cannot** use `{format}.template` (sink-only property)
-//! - **Can** use `{format}.mapping.*` (source-only properties)
+//! ### Source Streams
+//! - **Cannot** use `{format}.template` (sink only)
+//! - **Can** use `{format}.mapping.*` (source only)
+//! - JSON sources cannot use `json.pretty-print`. CSV sources cannot use
+//!   `csv.include-header` or `csv.header-names`.
 //!
-//! ### Sink Stream Restrictions
-//! - **Cannot** use `{format}.mapping.*` (source-only properties)
-//! - **Can** use `{format}.template` (sink-only property)
+//! ### Sink Streams
+//! - **Cannot** use `{format}.mapping.*` (source only)
+//! - **Can** use `{format}.template` (sink only)
+//! - JSON sinks cannot use `json.ignore-parse-errors` or `json.date-format`.
+//!   CSV sinks cannot use `csv.has-header` or `csv.ignore-parse-errors`.
 //!
 //! ## Example Errors
 //!
@@ -39,15 +43,18 @@
 
 use std::collections::HashMap;
 
-/// Validate that a source stream configuration doesn't contain sink-only properties
+/// Checks that a source stream config has no sink only properties. For JSON
+/// it also checks that each `json.mapping.*` path starts with `$.`, and for CSV
+/// that each `csv.mapping.*` value is a column index.
 ///
 /// # Arguments
-/// * `config` - Stream configuration map
-/// * `format` - Format name (e.g., "json", "csv")
+/// * `config` - Stream config map
+/// * `format` - Format name, such as "json" or "csv". Other formats only get
+///   the template check.
 ///
 /// # Returns
-/// * `Ok(())` - Configuration is valid
-/// * `Err(String)` - Validation failed with error message
+/// * `Ok(())` - The config is valid
+/// * `Err(String)` - The check failed, with a message saying why
 ///
 /// # Example
 /// ```rust,ignore
@@ -66,7 +73,6 @@ pub fn validate_source_mapper_config(
     config: &HashMap<String, String>,
     format: &str,
 ) -> Result<(), String> {
-    // Check for sink-only properties
     let template_key = format!("{}.template", format);
 
     if config.contains_key(&template_key) {
@@ -76,23 +82,23 @@ pub fn validate_source_mapper_config(
         ));
     }
 
-    // Additional format-specific validation
     match format {
         "json" => validate_json_source_config(config),
         "csv" => validate_csv_source_config(config),
-        _ => Ok(()), // Unknown formats pass validation
+        _ => Ok(()), // other formats have no extra checks
     }
 }
 
-/// Validate that a sink stream configuration doesn't contain source-only properties
+/// Checks that a sink stream config has no source only properties.
 ///
 /// # Arguments
-/// * `config` - Stream configuration map
-/// * `format` - Format name (e.g., "json", "csv")
+/// * `config` - Stream config map
+/// * `format` - Format name, such as "json" or "csv". Other formats only get
+///   the mapping check.
 ///
 /// # Returns
-/// * `Ok(())` - Configuration is valid
-/// * `Err(String)` - Validation failed with error message
+/// * `Ok(())` - The config is valid
+/// * `Err(String)` - The check failed, with a message saying why
 ///
 /// # Example
 /// ```rust,ignore
@@ -111,7 +117,6 @@ pub fn validate_sink_mapper_config(
     config: &HashMap<String, String>,
     format: &str,
 ) -> Result<(), String> {
-    // Check for source-only properties (mapping.*)
     let mapping_prefix = format!("{}.mapping.", format);
 
     for key in config.keys() {
@@ -123,11 +128,10 @@ pub fn validate_sink_mapper_config(
         }
     }
 
-    // Additional format-specific validation
     match format {
         "json" => validate_json_sink_config(config),
         "csv" => validate_csv_sink_config(config),
-        _ => Ok(()), // Unknown formats pass validation
+        _ => Ok(()), // other formats have no extra checks
     }
 }
 
@@ -135,9 +139,9 @@ pub fn validate_sink_mapper_config(
 // Format-Specific Validation
 // ============================================================================
 
-/// Validate JSON source-specific configuration
+/// Checks a JSON source config. Rejects `json.pretty-print`, and any
+/// `json.mapping.*` path that does not start with `$.`.
 fn validate_json_source_config(config: &HashMap<String, String>) -> Result<(), String> {
-    // Check for sink-only JSON properties
     let sink_only_keys = ["json.pretty-print"];
 
     for key in &sink_only_keys {
@@ -149,7 +153,6 @@ fn validate_json_source_config(config: &HashMap<String, String>) -> Result<(), S
         }
     }
 
-    // Validate JSONPath syntax if mappings are present
     for (key, value) in config {
         if let Some(_field_name) = key.strip_prefix("json.mapping.") {
             if !value.starts_with("$.") {
@@ -164,9 +167,9 @@ fn validate_json_source_config(config: &HashMap<String, String>) -> Result<(), S
     Ok(())
 }
 
-/// Validate JSON sink-specific configuration
+/// Checks a JSON sink config. Rejects `json.ignore-parse-errors` and
+/// `json.date-format`.
 fn validate_json_sink_config(config: &HashMap<String, String>) -> Result<(), String> {
-    // Check for source-only JSON properties
     let source_only_keys = ["json.ignore-parse-errors", "json.date-format"];
 
     for key in &source_only_keys {
@@ -181,9 +184,10 @@ fn validate_json_sink_config(config: &HashMap<String, String>) -> Result<(), Str
     Ok(())
 }
 
-/// Validate CSV source-specific configuration
+/// Checks a CSV source config. Rejects `csv.include-header` and
+/// `csv.header-names`, and any `csv.mapping.*` value that is not a whole
+/// number of 0 or more.
 fn validate_csv_source_config(config: &HashMap<String, String>) -> Result<(), String> {
-    // Check for sink-only CSV properties
     let sink_only_keys = ["csv.include-header", "csv.header-names"];
 
     for key in &sink_only_keys {
@@ -195,7 +199,6 @@ fn validate_csv_source_config(config: &HashMap<String, String>) -> Result<(), St
         }
     }
 
-    // Validate column indices if mappings are present
     for (key, value) in config {
         if let Some(_field_name) = key.strip_prefix("csv.mapping.") {
             if value.parse::<usize>().is_err() {
@@ -210,9 +213,9 @@ fn validate_csv_source_config(config: &HashMap<String, String>) -> Result<(), St
     Ok(())
 }
 
-/// Validate CSV sink-specific configuration
+/// Checks a CSV sink config. Rejects `csv.has-header` and
+/// `csv.ignore-parse-errors`.
 fn validate_csv_sink_config(config: &HashMap<String, String>) -> Result<(), String> {
-    // Check for source-only CSV properties
     let source_only_keys = ["csv.has-header", "csv.ignore-parse-errors"];
 
     for key in &source_only_keys {
@@ -227,19 +230,19 @@ fn validate_csv_sink_config(config: &HashMap<String, String>) -> Result<(), Stri
     Ok(())
 }
 
-/// Validate mapper configuration for a stream type
+/// Checks a mapper config for a stream type.
 ///
-/// This is a convenience function that dispatches to the appropriate validator
-/// based on stream type.
+/// A shortcut that calls the source or sink check based on `stream_type`.
 ///
 /// # Arguments
-/// * `config` - Stream configuration map
-/// * `format` - Format name (e.g., "json", "csv")
-/// * `stream_type` - Either "source" or "sink"
+/// * `config` - Stream config map
+/// * `format` - Format name, such as "json" or "csv"
+/// * `stream_type` - "source" or "sink"
 ///
 /// # Returns
-/// * `Ok(())` - Configuration is valid
-/// * `Err(String)` - Validation failed with error message
+/// * `Ok(())` - The config is valid
+/// * `Err(String)` - The check failed, or `stream_type` is neither "source"
+///   nor "sink"
 pub fn validate_mapper_config(
     config: &HashMap<String, String>,
     format: &str,

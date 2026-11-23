@@ -15,17 +15,17 @@
  * limitations under the License.
  */
 
-//! # Timer Source with Error Handling Integration
+//! # Timer Source with Error Handling
 //!
-//! This module demonstrates how to integrate M5 error handling into Source implementations.
+//! A simple source that also shows how a source plugs in error handling.
 //!
-//! ## Error Handling Integration Pattern
+//! ## Error Handling Pattern
 //!
-//! Sources should:
-//! 1. Include an optional `SourceErrorContext` field
-//! 2. Provide a factory method that accepts properties HashMap
-//! 3. Use `error_ctx.handle_error()` in the event loop
-//! 4. Call `error_ctx.reset_errors()` after successful event processing
+//! Sources should
+//! 1. hold an optional `SourceErrorContext` field
+//! 2. offer a constructor that takes a properties HashMap
+//! 3. call `error_ctx.handle_error()` in the event loop
+//! 4. call `error_ctx.reset_errors()` after an event is processed
 //!
 //! ## Example Usage
 //!
@@ -53,30 +53,31 @@ use std::fmt::Debug;
 use std::sync::{atomic::Ordering, Arc, Mutex};
 use std::time::Duration;
 
-/// Timer source that generates tick events at regular intervals
+/// Timer source that sends a tick event on a fixed interval.
 ///
-/// This implementation demonstrates M5 error handling integration:
-/// - Optional error handling context
-/// - Factory method with properties
-/// - Error handling in event loop
-/// - Error counter reset after success
+/// Each tick is one event with timestamp 0 and the single string value "tick".
+/// It shows the error handling pattern
+/// - optional error handling context
+/// - constructor that takes properties
+/// - error handling in the event loop
+/// - error counter reset after success
 #[derive(Debug)]
 pub struct TimerSource {
-    /// Interval between ticks in milliseconds
+    /// Time between ticks in ms
     interval_ms: u64,
-    /// Worker thread lifecycle (spawn, signal, join on stop)
+    /// Runs the worker thread. Starts it, signals it, and joins it on stop.
     worker: SourceWorker,
-    /// Optional error handling context (M5 integration)
+    /// Optional error handling context
     error_ctx: Option<SourceErrorContext>,
-    /// Optional simulated failure rate for testing (0.0 = never, 1.0 = always)
+    /// Chance that a tick fails, for tests. 0.0 never fails, 1.0 always fails.
     #[cfg(test)]
     simulate_failure_rate: f64,
 }
 
 impl TimerSource {
-    /// Create a new timer source without error handling
+    /// Creates a timer source with no error handling.
     ///
-    /// For production use, prefer `from_properties()` which supports error handling.
+    /// For real use, prefer `from_properties()`, which supports error handling.
     pub fn new(interval_ms: u64) -> Self {
         Self {
             interval_ms,
@@ -87,40 +88,38 @@ impl TimerSource {
         }
     }
 
-    /// Create a timer source with error handling from properties
-    ///
-    /// This is the recommended factory method for M7 stream initialization.
+    /// Creates a timer source with error handling from properties.
     ///
     /// # Properties
-    /// - `interval` (required): Interval in milliseconds
-    /// - `error.strategy`: Error handling strategy (drop/retry/dlq/fail)
-    /// - `error.retry.*`: Retry configuration if strategy is "retry"
-    /// - `error.dlq.*`: DLQ configuration if strategy is "dlq"
+    /// - `interval` (required): time between ticks in ms
+    /// - `error.strategy`: error handling strategy (drop, retry, dlq, or fail)
+    /// - `error.retry.*`: retry settings when the strategy is "retry"
+    /// - `error.dlq.*`: DLQ settings when the strategy is "dlq"
     ///
     /// # Arguments
-    /// * `properties` - Configuration properties
-    /// * `dlq_junction` - Optional DLQ stream junction (for DLQ strategy)
+    /// * `properties` - Config properties
+    /// * `dlq_junction` - Optional DLQ stream junction, for the DLQ strategy
     /// * `stream_name` - Name of the source stream
     ///
     /// # Returns
-    /// * `Ok(TimerSource)` - Successfully created source
-    /// * `Err(String)` - Configuration error
+    /// * `Ok(TimerSource)` - The new source
+    /// * `Err(String)` - `interval` is missing or not a number, or the error
+    ///   config is invalid
     pub fn from_properties(
         properties: &HashMap<String, String>,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
         stream_name: &str,
     ) -> Result<Self, String> {
-        // Parse interval (required)
         let interval_ms = properties
             .get("interval")
             .ok_or_else(|| "Missing required property: interval".to_string())?
             .parse::<u64>()
             .map_err(|e| format!("Invalid interval value: {}", e))?;
 
-        // Parse error handling configuration (optional)
+        // Error handling is optional. Only `error.*` keys go into the FlatConfig
+        // for SourceErrorContext.
         let error_config_builder = ErrorConfigBuilder::from_properties(properties);
         let error_ctx = if error_config_builder.is_configured() {
-            // Build FlatConfig for SourceErrorContext
             use crate::core::config::{FlatConfig, PropertySource};
             let mut config = FlatConfig::new();
             for (key, value) in properties {
@@ -147,14 +146,15 @@ impl TimerSource {
         })
     }
 
-    /// Set simulated failure rate for testing (only available in test builds)
+    /// Sets the fake failure rate for tests, clamped to 0.0 to 1.0. Test builds only.
     #[cfg(test)]
     pub fn with_failure_rate(mut self, rate: f64) -> Self {
         self.simulate_failure_rate = rate.clamp(0.0, 1.0);
         self
     }
 
-    /// Simulate a failure for testing purposes
+    /// Returns a fake error at the set failure rate, for tests. Not called by
+    /// `start`, which has its own copy of this check.
     #[cfg(test)]
     #[allow(dead_code)]
     fn simulate_error(&self) -> Result<(), EventFluxError> {
@@ -171,7 +171,7 @@ impl TimerSource {
         Ok(())
     }
 
-    /// Check for simulated errors (no-op in non-test builds)
+    /// Always returns Ok outside test builds
     #[cfg(not(test))]
     #[allow(dead_code)]
     fn simulate_error(&self) -> Result<(), EventFluxError> {
@@ -179,13 +179,13 @@ impl TimerSource {
     }
 }
 
-// Manual Clone implementation since SourceErrorContext doesn't implement Clone
+// Written by hand because SourceErrorContext does not implement Clone
 impl Clone for TimerSource {
     fn clone(&self) -> Self {
         Self {
             interval_ms: self.interval_ms,
-            worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            worker: self.worker.clone(), // the clone is a new worker that has not started
+            // New context with the same strategy and DLQ, and runtime counters reset
             error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
             #[cfg(test)]
             simulate_failure_rate: self.simulate_failure_rate,
@@ -197,7 +197,7 @@ impl Source for TimerSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
         let interval = self.interval_ms;
 
-        // Move error_ctx into the thread (take ownership)
+        // The thread gets a new copy, so self keeps its config for a later restart
         let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         #[cfg(test)]
@@ -208,11 +208,10 @@ impl Source for TimerSource {
                 ctx.bind_cancellation(Arc::clone(&running));
             }
             while running.load(Ordering::SeqCst) {
-                // Create event
                 let event =
                     Event::new_with_data(0, vec![AttributeValue::String("tick".to_string())]);
 
-                // Simulate error for testing (no-op in production builds)
+                // Fake error for tests. Always Ok in normal builds.
                 #[cfg(test)]
                 let error_result = if failure_rate > 0.0 {
                     use rand::Rng;
@@ -231,32 +230,29 @@ impl Source for TimerSource {
                 #[cfg(not(test))]
                 let error_result: Result<(), EventFluxError> = Ok(());
 
-                // Process event or handle error
                 match error_result {
                     Ok(_) => {
-                        // Success case - serialize event to bytes and deliver via callback
+                        // Encode the event to bytes and pass it to the callback
                         match PassthroughMapper::serialize(std::slice::from_ref(&event)) {
                             Ok(bytes) => {
                                 if let Err(e) = callback.on_data(&bytes) {
-                                    // Handle send error with error context
                                     if let Some(ctx) = &mut error_ctx {
                                         if !ctx.handle_error(Some(&event), &e) {
-                                            // Stop source on unrecoverable error
+                                            // The strategy says stop
                                             break;
                                         }
                                     } else {
-                                        // No error handling configured - log and continue
+                                        // No error handling set, so print and go on
                                         eprintln!("Timer source callback error: {}", e);
                                     }
                                 } else {
-                                    // Event sent successfully - reset error counter
+                                    // Sent, so reset the error counter
                                     if let Some(ctx) = &mut error_ctx {
                                         ctx.reset_errors();
                                     }
                                 }
                             }
                             Err(e) => {
-                                // Serialization error
                                 let serialize_error = EventFluxError::app_runtime(format!(
                                     "Failed to serialize timer event: {}",
                                     e
@@ -272,21 +268,20 @@ impl Source for TimerSource {
                         }
                     }
                     Err(e) => {
-                        // Error case - use error context to handle
                         if let Some(ctx) = &mut error_ctx {
                             if !ctx.handle_error(Some(&event), &e) {
-                                // Stop source on unrecoverable error (e.g., fail strategy)
+                                // The strategy says stop, for example the fail strategy
                                 break;
                             }
-                            // Continue processing (error was handled via drop/retry/dlq)
+                            // Handled by drop, retry, or DLQ, so go on
                         } else {
-                            // No error handling configured - log and continue
+                            // No error handling set, so print and go on
                             eprintln!("Timer source error: {}", e);
                         }
                     }
                 }
 
-                // Interruptible sleep: a long interval must not delay stop()
+                // Wakes early on stop, so a long interval never delays stop()
                 sleep_while_running(&running, Duration::from_millis(interval));
             }
         });
@@ -306,8 +301,8 @@ mod tests {
     use super::*;
     use std::thread;
 
-    // Note: Full timer source tests with actual event delivery are in tests/source_sink.rs
-    // These tests focus on error handling configuration
+    // These tests cover the error handling config. Tests that deliver real
+    // events through a timer source are in tests/source_sink.rs.
 
     #[test]
     fn test_timer_source_from_properties_no_error_handling() {
@@ -367,7 +362,6 @@ mod tests {
             .unwrap()
             .with_failure_rate(0.3); // 30% failure rate
 
-        // Verify error handling is configured
         assert!(source.error_ctx.is_some());
         assert_eq!(source.simulate_failure_rate, 0.3);
     }
@@ -390,9 +384,9 @@ mod tests {
         }
     }
 
-    // Idempotency and stop-without-start are covered once at the mechanism
-    // level by the SourceWorker tests in source/mod.rs; this end-to-end test
-    // proves the delegation through the Source trait.
+    // Repeat stops and stop before start are covered once by the SourceWorker
+    // tests in source/mod.rs. This end to end test checks that the Source trait
+    // really hands off to the worker.
     #[test]
     fn test_no_callbacks_after_stop_returns() {
         let count = Arc::new(AtomicU64::new(0));
@@ -405,9 +399,9 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         source.stop();
 
-        // stop() joined the worker — the count must be frozen from here on.
-        // Before the join this assertion was racy: the worker could still be
-        // mid-iteration when stop() returned.
+        // stop() joined the worker, so the count must not change from here on.
+        // Before the join this check could fail at random, since the worker
+        // could still be in the middle of a round when stop() returned.
         let count_at_stop = count.load(Ordering::SeqCst);
         assert!(count_at_stop > 0, "worker should have delivered ticks");
         thread::sleep(Duration::from_millis(50));

@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/event/state/populater/state_event_populator.rs
 use crate::core::event::complex_event::ComplexEvent;
 
 pub trait StateEventPopulator {

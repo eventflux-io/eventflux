@@ -17,13 +17,12 @@
 
 //! Configuration Metadata Types
 //!
-//! Defines metadata structures for configuration objects following
-//! Kubernetes-style API conventions.
+//! Metadata for configuration objects, shaped like Kubernetes object metadata.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Configuration metadata following Kubernetes API conventions
+/// Configuration metadata, shaped like Kubernetes object metadata
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ConfigMetadata {
     /// Name of the configuration
@@ -38,25 +37,25 @@ pub struct ConfigMetadata {
     /// Environment identifier
     pub environment: Option<String>,
 
-    /// Custom labels for organization and selection
+    /// Labels used to group and select configurations
     #[serde(default)]
     pub labels: HashMap<String, String>,
 
-    /// Custom annotations for additional metadata
+    /// Free form notes attached to the configuration
     #[serde(default)]
     pub annotations: HashMap<String, String>,
 
-    /// Creation timestamp (ISO 8601)
+    /// Creation time as RFC 3339 text. Written as `createdAt`.
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
 
-    /// Last update timestamp (ISO 8601)
+    /// Last update time as RFC 3339 text. Written as `updatedAt`.
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
 }
 
 impl ConfigMetadata {
-    /// Create a new metadata instance with required fields
+    /// Create metadata with the given name and every other field empty
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: Some(name.into()),
@@ -110,14 +109,17 @@ impl ConfigMetadata {
         self.annotations.get(key)
     }
 
-    /// Check if this configuration matches the given selectors
+    /// Check that every selector key has a label with the same value. True when
+    /// `selectors` is empty.
     pub fn matches_labels(&self, selectors: &HashMap<String, String>) -> bool {
         selectors
             .iter()
             .all(|(key, value)| self.labels.get(key) == Some(value))
     }
 
-    /// Generate a unique identifier for this configuration
+    /// Build an id of the form `<namespace>/<name>:<version>`.
+    ///
+    /// Missing parts become "default", "unnamed" and "latest".
     pub fn generate_id(&self) -> String {
         let name = self.name.as_deref().unwrap_or("unnamed");
         let namespace = self.namespace.as_deref().unwrap_or("default");
@@ -126,7 +128,7 @@ impl ConfigMetadata {
         format!("{}/{}:{}", namespace, name, version)
     }
 
-    /// Update the timestamp to current time
+    /// Set the updated time to now in UTC. Also sets the created time if it is empty.
     pub fn touch(&mut self) {
         let now = chrono::Utc::now().to_rfc3339();
         self.updated_at = Some(now.clone());
@@ -135,9 +137,11 @@ impl ConfigMetadata {
         }
     }
 
-    /// Validate the metadata fields
+    /// Check the name and namespace, when set. Returns the first problem found.
+    ///
+    /// A name must not be empty and may hold only letters, digits, `-` and `_`. A
+    /// namespace must not be empty and may hold only letters, digits and `-`.
     pub fn validate(&self) -> Result<(), String> {
-        // Validate name format if provided
         if let Some(ref name) = self.name {
             if name.is_empty() {
                 return Err("Name cannot be empty".to_string());
@@ -153,7 +157,6 @@ impl ConfigMetadata {
             }
         }
 
-        // Validate namespace format if provided
         if let Some(ref namespace) = self.namespace {
             if namespace.is_empty() {
                 return Err("Namespace cannot be empty".to_string());
@@ -176,7 +179,7 @@ mod tests {
     #[test]
     fn test_metadata_default() {
         let metadata = ConfigMetadata::default();
-        // api_version and kind are now in EventFluxConfig, not ConfigMetadata
+        // api_version and kind live on EventFluxConfig, not ConfigMetadata
         assert!(metadata.name.is_none());
         assert!(metadata.labels.is_empty());
     }
@@ -203,7 +206,7 @@ mod tests {
         let mut metadata = ConfigMetadata::default();
         assert!(metadata.validate().is_ok());
 
-        // api_version and kind validation is now handled at EventFluxConfig level
+        // api_version and kind are checked on EventFluxConfig, not here
         metadata.name = Some("invalid name!".to_string());
         assert!(metadata.validate().is_err());
 

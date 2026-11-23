@@ -15,16 +15,14 @@
  * limitations under the License.
  */
 
-// src/core/event/complex_event.rs
-// Corresponds to io.eventflux.core.event.ComplexEvent (interface)
+// Port of the Java ComplexEvent interface.
 use super::value::AttributeValue;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
-use std::fmt::Debug; // For as_any_mut
+use std::fmt::Debug;
 
-// Moved from stream_event.rs (or defined here if it wasn't there)
-// This enum corresponds to ComplexEvent.Type in Java
-/// Type of complex event (CURRENT, EXPIRED, TIMER, RESET).
+// Port of ComplexEvent.Type in Java.
+/// Type of complex event (CURRENT, EXPIRED, TIMER, RESET). Defaults to `Current`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum ComplexEventType {
     #[default]
@@ -34,17 +32,17 @@ pub enum ComplexEventType {
     Reset,
 }
 
-/// Trait for complex events that can form a linked list (chunk) and carry various data arrays.
+/// An event that can link to the next one to form a chunk and carries data arrays.
 pub trait ComplexEvent: Debug + Send + Sync + 'static {
     fn get_next(&self) -> Option<&dyn ComplexEvent>;
     fn set_next(
         &mut self,
         next_event: Option<Box<dyn ComplexEvent>>,
-    ) -> Option<Box<dyn ComplexEvent>>; // Return old next
-                                        // Provides mutable access to the 'next' field's Option for easier list manipulation
+    ) -> Option<Box<dyn ComplexEvent>>; // returns the old next
+                                        // Mutable access to the `next` slot, for easier list edits.
     fn mut_next_ref_option(&mut self) -> &mut Option<Box<dyn ComplexEvent>>;
 
-    fn get_output_data(&self) -> Option<&[AttributeValue]>; // Changed to Option<&[AttributeValue]>
+    fn get_output_data(&self) -> Option<&[AttributeValue]>;
     fn set_output_data(&mut self, data: Option<Vec<AttributeValue>>);
     // Optional: get_output_data_mut if direct mutation of Vec is needed
     // fn get_output_data_mut(&mut self) -> Option<&mut Vec<AttributeValue>>;
@@ -56,16 +54,13 @@ pub trait ComplexEvent: Debug + Send + Sync + 'static {
     fn set_event_type(&mut self, event_type: ComplexEventType);
 
     fn is_expired(&self) -> bool {
-        // Default impl
         self.get_event_type() == ComplexEventType::Expired
     }
     fn set_expired(&mut self, expired: bool) {
-        // Default impl
         if expired {
             self.set_event_type(ComplexEventType::Expired);
         } else if self.get_event_type() == ComplexEventType::Expired {
-            // Only change from EXPIRED to CURRENT if explicitly set to not expired.
-            // Other types (TIMER, RESET) should remain.
+            // Clearing only turns EXPIRED back into CURRENT. TIMER and RESET stay as they are.
             self.set_event_type(ComplexEventType::Current);
         }
     }
@@ -73,12 +68,16 @@ pub trait ComplexEvent: Debug + Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
-    // Helper for cloning, if ComplexEvent needs to be cloneable for some strategies
-    // Each implementor would need to implement this.
+    // Possible clone hook if some strategy needs cloneable events. Every
+    // implementor would have to provide it.
     // fn clone_complex_event(&self) -> Box<dyn ComplexEvent>;
 }
 
-/// Deep clone a [`ComplexEvent`] chain.
+/// Deep clones a [`ComplexEvent`] and every event after it in the chain.
+///
+/// # Panics
+///
+/// Panics if the event is not a `StreamEvent` or `StateEvent`.
 pub fn clone_box_complex_event(event: &dyn ComplexEvent) -> Box<dyn ComplexEvent> {
     if let Some(se) = event
         .as_any()
@@ -95,7 +94,11 @@ pub fn clone_box_complex_event(event: &dyn ComplexEvent) -> Box<dyn ComplexEvent
     }
 }
 
-/// Clone a single [`ComplexEvent`] without cloning its `next` pointer.
+/// Clones a single [`ComplexEvent`]. The clone has no `next` event.
+///
+/// # Panics
+///
+/// Panics if the event is not a `StreamEvent` or `StateEvent`.
 pub fn clone_box_complex_event_without_next(event: &dyn ComplexEvent) -> Box<dyn ComplexEvent> {
     if let Some(se) = event
         .as_any()
@@ -112,7 +115,13 @@ pub fn clone_box_complex_event_without_next(event: &dyn ComplexEvent) -> Box<dyn
     }
 }
 
-/// Clone an entire chain of [`ComplexEvent`]s starting at `head`.
+/// Clones the whole chain of [`ComplexEvent`]s starting at `head`.
+///
+/// Recurses once per event, so a very long chain can overflow the stack.
+///
+/// # Panics
+///
+/// Panics if any event is not a `StreamEvent` or `StateEvent`.
 pub fn clone_event_chain(head: &dyn ComplexEvent) -> Box<dyn ComplexEvent> {
     let mut new_head = clone_box_complex_event_without_next(head);
     if let Some(next) = head.get_next() {
@@ -121,8 +130,7 @@ pub fn clone_event_chain(head: &dyn ComplexEvent) -> Box<dyn ComplexEvent> {
     new_head
 }
 
-// Example of how a concrete type might implement clone_box
-// This is now part of the trait comment as it's specific to implementors.
+// Example of how `Box<dyn ComplexEvent>` could be made cloneable with the hook above.
 // impl Clone for Box<dyn ComplexEvent> {
 //     fn clone(&self) -> Self {
 //         self.clone_complex_event()

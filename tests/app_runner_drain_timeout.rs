@@ -15,15 +15,14 @@
  * limitations under the License.
  */
 
-//! Runtime-level drain-timeout path: with a tiny drain budget and a slow
-//! subscriber, shutdown() must take the halt → settle → abandon branch and
-//! uphold the ledger invariant — every accepted event is either delivered or
-//! counted dropped, never both, and nothing keeps delivering after shutdown
-//! returns.
+//! Drain timeout at the runtime level. With a tiny drain budget and a slow
+//! subscriber, shutdown() must take the halt → settle → abandon branch and keep
+//! the accounting rule. Every accepted event is either delivered or counted as
+//! dropped, never both, and nothing is delivered after shutdown returns.
 //!
-//! Lives in its own file (own test process) because it sets the
-//! EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS env var, which must not leak into
-//! tests running in parallel threads of another binary.
+//! This test has its own file, and so its own test process, because it sets the
+//! EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS env var. That must not leak into tests
+//! running on parallel threads of another binary.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -33,8 +32,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// Second subscriber on Out whose per-event sleep keeps the executor busy so a
-/// dispatch backlog reliably exists when the (tiny) drain budget expires.
+/// Second subscriber on Out. It sleeps 1 ms per event to keep the executor busy,
+/// so there is always a dispatch backlog when the tiny drain budget runs out.
 #[derive(Debug)]
 struct SlowCallback;
 
@@ -50,14 +49,14 @@ impl eventflux::core::stream::output::stream_callback::StreamCallback for SlowCa
 async fn drain_timeout_abandons_without_delivering_after_shutdown() {
     use eventflux::core::eventflux_manager::EventFluxManager;
 
-    // Own-process env var (sole test in this binary): 10ms drain budget
-    // guarantees the timeout branch under the 1ms/event slow callback.
+    // Safe to set because this is the only test in this binary. A 10 ms drain
+    // budget against a 1 ms per event callback always hits the timeout branch.
     std::env::set_var("EVENTFLUX_JUNCTION_DRAIN_TIMEOUT_MS", "10");
 
     let manager = EventFluxManager::new();
-    // One async junction: In's tracked dispatches run the query and deliver
-    // into the sync Out junction inline, so every accepted event is either
-    // delivered or still queued in In when the budget expires.
+    // Only In is async. Its tracked dispatches run the query and deliver into the
+    // sync Out junction inline, so every accepted event is either delivered or
+    // still queued in In when the budget runs out.
     let app = "\
         CREATE STREAM In (v INT) WITH ('async.enabled' = 'true', 'async.buffer_size' = '4096');\n\
         CREATE STREAM Out (v INT);\n\
@@ -79,8 +78,8 @@ async fn drain_timeout_abandons_without_delivering_after_shutdown() {
 
     let runtime = runner.runtime();
     let runner = Arc::try_unwrap(runner).unwrap();
-    // Immediate shutdown: the 10ms budget cannot drain 2000 events at
-    // 1ms/event, so the halt → settle → abandon branch runs.
+    // Shut down right away. A 10 ms budget cannot drain 2000 events at 1 ms each,
+    // so the halt → settle → abandon branch runs.
     let delivered = runner.shutdown();
 
     let dropped: u64 = runtime

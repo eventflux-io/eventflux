@@ -55,20 +55,17 @@ pub struct AppRunner {
 #[allow(dead_code)]
 impl AppRunner {
     // ============================================================================
-    // TIER 1: Basic Constructors (No Configuration)
+    // TIER 1: Basic constructors (no configuration)
     // ============================================================================
 
-    /// Create a new AppRunner with default configuration.
+    /// Create a new AppRunner with a default EventFluxManager.
     ///
-    /// This is the simplest constructor for testing. It creates a default
-    /// EventFluxManager with no custom configuration.
-    ///
-    /// Creates the runtime, adds callbacks, then starts it. This ensures
-    /// start-trigger events can be observed.
+    /// Adds the collecting callback before starting the runtime, so events fired
+    /// by start triggers are collected too.
     ///
     /// # Arguments
-    /// * `app_string` - SQL application definition string
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `app_string` - SQL application text
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Example
     /// ```rust,ignore
@@ -92,7 +89,7 @@ impl AppRunner {
                 }),
             )
             .expect("add cb");
-        // Start after adding callbacks to observe start-trigger events
+        // Start only after the callback is added so start trigger events are collected
         runtime.start().expect("Failed to start runtime");
         Self {
             runtime,
@@ -101,17 +98,15 @@ impl AppRunner {
         }
     }
 
-    /// Create a new AppRunner from an EventFluxApp API object.
+    /// Create a new AppRunner from an EventFluxApp built in code instead of parsed
+    /// from SQL.
     ///
-    /// Use this when you've already constructed the EventFluxApp programmatically
-    /// instead of parsing from SQL.
-    ///
-    /// Creates the runtime, adds callbacks, then starts it. This ensures
-    /// start-trigger events can be observed.
+    /// Adds the collecting callback before starting the runtime, so events fired
+    /// by start triggers are collected too.
     ///
     /// # Arguments
-    /// * `app` - Pre-constructed EventFluxApp API object
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `app` - EventFluxApp built in code
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Example
     /// ```rust,ignore
@@ -136,7 +131,7 @@ impl AppRunner {
                 }),
             )
             .expect("add cb");
-        // Start after adding callbacks to observe start-trigger events
+        // Start only after the callback is added so start trigger events are collected
         runtime.start().expect("Failed to start runtime");
         Self {
             runtime,
@@ -146,18 +141,18 @@ impl AppRunner {
     }
 
     // ============================================================================
-    // TIER 2: Configuration-Aware Constructors
+    // TIER 2: Constructors that take a config
     // ============================================================================
 
-    /// Create AppRunner with a pre-loaded EventFluxConfig.
+    /// Create AppRunner with an EventFluxConfig that is already loaded.
     ///
-    /// Mirrors EventFluxManager::new_with_config(). Use this when you have
-    /// a programmatically constructed configuration object.
+    /// Mirrors `EventFluxManager::new_with_config()`. Use this when the test
+    /// builds the config object in code.
     ///
     /// # Arguments
-    /// * `config` - Pre-loaded EventFluxConfig
-    /// * `app_string` - SQL application definition string
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `config` - Loaded EventFluxConfig
+    /// * `app_string` - SQL application text
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Example
     /// ```rust,ignore
@@ -170,8 +165,8 @@ impl AppRunner {
     /// ```
     ///
     /// # See Also
-    /// * `EventFluxManager::new_with_config()` - Parallel manager method
-    /// * `new_with_config_manager()` - For dynamic config loading
+    /// * `EventFluxManager::new_with_config()` - Matching manager method
+    /// * `new_with_config_manager()` - Loads config from files and the environment
     pub async fn new_with_config(
         config: EventFluxConfig,
         app_string: &str,
@@ -181,15 +176,15 @@ impl AppRunner {
         Self::new_with_manager(manager, app_string, out_stream).await
     }
 
-    /// Create AppRunner from API with a pre-loaded EventFluxConfig.
+    /// Create AppRunner from an EventFluxApp built in code, with an EventFluxConfig
+    /// that is already loaded.
     ///
-    /// Mirrors EventFluxManager::new_with_config(). API variant of
-    /// `new_with_config()` for pre-constructed EventFluxApp objects.
+    /// Same as `new_with_config()` but takes an EventFluxApp instead of SQL.
     ///
     /// # Arguments
-    /// * `config` - Pre-loaded EventFluxConfig
-    /// * `app` - Pre-constructed EventFluxApp API object
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `config` - Loaded EventFluxConfig
+    /// * `app` - EventFluxApp built in code
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Example
     /// ```rust,ignore
@@ -207,19 +202,19 @@ impl AppRunner {
     }
 
     // ============================================================================
-    // TIER 3: ConfigManager-Based Constructors
+    // TIER 3: Constructors that take a ConfigManager
     // ============================================================================
 
-    /// Create AppRunner with a ConfigManager for dynamic config loading.
+    /// Create AppRunner with a ConfigManager that loads the config.
     ///
-    /// Mirrors EventFluxManager::new_with_config_manager(). The ConfigManager
-    /// handles loading from YAML files, environment variables, Kubernetes
-    /// ConfigMaps, etc., with proper precedence and merging.
+    /// Mirrors `EventFluxManager::new_with_config_manager()`. The ConfigManager
+    /// loads config from its registered loaders, such as YAML files and
+    /// environment variables, and merges them by priority.
     ///
     /// # Arguments
-    /// * `config_manager` - ConfigManager instance (pre-configured with loaders)
-    /// * `app_string` - SQL application definition string
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `config_manager` - ConfigManager with its loaders already registered
+    /// * `app_string` - SQL application text
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Example
     /// ```rust,ignore
@@ -232,8 +227,8 @@ impl AppRunner {
     /// ```
     ///
     /// # See Also
-    /// * `EventFluxManager::new_with_config_manager()` - Parallel manager method
-    /// * `new_from_yaml()` - Convenience method for loading from YAML files
+    /// * `EventFluxManager::new_with_config_manager()` - Matching manager method
+    /// * `new_from_yaml()` - Shortcut that loads config from one YAML file
     pub async fn new_with_config_manager(
         config_manager: ConfigManager,
         app_string: &str,
@@ -243,15 +238,15 @@ impl AppRunner {
         Self::new_with_manager(manager, app_string, out_stream).await
     }
 
-    /// Create AppRunner from API with a ConfigManager for dynamic config loading.
+    /// Create AppRunner from an EventFluxApp built in code, with a ConfigManager
+    /// that loads the config.
     ///
-    /// API variant of `new_with_config_manager()` for pre-constructed
-    /// EventFluxApp objects.
+    /// Same as `new_with_config_manager()` but takes an EventFluxApp instead of SQL.
     ///
     /// # Arguments
-    /// * `config_manager` - ConfigManager instance (pre-configured with loaders)
-    /// * `app` - Pre-constructed EventFluxApp API object
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `config_manager` - ConfigManager with its loaders already registered
+    /// * `app` - EventFluxApp built in code
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Example
     /// ```rust,ignore
@@ -273,33 +268,29 @@ impl AppRunner {
     }
 
     // ============================================================================
-    // TIER 4: File-Based Configuration Loaders (Convenience Methods)
+    // TIER 4: Shortcuts that load config from a file
     // ============================================================================
 
-    /// Create AppRunner by loading configuration from a YAML file.
+    /// Create AppRunner with config loaded from a YAML file.
     ///
-    /// This is a convenience method that combines ConfigManager::from_file() with
-    /// AppRunner creation. The YAML configuration is loaded and merged with any
-    /// environment variable overrides before creating the runtime.
+    /// Shortcut for `ConfigManager::from_file()` plus `new_with_config_manager()`.
+    /// Environment variables override values from the YAML file.
     ///
-    /// **Key Feature**: Tests SQL WITH clause priority over YAML configuration.
-    /// When both YAML and SQL WITH define the same stream configuration,
-    /// SQL WITH takes precedence.
+    /// Useful to test that a SQL WITH clause wins over the YAML file. When both
+    /// set the same stream option, the SQL WITH value is used.
     ///
     /// # Arguments
-    /// * `yaml_path` - Path to YAML configuration file (accepts &str, String, Path, PathBuf)
-    /// * `app_string` - SQL application definition string
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `yaml_path` - Path to the YAML config file (accepts &str, String, Path, PathBuf)
+    /// * `app_string` - SQL application text
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Returns
-    /// * `Ok(Self)` - AppRunner with loaded configuration
-    /// * `Err(String)` - Configuration loading or parsing errors
+    /// Always `Ok(Self)` today. The file is not read until the runtime is built,
+    /// so this function never returns `Err`.
     ///
-    /// # Errors
-    /// * File not found
-    /// * YAML parsing errors
-    /// * Configuration validation errors
-    /// * Runtime creation errors
+    /// # Panics
+    /// Panics if the runtime cannot be created, for example when the SQL does not
+    /// parse or the callback cannot be added.
     ///
     /// # Example
     /// ```rust,ignore
@@ -318,8 +309,8 @@ impl AppRunner {
     /// ```
     ///
     /// # See Also
-    /// * `ConfigManager::from_file()` - Underlying config loader
-    /// * `new_with_config_manager()` - More control over config loading
+    /// * `ConfigManager::from_file()` - The config loader this uses
+    /// * `new_with_config_manager()` - For full control over which loaders run
     pub async fn new_from_yaml<P: AsRef<Path>>(
         yaml_path: P,
         app_string: &str,
@@ -329,18 +320,18 @@ impl AppRunner {
         Ok(Self::new_with_config_manager(config_manager, app_string, out_stream).await)
     }
 
-    /// Create AppRunner from API by loading configuration from a YAML file.
+    /// Create AppRunner from an EventFluxApp built in code, with config loaded from
+    /// a YAML file.
     ///
-    /// API variant of `new_from_yaml()` for pre-constructed EventFluxApp objects.
+    /// Same as `new_from_yaml()` but takes an EventFluxApp instead of SQL.
     ///
     /// # Arguments
-    /// * `yaml_path` - Path to YAML configuration file (accepts &str, String, Path, PathBuf)
-    /// * `app` - Pre-constructed EventFluxApp API object
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `yaml_path` - Path to the YAML config file (accepts &str, String, Path, PathBuf)
+    /// * `app` - EventFluxApp built in code
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Returns
-    /// * `Ok(Self)` - AppRunner with loaded configuration
-    /// * `Err(String)` - Configuration loading or parsing errors
+    /// Always `Ok(Self)` today. Failures to build the runtime panic instead.
     ///
     /// # Example
     /// ```rust,ignore
@@ -361,19 +352,18 @@ impl AppRunner {
     }
 
     // ============================================================================
-    // TIER 5: Persistence Store Constructors
+    // TIER 5: Constructors that take a persistence store
     // ============================================================================
 
-    /// Create AppRunner with a specific persistence store.
+    /// Create AppRunner with the given persistence store.
     ///
-    /// The persistence store is used for state snapshots, checkpointing,
-    /// and state recovery. Common implementations include Redis, file-based
-    /// stores, or in-memory stores.
+    /// The store holds state for `persist()` and `restore_revision()`. Examples
+    /// are Redis, file and in memory stores.
     ///
     /// # Arguments
-    /// * `app_string` - SQL application definition string
-    /// * `out_stream` - Output stream name to collect events from
-    /// * `store` - Persistence store implementation
+    /// * `app_string` - SQL application text
+    /// * `out_stream` - Name of the stream to collect output events from
+    /// * `store` - Persistence store to use
     ///
     /// # Example
     /// ```rust,ignore
@@ -412,14 +402,15 @@ impl AppRunner {
         }
     }
 
-    /// Create AppRunner from API with a specific persistence store.
+    /// Create AppRunner from an EventFluxApp built in code, with the given
+    /// persistence store.
     ///
-    /// API variant of `new_with_store()` for pre-constructed EventFluxApp objects.
+    /// Same as `new_with_store()` but takes an EventFluxApp instead of SQL.
     ///
     /// # Arguments
-    /// * `app` - Pre-constructed EventFluxApp API object
-    /// * `out_stream` - Output stream name to collect events from
-    /// * `store` - Persistence store implementation
+    /// * `app` - EventFluxApp built in code
+    /// * `out_stream` - Name of the stream to collect output events from
+    /// * `store` - Persistence store to use
     ///
     /// # Example
     /// ```rust,ignore
@@ -447,7 +438,7 @@ impl AppRunner {
                 }),
             )
             .expect("add cb");
-        // Start after adding callbacks to observe start-trigger events
+        // Start only after the callback is added so start trigger events are collected
         runtime.start().expect("Failed to start runtime");
         Self {
             runtime,
@@ -457,23 +448,23 @@ impl AppRunner {
     }
 
     // ============================================================================
-    // TIER 6: Full Control Constructors (Pre-configured Manager)
+    // TIER 6: Full control constructors (manager set up by the caller)
     // ============================================================================
 
-    /// Create AppRunner with a fully pre-configured EventFluxManager.
+    /// Create AppRunner with an EventFluxManager the caller has already set up.
     ///
-    /// This provides maximum control and flexibility. Use this when you need to:
-    /// * Register custom extension factories (sources, sinks, windows, etc.)
-    /// * Configure complex multi-layer configurations
-    /// * Share a manager across multiple runtimes
-    /// * Perform advanced setup before runtime creation
+    /// Gives the most control. Use it when you need to
+    /// * register custom extension factories (sources, sinks, windows and so on)
+    /// * set up config from several layers
+    /// * do any other setup on the manager before the runtime is built
     ///
-    /// All other constructors ultimately delegate to this method.
+    /// The config based SQL constructors (`new_with_config()`,
+    /// `new_with_config_manager()`, `new_from_yaml()`) delegate to this method.
     ///
     /// # Arguments
-    /// * `manager` - Pre-configured EventFluxManager (with factories, config, etc.)
-    /// * `app_string` - SQL application definition string
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `manager` - EventFluxManager already set up with factories, config and so on
+    /// * `app_string` - SQL application text
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Example
     /// ```rust,ignore
@@ -490,8 +481,8 @@ impl AppRunner {
     /// ```
     ///
     /// # See Also
-    /// * `new_with_config()` - For configuration without factories
-    /// * `new_with_config_manager()` - For dynamic config loading
+    /// * `new_with_config()` - For config without custom factories
+    /// * `new_with_config_manager()` - Loads config from files and the environment
     pub async fn new_with_manager(
         manager: EventFluxManager,
         app_string: &str,
@@ -518,17 +509,18 @@ impl AppRunner {
         }
     }
 
-    /// Create AppRunner WITHOUT auto-starting the runtime.
+    /// Create AppRunner WITHOUT starting the runtime.
     ///
-    /// This is critical for state recovery scenarios where you need to:
-    /// 1. Create the runtime (which creates all processors/windows)
-    /// 2. Add callbacks
-    /// 3. Restore state from checkpoint
-    /// 4. THEN start the runtime (caller must call runtime.start())
+    /// Needed for state recovery tests, which must
+    /// 1. create the runtime (this builds all processors and windows)
+    /// 2. add callbacks
+    /// 3. restore state from a checkpoint
+    /// 4. only then start the runtime
     ///
-    /// If you start before restoring, the windows will have empty buffers!
+    /// If the runtime starts before the restore, the windows come up with empty
+    /// buffers.
     ///
-    /// **Important**: Caller MUST call `runtime.start()` when ready.
+    /// **Important**: the caller MUST call `runtime().start()` when ready.
     pub async fn new_with_manager_no_start(
         manager: EventFluxManager,
         app_string: &str,
@@ -547,8 +539,8 @@ impl AppRunner {
                 }),
             )
             .expect("add cb");
-        // NOTE: Explicitly do NOT call runtime.start() here!
-        // The manager method no longer auto-starts, so the runtime is NOT started.
+        // Do NOT call runtime.start() here. The manager does not start the runtime
+        // either, so it stays stopped until the caller starts it.
         Self {
             runtime,
             collected,
@@ -556,15 +548,15 @@ impl AppRunner {
         }
     }
 
-    /// Create AppRunner from API with a fully pre-configured EventFluxManager.
+    /// Create AppRunner from an EventFluxApp built in code, with an EventFluxManager
+    /// the caller has already set up.
     ///
-    /// API variant of `new_with_manager()` for pre-constructed EventFluxApp objects.
-    /// Provides maximum control over the runtime environment.
+    /// Same as `new_with_manager()` but takes an EventFluxApp instead of SQL.
     ///
     /// # Arguments
-    /// * `manager` - Pre-configured EventFluxManager (with factories, config, etc.)
-    /// * `app` - Pre-constructed EventFluxApp API object
-    /// * `out_stream` - Output stream name to collect events from
+    /// * `manager` - EventFluxManager already set up with factories, config and so on
+    /// * `app` - EventFluxApp built in code
+    /// * `out_stream` - Name of the stream to collect output events from
     ///
     /// # Example
     /// ```rust,ignore
@@ -592,7 +584,7 @@ impl AppRunner {
                 }),
             )
             .expect("add cb");
-        // Start after adding callbacks to observe start-trigger events
+        // Start only after the callback is added so start trigger events are collected
         runtime.start().expect("Failed to start runtime");
         Self {
             runtime,
@@ -602,16 +594,20 @@ impl AppRunner {
     }
 
     // ============================================================================
-    // Event Sending Methods
+    // Event sending methods
     // ============================================================================
 
-    /// Send a single event to a stream.
+    /// Send one event to a stream.
     ///
-    /// Events are sent with timestamp 0 (current time will be assigned by runtime).
+    /// The event has timestamp 0. Use `send_with_ts()` when the test depends on
+    /// event time. Does nothing if the stream has no input handler.
+    ///
+    /// # Panics
+    /// Panics if the input handler fails to send the event.
     ///
     /// # Arguments
     /// * `stream_id` - Name of the input stream
-    /// * `data` - Event data as vector of attribute values
+    /// * `data` - Attribute values of the event
     pub fn send(&self, stream_id: &str, data: Vec<AttributeValue>) {
         if let Some(handler) = self.runtime.get_input_handler(stream_id) {
             handler
@@ -622,12 +618,14 @@ impl AppRunner {
         }
     }
 
-    /// Send an event with an explicit timestamp.
+    /// Send one event with the given timestamp.
+    ///
+    /// Does nothing if the stream has no input handler.
     ///
     /// # Arguments
     /// * `stream_id` - Name of the input stream
-    /// * `ts` - Event timestamp (milliseconds since epoch)
-    /// * `data` - Event data as vector of attribute values
+    /// * `ts` - Event timestamp in milliseconds since epoch
+    /// * `data` - Attribute values of the event
     pub fn send_with_ts(&self, stream_id: &str, ts: i64, data: Vec<AttributeValue>) {
         if let Some(handler) = self.runtime.get_input_handler(stream_id) {
             handler
@@ -638,14 +636,14 @@ impl AppRunner {
         }
     }
 
-    /// Send a batch of events to a stream.
+    /// Send several events to a stream in one call.
     ///
-    /// More efficient than sending events individually. All events are
-    /// sent with timestamp 0.
+    /// All events have timestamp 0. Does nothing if the stream has no input
+    /// handler.
     ///
     /// # Arguments
     /// * `stream_id` - Name of the input stream
-    /// * `batch` - Vector of events (each event is a vector of attribute values)
+    /// * `batch` - Events to send, each one a list of attribute values
     pub fn send_batch(&self, stream_id: &str, batch: Vec<Vec<AttributeValue>>) {
         if let Some(handler) = self.runtime.get_input_handler(stream_id) {
             let events: Vec<Event> = batch
@@ -661,89 +659,84 @@ impl AppRunner {
     }
 
     // ============================================================================
-    // Lifecycle & State Management Methods
+    // Lifecycle and state methods
     // ============================================================================
 
-    /// Shutdown the runtime and return all collected events.
+    /// Shut down the runtime and return all collected events.
     ///
-    /// Consumes the AppRunner. This is typically called at the end of a test
-    /// to retrieve results.
+    /// Consumes the AppRunner. Tests usually call this last to get their results.
     ///
     /// # Returns
-    /// All events collected from the output stream since runtime start
+    /// Data of every event the output stream callback has received
     pub fn shutdown(self) -> Vec<Vec<AttributeValue>> {
         self.runtime.shutdown();
         self.collected.lock().unwrap().clone()
     }
 
-    /// Persist current runtime state and return revision ID.
+    /// Save the current runtime state and return its revision id.
     ///
-    /// Requires a persistence store to be configured.
+    /// Needs a persistence store on the manager. Panics if the save fails.
     ///
     /// # Returns
-    /// Revision ID that can be used with `restore_revision()`
+    /// Revision id to pass to `restore_revision()`
     pub fn persist(&self) -> String {
         self.runtime.persist().expect("persist failed").revision
     }
 
-    /// Restore runtime state from a specific revision.
+    /// Restore runtime state from a saved revision. Panics if the restore fails.
     ///
     /// # Arguments
-    /// * `rev` - Revision ID from a previous `persist()` call
+    /// * `rev` - Revision id from an earlier `persist()` call
     pub fn restore_revision(&self, rev: &str) {
         self.runtime.restore_revision(rev).expect("restore")
     }
 
-    /// Create a snapshot of current runtime state.
+    /// Take a snapshot of the current runtime state. Panics if it fails.
     ///
     /// # Returns
-    /// Serialized snapshot as byte array
+    /// The snapshot as bytes
     pub fn snapshot(&self) -> Vec<u8> {
         self.runtime.snapshot().expect("snapshot")
     }
 
-    /// Restore runtime state from a snapshot.
+    /// Restore runtime state from a snapshot. Panics if the restore fails.
     ///
     /// # Arguments
-    /// * `snap` - Snapshot byte array from previous `snapshot()` call
+    /// * `snap` - Snapshot bytes from an earlier `snapshot()` call
     pub fn restore(&self, snap: &[u8]) {
         self.runtime.restore(snap).expect("restore")
     }
 
     // ============================================================================
-    // Runtime Access Methods
+    // Runtime access methods
     // ============================================================================
 
-    /// Get direct access to the underlying EventFluxAppRuntime.
-    ///
-    /// Use this for advanced operations not exposed through AppRunner.
-    ///
-    /// # Returns
-    /// Arc-wrapped runtime instance
+    /// Return the EventFluxAppRuntime behind this runner, for calls AppRunner
+    /// does not wrap.
     pub fn runtime(&self) -> Arc<EventFluxAppRuntime> {
         Arc::clone(&self.runtime)
     }
 
-    /// Obtain an input handler for a specific table.
+    /// Get the input handler for a table.
     ///
     /// # Arguments
     /// * `table_id` - Name of the table
     ///
     /// # Returns
-    /// Table input handler if table exists, None otherwise
+    /// The table input handler, or None if no such table exists
     pub fn get_table_input_handler(&self, table_id: &str) -> Option<TableInputHandler> {
         self.runtime.get_table_input_handler(table_id)
     }
 
-    /// Retrieve aggregated rows using optional time constraints.
+    /// Read rows from an aggregation, optionally limited by time.
     ///
     /// # Arguments
-    /// * `agg_id` - Aggregation identifier
-    /// * `within` - Optional time range constraint
-    /// * `per` - Optional time bucket duration
+    /// * `agg_id` - Aggregation id
+    /// * `within` - Optional time range to read from
+    /// * `per` - Optional bucket duration to group rows by
     ///
     /// # Returns
-    /// Vector of aggregated result rows
+    /// The aggregated rows
     pub fn get_aggregation_data(
         &self,
         agg_id: &str,
@@ -758,8 +751,8 @@ impl AppRunner {
 // Connector test helpers
 // ============================================================================
 
-/// Source callback that records every payload it receives, with a
-/// deadline-based wait — shared by connector integration tests.
+/// Source callback that records every payload it receives and lets a test wait
+/// for them up to a deadline. Shared by the connector integration tests.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CollectingCallback {
@@ -774,8 +767,8 @@ impl CollectingCallback {
         }
     }
 
-    /// Wait until `count` payloads arrived or `timeout` elapsed; returns
-    /// whatever was collected.
+    /// Wait until at least `count` payloads have arrived or `timeout` has passed.
+    /// Checks every 20 ms. Returns whatever was collected by then.
     pub fn wait_for(&self, count: usize, timeout: std::time::Duration) -> Vec<Vec<u8>> {
         let deadline = std::time::Instant::now() + timeout;
         loop {
@@ -796,7 +789,8 @@ impl eventflux::core::stream::input::source::SourceCallback for CollectingCallba
     }
 }
 
-/// A currently-free localhost port (racy by nature; fine for tests)
+/// Return a localhost port that is free right now. Another process may take it
+/// before the test binds it, which is fine for tests.
 #[allow(dead_code)]
 pub fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -806,8 +800,8 @@ pub fn free_port() -> u16 {
         .port()
 }
 
-/// Block until something is accepting connections on the port (or panic
-/// after the deadline) — replaces fixed warm-up sleeps.
+/// Block until something accepts connections on `port` at 127.0.0.1. Panics after
+/// 10 seconds. Use this instead of a fixed warm up sleep.
 #[allow(dead_code)]
 pub fn wait_listening(port: u16) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-//! A configuration that fails to load must fail app creation (fail-fast),
-//! not silently start the engine with defaults (wrong buffer sizes, sync
-//! junctions where async was configured, fallback app names breaking
-//! persistence keys).
+//! A configuration that fails to load must fail app creation right away. It must
+//! not quietly start the engine with defaults, which would mean wrong buffer sizes,
+//! sync junctions where async was configured, and fallback app names that break
+//! persistence keys.
 
 use eventflux::core::config::ConfigManager;
 use eventflux::core::eventflux_manager::EventFluxManager;

@@ -15,21 +15,17 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.Expression (the abstract class)
-// In Rust, this is represented as an enum.
-
-// Import all the specific expression types
 use super::attribute_function::AttributeFunction;
 use super::case::{Case, WhenClause};
 use super::cast::Cast;
 use super::condition::{And, Compare, CompareOperator, InOp, IsNull, Not, Or};
-use super::constant::{Constant, TimeUtil as ConstantTimeUtil}; // Corrected ConstantValue path
+use super::constant::{Constant, TimeUtil as ConstantTimeUtil};
 use super::indexed_variable::IndexedVariable;
 use super::math::{Add, Divide, ModOp, Multiply, Subtract};
-use super::variable::Variable; // Renamed Operator to CompareOperator
+use super::variable::Variable;
 use crate::query_api::definition::attribute::Type as AttributeType;
 
-/// Represents various types of expressions in a EventFlux query.
+/// Any expression in an EventFlux query. Larger node types are boxed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expression {
     Constant(Constant),
@@ -51,7 +47,7 @@ pub enum Expression {
     Cast(Box<Cast>),
 }
 
-// Static factory methods from Java's Expression class
+// Factory functions. Each builds the node and wraps it in the matching variant.
 impl Expression {
     // Constants
     pub fn value_string(value: String) -> Self {
@@ -81,7 +77,9 @@ impl Expression {
         Expression::Variable(Variable::new(attribute_name))
     }
 
-    // IndexedVariable - array access: e[0].attr, e[last].attr
+    // Indexed access into a pattern event list, as in e[0].attr or e[last].attr.
+    // The stream is only set when both stream_id and stream_index are Some. If just one
+    // is given, it is dropped.
     pub fn indexed_variable_with_index(
         attribute_name: String,
         index: usize,
@@ -187,7 +185,7 @@ impl Expression {
         Expression::Cast(Box::new(Cast::new(expression, target_type)))
     }
 
-    // Time constants
+    // Time constants. Each returns a Time constant in milliseconds.
     pub fn time_millisec(val: i64) -> Self {
         Expression::Constant(ConstantTimeUtil::millisec(val))
     }
@@ -214,7 +212,7 @@ impl Expression {
     }
 }
 
-// Accessing EventFluxElement context from the composed field in each variant's struct.
+// Read and write the query positions held by whichever node this is.
 impl Expression {
     pub fn get_query_context_start_index(&self) -> Option<(i32, i32)> {
         match self {

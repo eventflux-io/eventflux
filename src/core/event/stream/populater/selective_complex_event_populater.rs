@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/event/stream/populater/selective_complex_event_populater.rs
 use super::{ComplexEventPopulater, StreamMappingElement};
 use crate::core::event::{
     complex_event::ComplexEvent, state::state_event::StateEvent, stream::stream_event::StreamEvent,

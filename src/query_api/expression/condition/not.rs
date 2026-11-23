@@ -15,15 +15,14 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.condition.Not
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq)] // Removed Default
+/// Logical NOT of a condition.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Not {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Not specific field
     pub expression: Box<Expression>,
 }
 

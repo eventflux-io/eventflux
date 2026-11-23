@@ -17,37 +17,39 @@
 
 // src/core/persistence/state_registry.rs
 
-//! State Registry for centralized state component management
+//! State registry.
 //!
-//! The StateRegistry maintains a catalog of all stateful components in the system,
-//! their dependencies, and topology information for optimization.
+//! [`StateRegistry`] keeps a list of every stateful component, what each one
+//! depends on, and the order to recover them in.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use super::state_holder::{AccessPattern, ComponentId, StateError, StateHolder, StateSize};
 
-/// Component metadata for registry
+/// Registry details for one component.
 #[derive(Debug, Clone)]
 pub struct ComponentMetadata {
     pub component_id: ComponentId,
     pub component_type: String,
+    /// Components that must be recovered before this one.
     pub dependencies: Vec<ComponentId>,
+    /// Components that depend on this one. Only read on unregister.
     pub dependents: Vec<ComponentId>,
     pub priority: ComponentPriority,
     pub resource_requirements: ResourceRequirements,
 }
 
-/// Priority for component recovery ordering
+/// Recovery priority. Not used for ordering yet, which follows dependencies only.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ComponentPriority {
-    Critical = 0, // Must recover first (e.g., sources)
-    High = 1,     // Important for system function
-    Medium = 2,   // Normal processing components
-    Low = 3,      // Optional or derived components
+    Critical = 0, // must recover first, such as sources
+    High = 1,     // needed for the system to work
+    Medium = 2,   // normal processing components
+    Low = 3,      // optional or derived components
 }
 
-/// Resource requirements for optimization
+/// Expected resource use of a component.
 #[derive(Debug, Clone)]
 pub struct ResourceRequirements {
     pub memory_estimate: usize,
@@ -70,12 +72,15 @@ pub struct NetworkRequirements {
     pub bandwidth_estimate: Option<u64>, // bytes per second
 }
 
-/// State topology for dependency analysis
+/// Components, their dependency graph, and the recovery order.
 #[derive(Debug, Clone)]
 pub struct StateTopology {
     pub components: HashMap<ComponentId, ComponentMetadata>,
     pub dependency_graph: DependencyGraph,
-    pub recovery_stages: Vec<Vec<ComponentId>>, // Ordered recovery stages
+    /// Recovery order as stages. Every component in a stage depends only on
+    /// earlier stages. Only components that appear in the dependency graph are
+    /// listed, so a component with no dependencies and no dependents is missing.
+    pub recovery_stages: Vec<Vec<ComponentId>>,
 }
 
 impl Default for StateTopology {
@@ -93,23 +98,31 @@ impl StateTopology {
         }
     }
 
-    /// Calculate optimal recovery order based on dependencies
+    /// Rebuild `recovery_stages` from the dependency graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the dependencies form a cycle. The old
+    /// stages are kept in that case.
     pub fn calculate_recovery_order(&mut self) -> Result<(), StateError> {
         let stages = self.dependency_graph.topological_sort()?;
         self.recovery_stages = stages;
         Ok(())
     }
 
-    /// Get components that can be recovered in parallel
+    /// Returns the recovery stages. Components in one stage can be recovered in
+    /// parallel.
     pub fn get_parallel_recovery_groups(&self) -> Vec<Vec<ComponentId>> {
         self.recovery_stages.clone()
     }
 }
 
-/// Dependency graph for state components
+/// Which components depend on which.
 #[derive(Debug, Clone)]
 pub struct DependencyGraph {
+    /// For each component, the components that depend on it.
     pub edges: HashMap<ComponentId, HashSet<ComponentId>>,
+    /// For each component, the components it depends on.
     pub reverse_edges: HashMap<ComponentId, HashSet<ComponentId>>,
 }
 
@@ -127,11 +140,10 @@ impl DependencyGraph {
         }
     }
 
-    /// Add a dependency edge: from depends on to
-    /// This means 'to' must be recovered before 'from' can be recovered
+    /// Record that `from` depends on `to`, so `to` must be recovered first.
     pub fn add_dependency(&mut self, from: ComponentId, to: ComponentId) {
-        // 'from' depends on 'to', so 'to' -> 'from' in the dependency graph
-        // This means 'to' must come before 'from' in topological order
+        // Stored as an edge from `to` to `from`, so `to` comes first in the
+        // topological order.
         self.edges
             .entry(to.clone())
             .or_default()
@@ -139,9 +151,9 @@ impl DependencyGraph {
         self.reverse_edges.entry(from).or_default().insert(to);
     }
 
-    /// Remove a dependency
+    /// Remove the record that `from` depends on `to`. Leaves both nodes in the
+    /// graph, even with no edges left.
     pub fn remove_dependency(&mut self, from: &ComponentId, to: &ComponentId) {
-        // 'from' depends on 'to', so 'to' -> 'from' in the dependency graph
         if let Some(deps) = self.edges.get_mut(to) {
             deps.remove(from);
         }
@@ -150,12 +162,19 @@ impl DependencyGraph {
         }
     }
 
-    /// Perform topological sort for recovery ordering
+    /// Sort the components into recovery stages.
+    ///
+    /// Each stage holds the components whose dependencies are all in earlier
+    /// stages. Order inside a stage is not fixed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the dependencies form a cycle.
     pub fn topological_sort(&self) -> Result<Vec<Vec<ComponentId>>, StateError> {
+        // in_degree counts how many dependencies each node still waits on.
         let mut in_degree: HashMap<ComponentId, usize> = HashMap::new();
         let mut all_nodes: HashSet<ComponentId> = HashSet::new();
 
-        // Initialize in-degrees
         for (from, tos) in &self.edges {
             all_nodes.insert(from.clone());
             in_degree.entry(from.clone()).or_insert(0);
@@ -174,7 +193,8 @@ impl DependencyGraph {
             .collect();
 
         while !queue.is_empty() {
-            // All nodes in current queue can be processed in parallel
+            // Every node in the queue now has no pending dependencies, so they
+            // form one stage.
             result.push(queue.clone());
 
             let current_level = queue.clone();
@@ -194,7 +214,7 @@ impl DependencyGraph {
             }
         }
 
-        // Check for cycles
+        // Nodes in a cycle never reach zero, so they are left out.
         let processed_count: usize = result.iter().map(|stage| stage.len()).sum();
         if processed_count != all_nodes.len() {
             return Err(StateError::InvalidStateData {
@@ -205,10 +225,11 @@ impl DependencyGraph {
         Ok(result)
     }
 
-    /// Detect strongly connected components (cycles)
+    /// Find dependency cycles.
+    ///
+    /// Uses a depth first search, not Tarjan's algorithm. Returns at most one
+    /// cycle per search start, so it may not list every cycle.
     pub fn detect_cycles(&self) -> Vec<Vec<ComponentId>> {
-        // Implementation of Tarjan's algorithm for SCC detection
-        // This is a simplified version - could be enhanced
         let mut visited = HashSet::new();
         let mut cycles = Vec::new();
 
@@ -233,7 +254,7 @@ impl DependencyGraph {
         path: &mut Vec<ComponentId>,
     ) -> bool {
         if current_visited.contains(node) {
-            // Found a cycle
+            // Back on the current path, so this is a cycle. Trim the path to it.
             if let Some(cycle_start) = path.iter().position(|n| n == node) {
                 *path = path[cycle_start..].to_vec();
                 return true;
@@ -262,17 +283,21 @@ impl DependencyGraph {
     }
 }
 
-/// State dependency analysis results
+/// Result of a dependency analysis.
 #[derive(Debug, Clone)]
 pub struct StateDependencyGraph {
     pub total_components: usize,
+    /// Number of recovery stages.
     pub dependency_depth: usize,
+    /// Size of the largest recovery stage.
     pub parallel_recovery_width: usize,
     pub circular_dependencies: Vec<Vec<ComponentId>>,
+    /// Meant to be the longest dependency chain. See
+    /// [`StateRegistry::analyze_dependencies`] for what it holds today.
     pub critical_path: Vec<ComponentId>,
 }
 
-/// Central registry for all stateful components
+/// Registry of every stateful component.
 pub struct StateRegistry {
     components: RwLock<HashMap<ComponentId, Arc<dyn StateHolder>>>,
     metadata: RwLock<HashMap<ComponentId, ComponentMetadata>>,
@@ -288,21 +313,25 @@ impl StateRegistry {
         }
     }
 
-    /// Register a stateful component
+    /// Register a stateful component and rebuild the recovery order.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if `id` is empty, already registered, or its
+    /// dependencies create a cycle. In the cycle case the component and its
+    /// dependencies stay registered.
     pub fn register(
         &self,
         id: ComponentId,
         component: Arc<dyn StateHolder>,
         metadata: ComponentMetadata,
     ) -> Result<(), StateError> {
-        // Validate component
         if id.is_empty() {
             return Err(StateError::InvalidStateData {
                 message: "Component ID cannot be empty".to_string(),
             });
         }
 
-        // Register component
         {
             let mut components = self.components.write().unwrap();
             if components.contains_key(&id) {
@@ -313,12 +342,10 @@ impl StateRegistry {
             components.insert(id.clone(), component);
         }
 
-        // Register metadata and update topology
         {
             let mut metadata_map = self.metadata.write().unwrap();
             let mut topology = self.topology.write().unwrap();
 
-            // Add dependencies to topology
             for dep in &metadata.dependencies {
                 topology
                     .dependency_graph
@@ -328,14 +355,23 @@ impl StateRegistry {
             metadata_map.insert(id.clone(), metadata.clone());
             topology.components.insert(id, metadata);
 
-            // Recalculate recovery order
             topology.calculate_recovery_order()?;
         }
 
         Ok(())
     }
 
-    /// Unregister a component
+    /// Remove a component and its dependency edges, then rebuild the recovery
+    /// order.
+    ///
+    /// Edges are removed using the `dependencies` and `dependents` lists in the
+    /// component's metadata. Edges added by other components that are not in
+    /// `dependents` stay in the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the component is not registered, or if the
+    /// remaining dependencies form a cycle.
     pub fn unregister(&self, id: &ComponentId) -> Result<(), StateError> {
         let mut components = self.components.write().unwrap();
         let mut metadata_map = self.metadata.write().unwrap();
@@ -347,12 +383,9 @@ impl StateRegistry {
             });
         }
 
-        // Remove from components
         components.remove(id);
 
-        // Remove from metadata and topology
         if let Some(metadata) = metadata_map.remove(id) {
-            // Remove dependencies
             for dep in &metadata.dependencies {
                 topology.dependency_graph.remove_dependency(id, dep);
             }
@@ -367,31 +400,32 @@ impl StateRegistry {
         Ok(())
     }
 
-    /// Get a component by ID
     pub fn get_component(&self, id: &ComponentId) -> Option<Arc<dyn StateHolder>> {
         let components = self.components.read().unwrap();
         components.get(id).cloned()
     }
 
-    /// Get component metadata
     pub fn get_metadata(&self, id: &ComponentId) -> Option<ComponentMetadata> {
         let metadata = self.metadata.read().unwrap();
         metadata.get(id).cloned()
     }
 
-    /// Get all component IDs
+    /// Returns every registered component id, in no set order.
     pub fn get_all_component_ids(&self) -> Vec<ComponentId> {
         let components = self.components.read().unwrap();
         components.keys().cloned().collect()
     }
 
-    /// Get state topology for optimization
+    /// Returns a copy of the topology.
     pub fn get_topology(&self) -> StateTopology {
         let topology = self.topology.read().unwrap();
         topology.clone()
     }
 
-    /// Analyze state dependencies
+    /// Summarize the component dependencies.
+    ///
+    /// `critical_path` is the node list from one depth first walk of the graph,
+    /// which includes side branches. It is not strictly the longest chain.
     pub fn analyze_dependencies(&self) -> StateDependencyGraph {
         let topology = self.topology.read().unwrap();
         let circular_deps = topology.dependency_graph.detect_cycles();
@@ -403,7 +437,6 @@ impl StateRegistry {
             .max()
             .unwrap_or(0);
 
-        // Find critical path (longest dependency chain)
         let critical_path = self.find_critical_path(&topology);
 
         StateDependencyGraph {
@@ -415,7 +448,7 @@ impl StateRegistry {
         }
     }
 
-    /// Get total state size estimate
+    /// Returns the sum of every component's size estimate.
     pub fn estimate_total_state_size(&self) -> StateSize {
         let components = self.components.read().unwrap();
         let mut total_bytes = 0;
@@ -436,7 +469,7 @@ impl StateRegistry {
         }
     }
 
-    /// Get components by access pattern
+    /// Returns the ids of components with the given access pattern.
     pub fn get_components_by_access_pattern(&self, pattern: AccessPattern) -> Vec<ComponentId> {
         let components = self.components.read().unwrap();
         components
@@ -446,7 +479,9 @@ impl StateRegistry {
             .collect()
     }
 
-    /// Find the critical path (longest dependency chain)
+    /// Returns the largest node list from a depth first walk started at each
+    /// unvisited component. Meant to find the longest dependency chain, but the
+    /// walk never pops nodes, so side branches are included too.
     fn find_critical_path(&self, topology: &StateTopology) -> Vec<ComponentId> {
         let mut longest_path = Vec::new();
         let mut visited = HashSet::new();
@@ -502,7 +537,7 @@ mod tests {
         ChangeLog, SchemaVersion, SerializationHints, StateSnapshot,
     };
 
-    // Mock component for testing
+    // Only the size, access pattern and metadata methods work.
     struct MockStateHolder {
         id: String,
     }
@@ -588,13 +623,8 @@ mod tests {
     fn test_dependency_graph_topological_sort() {
         let mut graph = DependencyGraph::new();
 
-        // Create a simple dependency chain where:
-        // - A depends on B (A cannot start until B is recovered)
-        // - B depends on C (B cannot start until C is recovered)
-        // So recovery order should be: C -> B -> A
-        //
-        // In our implementation: add_dependency(from, to) means "from depends on to"
-        // So A->B means A depends on B, B must come before A in topological order
+        // A depends on B, and B depends on C, so the recovery order must be
+        // C, then B, then A. add_dependency(from, to) means from depends on to.
         graph.add_dependency("A".to_string(), "B".to_string());
         graph.add_dependency("B".to_string(), "C".to_string());
 
@@ -602,7 +632,6 @@ mod tests {
 
         println!("Topological sort result: {:?}", result);
 
-        // Find the positions of each node
         let mut c_pos = None;
         let mut b_pos = None;
         let mut a_pos = None;
@@ -621,8 +650,7 @@ mod tests {
 
         println!("Positions - C: {:?}, B: {:?}, A: {:?}", c_pos, b_pos, a_pos);
 
-        // For recovery: C should come before B, and B should come before A
-        // (dependencies must be recovered first)
+        // Dependencies are recovered first, so C comes before B, and B before A.
         assert!(c_pos.is_some());
         assert!(b_pos.is_some());
         assert!(a_pos.is_some());
@@ -634,7 +662,7 @@ mod tests {
     fn test_cycle_detection() {
         let mut graph = DependencyGraph::new();
 
-        // Create a cycle: A -> B -> C -> A
+        // A depends on B, B on C, and C on A, which is a cycle.
         graph.add_dependency("A".to_string(), "B".to_string());
         graph.add_dependency("B".to_string(), "C".to_string());
         graph.add_dependency("C".to_string(), "A".to_string());

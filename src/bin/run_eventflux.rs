@@ -42,7 +42,7 @@ struct Cli {
     #[arg(long, short = 'c')]
     config: Option<PathBuf>,
 
-    /// Override config values using dot-notation (can be used multiple times)
+    /// Override a config value by its dotted key path. Repeat the flag to set more than one
     ///
     /// Examples:
     ///   --set eventflux.persistence.type=sqlite
@@ -51,12 +51,17 @@ struct Cli {
     #[arg(long = "set", value_name = "KEY=VALUE")]
     overrides: Vec<String>,
 
-    /// Dynamic extension libraries to load
+    /// Shared library files with extensions to load. Repeat the flag for more than one
     #[arg(short = 'e', long)]
     extension: Vec<PathBuf>,
 }
 
-/// Initialize persistence store from configuration
+/// Build the persistence store named in the config.
+///
+/// Returns `None` when persistence is disabled, when the backend is `Memory`, when the
+/// backend is `Redis` (not supported here yet), or when the store fails to open. Failures
+/// are printed to stderr. Default locations are `./snapshots` for File, `./eventflux.db`
+/// for SQLite and `redis://localhost:6379` for Redis.
 fn init_persistence_store(
     persistence_config: &GlobalPersistenceConfig,
 ) -> Option<Arc<dyn PersistenceStore>> {
@@ -117,12 +122,12 @@ fn init_persistence_store(
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging from RUST_LOG environment variable
+    // Log level comes from the RUST_LOG environment variable.
     env_logger::init();
 
     let cli = Cli::parse();
 
-    // Load configuration from file or use defaults
+    // Use the YAML file from --config if given, else the defaults.
     let mut config = if let Some(ref config_path) = cli.config {
         let manager = ConfigManager::from_file(config_path);
         match manager.load_unified_config().await {
@@ -136,7 +141,6 @@ async fn main() {
         EventFluxConfig::default()
     };
 
-    // Apply command-line overrides
     if !cli.overrides.is_empty() {
         if let Err(e) = apply_config_overrides(&mut config, &cli.overrides) {
             eprintln!("Failed to apply config overrides: {e}");
@@ -144,14 +148,12 @@ async fn main() {
         }
     }
 
-    // Initialize persistence store from config
     let store = config
         .eventflux
         .persistence
         .as_ref()
         .and_then(init_persistence_store);
 
-    // Read EventFluxQL file
     let content = match fs::read_to_string(&cli.eventflux_file) {
         Ok(c) => c,
         Err(e) => {
@@ -160,13 +162,11 @@ async fn main() {
         }
     };
 
-    // Create EventFlux manager with our (potentially overridden) config
-    // This ensures --set overrides are used by the runtime
-    // Note: We don't call set_config_manager() because it would clear the cached
-    // config and reload from file, losing our --set overrides
+    // Pass the config in directly so the runtime sees the --set overrides.
+    // Do not call set_config_manager() here. It clears the cached config and reloads it
+    // from the file, which drops the --set overrides.
     let manager = EventFluxManager::new_with_config(config);
 
-    // Set persistence store if configured
     if let Some(s) = store {
         if let Err(e) = manager.set_persistence_store(s) {
             eprintln!("Failed to set persistence store: {e}");
@@ -174,7 +174,8 @@ async fn main() {
         }
     }
 
-    // Load extensions
+    // Each library is registered under its file stem. A path that is not valid UTF-8 is
+    // skipped, and a load failure is printed but does not stop the run.
     for lib in cli.extension {
         if let Some(p) = lib.to_str() {
             let name = lib.file_stem().and_then(|s| s.to_str()).unwrap_or("ext");
@@ -184,7 +185,6 @@ async fn main() {
         }
     }
 
-    // Create runtime
     let runtime = match manager
         .create_eventflux_app_runtime_from_string(&content)
         .await
@@ -196,10 +196,9 @@ async fn main() {
         }
     };
 
-    // Note: Sink streams configured via SQL WITH clause (extension = 'log')
-    // already have proper logging. No need to add callbacks to all streams.
+    // No output callbacks are added here. To see events, declare a sink stream in the SQL
+    // with a WITH clause such as extension = 'log'.
 
-    // Start the runtime
     if let Err(e) = runtime.start() {
         eprintln!("Failed to start runtime: {e}");
         std::process::exit(1);
@@ -210,7 +209,7 @@ async fn main() {
         runtime.name
     );
 
-    // Keep the main thread alive until interrupted
+    // Runs until the process is killed, for example with Ctrl+C. There is no clean shutdown.
     loop {
         thread::sleep(Duration::from_secs(1));
     }

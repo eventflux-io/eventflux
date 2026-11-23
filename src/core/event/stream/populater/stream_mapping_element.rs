@@ -15,11 +15,10 @@
  * limitations under the License.
  */
 
-// src/core/event/stream/populater/stream_mapping_element.rs
 #[derive(Debug, Clone)]
 pub struct StreamMappingElement {
     pub from_position: usize,
-    pub to_position: Option<Vec<i32>>, // EventFlux position array
+    pub to_position: Option<Vec<i32>>, // position array, None means the value is skipped
 }
 
 impl StreamMappingElement {

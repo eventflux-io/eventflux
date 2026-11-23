@@ -17,7 +17,7 @@
 
 //! # WebSocket Sink
 //!
-//! Publishes formatted event data to WebSocket endpoints.
+//! Publishes formatted event data to a WebSocket endpoint.
 //!
 //! ## Architecture
 //!
@@ -58,7 +58,7 @@ use tokio_tungstenite::{
 /// Message type for WebSocket sink
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MessageType {
-    /// Send messages as text (UTF-8)
+    /// Send messages as text. The payload must be valid UTF-8. The default.
     #[default]
     Text,
     /// Send messages as binary
@@ -68,7 +68,7 @@ pub enum MessageType {
 impl std::str::FromStr for MessageType {
     type Err = String;
 
-    /// Parse from string
+    /// Parses "text" or "binary", ignoring case
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "text" => Ok(MessageType::Text),
@@ -84,23 +84,24 @@ impl std::str::FromStr for MessageType {
 /// Configuration for WebSocket sink
 #[derive(Debug, Clone)]
 pub struct WebSocketSinkConfig {
-    /// WebSocket URL (ws:// or wss://)
+    /// WebSocket URL, starting with ws:// or wss://
     pub url: String,
-    /// Enable auto-reconnect on disconnect (default: true)
+    /// Reconnect in publish() when sending fails or there is no connection.
+    /// Default true.
     pub reconnect: bool,
-    /// Initial reconnect delay in milliseconds (default: 1000)
+    /// First reconnect delay in ms. Doubles after each failed connect. Default 1000.
     pub reconnect_delay_ms: u64,
-    /// Maximum reconnect delay in milliseconds (default: 30000)
+    /// Largest reconnect delay in ms. Default 30000.
     pub reconnect_max_delay_ms: u64,
-    /// Maximum reconnect attempts (-1 = unlimited, default: 3)
+    /// Most connect attempts in one reconnect. Any negative value means no
+    /// limit. Default 3.
     pub reconnect_max_attempts: i32,
-    /// Message type: text or binary (default: text)
+    /// Message type, text or binary. Default text.
     pub message_type: MessageType,
-    /// Custom headers for connection (e.g., Authorization)
-    /// Custom handshake headers (values redacted in Debug — they may
-    /// carry Authorization tokens)
+    /// Extra handshake headers, such as Authorization. Values are hidden in
+    /// Debug, since they may carry tokens.
     pub headers: HashMap<String, crate::core::stream::connector_util::Redacted>,
-    /// WebSocket subprotocol for negotiation
+    /// WebSocket subprotocol to ask for, sent as `Sec-WebSocket-Protocol`
     pub subprotocol: Option<String>,
 }
 
@@ -120,18 +121,22 @@ impl Default for WebSocketSinkConfig {
 }
 
 impl WebSocketSinkConfig {
-    /// Build configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `websocket.url` is missing or does not start with
+    /// ws:// or wss://, `websocket.message.type` is not text or binary, or a
+    /// bool or number does not parse.
     #[allow(clippy::field_reassign_with_default)]
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
 
-        // Required: url
         config.url = properties
             .get("websocket.url")
             .ok_or("Missing required property: websocket.url")?
             .clone();
 
-        // Validate URL scheme
         if !config.url.starts_with("ws://") && !config.url.starts_with("wss://") {
             return Err(format!(
                 "Invalid WebSocket URL: must start with ws:// or wss://, got: {}",
@@ -139,7 +144,6 @@ impl WebSocketSinkConfig {
             ));
         }
 
-        // Optional properties
         if let Some(reconnect) = properties.get("websocket.reconnect") {
             config.reconnect = reconnect
                 .parse()
@@ -168,12 +172,11 @@ impl WebSocketSinkConfig {
             config.message_type = MessageType::from_str(msg_type)?;
         }
 
-        // Parse subprotocol
         if let Some(subprotocol) = properties.get("websocket.subprotocol") {
             config.subprotocol = Some(subprotocol.clone());
         }
 
-        // Parse custom headers (websocket.headers.*)
+        // Extra headers come from websocket.headers.<Name> keys
         config.headers =
             crate::core::stream::connector_util::parse_prefixed(properties, "websocket.headers.")
                 .into_iter()
@@ -184,7 +187,8 @@ impl WebSocketSinkConfig {
     }
 }
 
-/// Internal state for WebSocket connection
+/// The open WebSocket connection. The read half is kept only so the
+/// connection stays whole. Nothing reads from it.
 struct WebSocketConnectionState {
     write: futures::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     _read: futures::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
@@ -198,28 +202,27 @@ impl Debug for WebSocketConnectionState {
     }
 }
 
-/// WebSocket sink that publishes messages to an endpoint
+/// WebSocket sink that publishes messages to an endpoint.
 ///
-/// This implementation:
-/// - Maintains a persistent WebSocket connection in `start()`
-/// - Publishes messages synchronously via internal tokio runtime
-/// - Supports configurable message types (text/binary)
-/// - Auto-reconnects on publish failures if enabled
+/// - Opens one WebSocket connection in `start()` and keeps it open
+/// - `publish()` blocks until the async send finishes, using a tokio runtime
+/// - Message type (text or binary) is configurable
+/// - When reconnect is on, publish() reconnects after a failed send or when
+///   there is no connection
 #[derive(Debug)]
 pub struct WebSocketSink {
-    /// Configuration
     config: WebSocketSinkConfig,
-    /// Connection state (established in start())
-    /// Uses tokio::sync::Mutex to safely hold across .await points in publish/stop
+    /// Connection state, set in start(). Uses tokio::sync::Mutex so it can be
+    /// held across .await points in publish and stop.
     state: Arc<TokioMutex<Option<WebSocketConnectionState>>>,
-    /// Tokio runtime for async operations (owned runtime when created by us)
+    /// Tokio runtime this sink created, when start() ran outside a runtime
     runtime: Arc<Mutex<Option<tokio::runtime::Runtime>>>,
-    /// Runtime handle for async operations (stored when started inside existing runtime)
+    /// Handle to the outside runtime, when start() ran inside one
     runtime_handle: Arc<Mutex<Option<tokio::runtime::Handle>>>,
 }
 
 impl WebSocketSink {
-    /// Create a new WebSocket sink
+    /// Creates a WebSocket sink. `start()` connects.
     pub fn new(config: WebSocketSinkConfig) -> Self {
         Self {
             config,
@@ -229,16 +232,18 @@ impl WebSocketSink {
         }
     }
 
-    /// Build an HTTP request with configured headers and subprotocol
+    /// Builds the handshake request with the configured headers and subprotocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error when the URL or a header is invalid.
     fn build_request(config: &WebSocketSinkConfig) -> Result<Request<()>, EventFluxError> {
         let mut request = Request::builder().uri(&config.url);
 
-        // Add custom headers
         for (name, value) in &config.headers {
             request = request.header(name.as_str(), value.expose());
         }
 
-        // Add subprotocol header if configured
         if let Some(ref subprotocol) = config.subprotocol {
             request = request.header("Sec-WebSocket-Protocol", subprotocol.as_str());
         }
@@ -248,24 +253,29 @@ impl WebSocketSink {
         })
     }
 
-    /// Create a WebSocket sink from properties
+    /// Creates a WebSocket sink from properties.
     ///
     /// # Required Properties
     /// - `websocket.url`: WebSocket URL (ws:// or wss://)
     ///
     /// # Optional Properties
-    /// - `websocket.reconnect`: Enable auto-reconnect (default: true)
-    /// - `websocket.reconnect.delay.ms`: Initial reconnect delay (default: 1000)
-    /// - `websocket.reconnect.max.delay.ms`: Max reconnect delay (default: 30000)
-    /// - `websocket.message.type`: Message type - "text" or "binary" (default: text)
-    /// - `websocket.headers.*`: Custom headers (e.g., `websocket.headers.Authorization`)
-    /// - `websocket.subprotocol`: WebSocket subprotocol for negotiation
+    /// - `websocket.reconnect`: reconnect on its own (default true)
+    /// - `websocket.reconnect.delay.ms`: first reconnect delay in ms (default 1000)
+    /// - `websocket.reconnect.max.delay.ms`: largest reconnect delay in ms (default 30000)
+    /// - `websocket.reconnect.max.attempts`: most attempts, -1 for no limit (default 3)
+    /// - `websocket.message.type`: "text" or "binary" (default text)
+    /// - `websocket.headers.*`: extra headers, such as `websocket.headers.Authorization`
+    /// - `websocket.subprotocol`: WebSocket subprotocol to ask for
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the config is invalid.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let config = WebSocketSinkConfig::from_properties(properties)?;
         Ok(Self::new(config))
     }
 
-    /// Get or create tokio runtime
+    /// Creates this sink's own tokio runtime if it does not have one yet
     fn get_runtime(&self) -> Result<(), EventFluxError> {
         let mut runtime_guard = self.runtime.lock().unwrap();
         if runtime_guard.is_none() {
@@ -277,13 +287,17 @@ impl WebSocketSink {
         Ok(())
     }
 
-    /// Connect to WebSocket server
+    /// Connects to the WebSocket server once, with no retry and no timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error when the request cannot be built, and
+    /// `ConnectionUnavailable` when the connect fails.
     async fn connect(
         config: &WebSocketSinkConfig,
     ) -> Result<WebSocketConnectionState, EventFluxError> {
         log::info!("[WebSocketSink] Connecting to {}", config.url);
 
-        // Build request with headers and subprotocol
         let request = Self::build_request(config)?;
 
         let (ws_stream, response) =
@@ -305,7 +319,11 @@ impl WebSocketSink {
         Ok(WebSocketConnectionState { write, _read: read })
     }
 
-    /// Connect with retry logic
+    /// Connects, retrying when reconnect is on.
+    ///
+    /// The wait starts at `reconnect_delay_ms` and doubles after each failure,
+    /// up to `reconnect_max_delay_ms`. Returns the last connect error when no
+    /// retry is left.
     async fn connect_with_retry(
         config: &WebSocketSinkConfig,
     ) -> Result<WebSocketConnectionState, EventFluxError> {
@@ -317,9 +335,8 @@ impl WebSocketSink {
                 Ok(state) => return Ok(state),
                 Err(e) => {
                     attempts += 1;
-                    // Check if we should retry:
-                    // - reconnect must be enabled
-                    // - max_attempts < 0 means unlimited, otherwise check limit
+                    // Retry only when reconnect is on, and the attempt limit is
+                    // negative (no limit) or not yet reached
                     let should_retry = config.reconnect
                         && (config.reconnect_max_attempts < 0
                             || attempts < config.reconnect_max_attempts);
@@ -345,8 +362,8 @@ impl WebSocketSink {
 
 impl Clone for WebSocketSink {
     fn clone(&self) -> Self {
-        // Clone creates a new sink with same config but no connection
-        // Connection will be established on start()
+        // The clone has the same config but no connection or runtime.
+        // start() connects it.
         Self {
             config: self.config.clone(),
             state: Arc::new(TokioMutex::new(None)),
@@ -361,11 +378,10 @@ impl Sink for WebSocketSink {
         let config = self.config.clone();
         let state = Arc::clone(&self.state);
 
-        // Create async connection logic
+        // start() connects once, with no retry
         let connect_future = async move {
             let conn_state = Self::connect(&config).await?;
 
-            // Store connection state
             let mut state_guard = state.lock().await;
             *state_guard = Some(conn_state);
 
@@ -374,17 +390,18 @@ impl Sink for WebSocketSink {
             Ok::<(), EventFluxError>(())
         };
 
-        // Check if we're already inside a tokio runtime
         let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // Store the handle for later use in publish()/stop()
+            // Already inside a tokio runtime. Keep the handle for publish() and
+            // stop() later.
             {
                 let mut handle_guard = self.runtime_handle.lock().unwrap();
                 *handle_guard = Some(handle.clone());
             }
-            // Use block_in_place to avoid nested runtime panic
+            // block_in_place avoids the panic from starting a runtime inside a
+            // runtime. It needs the multi thread runtime.
             tokio::task::block_in_place(|| handle.block_on(connect_future))
         } else {
-            // Not inside a runtime - create one and use block_on
+            // Not inside a runtime, so create this sink's own runtime
             if let Err(e) = self.get_runtime() {
                 log::error!("[WebSocketSink] Failed to initialize runtime: {}", e);
                 return;
@@ -401,6 +418,8 @@ impl Sink for WebSocketSink {
             rt.block_on(connect_future)
         };
 
+        // A failed start is only logged. publish() reconnects later when
+        // reconnect is on.
         if let Err(e) = result {
             log::error!("[WebSocketSink] Start failed: {}", e);
         }
@@ -409,7 +428,7 @@ impl Sink for WebSocketSink {
     fn publish(&self, payload: &[u8]) -> Result<(), EventFluxError> {
         let message = match self.config.message_type {
             MessageType::Text => {
-                // Convert bytes to string for text message
+                // A text message needs valid UTF-8
                 let text = String::from_utf8(payload.to_vec()).map_err(|e| {
                     EventFluxError::app_runtime(format!(
                         "Failed to convert payload to UTF-8 string: {}",
@@ -424,10 +443,9 @@ impl Sink for WebSocketSink {
         let state = Arc::clone(&self.state);
         let config = self.config.clone();
 
-        // Define the async publish operation
         let publish_future =
             async move {
-                // Try to send on existing connection
+                // Try the open connection first. A failed send drops it.
                 {
                     let mut state_guard = state.lock().await;
                     if let Some(conn_state) = state_guard.as_mut() {
@@ -441,17 +459,17 @@ impl Sink for WebSocketSink {
                     }
                 }
 
-                // Reconnect if enabled
+                // No connection, or the send failed. Reconnect if allowed and
+                // send once more. The new connection is kept only if that
+                // send works.
                 if config.reconnect {
                     log::info!("[WebSocketSink] Reconnecting...");
                     let mut conn_state = Self::connect_with_retry(&config).await?;
 
-                    // Send the message
                     conn_state.write.send(message).await.map_err(|e| {
                         EventFluxError::app_runtime(format!("Publish failed: {}", e))
                     })?;
 
-                    // Store the new connection
                     let mut state_guard = state.lock().await;
                     *state_guard = Some(conn_state);
 
@@ -464,11 +482,10 @@ impl Sink for WebSocketSink {
                 }
             };
 
-        // Check if we're already inside a tokio runtime
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| handle.block_on(publish_future))
         } else {
-            // Not inside a runtime - try our owned runtime first
+            // Not inside a runtime. Try this sink's own runtime first.
             let runtime_guard = self
                 .runtime
                 .lock()
@@ -479,7 +496,7 @@ impl Sink for WebSocketSink {
             }
             drop(runtime_guard);
 
-            // Fall back to stored handle
+            // Then the kept handle, set when start() ran inside a runtime
             let handle_guard = self
                 .runtime_handle
                 .lock()
@@ -500,7 +517,7 @@ impl Sink for WebSocketSink {
 
         let state = Arc::clone(&self.state);
 
-        // Create the shutdown future — take state first so it's cleaned up even if close fails
+        // Take the state first, so it is cleared even if the close fails
         let shutdown_future = async move {
             let conn_state = {
                 let mut state_guard = state.lock().await;
@@ -513,20 +530,19 @@ impl Sink for WebSocketSink {
             }
         };
 
-        // Try to use runtime/handle in order of preference
+        // Pick a runtime in this order: this sink's own runtime, the current
+        // runtime, then the kept handle
         let runtime_guard = self.runtime.lock().unwrap();
         if let Some(rt) = runtime_guard.as_ref() {
             rt.block_on(shutdown_future);
         } else {
             drop(runtime_guard);
 
-            // Try current runtime context
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 tokio::task::block_in_place(|| {
                     handle.block_on(shutdown_future);
                 });
             } else {
-                // Fall back to stored handle
                 let handle_guard = self.runtime_handle.lock().unwrap();
                 if let Some(handle) = handle_guard.as_ref() {
                     handle.block_on(shutdown_future);
@@ -546,15 +562,14 @@ impl Sink for WebSocketSink {
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
         let config = self.config.clone();
 
-        // Build request with headers and subprotocol (before async block)
+        // Build the request before the async block, so a bad request fails here
         let request = Self::build_request(&config)?;
         let url = config.url.clone();
 
-        // Create the async validation logic
         let validate_future = async move {
             log::info!("[WebSocketSink] Validating connectivity to {}", url);
 
-            // Try to connect with a timeout
+            // Give up after 10 s
             let connect_result =
                 tokio::time::timeout(Duration::from_secs(10), connect_async(request)).await;
 
@@ -565,7 +580,7 @@ impl Sink for WebSocketSink {
                         response.status()
                     );
 
-                    // Close the connection gracefully
+                    // Close the test connection cleanly
                     let (mut write, _read) = ws_stream.split();
                     let _ = write.close().await;
 
@@ -582,11 +597,10 @@ impl Sink for WebSocketSink {
             }
         };
 
-        // Check if we're already inside a tokio runtime
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| handle.block_on(validate_future))
         } else {
-            // Not inside a runtime - create a temporary one
+            // Not inside a runtime, so make a short lived one
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 EventFluxError::configuration(format!("Failed to create tokio runtime: {}", e))
             })?;
@@ -599,10 +613,10 @@ impl Sink for WebSocketSink {
 // WebSocket Sink Factory
 // ============================================================================
 
-/// Factory for creating WebSocket sink instances.
+/// Factory for WebSocket sinks.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// WebSocket sinks from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build WebSocket sinks from the
+/// SQL WITH clause config.
 #[derive(Debug, Clone)]
 pub struct WebSocketSinkFactory;
 
@@ -627,7 +641,7 @@ impl SinkFactory for WebSocketSinkFactory {
             "websocket.reconnect.max.attempts",
             "websocket.message.type",
             "websocket.subprotocol",
-            // Headers are dynamic: websocket.headers.*
+            // websocket.headers.<Name> keys are also accepted
         ]
     }
 
@@ -831,8 +845,8 @@ mod tests {
         assert_eq!(cloned.config.url, "wss://example.com/events");
         assert!(!cloned.config.reconnect);
         assert_eq!(cloned.config.message_type, MessageType::Binary);
-        // Cloned sink should not have connection state
-        // tokio::sync::Mutex::try_lock() for sync test context
+        // The cloned sink must have no connection state. try_lock() works on
+        // tokio::sync::Mutex outside async code.
         assert!(cloned.state.try_lock().unwrap().is_none());
     }
 

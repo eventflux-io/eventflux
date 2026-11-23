@@ -15,28 +15,23 @@
  * limitations under the License.
  */
 
-// Corresponds to the package io.eventflux.query.api.expression.condition
+// Condition expressions. AND, OR, NOT, comparisons, IN and IS NULL.
+//
+// Each condition struct holds an `eventflux_element: EventFluxElement` and its operands,
+// usually as Box<Expression>. The Expression enum in expression/expression.rs wraps them,
+// as in Expression::And(Box<And>). IsNull uses Option fields because it can test either
+// an expression or a stream.
 
 pub mod and;
 pub mod compare;
-pub mod in_op; // Renamed from in to in_op
+pub mod in_op; // not named `in` because that is a Rust keyword
 pub mod is_null;
 pub mod not;
 pub mod or;
 
 pub use self::and::And;
-pub use self::compare::{Compare, Operator as CompareOperator}; // Re-export Operator enum too
+pub use self::compare::{Compare, Operator as CompareOperator};
 pub use self::in_op::InOp;
 pub use self::is_null::IsNull;
 pub use self::not::Not;
 pub use self::or::Or;
-
-// Comments from before, updated for EventFluxElement composition:
-// Each condition struct (And, Or, etc.) will contain:
-// - eventflux_element: EventFluxElement
-// - Other specific fields, often Box<Expression> for operands.
-//
-// The Expression enum (in expression/expression.rs) will have variants
-// like Expression::And(Box<And>), etc.
-//
-// IsNull struct has Option fields to handle its different construction paths.

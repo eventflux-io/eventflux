@@ -15,17 +15,17 @@
  * limitations under the License.
  */
 
-// End-to-End Type Validation Tests
+// End to end type validation tests
 //
-// These tests match the Java Siddhi reference implementation exactly.
-// They test validation at SQL parse/compile time.
+// Each test is ported from a test in the Java reference implementation, named in
+// the comments. They check validation when the SQL is parsed and compiled.
 
 use eventflux::sql_compiler::parse;
 
 // ============================================================================
 // 1.1 Boolean Comparison Type Validation
 // Java: BooleanCompareTestCase.java
-// Tests: BOOL vs numeric type comparisons should be rejected
+// Comparing BOOL with a numeric type must be rejected
 // ============================================================================
 
 /// Test: x > y where x is BOOL and y is INT (Java test1)
@@ -103,7 +103,7 @@ fn test_1_1_double_not_equals_bool_rejected() {
 // ============================================================================
 // 1.2 String Comparison Type Validation
 // Java: StringCompareTestCase.java
-// Tests: STRING vs numeric type comparisons should be rejected
+// Comparing STRING with a numeric type must be rejected
 // ============================================================================
 
 /// Test: x > y where x is STRING and y is INT (Java test1)
@@ -188,9 +188,9 @@ fn test_1_3_nonexistent_attribute_in_select_rejected() {
 // Java: SimpleQueryValidatorTestCase.testQueryWithDuplicateDefinition
 // ============================================================================
 
-/// Test: Duplicate stream with incompatible schema
-/// Note: This validation may occur at runtime rather than parse time.
-/// The test documents expected behavior but allows both outcomes.
+/// Test: Insert into a stream whose schema does not fit the query output.
+/// This check may happen at runtime rather than at parse time, so the test
+/// records the expected behaviour but accepts both outcomes.
 #[test]
 fn test_1_4_duplicate_stream_incompatible_schema_rejected() {
     let sql = "\
@@ -202,9 +202,9 @@ fn test_1_4_duplicate_stream_incompatible_schema_rejected() {
         WHERE volume >= 50;\n";
 
     let result = parse(sql);
-    // This should fail because we're trying to insert 3 columns into a 2-column stream.
-    // Currently, schema mismatch validation may occur at runtime.
-    // This test passes regardless to document the expected behavior.
+    // This should fail because it inserts 3 columns into a stream with 2 columns.
+    // Today the schema mismatch may only be caught at runtime.
+    // The assert below accepts any result, so it checks nothing.
     assert!(
         result.is_err() || result.is_ok(),
         "Test documents schema mismatch validation behavior"
@@ -214,10 +214,10 @@ fn test_1_4_duplicate_stream_incompatible_schema_rejected() {
 // ============================================================================
 // 1.5 Invalid Filter Condition Validation
 // Java: SimpleQueryValidatorTestCase.testInvalidFilterCondition1
-// Tests: volume >= 50 AND volume (volume is LONG, not BOOL)
+// volume >= 50 AND volume must be rejected, because volume is LONG, not BOOL
 // ============================================================================
 
-/// Test: AND operator with non-boolean operand
+/// Test: AND with an operand that is not boolean
 #[test]
 fn test_1_5_and_with_non_boolean_operand_rejected() {
     let sql = "\
@@ -235,7 +235,7 @@ fn test_1_5_and_with_non_boolean_operand_rejected() {
     );
 }
 
-/// Test: OR operator with non-boolean operand
+/// Test: OR with an operand that is not boolean
 #[test]
 fn test_1_5_or_with_non_boolean_operand_rejected() {
     let sql = "\
@@ -256,10 +256,10 @@ fn test_1_5_or_with_non_boolean_operand_rejected() {
 // ============================================================================
 // 1.6 Non-Boolean Filter Expression Validation (NOT)
 // Java: SimpleQueryValidatorTestCase.testInvalidFilterCondition2
-// Tests: NOT(price) where price is FLOAT
+// NOT(price) must be rejected, because price is FLOAT
 // ============================================================================
 
-/// Test: NOT with non-boolean operand
+/// Test: NOT with an operand that is not boolean
 #[test]
 fn test_1_6_not_with_non_boolean_operand_rejected() {
     let sql = "\
@@ -302,13 +302,13 @@ fn test_1_7_direct_table_query_rejected() {
 // ============================================================================
 // 1.8 Direct Aggregation Query Prevention (with EVERY)
 // Java: SimpleQueryValidatorTestCase.testQueryWithAggregation
-// Note: Tests use `from every AggregationName` syntax
+// The Java tests use the `from every AggregationName` syntax
 // ============================================================================
 
 #[test]
 #[ignore = "Aggregation definitions not yet supported in SQL compiler"]
 fn test_1_8_every_aggregation_rejected() {
-    // This test is for when aggregation support is added
+    // Placeholder until aggregations are supported. The SQL has no query yet.
     let sql = "\
         CREATE STREAM Trades (symbol STRING, price DOUBLE, volume LONG, ts LONG);\n\
         -- CREATE AGGREGATION not yet supported\n\
@@ -320,7 +320,7 @@ fn test_1_8_every_aggregation_rejected() {
 // ============================================================================
 // 1.9 Every Keyword with Table Prevention
 // Java: SimpleQueryValidatorTestCase.testQueryWithEveryTable
-// Tests: `from every TestTable` is invalid
+// `from every TestTable` is invalid
 // ============================================================================
 
 /// Test: EVERY with table (EventFlux uses PATTERN syntax for EVERY)
@@ -335,7 +335,7 @@ fn test_1_9_table_in_pattern_rejected() {
         FROM PATTERN (EVERY e=T);\n";
 
     let result = parse(sql);
-    // Should be rejected - tables cannot be used in patterns
+    // Must be rejected because tables cannot be used in patterns
     assert!(
         result.is_err(),
         "Table in PATTERN should be rejected. Got: {:?}",
@@ -357,7 +357,7 @@ fn test_1_9_table_in_pattern_rejected() {
 #[test]
 #[ignore = "Aggregation definitions not yet supported in SQL compiler"]
 fn test_1_10_aggregation_in_pattern_rejected() {
-    // This test is for when aggregation support is added
+    // Placeholder until aggregations are supported. The SQL is only a comment.
     let sql = "\
         -- When aggregations are supported, this should be rejected\n";
 
@@ -365,7 +365,7 @@ fn test_1_10_aggregation_in_pattern_rejected() {
 }
 
 // ============================================================================
-// Positive Tests - These should PASS
+// Positive Tests. These must PASS.
 // ============================================================================
 
 /// Valid: BOOL comparison with BOOL

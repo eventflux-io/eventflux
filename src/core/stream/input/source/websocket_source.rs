@@ -17,11 +17,12 @@
 
 //! # WebSocket Source
 //!
-//! Connects to WebSocket endpoints and consumes messages for the EventFlux pipeline.
+//! Connects to a WebSocket endpoint and reads its messages into the EventFlux pipeline.
 //!
 //! ## Architecture
 //!
-//! Uses synchronous Source trait with internal tokio runtime for async WebSocket operations:
+//! The Source trait is blocking, so the worker thread runs its own tokio
+//! runtime for the async WebSocket client.
 //! ```text
 //! WebSocket URL → tokio-tungstenite → bytes → SourceCallback → SourceMapper → Events
 //! ```
@@ -63,21 +64,21 @@ use tokio_tungstenite::{
 /// Configuration for WebSocket source
 #[derive(Debug, Clone)]
 pub struct WebSocketSourceConfig {
-    /// WebSocket URL (ws:// or wss://)
+    /// WebSocket URL, starting with ws:// or wss://
     pub url: String,
-    /// Enable auto-reconnect on disconnect (default: true)
+    /// Reconnect after a disconnect or a failed connect. Default true.
     pub reconnect: bool,
-    /// Initial reconnect delay in milliseconds (default: 1000)
+    /// First reconnect delay in ms. Doubles after each failed connect. Default 1000.
     pub reconnect_delay_ms: u64,
-    /// Maximum reconnect delay in milliseconds (default: 30000)
+    /// Largest reconnect delay in ms. Default 30000.
     pub reconnect_max_delay_ms: u64,
-    /// Maximum reconnect attempts (-1 = unlimited, default: -1)
+    /// Most connect attempts in a row. Any negative value means no limit.
+    /// Default -1.
     pub reconnect_max_attempts: i32,
-    /// Custom headers for connection (e.g., Authorization)
-    /// Custom handshake headers (values redacted in Debug — they may
-    /// carry Authorization tokens)
+    /// Extra handshake headers, such as Authorization. Values are hidden in
+    /// Debug, since they may carry tokens.
     pub headers: HashMap<String, crate::core::stream::connector_util::Redacted>,
-    /// WebSocket subprotocol for negotiation
+    /// WebSocket subprotocol to ask for, sent as `Sec-WebSocket-Protocol`
     pub subprotocol: Option<String>,
 }
 
@@ -96,18 +97,21 @@ impl Default for WebSocketSourceConfig {
 }
 
 impl WebSocketSourceConfig {
-    /// Parse configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `websocket.url` is missing or does not start with
+    /// ws:// or wss://, or a bool or number does not parse.
     #[allow(clippy::field_reassign_with_default)]
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
 
-        // Required: url
         config.url = properties
             .get("websocket.url")
             .ok_or("Missing required property: websocket.url")?
             .clone();
 
-        // Validate URL scheme
         if !config.url.starts_with("ws://") && !config.url.starts_with("wss://") {
             return Err(format!(
                 "Invalid WebSocket URL: must start with ws:// or wss://, got: {}",
@@ -115,7 +119,6 @@ impl WebSocketSourceConfig {
             ));
         }
 
-        // Optional properties
         if let Some(reconnect) = properties.get("websocket.reconnect") {
             config.reconnect = reconnect
                 .parse()
@@ -140,12 +143,11 @@ impl WebSocketSourceConfig {
                 .map_err(|e| format!("Invalid websocket.reconnect.max.attempts: {}", e))?;
         }
 
-        // Parse subprotocol
         if let Some(subprotocol) = properties.get("websocket.subprotocol") {
             config.subprotocol = Some(subprotocol.clone());
         }
 
-        // Parse custom headers (websocket.headers.*)
+        // Extra headers come from websocket.headers.<Name> keys
         config.headers =
             crate::core::stream::connector_util::parse_prefixed(properties, "websocket.headers.")
                 .into_iter()
@@ -156,24 +158,22 @@ impl WebSocketSourceConfig {
     }
 }
 
-/// WebSocket source that connects to an endpoint and receives messages
+/// WebSocket source that connects to an endpoint and receives its messages.
 ///
-/// This implementation:
-/// - Uses sync Source trait with internal tokio runtime for async WebSocket operations
-/// - Supports auto-reconnection with exponential backoff
-/// - Integrates with M5 error handling context
+/// - Runs its own tokio runtime on the worker thread for the async client
+/// - Reconnects on its own, doubling the wait after each failed connect
+/// - Uses the `error.*` handling strategies
 #[derive(Debug)]
 pub struct WebSocketSource {
-    /// Configuration
     config: WebSocketSourceConfig,
-    /// Worker thread lifecycle (spawn, signal, join on stop)
+    /// Runs the worker thread. Starts it, signals it, and joins it on stop.
     worker: SourceWorker,
-    /// Optional error handling context (M5 integration)
+    /// Optional error handling context
     error_ctx: Option<SourceErrorContext>,
 }
 
 impl WebSocketSource {
-    /// Create a new WebSocket source without error handling
+    /// Creates a WebSocket source with no error handling
     pub fn new(config: WebSocketSourceConfig) -> Self {
         Self {
             config,
@@ -182,21 +182,24 @@ impl WebSocketSource {
         }
     }
 
-    /// Check if we need custom headers for the request
+    /// Returns true when the handshake needs a built request, because there are
+    /// extra headers or a subprotocol
     fn needs_custom_request(config: &WebSocketSourceConfig) -> bool {
         !config.headers.is_empty() || config.subprotocol.is_some()
     }
 
-    /// Build an HTTP request with configured headers and subprotocol
+    /// Builds the handshake request with the configured headers and subprotocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error when the URL or a header is invalid.
     fn build_request(config: &WebSocketSourceConfig) -> Result<Request<()>, EventFluxError> {
         let mut request = Request::builder().uri(&config.url);
 
-        // Add custom headers
         for (name, value) in &config.headers {
             request = request.header(name.as_str(), value.expose());
         }
 
-        // Add subprotocol header if configured
         if let Some(ref subprotocol) = config.subprotocol {
             request = request.header("Sec-WebSocket-Protocol", subprotocol.as_str());
         }
@@ -206,19 +209,23 @@ impl WebSocketSource {
         })
     }
 
-    /// Create a WebSocket source from properties
+    /// Creates a WebSocket source from properties.
     ///
     /// # Required Properties
     /// - `websocket.url`: WebSocket URL (ws:// or wss://)
     ///
     /// # Optional Properties
-    /// - `websocket.reconnect`: Enable auto-reconnect (default: true)
-    /// - `websocket.reconnect.delay.ms`: Initial reconnect delay (default: 1000)
-    /// - `websocket.reconnect.max.delay.ms`: Max reconnect delay (default: 30000)
-    /// - `websocket.reconnect.max.attempts`: Max attempts, -1 = unlimited (default: -1)
-    /// - `websocket.headers.*`: Custom headers (e.g., `websocket.headers.Authorization`)
-    /// - `websocket.subprotocol`: WebSocket subprotocol for negotiation
-    /// - `error.*`: Error handling properties (see SourceErrorContext)
+    /// - `websocket.reconnect`: reconnect on its own (default true)
+    /// - `websocket.reconnect.delay.ms`: first reconnect delay in ms (default 1000)
+    /// - `websocket.reconnect.max.delay.ms`: largest reconnect delay in ms (default 30000)
+    /// - `websocket.reconnect.max.attempts`: most attempts, -1 for no limit (default -1)
+    /// - `websocket.headers.*`: extra headers, such as `websocket.headers.Authorization`
+    /// - `websocket.subprotocol`: WebSocket subprotocol to ask for
+    /// - `error.*`: error handling properties (see SourceErrorContext)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the WebSocket config or the error config is invalid.
     pub fn from_properties(
         properties: &HashMap<String, String>,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
@@ -226,7 +233,7 @@ impl WebSocketSource {
     ) -> Result<Self, String> {
         let config = WebSocketSourceConfig::from_properties(properties)?;
 
-        // Parse error handling configuration (optional)
+        // Error handling is optional. Only `error.*` keys are passed on.
         let error_config_builder = ErrorConfigBuilder::from_properties(properties);
         let error_ctx = if error_config_builder.is_configured() {
             use crate::core::config::{FlatConfig, PropertySource};
@@ -253,7 +260,15 @@ impl WebSocketSource {
         })
     }
 
-    /// Connect to WebSocket with retry logic
+    /// Connects to the WebSocket, retrying when reconnect is on.
+    ///
+    /// The wait starts at `reconnect_delay_ms` and doubles after each failure,
+    /// up to `reconnect_max_delay_ms`. The wait does not wake early on stop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source was stopped, the request cannot be
+    /// built, or a connect fails and no retry is left.
     async fn connect_with_retry(
         config: &WebSocketSourceConfig,
         running: &Arc<AtomicBool>,
@@ -268,7 +283,7 @@ impl WebSocketSource {
 
             log::info!("[WebSocketSource] Connecting to {}", config.url);
 
-            // Use URL directly when no custom headers, otherwise build request
+            // Use the URL as is when there are no extra headers, else build a request
             let connect_result = if Self::needs_custom_request(config) {
                 let request = Self::build_request(config)?;
                 connect_async(request).await
@@ -310,14 +325,15 @@ impl WebSocketSource {
 
                     tokio::time::sleep(Duration::from_millis(delay)).await;
 
-                    // Exponential backoff with cap
+                    // Double the wait, up to the max
                     delay = (delay * 2).min(config.reconnect_max_delay_ms);
                 }
             }
         }
     }
 
-    /// Main message processing loop
+    /// Connects, reads messages until the connection ends, and reconnects when
+    /// reconnect is on. Returns when stopped or when it gives up.
     async fn message_loop(
         config: WebSocketSourceConfig,
         running: Arc<AtomicBool>,
@@ -325,7 +341,6 @@ impl WebSocketSource {
         mut error_ctx: Option<SourceErrorContext>,
     ) {
         'outer: while running.load(Ordering::SeqCst) {
-            // Connect (with retry if enabled)
             let ws_stream = match Self::connect_with_retry(&config, &running).await {
                 Ok(stream) => stream,
                 Err(e) => {
@@ -340,13 +355,12 @@ impl WebSocketSource {
 
             let (mut write, mut read) = ws_stream.split();
 
-            // Message loop
             loop {
                 if !running.load(Ordering::SeqCst) {
                     break 'outer;
                 }
 
-                // Use timeout to periodically check running flag
+                // Wait at most 100 ms so the running flag is checked often
                 let msg_result =
                     tokio::time::timeout(Duration::from_millis(100), read.next()).await;
 
@@ -361,7 +375,7 @@ impl WebSocketSource {
                             MessageResult::Reconnect => {
                                 if config.reconnect {
                                     log::info!("[WebSocketSource] Reconnecting...");
-                                    break; // Break inner loop to reconnect
+                                    break; // leave the inner loop to reconnect
                                 } else {
                                     log::info!(
                                         "[WebSocketSource] Connection closed, reconnect disabled"
@@ -375,7 +389,6 @@ impl WebSocketSource {
                         }
                     }
                     Ok(Some(Err(e))) => {
-                        // WebSocket error
                         let err = EventFluxError::ConnectionUnavailable {
                             message: format!("WebSocket error: {}", e),
                             source: Some(Box::new(e)),
@@ -391,28 +404,27 @@ impl WebSocketSource {
 
                         if config.reconnect {
                             log::info!("[WebSocketSource] Connection lost, reconnecting...");
-                            break; // Break inner loop to reconnect
+                            break; // leave the inner loop to reconnect
                         } else {
                             break 'outer;
                         }
                     }
                     Ok(None) => {
-                        // Stream ended
                         log::info!("[WebSocketSource] Connection closed by server");
                         if config.reconnect {
-                            break; // Break inner loop to reconnect
+                            break; // leave the inner loop to reconnect
                         } else {
                             break 'outer;
                         }
                     }
                     Err(_) => {
-                        // Timeout - continue loop to check running flag
+                        // Timed out, so loop to check the running flag
                         continue;
                     }
                 }
             }
 
-            // Small delay before reconnect attempt
+            // Wait reconnect_delay_ms before trying to connect again
             if running.load(Ordering::SeqCst) && config.reconnect {
                 tokio::time::sleep(Duration::from_millis(config.reconnect_delay_ms)).await;
             }
@@ -421,7 +433,8 @@ impl WebSocketSource {
         log::info!("[WebSocketSource] Message loop ended");
     }
 
-    /// Process a single WebSocket message
+    /// Handles one WebSocket message. Text and binary payloads are delivered,
+    /// a ping gets a pong, and a close frame asks for a reconnect.
     async fn process_message(
         message: Message,
         callback: &Arc<dyn SourceCallback>,
@@ -432,14 +445,13 @@ impl WebSocketSource {
             Message::Text(text) => Self::deliver_data(text.as_bytes(), callback, error_ctx),
             Message::Binary(data) => Self::deliver_data(&data, callback, error_ctx),
             Message::Ping(data) => {
-                // Respond with Pong
                 if let Err(e) = write.send(Message::Pong(data)).await {
                     log::warn!("[WebSocketSource] Failed to send pong: {}", e);
                 }
                 MessageResult::Continue
             }
             Message::Pong(_) => {
-                // Pong received - connection is alive
+                // A pong means the connection is alive
                 log::trace!("[WebSocketSource] Pong received");
                 MessageResult::Continue
             }
@@ -456,13 +468,16 @@ impl WebSocketSource {
                 MessageResult::Reconnect
             }
             Message::Frame(_) => {
-                // Raw frame - typically not used
+                // Raw frames are not normally seen when reading, so ignore them
                 MessageResult::Continue
             }
         }
     }
 
-    /// Deliver data to callback with error handling
+    /// Passes data to the callback and applies the error strategy on failure.
+    ///
+    /// Retries while the strategy says Retry. Returns Stop on Fail or when
+    /// cancelled, and Continue after success, drop, or DLQ.
     fn deliver_data(
         data: &[u8],
         callback: &Arc<dyn SourceCallback>,
@@ -471,14 +486,13 @@ impl WebSocketSource {
         loop {
             match callback.on_data(data) {
                 Ok(()) => {
-                    // Success - reset error counter
                     if let Some(ctx) = error_ctx {
                         ctx.reset_errors();
                     }
                     return MessageResult::Continue;
                 }
                 Err(e) => {
-                    // Create fallback event for DLQ
+                    // Wrap the raw bytes in an event so the DLQ has something to carry
                     let fallback_event = Event::new_with_data(
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -496,7 +510,7 @@ impl WebSocketSource {
 
                     match action {
                         ErrorAction::Retry { .. } => {
-                            // Retry - loop continues
+                            // handle_error_with_action has already waited
                             continue;
                         }
                         ErrorAction::Fail => {
@@ -504,12 +518,12 @@ impl WebSocketSource {
                             return MessageResult::Stop;
                         }
                         ErrorAction::Cancelled => {
-                            // Stop requested mid-retry — no ack concept here,
-                            // just stop promptly
+                            // Stop was asked for during a retry. WebSocket has no
+                            // ack to undo, so just stop at once.
                             return MessageResult::Stop;
                         }
                         _ => {
-                            // Drop, DLQ, or other actions - continue processing
+                            // Drop or DLQ, so go on with the next message
                             return MessageResult::Continue;
                         }
                     }
@@ -519,7 +533,7 @@ impl WebSocketSource {
     }
 }
 
-/// Result of processing a message
+/// What the read loop should do after a message
 enum MessageResult {
     Continue,
     Reconnect,
@@ -530,8 +544,8 @@ impl Clone for WebSocketSource {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            worker: self.worker.clone(), // Clones as a fresh, unstarted worker
-            // Fresh context: same strategy/DLQ wiring, zeroed runtime state
+            worker: self.worker.clone(), // the clone is a new worker that has not started
+            // New context with the same strategy and DLQ, and runtime counters reset
             error_ctx: self.error_ctx.as_ref().map(SourceErrorContext::fresh),
         }
     }
@@ -541,14 +555,13 @@ impl Source for WebSocketSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
         let config = self.config.clone();
 
-        // Move error_ctx into the thread
+        // The thread gets a new copy, so self keeps its config for a later restart
         let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         self.worker.start(move |running| {
             if let Some(ctx) = &mut error_ctx {
                 ctx.bind_cancellation(Arc::clone(&running));
             }
-            // Create a tokio runtime for async WebSocket operations
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(e) => {
@@ -563,8 +576,8 @@ impl Source for WebSocketSource {
 
     fn stop(&mut self) {
         log::info!("[WebSocketSource] Stopping...");
-        // A worker blocked in a connect attempt (10s timeout) is detached
-        // after the grace period.
+        // A worker stuck in a connect attempt or a reconnect wait longer than
+        // the grace period is left running on its own
         self.worker.stop();
     }
 
@@ -577,7 +590,8 @@ impl Source for WebSocketSource {
         stream_name: &str,
         junction: Arc<Mutex<InputHandler>>,
     ) -> Result<(), EventFluxError> {
-        // Without error.strategy the source drops failures; no DLQ to wire
+        // With no error.strategy the source drops failures, so there is no DLQ
+        // to connect
         if let Some(ref mut ctx) = self.error_ctx {
             ctx.set_dlq_junction(stream_name, junction);
         }
@@ -588,7 +602,7 @@ impl Source for WebSocketSource {
         let config = self.config.clone();
         let needs_custom = Self::needs_custom_request(&config);
 
-        // Build request only if custom headers are needed
+        // Build a request only when there are extra headers or a subprotocol
         let request = if needs_custom {
             Some(Self::build_request(&config)?)
         } else {
@@ -596,11 +610,10 @@ impl Source for WebSocketSource {
         };
         let url = config.url.clone();
 
-        // Create the async validation logic
         let validate_future = async move {
             log::info!("[WebSocketSource] Validating connectivity to {}", url);
 
-            // Try to connect with a timeout - use URL directly if no custom headers
+            // Give up after 10 s
             let connect_result = if let Some(req) = request {
                 tokio::time::timeout(Duration::from_secs(10), connect_async(req)).await
             } else {
@@ -614,7 +627,7 @@ impl Source for WebSocketSource {
                         response.status()
                     );
 
-                    // Close the connection gracefully
+                    // Close the test connection cleanly
                     let (mut write, _read) = ws_stream.split();
                     let _ = write.close().await;
 
@@ -631,12 +644,13 @@ impl Source for WebSocketSource {
             }
         };
 
-        // Check if we're already inside a tokio runtime
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // Use block_in_place to avoid nested runtime panic
+            // Already inside a tokio runtime. block_in_place avoids the panic
+            // from starting a runtime inside a runtime. It needs the multi
+            // thread runtime.
             tokio::task::block_in_place(|| handle.block_on(validate_future))
         } else {
-            // Not inside a runtime - create a temporary one
+            // Not inside a runtime, so make a short lived one
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 EventFluxError::configuration(format!("Failed to create tokio runtime: {}", e))
             })?;
@@ -649,10 +663,10 @@ impl Source for WebSocketSource {
 // WebSocket Source Factory
 // ============================================================================
 
-/// Factory for creating WebSocket source instances.
+/// Factory for WebSocket sources.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// WebSocket sources from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build WebSocket sources from
+/// the SQL WITH clause config.
 #[derive(Debug, Clone)]
 pub struct WebSocketSourceFactory;
 
@@ -670,8 +684,8 @@ impl SourceFactory for WebSocketSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        // Connector keys + the shared error-handling keys (owned by
-        // SourceErrorContext) — concatenated once, on first use
+        // WebSocket keys plus the shared error handling keys owned by
+        // SourceErrorContext. Joined once, on first use.
         static PARAMS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
             [
                 &[
@@ -680,7 +694,7 @@ impl SourceFactory for WebSocketSourceFactory {
                     "websocket.reconnect.max.delay.ms",
                     "websocket.reconnect.max.attempts",
                     "websocket.subprotocol",
-                    // Headers are dynamic: websocket.headers.*
+                    // websocket.headers.<Name> keys are also accepted
                 ][..],
                 crate::core::error::source_support::SOURCE_ERROR_PARAMETERS,
             ]
@@ -693,9 +707,9 @@ impl SourceFactory for WebSocketSourceFactory {
         &self,
         config: &HashMap<String, String>,
     ) -> Result<Box<dyn Source>, EventFluxError> {
-        // DLQ junction is None initially — the runtime calls
-        // set_error_dlq_junction() on attachment, which also sets the stream
-        // name. Until then the URL identifies the stream in error context.
+        // The DLQ junction starts as None. The runtime calls
+        // set_error_dlq_junction() when it attaches the source, which also sets
+        // the stream name. Until then the URL names the stream in error messages.
         let stream_name = config
             .get("websocket.url")
             .cloned()
@@ -877,7 +891,7 @@ mod tests {
 
         assert_eq!(cloned.config.url, "wss://example.com/stream");
         assert!(!cloned.config.reconnect);
-        assert!(cloned.error_ctx.is_none()); // Error ctx not cloned
+        assert!(cloned.error_ctx.is_none()); // the source had none to clone
     }
 
     // =========================================================================
@@ -938,7 +952,7 @@ mod tests {
         assert!(result.is_ok(), "Factory should accept error.* config");
     }
 
-    // Shutdown lifecycle (stop-without-start, double-stop, join-on-stop) is
-    // covered by the SourceWorker tests in source/mod.rs — WebSocketSource
-    // delegates its lifecycle entirely to SourceWorker.
+    // Shutdown (stop before start, double stop, join on stop) is covered by the
+    // SourceWorker tests in source/mod.rs. WebSocketSource leaves start and
+    // stop fully to SourceWorker.
 }

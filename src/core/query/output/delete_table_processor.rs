@@ -25,18 +25,20 @@ use crate::core::table::{InMemoryCompiledCondition, Table};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Processor that handles DELETE table operations triggered by stream events.
+/// Runs a table DELETE for each incoming stream event.
 ///
-/// Supports two modes:
-/// 1. Legacy mode: Uses `output_data` as the condition for deletion
-/// 2. Expression mode: Uses a condition executor to find and delete matching rows
+/// Two modes:
+/// 1. Legacy mode: deletes rows that equal the event's `output_data`
+/// 2. Expression mode: deletes rows for which the WHERE condition is true
+///
+/// Errors from the table are ignored. This is the last processor in the chain.
 pub struct DeleteTableProcessor {
     meta: CommonProcessorMeta,
     table: Arc<dyn Table>,
-    /// Expression executor for evaluating WHERE condition (stream-triggered mode)
+    /// WHERE condition for expression mode. None means legacy mode.
     condition_executor: Option<Box<dyn ExpressionExecutor>>,
-    /// Counter for dropped events (e.g., non-StreamEvent inputs that can't be processed).
-    /// Wrapped in Arc so metric is shared across processor clones for accurate observability.
+    /// Number of events skipped, such as non StreamEvent input in expression mode.
+    /// In an Arc so all clones of this processor share one count.
     dropped_events: Arc<AtomicU64>,
 }
 
@@ -51,7 +53,7 @@ impl std::fmt::Debug for DeleteTableProcessor {
 }
 
 impl DeleteTableProcessor {
-    /// Creates a legacy DeleteTableProcessor (uses event data directly)
+    /// Create a processor in legacy mode, which matches rows on the event's output_data
     pub fn new(
         table: Arc<dyn Table>,
         app_ctx: Arc<EventFluxAppContext>,
@@ -65,11 +67,11 @@ impl DeleteTableProcessor {
         }
     }
 
-    /// Creates an expression-based DeleteTableProcessor for stream-triggered deletes
+    /// Create a processor in expression mode, for deletes driven by stream events.
     ///
     /// # Arguments
-    /// * `table` - The target table to delete from
-    /// * `condition_executor` - Executor for the WHERE condition expression
+    /// * `table` - Table to delete from
+    /// * `condition_executor` - Runs the WHERE condition
     pub fn new_with_expression(
         table: Arc<dyn Table>,
         app_ctx: Arc<EventFluxAppContext>,
@@ -84,13 +86,14 @@ impl DeleteTableProcessor {
         }
     }
 
-    /// Returns the count of dropped events (events that couldn't be processed).
-    /// Useful for monitoring and alerting on data loss.
+    /// Number of events skipped because they could not be processed, summed across all
+    /// clones. Useful for alerts on lost data.
     pub fn dropped_events(&self) -> u64 {
         self.dropped_events.load(Ordering::Relaxed)
     }
 
-    /// Process using legacy mode (output_data as condition)
+    /// Legacy mode. Deletes rows equal to the event's output_data. Does nothing when
+    /// the event has no output_data.
     fn process_legacy(&self, event: &dyn ComplexEvent) {
         if let Some(data) = event.get_output_data() {
             let cond = InMemoryCompiledCondition {
@@ -100,13 +103,13 @@ impl DeleteTableProcessor {
         }
     }
 
-    /// Process using expression mode (evaluate condition against stream event + table rows)
+    /// Expression mode. Deletes the rows for which the condition, run on the stream
+    /// event and each row, is true.
     fn process_with_expression(
         &self,
         se: &StreamEvent,
         condition_executor: &dyn ExpressionExecutor,
     ) {
-        // Use the table's expression-based delete method
         let _ = self.table.delete_with_expression(se, condition_executor);
     }
 }
@@ -117,17 +120,16 @@ impl Processor for DeleteTableProcessor {
             let next = event.set_next(None);
 
             if let Some(ref cond_exec) = self.condition_executor {
-                // Expression-based mode
-                // DELETE requires direct StreamEvent input. Join/window sources (StateEvent)
-                // are not supported because WHERE expressions are built with stream positions
-                // that would be lost when collapsing multi-stream data into a synthetic event.
+                // Expression mode needs a StreamEvent. Join and window sources send a
+                // StateEvent, which is not supported. The WHERE expression refers to stream
+                // positions, and those would be lost if the streams were merged into one
+                // made up event.
                 if let Some(se) = event.as_any().downcast_ref::<StreamEvent>() {
                     self.process_with_expression(se, cond_exec.as_ref());
                 } else {
-                    // Track dropped events for monitoring
                     let count = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
 
-                    // Log initial warning, then periodic reminders every 1000 drops
+                    // Warn on the first drop, then again every 1000 drops
                     if count == 1 {
                         log::warn!(
                             "DELETE processor received non-StreamEvent input (likely from JOIN/WINDOW). \
@@ -142,7 +144,7 @@ impl Processor for DeleteTableProcessor {
                     }
                 }
             } else {
-                // Legacy mode - works with any ComplexEvent via output_data
+                // Legacy mode works with any ComplexEvent, through its output_data
                 self.process_legacy(event.as_ref());
             }
 
@@ -155,7 +157,6 @@ impl Processor for DeleteTableProcessor {
     }
     fn set_next_processor(&mut self, _next: Option<Arc<Mutex<dyn Processor>>>) {}
     fn clone_processor(&self, query_ctx: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
-        // Clone executor if present
         let condition_executor = self
             .condition_executor
             .as_ref()
@@ -168,7 +169,7 @@ impl Processor for DeleteTableProcessor {
             ),
             table: Arc::clone(&self.table),
             condition_executor,
-            // Share metrics across clones for accurate aggregate observability
+            // Share one drop count across all clones
             dropped_events: Arc::clone(&self.dropped_events),
         })
     }
@@ -182,6 +183,6 @@ impl Processor for DeleteTableProcessor {
         ProcessingMode::DEFAULT
     }
     fn is_stateful(&self) -> bool {
-        true // DELETE operations affect table state
+        true // DELETE changes table state
     }
 }

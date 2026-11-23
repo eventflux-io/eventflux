@@ -17,14 +17,14 @@
 
 //! Configuration Error Types
 //!
-//! Comprehensive error handling for configuration management operations.
+//! Errors returned while loading, merging, validating and resolving configuration.
 
 use thiserror::Error;
 
 /// Result type for configuration operations
 pub type ConfigResult<T> = Result<T, ConfigError>;
 
-/// Comprehensive configuration error types
+/// Errors from configuration operations.
 #[derive(Error, Debug)]
 pub enum ConfigError {
     #[error("Configuration file not found: {path}")]
@@ -130,7 +130,7 @@ pub enum ConfigError {
     JsonError(#[from] serde_json::Error),
 }
 
-/// Configuration validation error details
+/// One problem found while validating a configuration.
 #[derive(Error, Debug, Clone, PartialEq)]
 pub enum ValidationError {
     #[error("Required field '{field}' is missing")]
@@ -177,21 +177,21 @@ pub enum ValidationError {
     Inconsistency { message: String },
 }
 
-/// Configuration validation result
+/// Errors and warnings collected by a validation pass.
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
-    /// List of validation errors
+    /// Problems that make the configuration invalid.
     pub errors: Vec<ValidationError>,
 
-    /// List of validation warnings
+    /// Problems that are reported but do not make the configuration invalid.
     pub warnings: Vec<ValidationError>,
 
-    /// Additional validation context
+    /// Free text describing what was validated.
     pub context: String,
 }
 
 impl ValidationResult {
-    /// Create a new validation result
+    /// Create an empty result with no errors or warnings.
     pub fn new() -> Self {
         Self {
             errors: Vec::new(),
@@ -200,12 +200,12 @@ impl ValidationResult {
         }
     }
 
-    /// Create a successful validation result
+    /// Create a passing result. Same as [`ValidationResult::new`].
     pub fn success() -> Self {
         Self::new()
     }
 
-    /// Create a validation result with errors
+    /// Create a result holding the given errors.
     pub fn with_errors(errors: Vec<ValidationError>) -> Self {
         Self {
             errors,
@@ -224,7 +224,7 @@ impl ValidationResult {
         self.warnings.push(warning);
     }
 
-    /// Check if the validation was successful (no errors)
+    /// Check that there are no errors. Warnings do not count.
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
     }
@@ -234,12 +234,14 @@ impl ValidationResult {
         !self.warnings.is_empty()
     }
 
-    /// Get the total number of issues (errors + warnings)
+    /// Total number of errors plus warnings.
     pub fn issue_count(&self) -> usize {
         self.errors.len() + self.warnings.len()
     }
 
-    /// Merge another validation result into this one
+    /// Add the errors and warnings of `other` to this result.
+    ///
+    /// A non empty `other.context` is appended to this context, separated by ", ".
     pub fn merge(&mut self, other: ValidationResult) {
         self.errors.extend(other.errors);
         self.warnings.extend(other.warnings);
@@ -252,7 +254,12 @@ impl ValidationResult {
         }
     }
 
-    /// Convert to a Result type
+    /// Convert to a `Result`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ValidationFailed`] with the errors if there are any.
+    /// Warnings are dropped.
     pub fn into_result(self) -> Result<(), ConfigError> {
         if self.is_valid() {
             Ok(())
@@ -263,7 +270,7 @@ impl ValidationResult {
         }
     }
 
-    /// Format validation result as a human-readable string
+    /// One line summary with the error and warning counts, for people to read.
     pub fn format_summary(&self) -> String {
         let mut parts = Vec::new();
 
@@ -282,12 +289,12 @@ impl ValidationResult {
         }
     }
 
-    /// Get detailed error messages
+    /// Display text of each error.
     pub fn error_messages(&self) -> Vec<String> {
         self.errors.iter().map(|e| e.to_string()).collect()
     }
 
-    /// Get detailed warning messages  
+    /// Display text of each warning.
     pub fn warning_messages(&self) -> Vec<String> {
         self.warnings.iter().map(|e| e.to_string()).collect()
     }
@@ -299,7 +306,7 @@ impl Default for ValidationResult {
     }
 }
 
-// Conversion implementations for common error types
+// VarError does not carry the variable name, so these errors report "unknown"
 impl From<std::env::VarError> for ConfigError {
     fn from(err: std::env::VarError) -> Self {
         match err {
@@ -392,7 +399,7 @@ impl ConfigError {
         }
     }
 
-    /// Create a validation error
+    /// Create a validation error. Same as [`ConfigError::validation_failed`].
     pub fn validation_error(errors: Vec<ValidationError>) -> Self {
         Self::ValidationFailed { errors }
     }

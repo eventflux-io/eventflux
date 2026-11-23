@@ -48,8 +48,8 @@ impl Clone for Box<dyn AttributeAggregatorExecutor> {
     }
 }
 
-/// Adapter that allows returning attribute aggregators as `Box<dyn ExpressionExecutor>`
-/// on stable Rust, without relying on unstable trait upcasting coercions.
+/// Wraps an attribute aggregator so it can be returned as `Box<dyn ExpressionExecutor>`
+/// on stable Rust, without the unstable trait upcasting feature.
 pub struct AttributeAggregatorExpressionExecutor {
     inner: Box<dyn AttributeAggregatorExecutor>,
 }
@@ -190,7 +190,7 @@ pub struct SumAttributeAggregatorExecutor {
     state: Mutex<SumState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<SumAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_sum: Option<Arc<Mutex<f64>>>,
     shared_count: Option<Arc<Mutex<u64>>>,
 }
@@ -230,10 +230,11 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let sum_arc = Arc::new(Mutex::new(0.0f64));
         let count_arc = Arc::new(Mutex::new(0u64));
-        // Use deterministic component ID with unique aggregator index for state recovery compatibility
+        // The id comes from a per query counter, so it is the same on every run and a
+        // restore finds the right holder
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("sum_aggregator_{}", aggregator_id);
 
@@ -244,12 +245,12 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
             rtype,
         );
 
-        // Register state holder with SnapshotService for persistence
+        // Register it with the SnapshotService, through the query context
         let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
             Arc::new(Mutex::new(state_holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state references for synchronized updates
+        // Keep handles to the shared state so updates reach the state holder
         self.shared_sum = Some(sum_arc);
         self.shared_count = Some(count_arc);
         self.state_holder = Some(state_holder);
@@ -261,7 +262,7 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
         if let Some(v) = data.as_ref().and_then(value_as_f64) {
             let mut st = self.state.lock().unwrap();
 
-            // Sync from shared state only after restoration (cheap atomic check)
+            // After a restore, reload from the shared state first. The flag check is a cheap atomic.
             if let Some(ref holder) = self.state_holder {
                 if holder
                     .base
@@ -280,7 +281,7 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
             st.sum += v;
             st.count += 1;
 
-            // Update shared state for persistence
+            // Copy the new values to the shared state the state holder saves
             if let (Some(ref shared_sum), Some(ref shared_count)) =
                 (&self.shared_sum, &self.shared_count)
             {
@@ -304,7 +305,7 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
         if let Some(v) = data.as_ref().and_then(value_as_f64) {
             let mut st = self.state.lock().unwrap();
 
-            // Sync from shared state only after restoration (cheap atomic check)
+            // After a restore, reload from the shared state first. The flag check is a cheap atomic.
             if let Some(ref holder) = self.state_holder {
                 if holder
                     .base
@@ -325,7 +326,7 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
                 st.count -= 1;
             }
 
-            // Update shared state for persistence
+            // Copy the new values to the shared state the state holder saves
             if let (Some(ref shared_sum), Some(ref shared_count)) =
                 (&self.shared_sum, &self.shared_count)
             {
@@ -346,7 +347,6 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
     }
 
     fn reset(&self) -> Option<AttributeValue> {
-        // Update internal state
         let mut st = self.state.lock().unwrap();
         let old_sum = st.sum;
         let old_count = st.count;
@@ -354,7 +354,7 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
         st.sum = 0.0;
         st.count = 0;
 
-        // Update shared state for persistence
+        // Copy the new values to the shared state the state holder saves
         if let (Some(ref shared_sum), Some(ref shared_count)) =
             (&self.shared_sum, &self.shared_count)
         {
@@ -362,7 +362,7 @@ impl AttributeAggregatorExecutor for SumAttributeAggregatorExecutor {
             *shared_count.lock().unwrap() = 0;
         }
 
-        // Record state reset for incremental checkpointing
+        // Log the reset for incremental checkpoints
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_reset(old_sum, old_count);
         }
@@ -433,7 +433,7 @@ pub struct AvgAttributeAggregatorExecutor {
     state: Mutex<AvgState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<AvgAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_sum: Option<Arc<Mutex<f64>>>,
     shared_count: Option<Arc<Mutex<u64>>>,
 }
@@ -465,7 +465,7 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
         self.arg_exec = Some(execs.remove(0));
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let sum_arc = Arc::new(Mutex::new(0.0f64));
         let count_arc = Arc::new(Mutex::new(0u64));
         let aggregator_id = ctx.next_aggregator_id();
@@ -474,12 +474,12 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
         let state_holder =
             AvgAggregatorStateHolder::new(sum_arc.clone(), count_arc.clone(), component_id.clone());
 
-        // Register state holder with SnapshotService for persistence
+        // Register it with the SnapshotService, through the query context
         let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
             Arc::new(Mutex::new(state_holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state references for synchronized updates
+        // Keep handles to the shared state so updates reach the state holder
         self.shared_sum = Some(sum_arc);
         self.shared_count = Some(count_arc);
         self.state_holder = Some(state_holder);
@@ -579,7 +579,7 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
         st.sum = 0.0;
         st.count = 0;
 
-        // Update shared state for persistence
+        // Copy the new values to the shared state the state holder saves
         if let (Some(ref shared_sum), Some(ref shared_count)) =
             (&self.shared_sum, &self.shared_count)
         {
@@ -587,7 +587,7 @@ impl AttributeAggregatorExecutor for AvgAttributeAggregatorExecutor {
             *shared_count.lock().unwrap() = 0;
         }
 
-        // Record state reset for incremental checkpointing
+        // Log the reset for incremental checkpoints
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_reset(old_sum, old_count);
         }
@@ -655,7 +655,7 @@ pub struct CountAttributeAggregatorExecutor {
     state: Mutex<CountState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<CountAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_count: Option<Arc<Mutex<i64>>>,
 }
 
@@ -680,19 +680,19 @@ impl AttributeAggregatorExecutor for CountAttributeAggregatorExecutor {
     ) -> Result<(), String> {
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let count_arc = Arc::new(Mutex::new(0i64));
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("count_aggregator_{}", aggregator_id);
 
         let state_holder = CountAggregatorStateHolder::new(count_arc.clone(), component_id.clone());
 
-        // Register state holder with SnapshotService for persistence
+        // Register it with the SnapshotService, through the query context
         let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
             Arc::new(Mutex::new(state_holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state reference for synchronized updates
+        // Keep a handle to the shared state so updates reach the state holder
         self.shared_count = Some(count_arc);
         self.state_holder = Some(state_holder);
 
@@ -764,7 +764,7 @@ impl AttributeAggregatorExecutor for CountAttributeAggregatorExecutor {
             *shared_count.lock().unwrap() = 0;
         }
 
-        // Record state reset for incremental checkpointing
+        // Log the reset for incremental checkpoints
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_reset(old_count);
         }
@@ -826,7 +826,7 @@ pub struct DistinctCountAttributeAggregatorExecutor {
     state: Mutex<DistinctCountState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<DistinctCountAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_map: Option<Arc<Mutex<HashMap<String, i64>>>>,
 }
 
@@ -856,7 +856,7 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
         self.arg_exec = Some(e.remove(0));
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let map_arc = Arc::new(Mutex::new(HashMap::new()));
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("distinctcount_aggregator_{}", aggregator_id);
@@ -866,7 +866,7 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
             Arc::new(Mutex::new(holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state reference for synchronized updates
+        // Keep a handle to the shared state so updates reach the state holder
         self.shared_map = Some(map_arc);
         self.state_holder = Some(holder);
 
@@ -935,7 +935,7 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
                     Some(*c)
                 };
 
-                // Update shared state for persistence
+                // Copy the new values to the shared state the state holder saves
                 if let Some(ref shared) = self.shared_map {
                     let mut shared_map = shared.lock().unwrap();
                     if let Some(nc) = new_count {
@@ -945,7 +945,7 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
                     }
                 }
 
-                // Record state change
+                // Log the change for incremental checkpoints
                 if let Some(ref state_holder) = self.state_holder {
                     state_holder.record_value_removed(&key, old_count, new_count);
                 }
@@ -964,12 +964,12 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
             old_map
         };
 
-        // Update shared state for persistence
+        // Copy the new values to the shared state the state holder saves
         if let Some(ref shared) = self.shared_map {
             shared.lock().unwrap().clear();
         }
 
-        // Record state change
+        // Log the change for incremental checkpoints
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_reset(&old_map);
         }
@@ -980,7 +980,7 @@ impl AttributeAggregatorExecutor for DistinctCountAttributeAggregatorExecutor {
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
 
-        // Read from shared state for consistency
+        // Seed the clone from the shared state. The clone gets no state holder.
         let synchronized_state = if let Some(ref shared) = self.shared_map {
             DistinctCountState {
                 map: shared.lock().unwrap().clone(),
@@ -1035,7 +1035,7 @@ fn st_to_val(rt: ApiAttributeType, st: &MinMaxState) -> Option<AttributeValue> {
     })
 }
 
-/// Comparison mode for min/max aggregators
+/// Whether a min/max aggregator tracks the smallest or the largest value
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MinMaxMode {
     Min,
@@ -1043,7 +1043,8 @@ pub enum MinMaxMode {
 }
 
 impl MinMaxMode {
-    /// Returns true if `v` should replace `current` based on the mode
+    /// True when `v` should replace `current`: strictly smaller for Min, strictly
+    /// larger for Max
     fn should_replace(&self, v: f64, current: f64) -> bool {
         match self {
             MinMaxMode::Min => v < current,
@@ -1052,11 +1053,13 @@ impl MinMaxMode {
     }
 }
 
-/// Unified min/max aggregator executor that handles all 4 variants:
-/// - min: tracks minimum, resets state on window reset
-/// - max: tracks maximum, resets state on window reset
-/// - minForever: tracks all-time minimum, preserves state on reset
-/// - maxForever: tracks all-time maximum, preserves state on reset
+/// One min/max aggregator for all four variants:
+/// - min: tracks the minimum, cleared on a window reset
+/// - max: tracks the maximum, cleared on a window reset
+/// - minForever: tracks the all time minimum, kept on reset
+/// - maxForever: tracks the all time maximum, kept on reset
+///
+/// Values are compared as f64 and converted back to the argument type on output.
 #[derive(Debug)]
 pub struct MinMaxAttributeAggregatorExecutor {
     arg_exec: Option<Box<dyn ExpressionExecutor>>,
@@ -1064,7 +1067,7 @@ pub struct MinMaxAttributeAggregatorExecutor {
     state: Mutex<MinMaxState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     mode: MinMaxMode,
-    preserve_on_reset: bool, // true for "forever" variants
+    preserve_on_reset: bool, // true for the "forever" variants
     min_state_holder: Option<MinAggregatorStateHolder>,
     max_state_holder: Option<MaxAggregatorStateHolder>,
     shared_value: Option<Arc<Mutex<Option<f64>>>>,
@@ -1085,7 +1088,7 @@ impl MinMaxAttributeAggregatorExecutor {
         }
     }
 
-    /// Check restoration flag from either min or max state holder.
+    /// True when the min or max state holder flagged a restore. Clears the flag.
     fn check_restored(&self) -> bool {
         if let Some(ref holder) = self.min_state_holder {
             if holder
@@ -1108,7 +1111,9 @@ impl MinMaxAttributeAggregatorExecutor {
         false
     }
 
-    /// Try to update the tracked value. If the value changes, sync shared state and record.
+    /// Replace the tracked value when `data` beats it, or when nothing is tracked yet.
+    /// On a change, copies it to the shared state and logs it with the state holder.
+    /// Non numeric data is ignored.
     fn try_update(&self, st: &mut MinMaxState, data: Option<AttributeValue>) {
         let old_value = st.value;
         if let Some(v) = data.and_then(|v| value_as_f64(&v)) {
@@ -1147,7 +1152,7 @@ impl AttributeAggregatorExecutor for MinMaxAttributeAggregatorExecutor {
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let value_arc = Arc::new(Mutex::new(None::<f64>));
         let aggregator_id = ctx.next_aggregator_id();
         let mode_name = match self.mode {
@@ -1215,9 +1220,9 @@ impl AttributeAggregatorExecutor for MinMaxAttributeAggregatorExecutor {
             }
         }
 
-        // For forever variants (preserve_on_reset), removal is a no-op
-        // since we preserve the historical min/max.
-        // For windowed variants, the window processor handles recomputation.
+        // Removal never changes the value. The forever variants keep the all time min or
+        // max on purpose. The windowed variants also keep it, even after the event that
+        // set it leaves the window.
         st_to_val(self.return_type, &st)
     }
 
@@ -1246,7 +1251,7 @@ impl AttributeAggregatorExecutor for MinMaxAttributeAggregatorExecutor {
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
 
-        // Read from shared state for consistency
+        // Seed the clone from the shared state. The clone gets no state holder.
         let synchronized_state = if let Some(ref shared) = self.shared_value {
             MinMaxState {
                 value: *shared.lock().unwrap(),
@@ -1295,19 +1300,19 @@ impl ExpressionExecutor for MinMaxAttributeAggregatorExecutor {
 }
 
 // ============================================================================
-// StdDev Aggregator - Standard Deviation using Welford's online algorithm
+// StdDev Aggregator, standard deviation with Welford's running method
 // ============================================================================
 
 #[derive(Debug, Clone, Default)]
 struct StdDevState {
     mean: f64,
-    m2: f64, // Sum of squared deviations from mean (Welford's M2)
+    m2: f64, // sum of squared distances from the mean (Welford's M2)
     sum: f64,
     count: u64,
 }
 
 impl StdDevState {
-    /// Calculate current standard deviation from state
+    /// Population standard deviation, sqrt(M2 / count). None for no values, 0.0 for one.
     fn current_stddev(&self) -> Option<AttributeValue> {
         match self.count {
             0 => None,
@@ -1323,7 +1328,7 @@ pub struct StdDevAttributeAggregatorExecutor {
     state: Mutex<StdDevState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<StdDevAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_mean: Option<Arc<Mutex<f64>>>,
     shared_m2: Option<Arc<Mutex<f64>>>,
     shared_sum: Option<Arc<Mutex<f64>>>,
@@ -1359,7 +1364,7 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
         self.arg_exec = Some(e.remove(0));
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let mean_arc = Arc::new(Mutex::new(0.0f64));
         let m2_arc = Arc::new(Mutex::new(0.0f64));
         let sum_arc = Arc::new(Mutex::new(0.0f64));
@@ -1379,7 +1384,7 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
             Arc::new(Mutex::new(holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state references for synchronized updates
+        // Keep handles to the shared state so updates reach the state holder
         self.shared_mean = Some(mean_arc);
         self.shared_m2 = Some(m2_arc);
         self.shared_sum = Some(sum_arc);
@@ -1425,7 +1430,7 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
                 st.m2 += (v - old_mean) * (v - st.mean);
             }
 
-            // Update shared state for persistence
+            // Copy the new values to the shared state the state holder saves
             if let (Some(ref s_mean), Some(ref s_m2), Some(ref s_sum), Some(ref s_count)) = (
                 &self.shared_mean,
                 &self.shared_m2,
@@ -1509,7 +1514,7 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
         st.sum = 0.0;
         st.count = 0;
 
-        // Update shared state for persistence
+        // Copy the new values to the shared state the state holder saves
         if let (Some(ref s_mean), Some(ref s_m2), Some(ref s_sum), Some(ref s_count)) = (
             &self.shared_mean,
             &self.shared_m2,
@@ -1532,7 +1537,7 @@ impl AttributeAggregatorExecutor for StdDevAttributeAggregatorExecutor {
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
 
-        // Read from shared state for consistency
+        // Seed the clone from the shared state. The clone gets no state holder.
         let synchronized_state = if let (Some(s_mean), Some(s_m2), Some(s_sum), Some(s_count)) = (
             &self.shared_mean,
             &self.shared_m2,
@@ -1588,7 +1593,7 @@ impl ExpressionExecutor for StdDevAttributeAggregatorExecutor {
 }
 
 // ============================================================================
-// First Aggregator - Returns first value in window
+// First Aggregator, returns the first value in the window
 // ============================================================================
 
 #[derive(Debug, Clone, Default)]
@@ -1603,7 +1608,7 @@ pub struct FirstAttributeAggregatorExecutor {
     state: Mutex<FirstState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<FirstAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_values: Option<Arc<Mutex<VecDeque<AttributeValue>>>>,
 }
 
@@ -1611,7 +1616,7 @@ impl Default for FirstAttributeAggregatorExecutor {
     fn default() -> Self {
         Self {
             arg_exec: None,
-            return_type: ApiAttributeType::STRING, // Will be set from input
+            return_type: ApiAttributeType::STRING, // init sets it from the argument type
             state: Mutex::new(FirstState::default()),
             app_ctx: None,
             state_holder: None,
@@ -1636,7 +1641,7 @@ impl AttributeAggregatorExecutor for FirstAttributeAggregatorExecutor {
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let values_arc = Arc::new(Mutex::new(VecDeque::new()));
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("first_aggregator_{}", aggregator_id);
@@ -1646,7 +1651,7 @@ impl AttributeAggregatorExecutor for FirstAttributeAggregatorExecutor {
             Arc::new(Mutex::new(holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state reference for synchronized updates
+        // Keep a handle to the shared state so updates reach the state holder
         self.shared_values = Some(values_arc);
         self.state_holder = Some(holder);
 
@@ -1718,7 +1723,7 @@ impl AttributeAggregatorExecutor for FirstAttributeAggregatorExecutor {
         let mut st = self.state.lock().unwrap();
         st.values.clear();
 
-        // Update shared state for persistence
+        // Copy the new values to the shared state the state holder saves
         if let Some(ref shared) = self.shared_values {
             shared.lock().unwrap().clear();
         }
@@ -1778,7 +1783,7 @@ impl ExpressionExecutor for FirstAttributeAggregatorExecutor {
 }
 
 // ============================================================================
-// Last Aggregator - Returns last/most recent value in window
+// Last Aggregator, returns the most recent value in the window
 // ============================================================================
 
 #[derive(Debug, Clone, Default)]
@@ -1793,7 +1798,7 @@ pub struct LastAttributeAggregatorExecutor {
     state: Mutex<LastState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<LastAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_value: Option<Arc<Mutex<Option<AttributeValue>>>>,
 }
 
@@ -1801,7 +1806,7 @@ impl Default for LastAttributeAggregatorExecutor {
     fn default() -> Self {
         Self {
             arg_exec: None,
-            return_type: ApiAttributeType::STRING, // Will be set from input
+            return_type: ApiAttributeType::STRING, // init sets it from the argument type
             state: Mutex::new(LastState::default()),
             app_ctx: None,
             state_holder: None,
@@ -1826,7 +1831,7 @@ impl AttributeAggregatorExecutor for LastAttributeAggregatorExecutor {
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let value_arc = Arc::new(Mutex::new(None::<AttributeValue>));
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("last_aggregator_{}", aggregator_id);
@@ -1836,7 +1841,7 @@ impl AttributeAggregatorExecutor for LastAttributeAggregatorExecutor {
             Arc::new(Mutex::new(holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state reference for synchronized updates
+        // Keep a handle to the shared state so updates reach the state holder
         self.shared_value = Some(value_arc);
         self.state_holder = Some(holder);
 
@@ -1879,7 +1884,7 @@ impl AttributeAggregatorExecutor for LastAttributeAggregatorExecutor {
     fn process_remove(&self, _data: Option<AttributeValue>) -> Option<AttributeValue> {
         let mut st = self.state.lock().unwrap();
 
-        // Sync from shared state if restoration happened
+        // After a restore, reload from the shared state first
         if let Some(ref holder) = self.state_holder {
             if holder
                 .base
@@ -1899,7 +1904,7 @@ impl AttributeAggregatorExecutor for LastAttributeAggregatorExecutor {
         let mut st = self.state.lock().unwrap();
         st.last_value = None;
 
-        // Update shared state for persistence
+        // Copy the new values to the shared state the state holder saves
         if let Some(ref shared) = self.shared_value {
             *shared.lock().unwrap() = None;
         }
@@ -1995,8 +2000,9 @@ pub use and_aggregator_state_holder::AndAggregatorStateHolder;
 pub mod or_aggregator_state_holder;
 pub use or_aggregator_state_holder::OrAggregatorStateHolder;
 
-/// Shared helper for state holder changelog operation keys.
-/// Generates a unique key by combining operation type, timestamp, and atomic counter.
+/// Build a changelog key for aggregator state holders.
+/// The key is `<operation_type>_<nanosecond wall clock time>_<counter>`, numbers little
+/// endian. The process wide counter keeps keys unique even with equal timestamps.
 pub(crate) fn generate_operation_key(operation_type: &str) -> Vec<u8> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2190,7 +2196,7 @@ impl AttributeAggregatorFactory for LastAttributeAggregatorFactory {
 }
 
 // ============================================================================
-// And Aggregator - Returns true only if ALL boolean values in window are true
+// And Aggregator, true only when every boolean value in the window is true
 // ============================================================================
 
 #[derive(Debug, Clone, Default)]
@@ -2205,7 +2211,7 @@ pub struct AndAttributeAggregatorExecutor {
     state: Mutex<AndState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<AndAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_true_count: Option<Arc<Mutex<i64>>>,
     shared_false_count: Option<Arc<Mutex<i64>>>,
 }
@@ -2241,7 +2247,7 @@ impl AttributeAggregatorExecutor for AndAttributeAggregatorExecutor {
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let true_count_arc = Arc::new(Mutex::new(0i64));
         let false_count_arc = Arc::new(Mutex::new(0i64));
         let aggregator_id = ctx.next_aggregator_id();
@@ -2256,7 +2262,7 @@ impl AttributeAggregatorExecutor for AndAttributeAggregatorExecutor {
             Arc::new(Mutex::new(holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state references for synchronized updates
+        // Keep handles to the shared state so updates reach the state holder
         self.shared_true_count = Some(true_count_arc);
         self.shared_false_count = Some(false_count_arc);
         self.state_holder = Some(holder);
@@ -2332,7 +2338,7 @@ impl AttributeAggregatorExecutor for AndAttributeAggregatorExecutor {
                 st.false_count -= 1;
             }
 
-            // Update shared state for persistence
+            // Copy the new values to the shared state the state holder saves
             if let (Some(ref shared_tc), Some(ref shared_fc)) =
                 (&self.shared_true_count, &self.shared_false_count)
             {
@@ -2356,7 +2362,7 @@ impl AttributeAggregatorExecutor for AndAttributeAggregatorExecutor {
         st.true_count = 0;
         st.false_count = 0;
 
-        // Update shared state for persistence
+        // Copy the new values to the shared state the state holder saves
         if let (Some(ref shared_tc), Some(ref shared_fc)) =
             (&self.shared_true_count, &self.shared_false_count)
         {
@@ -2374,7 +2380,7 @@ impl AttributeAggregatorExecutor for AndAttributeAggregatorExecutor {
     fn clone_box(&self) -> Box<dyn AttributeAggregatorExecutor> {
         let ctx = self.app_ctx.as_ref().unwrap();
 
-        // Read from shared state for consistency
+        // Seed the clone from the shared state. The clone gets no state holder.
         let synchronized_state = if let (Some(ref shared_tc), Some(ref shared_fc)) =
             (&self.shared_true_count, &self.shared_false_count)
         {
@@ -2423,7 +2429,7 @@ impl ExpressionExecutor for AndAttributeAggregatorExecutor {
 }
 
 // ============================================================================
-// Or Aggregator - Returns true if ANY boolean value in window is true
+// Or Aggregator, true when any boolean value in the window is true
 // ============================================================================
 
 #[derive(Debug, Clone, Default)]
@@ -2437,7 +2443,7 @@ pub struct OrAttributeAggregatorExecutor {
     state: Mutex<OrState>,
     app_ctx: Option<Arc<EventFluxAppContext>>,
     state_holder: Option<OrAggregatorStateHolder>,
-    // Shared state for persistence (same as used by state holder)
+    // Same values the state holder holds, so snapshots see the current state
     shared_true_count: Option<Arc<Mutex<i64>>>,
 }
 
@@ -2471,7 +2477,7 @@ impl AttributeAggregatorExecutor for OrAttributeAggregatorExecutor {
         self.arg_exec = Some(exec);
         self.app_ctx = Some(Arc::clone(&ctx.eventflux_app_context));
 
-        // Initialize state holder for persistence
+        // Set up and register the state holder that checkpoints this aggregator
         let true_count_arc = Arc::new(Mutex::new(0i64));
         let aggregator_id = ctx.next_aggregator_id();
         let component_id = format!("or_aggregator_{}", aggregator_id);
@@ -2481,7 +2487,7 @@ impl AttributeAggregatorExecutor for OrAttributeAggregatorExecutor {
             Arc::new(Mutex::new(holder.clone()));
         ctx.register_state_holder(component_id, state_holder_arc);
 
-        // Store shared state reference for synchronized updates
+        // Keep a handle to the shared state so updates reach the state holder
         self.shared_true_count = Some(true_count_arc);
         self.state_holder = Some(holder);
 
@@ -2537,7 +2543,7 @@ impl AttributeAggregatorExecutor for OrAttributeAggregatorExecutor {
                 st.true_count -= 1;
             }
 
-            // Update shared state for persistence
+            // Copy the new values to the shared state the state holder saves
             if let Some(ref shared_tc) = self.shared_true_count {
                 *shared_tc.lock().unwrap() = st.true_count;
             }
@@ -2554,7 +2560,7 @@ impl AttributeAggregatorExecutor for OrAttributeAggregatorExecutor {
         let old_count = st.true_count;
         st.true_count = 0;
 
-        // Update shared state for persistence
+        // Copy the new values to the shared state the state holder saves
         if let Some(ref shared_tc) = self.shared_true_count {
             *shared_tc.lock().unwrap() = 0;
         }

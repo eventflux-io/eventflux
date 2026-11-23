@@ -17,17 +17,20 @@
 
 //! Processor Configuration Reader
 //!
-//! Provides a centralized way for processors to read configuration values
-//! with fallback to defaults and caching for performance.
+//! One place for processors to read configuration values. Falls back to built in
+//! defaults and caches what it finds.
 
 use crate::core::config::{ApplicationConfig, EventFluxConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-/// Configuration reader for processors with performance-optimized caching
+/// Reads configuration values for processors and caches them.
+///
+/// Only found values are cached, so a missing key is looked up again on every call.
+/// Clones share the same cache.
 #[derive(Debug, Clone)]
 pub struct ProcessorConfigReader {
-    /// Cached configuration values for quick access
+    /// Found values keyed by `"<section>.<type>.<key>"` or `"performance.<key>"`
     config_cache: Arc<RwLock<HashMap<String, ConfigValue>>>,
     /// Application configuration
     app_config: Option<ApplicationConfig>,
@@ -35,7 +38,7 @@ pub struct ProcessorConfigReader {
     global_config: Option<EventFluxConfig>,
 }
 
-/// Configuration value types that processors can request
+/// A typed configuration value returned to a processor
 #[derive(Debug, Clone)]
 pub enum ConfigValue {
     Integer(i64),
@@ -46,7 +49,7 @@ pub enum ConfigValue {
 }
 
 impl ProcessorConfigReader {
-    /// Create a new configuration reader
+    /// Create a reader with an empty cache
     pub fn new(
         app_config: Option<ApplicationConfig>,
         global_config: Option<EventFluxConfig>,
@@ -58,21 +61,18 @@ impl ProcessorConfigReader {
         }
     }
 
-    /// Get window configuration value with caching
+    /// Get a window setting. See `lookup_window_config` for where it comes from.
     pub fn get_window_config(&self, window_type: &str, key: &str) -> Option<ConfigValue> {
         let cache_key = format!("window.{}.{}", window_type, key);
 
-        // Check cache first
         if let Ok(cache) = self.config_cache.read() {
             if let Some(cached_value) = cache.get(&cache_key) {
                 return Some(cached_value.clone());
             }
         }
 
-        // Look up from configuration
         let value = self.lookup_window_config(window_type, key);
 
-        // Cache the result
         if let Some(ref val) = value {
             if let Ok(mut cache) = self.config_cache.write() {
                 cache.insert(cache_key, val.clone());
@@ -82,21 +82,18 @@ impl ProcessorConfigReader {
         value
     }
 
-    /// Get sink configuration value with caching
+    /// Get a sink setting. See `lookup_sink_config` for where it comes from.
     pub fn get_sink_config(&self, sink_type: &str, key: &str) -> Option<ConfigValue> {
         let cache_key = format!("sink.{}.{}", sink_type, key);
 
-        // Check cache first
         if let Ok(cache) = self.config_cache.read() {
             if let Some(cached_value) = cache.get(&cache_key) {
                 return Some(cached_value.clone());
             }
         }
 
-        // Look up from configuration
         let value = self.lookup_sink_config(sink_type, key);
 
-        // Cache the result
         if let Some(ref val) = value {
             if let Ok(mut cache) = self.config_cache.write() {
                 cache.insert(cache_key, val.clone());
@@ -106,21 +103,18 @@ impl ProcessorConfigReader {
         value
     }
 
-    /// Get stream processor configuration
+    /// Get a stream processor setting. Only built in defaults are returned today.
     pub fn get_stream_config(&self, processor_type: &str, key: &str) -> Option<ConfigValue> {
         let cache_key = format!("stream.{}.{}", processor_type, key);
 
-        // Check cache first
         if let Ok(cache) = self.config_cache.read() {
             if let Some(cached_value) = cache.get(&cache_key) {
                 return Some(cached_value.clone());
             }
         }
 
-        // Look up from configuration
         let value = self.lookup_stream_config(processor_type, key);
 
-        // Cache the result
         if let Some(ref val) = value {
             if let Ok(mut cache) = self.config_cache.write() {
                 cache.insert(cache_key, val.clone());
@@ -130,21 +124,18 @@ impl ProcessorConfigReader {
         value
     }
 
-    /// Get performance configuration
+    /// Get a runtime performance setting. See `lookup_performance_config`.
     pub fn get_performance_config(&self, key: &str) -> Option<ConfigValue> {
         let cache_key = format!("performance.{}", key);
 
-        // Check cache first
         if let Ok(cache) = self.config_cache.read() {
             if let Some(cached_value) = cache.get(&cache_key) {
                 return Some(cached_value.clone());
             }
         }
 
-        // Look up from configuration
         let value = self.lookup_performance_config(key);
 
-        // Cache the result
         if let Some(ref val) = value {
             if let Ok(mut cache) = self.config_cache.write() {
                 cache.insert(cache_key, val.clone());
@@ -154,9 +145,12 @@ impl ProcessorConfigReader {
         value
     }
 
-    /// Lookup window configuration from app/global config
+    /// Look up a window setting.
+    ///
+    /// If the app config has a window definition named `window_type`, the key is read
+    /// from its parameters and the built in defaults are not used, even when the key
+    /// is missing. Otherwise the built in default for the window type is returned.
     fn lookup_window_config(&self, window_type: &str, key: &str) -> Option<ConfigValue> {
-        // First check application-specific window configuration
         if let Some(ref app_config) = self.app_config {
             if let Some(crate::core::config::DefinitionConfig::Window(window_config)) =
                 app_config.definitions.get(window_type)
@@ -165,7 +159,7 @@ impl ProcessorConfigReader {
             }
         }
 
-        // Fallback to global defaults
+        // Built in defaults
         match (window_type, key) {
             ("length", "initial_capacity_multiplier") => Some(ConfigValue::Float(1.2)),
             ("length", "max_size_multiplier") => Some(ConfigValue::Float(2.0)),
@@ -177,9 +171,12 @@ impl ProcessorConfigReader {
         }
     }
 
-    /// Lookup sink configuration from app/global config
+    /// Look up a sink setting.
+    ///
+    /// First reads the key from the sink `connection` block of the app config stream
+    /// whose name equals `sink_type`. Falls back to the built in defaults for the
+    /// `log` and `console` sinks.
     fn lookup_sink_config(&self, sink_type: &str, key: &str) -> Option<ConfigValue> {
-        // Check application-specific sink configuration in streams
         if let Some(ref app_config) = self.app_config {
             if let Some(stream_config) = app_config.streams.get(sink_type) {
                 if let Some(ref sink) = stream_config.sink {
@@ -190,7 +187,7 @@ impl ProcessorConfigReader {
             }
         }
 
-        // Default configurations for sinks
+        // Built in defaults
         match (sink_type, key) {
             ("log", "prefix") => Some(ConfigValue::String("[LOG]".to_string())),
             ("log", "level") => Some(ConfigValue::String("INFO".to_string())),
@@ -199,20 +196,18 @@ impl ProcessorConfigReader {
         }
     }
 
-    /// Lookup stream processor configuration
+    /// Look up a stream processor setting. Returns the built in default only.
     fn lookup_stream_config(&self, processor_type: &str, key: &str) -> Option<ConfigValue> {
-        // First check application-specific stream configuration
         if let Some(ref app_config) = self.app_config {
             if let Some(crate::core::config::DefinitionConfig::Stream(_stream_config)) =
                 app_config.definitions.get(processor_type)
             {
-                // TODO: Extract @source/@sink properties from the unified
-                // ApplicationConfig and map them to processor properties.
-                // Without this, YAML-based stream configuration is ignored at runtime.
+                // TODO: map the @source and @sink properties of the ApplicationConfig to
+                // processor properties. Until then YAML stream config is ignored here.
             }
         }
 
-        // Default configurations for stream processors
+        // Built in defaults
         match (processor_type, key) {
             ("filter", "batch_size") => Some(ConfigValue::Integer(1000)),
             ("select", "buffer_size") => Some(ConfigValue::Integer(10000)),
@@ -221,9 +216,12 @@ impl ProcessorConfigReader {
         }
     }
 
-    /// Lookup performance configuration
+    /// Look up a runtime performance setting.
+    ///
+    /// Reads `eventflux.runtime.performance` from the global config when there is one.
+    /// `batch_size` is `None` there if unset. Without a global config, fixed defaults
+    /// are returned. `enable_statistics` is always false.
     fn lookup_performance_config(&self, key: &str) -> Option<ConfigValue> {
-        // Check global configuration for performance settings
         if let Some(ref global_config) = self.global_config {
             let performance = &global_config.eventflux.runtime.performance;
             match key {
@@ -242,7 +240,7 @@ impl ProcessorConfigReader {
                 _ => None,
             }
         } else {
-            // Fallback defaults when no global config
+            // No global config, so use fixed defaults
             match key {
                 "event_buffer_size" => Some(ConfigValue::Integer(1024)),
                 "batch_size" => Some(ConfigValue::Integer(1000)),
@@ -255,7 +253,8 @@ impl ProcessorConfigReader {
         }
     }
 
-    /// Extract configuration value from parameter map
+    /// Read `key` from a string map and type it as integer, float, boolean or string,
+    /// trying them in that order
     #[allow(dead_code)]
     fn extract_config_value(
         &self,
@@ -264,7 +263,6 @@ impl ProcessorConfigReader {
     ) -> Option<ConfigValue> {
         if let Some(ref params) = parameters {
             if let Some(value_str) = params.get(key) {
-                // Try to parse as different types
                 if let Ok(int_val) = value_str.parse::<i64>() {
                     return Some(ConfigValue::Integer(int_val));
                 }
@@ -274,14 +272,17 @@ impl ProcessorConfigReader {
                 if let Ok(bool_val) = value_str.parse::<bool>() {
                     return Some(ConfigValue::Boolean(bool_val));
                 }
-                // Default to string
                 return Some(ConfigValue::String(value_str.clone()));
             }
         }
         None
     }
 
-    /// Extract configuration value from YAML value (for WindowConfig parameters)
+    /// Read `key` from a YAML mapping, such as WindowConfig parameters.
+    ///
+    /// Numbers, booleans and strings are returned typed. A string is typed as integer,
+    /// float or boolean when it parses as one. Returns `None` if `yaml_value` is not a
+    /// mapping, the key is missing, or the value is another YAML type.
     fn extract_config_value_from_yaml(
         &self,
         yaml_value: &serde_yaml::Value,
@@ -299,7 +300,6 @@ impl ProcessorConfigReader {
                         }
                     }
                     serde_yaml::Value::String(str_val) => {
-                        // Try to parse string as number or boolean first
                         if let Ok(int_val) = str_val.parse::<i64>() {
                             return Some(ConfigValue::Integer(int_val));
                         }
@@ -328,7 +328,7 @@ impl ProcessorConfigReader {
         }
     }
 
-    /// Get cache size for monitoring
+    /// Number of cached values. Returns 0 if the cache lock is poisoned.
     pub fn get_cache_size(&self) -> usize {
         self.config_cache
             .read()
@@ -336,18 +336,18 @@ impl ProcessorConfigReader {
             .unwrap_or(0)
     }
 
-    /// Extract configuration value from sink configuration
+    /// Read `key` from the sink `connection` block
     fn extract_parameters_from_sink_config(
         &self,
         sink: &crate::core::config::types::application_config::SinkConfig,
         key: &str,
     ) -> Option<ConfigValue> {
-        // Extract parameters from the sink's connection YAML configuration
         self.extract_config_value_from_yaml(&sink.connection, key)
     }
 }
 
-/// Helper methods for extracting typed values from ConfigValue
+/// Typed accessors. Each returns `None` when the variant does not match, except that
+/// `as_float` also accepts an integer and `as_usize` accepts a non negative integer.
 impl ConfigValue {
     pub fn as_integer(&self) -> Option<i64> {
         match self {

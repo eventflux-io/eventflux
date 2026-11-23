@@ -15,39 +15,37 @@
  * limitations under the License.
  */
 
-// src/core/executor/function/instance_of_checkers.rs
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
 
-// Macro to define InstanceOf*FunctionExecutor structs and their impls
+// Defines an InstanceOf*ExpressionExecutor struct that returns true when its argument
+// value is the given AttributeValue variant
 macro_rules! define_instance_of_executor {
     ($struct_name:ident, $variant_name:ident) => {
-        // Changed to take variant identifier
-        #[derive(Debug)] // Clone not straightforward due to Box<dyn ExpressionExecutor>
+        #[derive(Debug)] // No Clone because of the Box<dyn ExpressionExecutor> field
         pub struct $struct_name {
             executor: Box<dyn ExpressionExecutor>,
         }
 
         impl $struct_name {
-            // Java constructor checks attributeExpressionExecutors.length != 1
-            // For simplicity, new takes one executor directly.
+            // Takes exactly one argument, which Java checks at run time. The argument can
+            // return any type. Never fails.
             pub fn new(executor: Box<dyn ExpressionExecutor>) -> Result<Self, String> {
-                // The input executor can return any type.
                 Ok(Self { executor })
             }
         }
 
         impl ExpressionExecutor for $struct_name {
             fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
-                // Java execute(Object data, S state) -> data instanceof <Type>
-                // Here, `data` is the result of self.executor.execute(event)
+                // Same as Java `data instanceof <Type>`. NULL, any other type and no value
+                // all give false.
                 match self.executor.execute(event) {
-                    Some(AttributeValue::$variant_name(_)) => Some(AttributeValue::Bool(true)), // Construct pattern here
-                    Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // null is not an instance of any specific type
-                    Some(_) => Some(AttributeValue::Bool(false)),                    // Other type
-                    None => Some(AttributeValue::Bool(false)), // No value from executor, not an instance
+                    Some(AttributeValue::$variant_name(_)) => Some(AttributeValue::Bool(true)),
+                    Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)),
+                    Some(_) => Some(AttributeValue::Bool(false)),
+                    None => Some(AttributeValue::Bool(false)),
                 }
             }
 
@@ -62,7 +60,6 @@ macro_rules! define_instance_of_executor {
                 >,
             ) -> Box<dyn ExpressionExecutor> {
                 Box::new(Self {
-                    // Using Self works within macro
                     executor: self.executor.clone_executor(eventflux_app_context),
                 })
             }
@@ -77,12 +74,8 @@ define_instance_of_executor!(InstanceOfLongExpressionExecutor, Long);
 define_instance_of_executor!(InstanceOfFloatExpressionExecutor, Float);
 define_instance_of_executor!(InstanceOfDoubleExpressionExecutor, Double);
 
-// InstanceOfObjectFunctionExecutor in Java would check if `data != null`.
-// This is slightly different as our AttributeValue::Object can hold None.
-// For `instanceOfObject(arg)`, it should return true if `arg` is not eventflux `null` AND its type is OBJECT.
-// However, the Java `InstanceOf*` functions check against specific Java types.
-// `instanceOfObject` is not a standard one in the provided list, usually it's specific types.
-// If it means "is this an AttributeValue::Object variant (regardless of inner Option)":
+// There is no InstanceOfObject executor. The Java one only checks `data != null`, and the
+// meaning here is unclear. If it should mean "is an AttributeValue::Object variant":
 // define_instance_of_executor!(InstanceOfObjectExpressionExecutor, AttributeValue::Object);
-// If it means "is this not AttributeValue::Null":
-// (This would be a different function like `isNotNull`)
+// If it should mean "is not AttributeValue::Null", that is a different function, such as
+// `isNotNull`.

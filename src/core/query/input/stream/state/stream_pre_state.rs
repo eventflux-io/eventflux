@@ -16,7 +16,7 @@
  */
 
 // src/core/query/input/stream/state/stream_pre_state.rs
-// Three-list state management for pattern processing
+// The three state lists of one pattern step
 
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
@@ -24,36 +24,36 @@ use crate::core::util::snapshot::state::State;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 
-/// StreamPreState manages the three-list pattern for state processing:
-/// 1. current_state_event_chunk: Current working set (Vec for fast indexing)
-/// 2. pending_state_event_list: Events waiting to be processed (VecDeque for FIFO)
-/// 3. new_and_every_state_event_list: New events and 'every' pattern events (VecDeque for FIFO)
+/// Holds the three StateEvent lists of one pattern step:
+/// 1. current_state_event_chunk: the chunk being worked on (Vec, for fast indexing)
+/// 2. pending_state_event_list: states waiting for a matching event (VecDeque, first
+///    in first out)
+/// 3. new_and_every_state_event_list: new states and 'every' states not yet pending
+///    (VecDeque, first in first out)
 ///
-/// This pattern is critical for:
-/// - Pattern matching across multiple streams
-/// - Count quantifiers (A{2,5})
-/// - 'every' pattern continuous matching
-/// - Absent pattern detection (NOT operator)
+/// Keeping new states apart from pending ones means a state added while an event is
+/// processed is only tried against later events. Used for patterns across streams,
+/// count quantifiers (A{2,5}) and 'every' patterns.
 #[derive(Debug, Default)]
 pub struct StreamPreState {
-    /// Current working set of state events being processed
     current_state_event_chunk: Vec<StateEvent>,
 
-    /// Events pending processing (sorted by timestamp)
+    /// States waiting for a matching event. Each batch moved in from the new list is
+    /// sorted by timestamp.
     pending_state_event_list: VecDeque<StateEvent>,
 
-    /// New events that arrived + 'every' pattern events
+    /// New states and 'every' states, moved to pending by move_new_to_pending
     new_and_every_state_event_list: VecDeque<StateEvent>,
 
-    /// Flag indicating if state has changed (for optimization)
+    /// Set when the state changes
     state_changed: bool,
 
-    /// Flag indicating if state has been initialized
+    /// Set once a start state has created its first StateEvent
     initialized: bool,
 }
 
 impl StreamPreState {
-    /// Create a new empty StreamPreState
+    /// Create a StreamPreState with empty lists and both flags cleared
     pub fn new() -> Self {
         Self {
             current_state_event_chunk: Vec::new(),
@@ -66,49 +66,44 @@ impl StreamPreState {
 
     // ===== List Operations =====
 
-    /// Add a new event to the new/every list
-    /// Used when fresh events arrive or 'every' patterns trigger
+    /// Add a state to the end of the new list. Used for states passed on from the
+    /// previous step and for 'every' restarts.
     pub fn add_to_new_list(&mut self, event: StateEvent) {
         self.new_and_every_state_event_list.push_back(event);
     }
 
-    /// Add an event to the pending list
-    /// Used for events that need to be processed in next iteration
+    /// Add a state straight to the end of the pending list, skipping the new list
     pub fn add_to_pending_list(&mut self, event: StateEvent) {
         self.pending_state_event_list.push_back(event);
     }
 
-    /// Move all events from new/every list to pending list
-    /// Events are sorted by timestamp before moving (critical for temporal ordering)
+    /// Move every state from the new list to the end of the pending list.
+    ///
+    /// The moved states are sorted by timestamp, oldest first, so matching follows
+    /// time order. States already pending are not sorted again.
     pub fn move_new_to_pending(&mut self) {
-        // Drain new list into a Vec for sorting
         let mut new_events: Vec<_> = self.new_and_every_state_event_list.drain(..).collect();
 
-        // Sort by timestamp (ascending order)
         new_events.sort_by_key(|e| e.get_timestamp());
 
-        // Move sorted events to pending list
         for event in new_events {
             self.pending_state_event_list.push_back(event);
         }
     }
 
-    /// Clear all events from the pending list
     pub fn clear_pending(&mut self) {
         self.pending_state_event_list.clear();
     }
 
-    /// Clear all events from the new/every list
     pub fn clear_new(&mut self) {
         self.new_and_every_state_event_list.clear();
     }
 
-    /// Clear all events from the current chunk
     pub fn clear_current(&mut self) {
         self.current_state_event_chunk.clear();
     }
 
-    /// Clear all lists
+    /// Empty all three lists. The flags are left as they are.
     pub fn clear_all(&mut self) {
         self.clear_current();
         self.clear_pending();
@@ -117,71 +112,57 @@ impl StreamPreState {
 
     // ===== Accessors =====
 
-    /// Get reference to pending list (read-only)
     pub fn get_pending_list(&self) -> &VecDeque<StateEvent> {
         &self.pending_state_event_list
     }
 
-    /// Get mutable reference to pending list
-    /// Used by StreamPreStateProcessor for direct list manipulation during processing
+    /// Mutable pending list, so processors can edit it in place while they process
     pub fn get_pending_list_mut(&mut self) -> &mut VecDeque<StateEvent> {
         &mut self.pending_state_event_list
     }
 
-    /// Get reference to new/every list (read-only)
     pub fn get_new_list(&self) -> &VecDeque<StateEvent> {
         &self.new_and_every_state_event_list
     }
 
-    /// Get reference to current chunk (read-only)
     pub fn get_current_chunk(&self) -> &Vec<StateEvent> {
         &self.current_state_event_chunk
     }
 
-    /// Get count of pending events
     pub fn pending_count(&self) -> usize {
         self.pending_state_event_list.len()
     }
 
-    /// Get count of new/every events
     pub fn new_count(&self) -> usize {
         self.new_and_every_state_event_list.len()
     }
 
-    /// Get count of current chunk events
     pub fn current_count(&self) -> usize {
         self.current_state_event_chunk.len()
     }
 
     // ===== State Flags =====
 
-    /// Mark that state has changed
-    /// Used for optimization to skip processing when nothing changed
     pub fn mark_state_changed(&mut self) {
         self.state_changed = true;
     }
 
-    /// Check if state has changed
     pub fn is_state_changed(&self) -> bool {
         self.state_changed
     }
 
-    /// Reset state changed flag
     pub fn reset_state_changed(&mut self) {
         self.state_changed = false;
     }
 
-    /// Mark state as initialized
     pub fn mark_initialized(&mut self) {
         self.initialized = true;
     }
 
-    /// Check if state has been initialized
     pub fn is_initialized(&self) -> bool {
         self.initialized
     }
 
-    /// Reset initialization flag
     pub fn reset_initialized(&mut self) {
         self.initialized = false;
     }
@@ -190,10 +171,11 @@ impl StreamPreState {
 // ===== State trait implementation for snapshot/restore =====
 
 impl State for StreamPreState {
+    /// Snapshot the list sizes and the two flags. The StateEvents themselves are not
+    /// saved.
     fn snapshot(&self) -> HashMap<String, Value> {
         let mut map = HashMap::new();
 
-        // Snapshot list counts (full event serialization would be complex, so we track counts)
         map.insert(
             "pending_count".to_string(),
             Value::from(self.pending_state_event_list.len()),
@@ -207,33 +189,26 @@ impl State for StreamPreState {
             Value::from(self.current_state_event_chunk.len()),
         );
 
-        // Snapshot flags
         map.insert("state_changed".to_string(), Value::from(self.state_changed));
         map.insert("initialized".to_string(), Value::from(self.initialized));
 
         map
     }
 
+    /// Restore only the two flags. The lists are left as they are, since the snapshot
+    /// holds no StateEvents. Restoring events would mean saving them in snapshot,
+    /// putting them back in the right lists and keeping time order.
     fn restore(&mut self, state: HashMap<String, Value>) {
-        // Restore flags
         if let Some(Value::Bool(b)) = state.get("state_changed") {
             self.state_changed = *b;
         }
         if let Some(Value::Bool(b)) = state.get("initialized") {
             self.initialized = *b;
         }
-
-        // Note: Full event restoration would require deserializing events
-        // For now, we restore metadata only. Full implementation would:
-        // 1. Deserialize events from snapshot
-        // 2. Restore to appropriate lists
-        // 3. Maintain temporal ordering
     }
 
     fn can_destroy(&self) -> bool {
-        // State can be destroyed if:
-        // - All lists are empty
-        // - Not initialized (no active pattern matching)
+        // Safe to drop only when all lists are empty and no matching has started
         self.current_state_event_chunk.is_empty()
             && self.pending_state_event_list.is_empty()
             && self.new_and_every_state_event_list.is_empty()
@@ -245,7 +220,7 @@ impl State for StreamPreState {
 mod tests {
     use super::*;
 
-    // ===== DAY 4 TESTS: StreamPreState Basic Operations =====
+    // ===== StreamPreState Basic Operations =====
 
     #[test]
     fn test_new_state() {
@@ -424,7 +399,7 @@ mod tests {
         assert_eq!(state.pending_count(), 0);
     }
 
-    // ===== DAY 5 TESTS: State trait implementation (snapshot/restore) =====
+    // ===== State trait implementation (snapshot/restore) =====
 
     #[test]
     fn test_snapshot_restore() {

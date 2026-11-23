@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! StateHolder implementation for StdDevAttributeAggregatorExecutor
+//! StateHolder for StdDevAttributeAggregatorExecutor. Checkpoints and restores its
+//! running mean, M2, sum and count.
 
 use super::aggregator_state_holder_base::{
     compress_and_build_snapshot, default_compression_hints, verify_and_decompress, StateHolderBase,

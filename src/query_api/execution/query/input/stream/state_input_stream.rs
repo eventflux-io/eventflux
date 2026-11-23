@@ -15,30 +15,30 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.stream.StateInputStream
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::execution::query::input::state::{StateElement, StreamStateElement};
 use crate::query_api::expression::constant::Constant as ExpressionConstant;
-// StreamHandler is not directly used by StateInputStream itself, but by its contained BasicSingleInputStreams.
+// Not used here. Handlers live on the streams inside the state elements.
 // use crate::query_api::execution::query::input::handler::StreamHandler;
-use super::input_stream::InputStreamTrait; // For get_all_stream_ids, get_unique_stream_ids
+use super::input_stream::InputStreamTrait;
 use std::collections::HashSet;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)] // Added Eq, Hash, Copy
-#[derive(Default)]
+/// Whether the state input is a pattern or a sequence. Defaults to `Pattern`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum Type {
     #[default]
     Pattern,
     Sequence,
 }
 
-#[derive(Clone, Debug, PartialEq)] // Default will be custom
+/// A pattern or sequence input, as a tree of state elements.
+#[derive(Clone, Debug, PartialEq)]
 pub struct StateInputStream {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // StateInputStream specific fields
     pub state_type: Type,
     pub state_element: Box<StateElement>,
+    /// WITHIN time limit for the whole pattern, or `None` for no limit.
     pub within_time: Option<ExpressionConstant>,
 }
 
@@ -56,11 +56,10 @@ impl StateInputStream {
         }
     }
 
-    // Corrected collect_stream_ids_recursive
+    // Walk the tree and append every stream id, left to right, repeats kept.
     fn collect_stream_ids_recursive(state_element: &StateElement, stream_ids: &mut Vec<String>) {
         match state_element {
             StateElement::Logical(logical) => {
-                // LogicalStateElement's fields are Box<StateElement>, not StreamStateElement directly.
                 Self::collect_stream_ids_recursive(
                     logical.stream_state_element_1.as_ref(),
                     stream_ids,
@@ -71,7 +70,6 @@ impl StateInputStream {
                 );
             }
             StateElement::Count(count) => {
-                // CountStateElement holds StreamStateElement
                 Self::collect_stream_ids_recursive_from_stream_state(
                     &count.stream_state_element,
                     stream_ids,
@@ -88,7 +86,6 @@ impl StateInputStream {
                 Self::collect_stream_ids_recursive_from_stream_state(stream_state, stream_ids);
             }
             StateElement::AbsentStream(absent_stream_state) => {
-                // AbsentStreamStateElement composes StreamStateElement
                 Self::collect_stream_ids_recursive_from_stream_state(
                     &absent_stream_state.stream_state_element,
                     stream_ids,
@@ -97,31 +94,22 @@ impl StateInputStream {
         }
     }
 
-    // Helper to get ID from the BasicSingleInputStream within a StreamStateElement
+    // Append the id of the stream inside a StreamStateElement.
     fn collect_stream_ids_recursive_from_stream_state(
         stream_state: &StreamStateElement,
         stream_ids: &mut Vec<String>,
     ) {
-        // BasicSingleInputStream is within StreamStateElement
-        // And BasicSingleInputStream wraps a SingleInputStream
-        // SingleInputStream has get_all_stream_ids() from InputStreamTrait
         stream_ids.extend(stream_state.basic_single_input_stream.get_all_stream_ids());
     }
 }
 
+// StateElement has no Default, so this builds a pattern over one default stream element.
+// That stream has an empty id, so the default is of little real use.
 impl Default for StateInputStream {
     fn default() -> Self {
-        // Requires StateElement to be Default, which is complex due to Box and variants.
-        // Creating a minimal valid default, e.g. a pattern with a default stream.
-        // This might not be a very useful default.
         StateInputStream {
             eventflux_element: EventFluxElement::default(),
             state_type: Type::default(),
-            // This requires StateElement to have a sensible default.
-            // Assuming StateElement::Stream(StreamStateElement::default()) could be one.
-            // StreamStateElement would need BasicSingleInputStream::default().
-            // BasicSingleInputStream would need SingleInputStreamKind::default().
-            // SingleInputStreamKind::Basic has defaults.
             state_element: Box::new(StateElement::Stream(StreamStateElement::default())),
             within_time: None,
         }
@@ -135,6 +123,7 @@ impl InputStreamTrait for StateInputStream {
         ids
     }
 
+    // Goes through a HashSet, so the order is not stable.
     fn get_unique_stream_ids(&self) -> Vec<String> {
         let all_ids = self.get_all_stream_ids();
         let set: HashSet<_> = all_ids.into_iter().collect();

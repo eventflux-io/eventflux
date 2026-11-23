@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/event/state/state_event_cloner.rs
-// Simplified port of io.eventflux.core.event.state.StateEventCloner
+// Simplified port of the Java StateEventCloner.
 use super::{
     meta_state_event::MetaStateEvent, state_event::StateEvent,
     state_event_factory::StateEventFactory,
@@ -38,8 +37,9 @@ impl StateEventCloner {
         }
     }
 
-    /// Create a cloner directly from a StateEvent (for pattern processing)
-    /// This is useful when you don't have MetaStateEvent available
+    /// Builds a cloner sized from an existing StateEvent, for pattern processing.
+    ///
+    /// Use it when no MetaStateEvent is at hand.
     pub fn from_state_event(event: &StateEvent) -> Self {
         let stream_event_size = event.stream_events.len();
         let output_data_size = event.output_data.as_ref().map_or(0, |v| v.len());
@@ -53,6 +53,8 @@ impl StateEventCloner {
         }
     }
 
+    // Deep copies `state_event`, keeping its id, timestamp and type. Panics if the source
+    // has fewer slots or output values than this cloner was sized for.
     pub fn copy_state_event(&self, state_event: &StateEvent) -> StateEvent {
         let mut new_event = self.state_event_factory.new_instance();
         if self.output_data_size > 0 {
@@ -63,7 +65,7 @@ impl StateEventCloner {
         }
         if self.stream_event_size > 0 {
             for i in 0..self.stream_event_size {
-                // This clone() will recursively clone event chains via StreamEvent's Clone impl
+                // StreamEvent's Clone also clones the rest of the chain.
                 new_event.stream_events[i] = state_event.stream_events[i].clone();
             }
         }
@@ -73,12 +75,14 @@ impl StateEventCloner {
         new_event
     }
 
-    /// Clone StateEvent for 'every' pattern (creates NEW ID, clears future positions)
+    /// Copies a StateEvent for an `every` pattern, with a new id and later slots cleared.
     ///
-    /// **Purpose**: 'every' patterns need to restart matching with a fresh StateEvent.
-    /// This means:
-    /// 1. Generate NEW ID (not preserve original ID)
-    /// 2. Clear positions >= clear_from_position (reset future matching)
+    /// `every` patterns restart matching from a fresh StateEvent. So the copy:
+    /// 1. Gets a new id from [`StateEvent::next_id`], not the original id.
+    /// 2. Has every slot at or after `clear_from_position` emptied.
+    ///
+    /// Timestamp, type and output data are kept. Panics under the same conditions as
+    /// `copy_state_event`.
     ///
     /// **Example**:
     /// ```text
@@ -88,8 +92,6 @@ impl StateEventCloner {
     /// - Keep A (position 0)
     /// - Clear B and C (positions 1, 2)
     /// ```
-    ///
-    /// StateEventFactory generates new IDs for each cloned 'every' pattern event
     pub fn copy_state_event_for_every(
         &self,
         state_event: &StateEvent,
@@ -97,10 +99,8 @@ impl StateEventCloner {
     ) -> StateEvent {
         let mut new_event = self.copy_state_event(state_event);
 
-        // Generate NEW ID for 'every' (don't preserve original)
         new_event.id = StateEvent::next_id();
 
-        // Clear positions >= clear_from_position
         for i in clear_from_position..self.stream_event_size {
             new_event.stream_events[i] = None;
         }

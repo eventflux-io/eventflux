@@ -34,7 +34,7 @@ impl PartitionParser {
     ) -> Result<PartitionRuntime, String> {
         let mut partition_runtime = PartitionRuntime::new();
 
-        // Determine unique partition ID from @info(name='...') annotation or generate from index
+        // Partition id comes from @info(name='...'), or "partition_<index>" if not set.
         let partition_id = partition
             .annotations
             .iter()
@@ -43,7 +43,8 @@ impl PartitionParser {
             .map(|el| el.value.clone())
             .unwrap_or_else(|| format!("partition_{}", partition_index));
 
-        // ensure a named executor for partition queries exists
+        // Make sure the "partition" executor exists. Default size is 2 threads, which
+        // the environment can override.
         eventflux_app_context
             .get_eventflux_context()
             .executor_services

@@ -15,17 +15,17 @@
  * limitations under the License.
  */
 
-//! M4: 3-Phase Validation System
+//! M4: 3 Phase Validation System
 //!
-//! Provides comprehensive validation for EventFlux applications across three phases:
-//! - Phase 1: Parse-Time (Syntax Only) - During SQL parsing and TOML loading
-//! - Phase 2: Application Initialization (Fail-Fast) - Before processing events
-//! - Phase 3: Runtime (Resilient Retry) - During event processing
+//! EventFlux validates an application in three phases:
+//! - Phase 1: Parse time. Syntax only, while the SQL is parsed and TOML is loaded.
+//! - Phase 2: Application start. Fails at once, before any event is processed.
+//! - Phase 3: Runtime. Retries on failure while events are processed.
 //!
-//! This module implements validation logic for:
-//! - Circular dependency detection in stream queries
-//! - DLQ (Dead Letter Queue) schema validation
-//! - DLQ stream name and recursive restriction validation
+//! This module holds the checks for:
+//! - Circular dependencies between stream queries
+//! - The schema of DLQ (dead letter queue) streams
+//! - DLQ stream names, and DLQ streams that would feed back into themselves
 
 pub mod circular_dependency;
 pub mod dlq_validation;

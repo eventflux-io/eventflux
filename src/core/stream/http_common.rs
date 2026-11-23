@@ -22,11 +22,11 @@ use crate::core::stream::connector_util::{parse_or, parse_prefixed, Redacted};
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Request headers from `http.headers.<Name>` properties.
+/// Reads request headers from `http.headers.<Name>` properties, sorted by name.
 ///
-/// Values are wrapped in [`Redacted`] — headers routinely carry credentials
-/// (`Authorization`, API keys), so a Debug of a config prints names only.
-/// Secrets belong in environment variables:
+/// Values are wrapped in [`Redacted`] because headers often carry credentials,
+/// such as `Authorization` or API keys. A Debug print of a config shows only the
+/// names. Put secrets in environment variables, for example
 /// `"http.headers.Authorization" = 'Bearer ${TOKEN}'`.
 pub fn parse_headers(properties: &HashMap<String, String>) -> Vec<(String, Redacted)> {
     parse_prefixed(properties, "http.headers.")
@@ -35,7 +35,12 @@ pub fn parse_headers(properties: &HashMap<String, String>) -> Vec<(String, Redac
         .collect()
 }
 
-/// Validate an `http://` or `https://` URL property.
+/// Reads the `http.url` property and returns it trimmed.
+///
+/// # Errors
+///
+/// Returns an error when the property is missing or does not start with
+/// `http://` or `https://`.
 pub fn parse_url(properties: &HashMap<String, String>) -> Result<String, String> {
     let url = properties
         .get("http.url")
@@ -50,10 +55,11 @@ pub fn parse_url(properties: &HashMap<String, String>) -> Result<String, String>
     Ok(url)
 }
 
-/// Exponential-backoff retry policy for outbound requests (`http.retry.*`)
+/// Retry policy for outgoing requests, read from `http.retry.*`. The wait grows
+/// by `backoff_multiplier` after each retry, up to `max_delay_ms`.
 #[derive(Debug, Clone)]
 pub struct HttpRetryConfig {
-    /// Retries after the first attempt (0 disables retrying)
+    /// Retries after the first attempt. 0 turns retrying off. Default 3.
     pub max_attempts: u32,
     pub initial_delay_ms: u64,
     pub max_delay_ms: u64,
@@ -61,6 +67,13 @@ pub struct HttpRetryConfig {
 }
 
 impl HttpRetryConfig {
+    /// Reads the policy from properties. Defaults are 3 retries, 100 ms first
+    /// delay, 10000 ms max delay, and a multiplier of 2.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a value does not parse, or the multiplier is NaN or
+    /// below 1.0.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let config = Self {
             max_attempts: parse_or(properties, "http.retry.max-attempts", 3)?,
@@ -68,7 +81,7 @@ impl HttpRetryConfig {
             max_delay_ms: parse_or(properties, "http.retry.max-delay-ms", 10_000)?,
             backoff_multiplier: parse_or(properties, "http.retry.backoff-multiplier", 2.0)?,
         };
-        // NaN fails every comparison, so it needs its own rejection
+        // NaN fails every comparison, so it needs its own check
         if config.backoff_multiplier.is_nan() || config.backoff_multiplier < 1.0 {
             return Err(format!(
                 "Invalid http.retry.backoff-multiplier '{}': must be >= 1.0",
@@ -78,7 +91,8 @@ impl HttpRetryConfig {
         Ok(config)
     }
 
-    /// Delay before retry number `retry` (1-based), capped at the ceiling
+    /// Returns the wait before retry number `retry`, counting from 1. Never more
+    /// than `max_delay_ms`.
     pub fn delay_for(&self, retry: u32) -> Duration {
         crate::core::error::retry::exponential_backoff_with_multiplier(
             retry as usize,
@@ -89,8 +103,12 @@ impl HttpRetryConfig {
     }
 }
 
-/// Parse an optional method property against an allowlist, normalizing to
-/// uppercase.
+/// Reads an optional HTTP method property and returns it in uppercase. Uses
+/// `default` as given when the key is missing.
+///
+/// # Errors
+///
+/// Returns an error when the method is not in `allowed`.
 pub fn parse_method(
     properties: &HashMap<String, String>,
     key: &str,
@@ -109,14 +127,14 @@ pub fn parse_method(
     Ok(method)
 }
 
-/// Build a request with the configured headers applied (body added by the
-/// caller). One definition instead of a copy per call site.
+/// Builds a request with the configured headers set. The caller adds the body.
+/// Kept in one place so each call site does not copy it.
 pub fn build_request(
     method: &str,
     url: &str,
     headers: &[(String, Redacted)],
 ) -> ureq::http::request::Builder {
-    // ureq re-exports the exact `http` crate version its API expects
+    // Use ureq's own `http` re-export so the crate version matches its API
     let mut request = ureq::http::Request::builder().method(method).uri(url);
     for (name, value) in headers {
         request = request.header(name, value.expose());
@@ -124,10 +142,10 @@ pub fn build_request(
     request
 }
 
-/// Compare a presented secret against the expected one without an
-/// early-exit on the first differing byte, so response timing does not
-/// leak how much of the token matched. (Length inequality still returns
-/// fast — the token length is not the secret.)
+/// Compares a presented secret with the expected one. It does not stop at the
+/// first byte that differs, so response timing does not reveal how much of the
+/// token matched. A length mismatch still returns early, since the token length
+/// is not the secret.
 pub fn constant_time_eq(presented: &[u8], expected: &[u8]) -> bool {
     presented.len() == expected.len()
         && presented
@@ -137,20 +155,21 @@ pub fn constant_time_eq(presented: &[u8], expected: &[u8]) -> bool {
             == 0
 }
 
-/// Whether a response status warrants a retry: request timeout, rate
-/// limiting, and server-side errors. Other 4xx mean the request itself is
-/// wrong — retrying cannot fix it.
+/// Returns true when a response status is worth a retry. That is 408 (request
+/// timeout), 429 (rate limited), and any 5xx server error. Other 4xx codes mean
+/// the request itself is wrong, and a retry cannot fix that.
 pub fn is_retryable_status(status: u16) -> bool {
     status == 408 || status == 429 || (500..600).contains(&status)
 }
 
-/// Blocking client with a global per-request timeout. Non-2xx statuses are
-/// returned as responses (not errors) so callers branch on status codes.
+/// Builds a blocking client. `timeout_ms` caps the whole of each request.
+/// Non 2xx statuses come back as responses, not errors, so callers can check
+/// the status code.
 ///
-/// Redirects are never followed: ureq's default would rewrite a redirected
-/// POST/PUT to a body-less GET (per 301/302/303 semantics), making the sink
-/// report a dropped payload as delivered. A 3xx instead surfaces to the
-/// caller as a non-2xx status — point the URL at the final location.
+/// Redirects are never followed. By default ureq would turn a redirected
+/// POST or PUT into a GET with no body, as 301, 302, and 303 allow. The sink
+/// would then report a dropped payload as delivered. A 3xx instead reaches the
+/// caller as a non 2xx status. Point the URL at the final location.
 pub fn build_agent(timeout_ms: u64) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_millis(timeout_ms)))
@@ -160,9 +179,14 @@ pub fn build_agent(timeout_ms: u64) -> ureq::Agent {
         .into()
 }
 
-/// Startup reachability probe: ANY HTTP response — including 4xx/405 —
-/// proves the endpoint is reachable; only transport failures (connect,
-/// timeout, TLS) fail the probe.
+/// Checks at startup that the endpoint can be reached. Any HTTP response,
+/// even a 4xx or 405, counts as reachable.
+///
+/// # Errors
+///
+/// Returns a configuration error when the request cannot be built, and
+/// `ConnectionUnavailable` on a transport failure such as a failed connect,
+/// a timeout, or a TLS error.
 pub fn probe_reachability(
     agent: &ureq::Agent,
     method: &str,
@@ -208,7 +232,7 @@ mod tests {
         assert_eq!(config.delay_for(1), Duration::from_millis(100));
         assert_eq!(config.delay_for(2), Duration::from_millis(200));
         assert_eq!(config.delay_for(3), Duration::from_millis(400));
-        // Capped at the ceiling
+        // Capped at max_delay_ms
         assert_eq!(config.delay_for(20), Duration::from_millis(10_000));
     }
 

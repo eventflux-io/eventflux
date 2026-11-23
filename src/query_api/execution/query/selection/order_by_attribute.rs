@@ -18,35 +18,34 @@
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Variable;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)] // Added Eq, Hash, Copy
-#[derive(Default)]
+/// Sort direction. Defaults to `Asc`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum Order {
     #[default]
     Asc,
     Desc,
 }
 
-#[derive(Clone, Debug, PartialEq)] // Default requires Variable to be Default
-#[derive(Default)]
+/// One ORDER BY entry. The attribute to sort on and the direction.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct OrderByAttribute {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // OrderByAttribute fields
-    pub variable: Variable, // Variable struct has Default derive
+    pub variable: Variable,
     pub order: Order,
 }
 
 impl OrderByAttribute {
-    // Constructor for `OrderByAttribute(Variable variable, Order order)`
+    /// The query positions start unset. They are not copied from `variable`.
     pub fn new(variable: Variable, order: Order) -> Self {
         OrderByAttribute {
-            eventflux_element: EventFluxElement::default(), // Or copy from variable.eventflux_element?
+            eventflux_element: EventFluxElement::default(),
             variable,
             order,
         }
     }
 
-    // Constructor for `OrderByAttribute(Variable variable)` which defaults to ASC
+    /// Sort on `variable` in ascending order.
     pub fn new_default_order(variable: Variable) -> Self {
         Self::new(variable, Order::default())
     }
@@ -59,6 +58,3 @@ impl OrderByAttribute {
         &self.order
     }
 }
-
-// If Variable is Default, OrderByAttribute can derive Default.
-// Variable's Default requires attribute_name to be String::default().

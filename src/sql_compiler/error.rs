@@ -15,10 +15,11 @@
  * limitations under the License.
  */
 
-//! Error types for SQL compiler
+//! Error types for the SQL compiler.
 
 use thiserror::Error;
 
+/// Top level SQL compiler error. Wraps the error of whichever stage failed.
 #[derive(Debug, Error)]
 pub enum SqlCompilerError {
     #[error("Catalog error: {0}")]
@@ -37,6 +38,7 @@ pub enum SqlCompilerError {
     Application(#[from] ApplicationError),
 }
 
+/// Errors from registering or looking up streams and tables in the catalog.
 #[derive(Debug, Error)]
 pub enum CatalogError {
     #[error("Duplicate stream definition: {0}")]
@@ -52,6 +54,7 @@ pub enum CatalogError {
     UnknownColumn(String, String),
 }
 
+/// Errors from mapping SQL types and from checking expression types.
 #[derive(Debug, Error)]
 pub enum TypeError {
     #[error("Unsupported SQL type: {0}")]
@@ -64,6 +67,7 @@ pub enum TypeError {
     PrecisionLoss(String),
 }
 
+/// Errors from expanding the SELECT list, such as SELECT *.
 #[derive(Debug, Error)]
 pub enum ExpansionError {
     #[error("Unknown stream: {0}")]
@@ -82,6 +86,7 @@ pub enum ExpansionError {
     UnsupportedFeature(String),
 }
 
+/// Errors from turning parsed SQL into query_api structures.
 #[derive(Debug, Error)]
 pub enum ConverterError {
     #[error("Unsupported SQL feature: {0}")]
@@ -112,6 +117,7 @@ pub enum ConverterError {
     SchemaMismatch(String),
 }
 
+/// Errors from parsing a whole SQL application.
 #[derive(Debug, Error)]
 pub enum ApplicationError {
     #[error("Empty SQL application")]

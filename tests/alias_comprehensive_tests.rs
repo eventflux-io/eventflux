@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 //
-// Comprehensive Alias Tests
-// Tests for stream/table aliases in JOIN, SELECT, WHERE, and ON clauses
+// Alias Tests
+// Tests for stream and table aliases in JOIN, SELECT, WHERE and ON clauses
 
 mod common;
 
@@ -64,7 +64,7 @@ async fn alias_basic_stream_join() {
     assert_eq!(out[0][2], AttributeValue::Float(1500.0));
 }
 
-/// Test: Mixed aliases - only left stream has alias
+/// Test: Mixed aliases, only the left stream has an alias
 #[tokio::test]
 async fn alias_mixed_left_only() {
     let app = "\
@@ -99,7 +99,7 @@ async fn alias_mixed_left_only() {
     assert_eq!(out[0][1], AttributeValue::String("world".to_string()));
 }
 
-/// Test: Mixed aliases - only right stream has alias
+/// Test: Mixed aliases, only the right stream has an alias
 #[tokio::test]
 async fn alias_mixed_right_only() {
     let app = "\
@@ -162,8 +162,8 @@ async fn alias_with_underscore_and_numbers() {
     assert_eq!(out[0][0], AttributeValue::Int(150));
 }
 
-/// Test: Self-join with correct value attribution
-/// Ensures left and right sides are properly distinguished
+/// Test: A stream joined with itself through two aliases
+/// The left and right sides must be kept apart, with each value on its own side
 #[tokio::test]
 async fn alias_self_join_value_attribution() {
     let app = "\
@@ -176,27 +176,27 @@ async fn alias_self_join_value_attribution() {
         ON l.id = r.id;\n";
 
     let runner = AppRunner::new(app, "Output").await;
-    // Send first event
     runner.send(
         "Events",
         vec![AttributeValue::Int(1), AttributeValue::Int(100)],
     );
-    // Send second event with same id but different value
+    // Same id, different value
     runner.send(
         "Events",
         vec![AttributeValue::Int(1), AttributeValue::Int(200)],
     );
 
     let out = runner.shutdown();
-    // Should have matches: (100,100), (100,200), (200,100), (200,200)
+    // Possible matches are (100,100), (100,200), (200,100), (200,200). Only non
+    // empty output is asserted.
     assert!(!out.is_empty());
-    // Verify structure - all outputs should have matching IDs
+    // Every output row must have the same id on both sides
     for row in &out {
         assert_eq!(row[0], row[2]); // leftId == rightId
     }
 }
 
-/// Test: Self-join with inequality condition
+/// Test: Self join with an inequality condition
 #[tokio::test]
 async fn alias_self_join_inequality() {
     let app = "\
@@ -223,7 +223,7 @@ async fn alias_self_join_inequality() {
     );
 
     let out = runner.shutdown();
-    // Should have pairs: (10,20), (10,30), (20,30)
+    // Expected pairs are (10,20), (10,30), (20,30). Each row must have smaller < larger.
     assert!(!out.is_empty());
     for row in &out {
         let smaller = if let AttributeValue::Int(v) = row[0] {
@@ -265,7 +265,7 @@ async fn alias_left_outer_join() {
             AttributeValue::String("Alice".to_string()),
         ],
     );
-    // No matching right event - should still produce output with NULL
+    // There is no matching right event, so the output has NULL for the right side
 
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
@@ -290,7 +290,7 @@ async fn alias_right_outer_join() {
         "Right",
         vec![AttributeValue::Int(1), AttributeValue::Int(100)],
     );
-    // No matching left event - should still produce output with NULL
+    // There is no matching left event, so the output has NULL for the left side
 
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
@@ -324,7 +324,7 @@ async fn alias_full_outer_join() {
     );
 
     let out = runner.shutdown();
-    // Should have at least 2 rows - one for each unmatched side
+    // At least 2 rows, one for each side without a match
     assert!(out.len() >= 2);
 }
 
@@ -332,7 +332,7 @@ async fn alias_full_outer_join() {
 // TABLE JOIN WITH ALIASES
 // ============================================================================
 
-/// Test: Stream-Table join with both aliases
+/// Test: Stream to table join where both have aliases
 #[tokio::test]
 async fn alias_stream_table_join() {
     let app = "\
@@ -370,7 +370,7 @@ async fn alias_stream_table_join() {
     assert_eq!(out[0][2], AttributeValue::Float(9.99));
 }
 
-/// Test: Stream-Table join with only stream alias
+/// Test: Stream to table join where only the stream has an alias
 #[tokio::test]
 async fn alias_stream_table_stream_alias_only() {
     let app = "\
@@ -407,7 +407,7 @@ async fn alias_stream_table_stream_alias_only() {
     assert_eq!(out[0][1], AttributeValue::String("Label1".to_string()));
 }
 
-/// Test: Stream-Table join with only table alias
+/// Test: Stream to table join where only the table has an alias
 #[tokio::test]
 async fn alias_stream_table_table_alias_only() {
     let app = "\
@@ -605,7 +605,7 @@ async fn alias_coalesce_expression() {
 // ============================================================================
 
 /// Test: Aggregate function with aliased stream in windowed join
-/// Note: GROUP BY with qualified column names (alias.column) not yet supported
+/// Ignored because GROUP BY with qualified column names (alias.column) is not supported yet
 #[tokio::test]
 #[ignore = "GROUP BY with qualified column names not yet supported"]
 async fn alias_aggregate_in_join() {

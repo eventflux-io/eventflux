@@ -15,34 +15,30 @@
  * limitations under the License.
  */
 
-// Corresponds to package io.eventflux.query.api.execution.query.input.stream
+// Input stream types for the FROM part of a query.
+//
+// - `input_stream.rs` has the `InputStream` enum (Single, Join, State) and `InputStreamTrait`.
+// - `single_input_stream.rs` has `SingleInputStream`, whose kind is Basic or Anonymous.
+// - `join_input_stream.rs` has `JoinInputStream` and its `Type` and `EventTrigger` enums.
+// - `state_input_stream.rs` has `StateInputStream` for patterns and sequences, and its `Type`.
+//
+// Each stream struct holds an `eventflux_element: EventFluxElement` field. `InputStream`
+// implements `InputStreamTrait` by passing calls on to the wrapped stream.
 
-// Individual stream types
-// pub mod anonymous_input_stream; // Functionality merged into single_input_stream.rs
-// pub mod basic_single_input_stream; // Functionality merged into single_input_stream.rs
-pub mod input_stream; // Defines the main InputStream enum and its factory methods
+// pub mod anonymous_input_stream; // merged into single_input_stream.rs
+// pub mod basic_single_input_stream; // merged into single_input_stream.rs
+pub mod input_stream;
 pub mod join_input_stream;
 pub mod single_input_stream;
 pub mod state_input_stream;
 
-// Re-export key types for easier access from parent modules (e.g., query_api::execution::query::input)
-pub use self::input_stream::{InputStream, InputStreamTrait}; // This is the main enum & trait
+pub use self::input_stream::{InputStream, InputStreamTrait};
 pub use self::single_input_stream::{SingleInputStream, SingleInputStreamKind};
-// BasicSingleInputStream and AnonymousInputStream are not top-level structs anymore.
-// Their logic is within SingleInputStream or specific constructors.
+// These types no longer exist. Use SingleInputStream with the matching kind.
 // pub use self::basic_single_input_stream::BasicSingleInputStream; // Removed
 // pub use self::anonymous_input_stream::AnonymousInputStream; // Removed
 pub use self::join_input_stream::{
     EventTrigger as JoinEventTrigger, JoinInputStream, Type as JoinType,
-}; // Removed Within from here
+};
 pub use self::state_input_stream::{StateInputStream, Type as StateInputStreamType};
-pub use crate::query_api::aggregation::Within as JoinWithin; // Import Within directly and alias
-
-// Comments updated:
-// - `input_stream.rs` defines `pub enum InputStream { Single(SingleInputStream), Join(JoinInputStream), State(StateInputStream) }` and `InputStreamTrait`.
-// - `single_input_stream.rs` defines `pub struct SingleInputStream { kind: SingleInputStreamKind }` where kind can be Basic or Anonymous.
-// - `join_input_stream.rs` defines `pub struct JoinInputStream { ... }` and its enums `Type` and `EventTrigger`.
-// - `state_input_stream.rs` defines `pub struct StateInputStream { ... }` and its enum `Type`.
-// All structs that are variants or composed within these (e.g. SingleInputStream, JoinInputStream, StateInputStream)
-// must compose `eventflux_element: EventFluxElement`.
-// The `InputStream` enum implements `EventFluxElement` and `InputStreamTrait` by dispatching to its variants.
+pub use crate::query_api::aggregation::Within as JoinWithin;

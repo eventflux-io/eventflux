@@ -15,26 +15,25 @@
  * limitations under the License.
  */
 
-// Corresponds to package io.eventflux.query.api.execution.query.input.handler
+// Handlers that run on an input stream before the query sees its events. Filters, stream
+// functions and windows.
 
 pub mod filter;
 pub mod stream_function;
-pub mod stream_handler; // Interface, will be a trait or enum
-pub mod window; // Renamed to window_handler internally if needed to avoid conflict
+pub mod stream_handler;
+pub mod window;
 
-// Re-export key types
 pub use self::filter::Filter;
 pub use self::stream_function::StreamFunction;
-pub use self::stream_handler::StreamHandler; // This will be the main enum/trait
-pub use self::window::Window as WindowHandler; // Alias to avoid conflicts if necessary elsewhere
+pub use self::stream_handler::StreamHandler;
+// Renamed so it does not clash with other Window types.
+pub use self::window::Window as WindowHandler;
 
-// The StreamHandler will likely be an enum in Rust:
+// Sketch of the StreamHandler enum. The real one in stream_handler.rs boxes the window.
 // pub enum StreamHandler {
 //     Filter(Filter),
 //     Function(StreamFunction),
 //     Window(WindowHandler),
 // }
-// Each struct (Filter, StreamFunction, WindowHandler) will implement EventFluxElement
-// and potentially a common trait if methods beyond EventFluxElement are shared from Java's StreamHandler.
-// Java's StreamHandler has `getParameters()` and EventFluxElement context.
-// The Extension interface is implemented by StreamFunction and Window.
+// Each handler struct holds an EventFluxElement field. StreamHandlerTrait gives access to
+// their parameters.

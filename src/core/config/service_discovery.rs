@@ -17,8 +17,9 @@
 
 //! Service Discovery for Distributed EventFlux Clusters
 //!
-//! Provides service discovery mechanisms for distributed EventFlux deployments
-//! including Kubernetes, Consul, Etcd, and static configuration support.
+//! Finds the other nodes of a distributed EventFlux deployment. Providers exist for
+//! Kubernetes (with the `kubernetes` feature) and for a fixed list of nodes. There is
+//! no Consul or Etcd provider yet.
 
 use crate::core::config::{ConfigError, ConfigResult};
 use std::collections::HashMap;
@@ -26,7 +27,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Service discovery provider trait
+/// A way to find cluster nodes
 #[async_trait::async_trait]
 pub trait ServiceDiscovery: Send + Sync + std::fmt::Debug {
     /// Get the provider name
@@ -44,10 +45,10 @@ pub trait ServiceDiscovery: Send + Sync + std::fmt::Debug {
     /// Watch for changes in cluster topology
     async fn watch_cluster_changes(&self) -> ConfigResult<ClusterChangeStream>;
 
-    /// Health check for the service discovery system
+    /// Check whether the service discovery system works
     async fn health_check(&self) -> ConfigResult<ServiceHealth>;
 
-    /// Get provider priority (higher = more important)
+    /// Provider priority, where a higher number is tried first. Defaults to 50.
     fn priority(&self) -> u32 {
         50
     }
@@ -106,7 +107,7 @@ pub enum NodeHealth {
     /// Node is starting up
     Starting,
 
-    /// Node is shutting down gracefully
+    /// Node is shutting down cleanly
     Draining,
 
     /// Node is unhealthy but may recover
@@ -128,7 +129,8 @@ pub struct ServiceHealth {
     /// Number of discovered nodes
     pub node_count: usize,
 
-    /// Last successful discovery time
+    /// Time of this health check. The built in providers set it even when discovery
+    /// failed.
     pub last_discovery: std::time::SystemTime,
 }
 
@@ -169,26 +171,26 @@ pub enum ClusterChange {
     },
 }
 
-/// Kubernetes service discovery implementation
+/// Finds nodes through the Endpoints of Kubernetes services
 #[cfg(feature = "kubernetes")]
 #[derive(Debug, Clone)]
 pub struct KubernetesServiceDiscovery {
     /// Namespace to discover services in
     namespace: String,
 
-    /// Service label selector
+    /// Label selector for the Endpoints. Defaults to `app=eventflux`.
     label_selector: String,
 
-    /// Port name for EventFlux communication
+    /// Name of the EventFlux port on the Endpoints. Defaults to `eventflux`.
     port_name: String,
 
-    /// Cached node information
+    /// Nodes from the last discovery
     cached_nodes: Arc<RwLock<Vec<NodeInfo>>>,
 }
 
 #[cfg(feature = "kubernetes")]
 impl KubernetesServiceDiscovery {
-    /// Create a new Kubernetes service discovery
+    /// Create a Kubernetes discovery for `namespace` with the default selector and port name
     pub fn new(namespace: impl Into<String>) -> Self {
         Self {
             namespace: namespace.into(),
@@ -210,7 +212,15 @@ impl KubernetesServiceDiscovery {
         self
     }
 
-    /// Discover nodes from Kubernetes endpoints
+    /// Build one node for each ready address in the matching Endpoints.
+    ///
+    /// Uses the named port, or 8080 when it is missing. For addresses that point at a
+    /// Pod, copies the pod labels and annotations into metadata as `label.<key>` and
+    /// `annotation.<key>` and reads roles from them. A pod that cannot be fetched is
+    /// skipped quietly. Every node is marked healthy and given this build's version.
+    ///
+    /// Returns `InternalError` if the client cannot be created, listing fails, or an
+    /// address does not parse.
     async fn discover_from_k8s(&self) -> ConfigResult<Vec<NodeInfo>> {
         use k8s_openapi::api::core::v1::{Endpoints, Pod};
         use kube::{Api, Client};
@@ -222,7 +232,6 @@ impl KubernetesServiceDiscovery {
         let endpoints_api: Api<Endpoints> = Api::namespaced(client.clone(), &self.namespace);
         let pods_api: Api<Pod> = Api::namespaced(client, &self.namespace);
 
-        // List endpoints matching our label selector
         let lp = kube::api::ListParams::default().labels(&self.label_selector);
         let endpoints_list = endpoints_api
             .list(&lp)
@@ -237,7 +246,6 @@ impl KubernetesServiceDiscovery {
                     if let Some(addresses) = subset.addresses {
                         for address in addresses {
                             if let Some(ip) = address.ip {
-                                // Find the appropriate port
                                 let port = subset
                                     .ports
                                     .as_ref()
@@ -257,21 +265,19 @@ impl KubernetesServiceDiscovery {
                                         ))
                                     })?;
 
-                                // Get additional metadata from the pod if available
+                                // Pod metadata is optional, so a failed fetch is ignored
                                 let mut metadata = HashMap::new();
                                 let mut roles = vec![NodeRole::Worker]; // Default role
 
                                 if let Some(target_ref) = &address.target_ref {
                                     if target_ref.kind == "Pod" {
                                         if let Ok(pod) = pods_api.get(&target_ref.name).await {
-                                            // Extract metadata from pod labels and annotations
                                             if let Some(labels) = pod.metadata.labels {
                                                 for (key, value) in labels {
                                                     metadata
                                                         .insert(format!("label.{}", key), value);
                                                 }
 
-                                                // Determine roles from labels
                                                 roles = Self::extract_roles_from_labels(&metadata);
                                             }
 
@@ -298,7 +304,7 @@ impl KubernetesServiceDiscovery {
                                     address: socket_addr,
                                     metadata,
                                     roles,
-                                    health: NodeHealth::Healthy, // Assume healthy if in endpoints
+                                    health: NodeHealth::Healthy, // Listed in Endpoints, so taken as healthy
                                     version: env!("CARGO_PKG_VERSION").to_string(),
                                     last_seen: std::time::SystemTime::now(),
                                 });
@@ -312,7 +318,10 @@ impl KubernetesServiceDiscovery {
         Ok(nodes)
     }
 
-    /// Extract node roles from Kubernetes labels
+    /// Read roles from the comma separated `eventflux.role` pod label.
+    ///
+    /// Unknown names become [`NodeRole::Custom`]. Returns only `Worker` when the label
+    /// is missing.
     fn extract_roles_from_labels(metadata: &HashMap<String, String>) -> Vec<NodeRole> {
         let mut roles = vec![NodeRole::Worker]; // Default
 
@@ -341,8 +350,8 @@ impl ServiceDiscovery for KubernetesServiceDiscovery {
     }
 
     async fn register_node(&self, node_info: NodeInfo) -> ConfigResult<()> {
-        // In Kubernetes, registration is handled by the platform
-        // We could create/update a custom resource or annotation here
+        // Kubernetes adds the pod to the Endpoints itself, so this only logs. A custom
+        // resource or annotation could be written here later.
         println!(
             "Node registration handled by Kubernetes platform: {}",
             node_info.id
@@ -351,7 +360,7 @@ impl ServiceDiscovery for KubernetesServiceDiscovery {
     }
 
     async fn deregister_node(&self, node_id: &str) -> ConfigResult<()> {
-        // In Kubernetes, deregistration is handled by the platform
+        // Kubernetes removes the pod from the Endpoints itself, so this only logs
         println!(
             "Node deregistration handled by Kubernetes platform: {}",
             node_id
@@ -362,7 +371,6 @@ impl ServiceDiscovery for KubernetesServiceDiscovery {
     async fn discover_nodes(&self) -> ConfigResult<Vec<NodeInfo>> {
         let nodes = self.discover_from_k8s().await?;
 
-        // Update cache
         {
             let mut cache = self.cached_nodes.write().await;
             *cache = nodes.clone();
@@ -372,16 +380,17 @@ impl ServiceDiscovery for KubernetesServiceDiscovery {
     }
 
     async fn watch_cluster_changes(&self) -> ConfigResult<ClusterChangeStream> {
-        // Implementation pending: Kubernetes watch for real-time cluster changes
-        // Future implementation will use the Kubernetes watch API to stream changes
+        // Not built yet. Returns a stream that ends at once. The plan is to use the
+        // Kubernetes watch API to stream changes as they happen.
         use futures::stream;
 
-        let stream = stream::empty(); // Stub implementation
+        let stream = stream::empty();
         Ok(Box::new(stream))
     }
 
     async fn health_check(&self) -> ConfigResult<ServiceHealth> {
-        // Try to discover nodes as a health check
+        // A full discovery is the health check. It also refreshes the node cache. A
+        // failure is reported as Unhealthy, not as an error.
         match self.discover_nodes().await {
             Ok(nodes) => Ok(ServiceHealth {
                 status: HealthStatus::Healthy,
@@ -399,19 +408,22 @@ impl ServiceDiscovery for KubernetesServiceDiscovery {
     }
 
     fn priority(&self) -> u32 {
-        80 // High priority in Kubernetes environments
+        80 // Tried before the static list
     }
 }
 
-/// Static service discovery (for testing or simple deployments)
+/// Fixed list of nodes, for tests or simple deployments.
+///
+/// Register and deregister only log. The list never changes on its own and the
+/// health check always reports healthy.
 #[derive(Debug, Clone)]
 pub struct StaticServiceDiscovery {
-    /// Static list of nodes
+    /// Fixed list of nodes
     nodes: Vec<NodeInfo>,
 }
 
 impl StaticServiceDiscovery {
-    /// Create a new static service discovery with a list of nodes
+    /// Create a static discovery with the given nodes
     pub fn new(nodes: Vec<NodeInfo>) -> Self {
         Self { nodes }
     }
@@ -443,7 +455,7 @@ impl ServiceDiscovery for StaticServiceDiscovery {
     }
 
     async fn watch_cluster_changes(&self) -> ConfigResult<ClusterChangeStream> {
-        // Static discovery doesn't have changes
+        // The list never changes, so the stream ends at once
         use futures::stream;
         Ok(Box::new(stream::empty()))
     }
@@ -462,21 +474,21 @@ impl ServiceDiscovery for StaticServiceDiscovery {
     }
 }
 
-/// Service discovery manager that coordinates multiple providers
+/// Picks one healthy provider from several and sends every call to it
 #[derive(Debug)]
 pub struct ServiceDiscoveryManager {
-    /// Registered service discovery providers
+    /// Providers, highest priority first
     providers: Vec<Box<dyn ServiceDiscovery>>,
 
-    /// Current active provider
+    /// Index into `providers` of the chosen provider. None until `initialize` succeeds.
     active_provider: Option<usize>,
 
-    /// Cached cluster topology
+    /// Nodes from the last `discover_nodes` call
     cached_topology: Arc<RwLock<Vec<NodeInfo>>>,
 }
 
 impl ServiceDiscoveryManager {
-    /// Create a new service discovery manager
+    /// Create a manager with no providers
     pub fn new() -> Self {
         Self {
             providers: Vec::new(),
@@ -485,15 +497,21 @@ impl ServiceDiscoveryManager {
         }
     }
 
-    /// Add a service discovery provider
+    /// Add a provider and keep the list sorted by priority.
+    ///
+    /// Call this before `initialize`. Sorting can move providers, so adding one later
+    /// may leave the chosen index pointing at a different provider.
     pub fn add_provider(&mut self, provider: Box<dyn ServiceDiscovery>) {
         self.providers.push(provider);
-        // Sort by priority (highest first)
+        // Highest priority first
         self.providers
             .sort_by_key(|p| std::cmp::Reverse(p.priority()));
     }
 
-    /// Initialize service discovery by selecting the best available provider
+    /// Choose the first provider, by priority, whose health check reports healthy.
+    ///
+    /// Each rejected provider is printed to stdout. Returns `InternalError` when no
+    /// provider is healthy.
     pub async fn initialize(&mut self) -> ConfigResult<()> {
         for (index, provider) in self.providers.iter().enumerate() {
             match provider.health_check().await {
@@ -516,7 +534,7 @@ impl ServiceDiscoveryManager {
         ))
     }
 
-    /// Get the active service discovery provider
+    /// Get the chosen provider. Returns `InternalError` before `initialize` succeeds.
     fn get_active_provider(&self) -> ConfigResult<&dyn ServiceDiscovery> {
         match self.active_provider {
             Some(index) => Ok(self.providers[index].as_ref()),
@@ -526,12 +544,11 @@ impl ServiceDiscoveryManager {
         }
     }
 
-    /// Discover nodes in the cluster
+    /// Discover nodes through the chosen provider and cache the result
     pub async fn discover_nodes(&self) -> ConfigResult<Vec<NodeInfo>> {
         let provider = self.get_active_provider()?;
         let nodes = provider.discover_nodes().await?;
 
-        // Update cache
         {
             let mut cache = self.cached_topology.write().await;
             *cache = nodes.clone();
@@ -540,7 +557,7 @@ impl ServiceDiscoveryManager {
         Ok(nodes)
     }
 
-    /// Get cached topology without performing discovery
+    /// Get the nodes from the last discovery without asking the provider again
     pub async fn get_cached_topology(&self) -> Vec<NodeInfo> {
         let cache = self.cached_topology.read().await;
         cache.clone()

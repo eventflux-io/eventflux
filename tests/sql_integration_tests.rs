@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-// Integration tests for SQL compiler
-// Tests end-to-end flow: SQL → Runtime → Event Processing → Output
+// Integration tests for the SQL compiler
+// They follow the whole flow, SQL → Runtime → Event Processing → Output
 
 use eventflux::core::event::value::AttributeValue;
 use eventflux::core::eventflux_manager::EventFluxManager;
@@ -425,7 +425,7 @@ async fn test_sql_query_4_window_length_count() {
 #[tokio::test]
 async fn test_sql_query_9_order_by_limit() {
     // Query 9: ORDER BY + LIMIT with WINDOW
-    // Note: ORDER BY and LIMIT make sense on windowed streams, not unbounded streams
+    // ORDER BY and LIMIT only make sense on a window, not on an unbounded stream
     let sql = r#"
         CREATE STREAM StockStream (symbol VARCHAR, price DOUBLE);
 
@@ -479,17 +479,14 @@ async fn test_sql_query_9_order_by_limit() {
 
     println!("Output events (Query 9): {:?}", output_events);
 
-    // NOTE: ORDER BY and LIMIT are converted correctly to Query API,
-    // but runtime execution may not fully implement these features yet.
-    // This test verifies that the SQL conversion succeeds without errors.
-    // Actual ordering and limiting behavior depends on runtime implementation.
-
-    // Verify we got some events (conversion and execution succeeded)
+    // ORDER BY and LIMIT convert to the Query API, but the runtime may not apply
+    // them fully yet. So this test only checks that the conversion and execution
+    // succeed. Ordering and limits are not checked.
     assert!(!output_events.is_empty(), "Expected at least 1 event");
 
-    // TODO: Once runtime implements ORDER BY/LIMIT properly, add assertions:
+    // TODO: Once the runtime applies ORDER BY and LIMIT, add these checks
     // - assert!(output_events.len() <= 3, "LIMIT 3 should restrict to 3 events");
-    // - Verify events are sorted by price DESC
+    // - events are sorted by price DESC
 
     runtime.shutdown();
 }
@@ -551,7 +548,7 @@ async fn test_sql_query_10_insert_into() {
         output_events
     );
 
-    // Verify only high-price stocks (> 500) are in HighPriceAlerts
+    // Only stocks priced above 500 are in HighPriceAlerts
     assert_eq!(output_events.len(), 2, "Expected 2 high-price alerts");
 
     // Verify first alert (GOOGL, 600.0)
@@ -836,8 +833,8 @@ async fn test_sql_query_8_multiple_aggregations() {
 
 #[tokio::test]
 async fn test_sql_query_5_stream_join() {
-    // Query 5: Stream JOIN (SQL parsing and conversion test)
-    // Note: Uses full stream names instead of aliases for M1
+    // Query 5: Stream JOIN, a test of SQL parsing and conversion.
+    // Uses full stream names instead of aliases for M1.
     let sql = r#"
         CREATE STREAM Trades (symbol VARCHAR, price DOUBLE);
         CREATE STREAM News (symbol VARCHAR, headline VARCHAR);
@@ -915,15 +912,13 @@ async fn test_sql_query_5_stream_join() {
 
     println!("Output events (Query 5 - JOIN): {:?}", output_events);
 
-    // Verify JOIN results
     assert!(
         output_events.len() >= 2,
         "Expected at least 2 joined events"
     );
 
-    // Note: JOIN output format depends on runtime implementation
-    // This test verifies that the SQL → Query API conversion works
-    // Actual runtime behavior may vary
+    // The layout of JOIN output depends on the runtime, so only the count is
+    // checked. The test is mainly about the SQL → Query API conversion.
 
     runtime.shutdown();
 }
@@ -935,10 +930,10 @@ async fn test_sql_query_5_stream_join() {
 /// 2. NO spurious empty events (count=0, avg=null) are emitted
 /// 3. Each batch contains only events from its window period
 ///
-/// Bug context: Without RESET events between batches, aggregators used incremental
-/// add/remove semantics which caused:
-/// - Spurious emissions with count=0, avg=null
-/// - Incorrect aggregation values due to state not being cleared between batches
+/// The bug. Without RESET events between batches, aggregators added and removed
+/// values one by one, which caused
+/// - extra output with count=0, avg=null
+/// - wrong aggregate values because state was not cleared between batches
 #[tokio::test]
 async fn test_tumbling_window_multi_batch_no_spurious_empty_events() {
     let sql = r#"
@@ -967,7 +962,7 @@ async fn test_tumbling_window_multi_batch_no_spurious_empty_events() {
         .get_input_handler("TradeStream")
         .expect("Failed to get input handler");
 
-    // === BATCH 1: Send 3 events ===
+    // === BATCH 1. Send 3 events ===
     for price in [100.0, 150.0, 200.0] {
         input_handler
             .lock()
@@ -982,7 +977,7 @@ async fn test_tumbling_window_multi_batch_no_spurious_empty_events() {
     // Wait for first window to close (1 second + buffer)
     tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-    // === BATCH 2: Send 2 events ===
+    // === BATCH 2. Send 2 events ===
     for price in [300.0, 400.0] {
         input_handler
             .lock()
@@ -997,7 +992,7 @@ async fn test_tumbling_window_multi_batch_no_spurious_empty_events() {
     // Wait for second window to close
     tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-    // === BATCH 3: Send 1 event ===
+    // === BATCH 3. Send 1 event ===
     input_handler
         .lock()
         .unwrap()
@@ -1018,7 +1013,7 @@ async fn test_tumbling_window_multi_batch_no_spurious_empty_events() {
         output_events
     );
 
-    // Verify NO spurious empty events (the bug we fixed)
+    // NO extra empty events, which was the bug
     for (i, event) in output_events.iter().enumerate() {
         // event[0] = symbol, event[1] = trade_count, event[2] = avg_price
         let trade_count = &event[1];
@@ -1056,8 +1051,8 @@ async fn test_tumbling_window_multi_batch_no_spurious_empty_events() {
         );
     }
 
-    // We should have exactly 3 output events (one per batch with data)
-    // Note: Timing-sensitive, but we should have at least 2 valid batches
+    // Ideally 3 output events, one per batch with data. Timing can vary, so at
+    // least 2 are required.
     assert!(
         output_events.len() >= 2,
         "Expected at least 2 batch outputs, got {}",
@@ -1074,8 +1069,8 @@ async fn test_tumbling_window_multi_batch_no_spurious_empty_events() {
 /// 2. NO spurious empty events (count=0, avg=null) are emitted
 /// 3. Each batch contains only the specified number of events
 ///
-/// Bug context: Same as tumbling window - without RESET events, aggregators
-/// used incremental add/remove semantics causing spurious empty emissions.
+/// The bug was the same as for the tumbling window. Without RESET events,
+/// aggregators added and removed values one by one, which gave extra empty output.
 #[tokio::test]
 async fn test_length_batch_window_multi_batch_no_spurious_empty_events() {
     let sql = r#"
@@ -1104,7 +1099,7 @@ async fn test_length_batch_window_multi_batch_no_spurious_empty_events() {
         .get_input_handler("TradeStream")
         .expect("Failed to get input handler");
 
-    // === BATCH 1: Send 3 events (triggers flush) ===
+    // === BATCH 1. Send 3 events, which flushes the batch ===
     for price in [100.0, 150.0, 200.0] {
         input_handler
             .lock()
@@ -1119,7 +1114,7 @@ async fn test_length_batch_window_multi_batch_no_spurious_empty_events() {
     // Small delay to allow processing
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // === BATCH 2: Send 3 more events (triggers second flush) ===
+    // === BATCH 2. Send 3 more events, the second flush ===
     for price in [300.0, 400.0, 500.0] {
         input_handler
             .lock()
@@ -1134,7 +1129,7 @@ async fn test_length_batch_window_multi_batch_no_spurious_empty_events() {
     // Small delay to allow processing
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // === BATCH 3: Send 3 more events (triggers third flush) ===
+    // === BATCH 3. Send 3 more events, the third flush ===
     for price in [600.0, 700.0, 800.0] {
         input_handler
             .lock()
@@ -1194,7 +1189,7 @@ async fn test_length_batch_window_multi_batch_no_spurious_empty_events() {
         );
     }
 
-    // We should have exactly 3 output events (one per batch of 3 events)
+    // Ideally 3 output events, one per batch of 3. At least 2 are required.
     assert!(
         output_events.len() >= 2,
         "Expected at least 2 batch outputs, got {}",
@@ -1209,10 +1204,11 @@ async fn test_length_batch_window_multi_batch_no_spurious_empty_events() {
 /// This test verifies that:
 /// 1. Multiple consecutive batches emit correct aggregation results
 /// 2. NO spurious empty events (count=0, avg=null) are emitted
-/// 3. Each batch is determined by the external timestamp field
+/// 3. Each batch is decided by event timestamps, which the test sets to match
+///    the trade_time field
 ///
-/// Bug context: Same as tumbling window - without RESET events, aggregators
-/// used incremental add/remove semantics causing spurious empty emissions.
+/// The bug was the same as for the tumbling window. Without RESET events,
+/// aggregators added and removed values one by one, which gave extra empty output.
 #[tokio::test]
 async fn test_external_time_batch_window_multi_batch_no_spurious_empty_events() {
     let sql = r#"
@@ -1243,10 +1239,10 @@ async fn test_external_time_batch_window_multi_batch_no_spurious_empty_events() 
         .get_input_handler("TradeStream")
         .expect("Failed to get input handler");
 
-    // externalTimeBatch uses the event's internal timestamp (set via send_event_with_timestamp)
-    // NOT the field value, so we must use send_event_with_timestamp with matching values
+    // externalTimeBatch uses the event timestamp set by send_event_with_timestamp,
+    // NOT the field value, so events are sent with timestamps that match the field
 
-    // === BATCH 1: Events at time 0-500ms ===
+    // === BATCH 1. Events at 0 to 500 ms ===
     for (ts, price) in [(0i64, 100.0), (200, 150.0), (400, 200.0)] {
         input_handler
             .lock()
@@ -1262,7 +1258,7 @@ async fn test_external_time_batch_window_multi_batch_no_spurious_empty_events() 
             .expect("Failed to send event");
     }
 
-    // === BATCH 2: Events at time 1000-1500ms (new window) ===
+    // === BATCH 2. Events at 1000 to 1500 ms, a new window ===
     for (ts, price) in [(1000i64, 300.0), (1200, 400.0)] {
         input_handler
             .lock()
@@ -1278,7 +1274,7 @@ async fn test_external_time_batch_window_multi_batch_no_spurious_empty_events() 
             .expect("Failed to send event");
     }
 
-    // === BATCH 3: Events at time 2000-2500ms (triggers flush of batch 2) ===
+    // === BATCH 3. Events at 2000 to 2500 ms, which flush batch 2 ===
     {
         let (ts, price) = (2000i64, 500.0);
         input_handler

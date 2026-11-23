@@ -22,7 +22,7 @@ use eventflux::core::event::value::AttributeValue;
 
 #[tokio::test]
 async fn test_processor_pipeline() {
-    // Test WHERE clause filtering (pre-aggregation)
+    // WHERE filters rows before any aggregation
     let app = "\
         CREATE STREAM InputStream (a INT);\n\
         CREATE STREAM OutStream (a INT);\n\

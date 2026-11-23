@@ -20,13 +20,15 @@ use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
 use std::cmp::Ordering;
 
-/// Comparator for events according to ORDER BY clauses.
+/// Orders events by the ORDER BY attributes, each ascending or descending.
 #[derive(Debug)]
 pub struct OrderByEventComparator {
     executors: Vec<Box<dyn ExpressionExecutor>>,
     ascending: Vec<bool>,
 }
 
+// A clone keeps the directions but has no executors, so it treats every pair of events
+// as equal
 impl Clone for OrderByEventComparator {
     fn clone(&self) -> Self {
         Self {
@@ -44,6 +46,8 @@ impl OrderByEventComparator {
         }
     }
 
+    /// Compare two events attribute by attribute, stopping at the first difference.
+    /// An event with a value sorts before one without, before the direction is applied.
     pub fn compare(&self, ev1: &dyn ComplexEvent, ev2: &dyn ComplexEvent) -> Ordering {
         for (exec, asc) in self.executors.iter().zip(self.ascending.iter()) {
             let v1 = exec.execute(Some(ev1));
@@ -62,6 +66,8 @@ impl OrderByEventComparator {
     }
 }
 
+// Same typed values compare directly. NaN floats compare equal. Mixed types compare by
+// their string form.
 fn compare_attr_values(a: &AttributeValue, b: &AttributeValue) -> Ordering {
     match (a, b) {
         (AttributeValue::String(x), AttributeValue::String(y)) => x.cmp(y),

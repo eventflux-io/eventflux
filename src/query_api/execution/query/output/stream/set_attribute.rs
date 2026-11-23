@@ -17,12 +17,16 @@
 
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
-use crate::query_api::expression::Variable; // Corrected path
+use crate::query_api::expression::Variable;
 
-#[derive(Clone, Debug, PartialEq)] // Default is tricky due to Variable and Expression
+/// One assignment in an UPDATE SET clause, as in `price = s.price`.
+///
+/// Has no `Default` because both the column and the value are required.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SetAttribute {
     pub eventflux_element: EventFluxElement,
-    pub table_column: Variable, // Java uses Variable, not String.
+    /// The table column to set. A Variable so it can carry a table qualifier.
+    pub table_column: Variable,
     pub value_to_set: Expression,
 }
 
@@ -36,9 +40,4 @@ impl SetAttribute {
     }
 }
 
-// SetAttribute in Java is a EventFluxElement. So this struct also composes/implements it.
-// Default derive removed as Variable and Expression don't have trivial defaults for this context.
-
-// The UpdateSet class from Java would be a separate struct, likely in its own file (e.g., update_set.rs)
-// and would contain `pub set_attribute_list: Vec<SetAttribute>`.
-// For now, only defining SetAttribute as requested by the file name in the prompt.
+// The list of assignments lives in UpdateSet, in update_set.rs.

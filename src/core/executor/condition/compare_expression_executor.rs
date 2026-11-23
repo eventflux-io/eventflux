@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/executor/condition/compare_expression_executor.rs
 // Corresponds to io.eventflux.core.executor.condition.compare.CompareConditionExpressionExecutor (abstract class)
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
@@ -263,14 +262,13 @@ mod tests {
     use crate::core::event::value::AttributeValue;
     use crate::core::executor::constant_expression_executor::ConstantExpressionExecutor;
     use crate::query_api::expression::condition::compare::Operator as ApiCompareOperator;
-    // ApiAttributeType is imported in the outer scope
+    // ApiAttributeType comes from the parent module through super::*
     use crate::core::config::eventflux_app_context::EventFluxAppContext;
     use crate::core::executor::expression_executor::ExpressionExecutor;
     use std::sync::Arc;
 
     #[test]
     fn test_compare_greater_than_int_true() {
-        // Renamed as per subtask suggestion (though original would be fine too)
         let left_exec = Box::new(ConstantExpressionExecutor::new(
             AttributeValue::Int(20),
             ApiAttributeType::INT,
@@ -351,12 +349,12 @@ mod tests {
         let right_exec = Box::new(ConstantExpressionExecutor::new(
             AttributeValue::Null,
             ApiAttributeType::INT,
-        )); // Null operand
+        ));
         let cmp_exec =
             CompareExpressionExecutor::new(left_exec, right_exec, ApiCompareOperator::GreaterThan)
                 .unwrap();
 
-        // Current logic: if either operand is Null, returns Bool(false)
+        // A NULL on either side gives Bool(false) for every operator except !=, which gives true
         let result = cmp_exec.execute(None);
         assert_eq!(result, Some(AttributeValue::Bool(false)));
     }

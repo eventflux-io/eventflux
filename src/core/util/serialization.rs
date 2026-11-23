@@ -17,8 +17,7 @@
 
 use serde::{de::DeserializeOwned, Serialize};
 
-/// Unified error for bincode 2/3, which splits encode and decode errors
-/// into separate types.
+/// One error type for bincode 2, which has separate encode and decode error types.
 #[derive(Debug, thiserror::Error)]
 pub enum SerdeError {
     #[error("encode: {0}")]
@@ -27,23 +26,30 @@ pub enum SerdeError {
     Decode(#[from] bincode::error::DecodeError),
 }
 
-/// The one wire-format definition for every bincode use in the engine.
+/// The single byte format setting for every bincode use in the engine.
 ///
-/// `legacy()` is byte-identical to bincode 1.x (fixed-width ints, little
-/// endian), so snapshots/checkpoints persisted before the bincode 3
-/// migration keep decoding. Switching to `standard()` (varint) is a
-/// deliberate format break, not a drive-by upgrade.
+/// `legacy()` writes exactly the same bytes as bincode 1.x (fixed width ints, little
+/// endian), so snapshots and checkpoints saved before the move to bincode 2 still
+/// decode. Switching to `standard()` (varint) breaks the format on purpose and must
+/// not be done as a casual upgrade.
 fn config() -> impl bincode::config::Config {
     bincode::config::legacy()
 }
 
-/// Serialize any serde serializable object to bytes using bincode.
-/// `?Sized` admits slices (`&[Event]`), which the binary mappers use.
+/// Serializes any serde value to bytes with bincode.
+/// `?Sized` allows slices (`&[Event]`), which the binary mappers use.
+///
+/// # Errors
+/// Returns `SerdeError::Encode` if encoding fails.
 pub fn to_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, SerdeError> {
     Ok(bincode::serde::encode_to_vec(value, config())?)
 }
 
-/// Deserialize bytes back into an object using bincode.
+/// Decodes bytes written by [`to_bytes`] back into a value. Extra trailing bytes are
+/// ignored.
+///
+/// # Errors
+/// Returns `SerdeError::Decode` if the bytes do not decode as `T`.
 pub fn from_bytes<T: DeserializeOwned>(data: &[u8]) -> Result<T, SerdeError> {
     Ok(bincode::serde::decode_from_slice(data, config())?.0)
 }
@@ -54,10 +60,10 @@ mod tests {
 
     #[test]
     fn test_wire_format_matches_bincode_1() {
-        // Golden bytes produced by bincode 1.3's `serialize` for these
-        // exact values. `config::legacy()` must keep emitting them so
-        // snapshots/checkpoints persisted before the bincode-2 migration
-        // still decode. A failure here means the wire format broke.
+        // Known good bytes from bincode 1.3 `serialize` for these exact values.
+        // `config::legacy()` must keep writing them so snapshots and checkpoints saved
+        // before the move to bincode 2 still decode. A failure here means the byte
+        // format broke.
         #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
         struct Golden {
             id: u64,
@@ -96,7 +102,7 @@ mod tests {
         let back: Vec<(String, u32)> = from_bytes(&bytes).unwrap();
         assert_eq!(back, original);
 
-        // Garbage decodes to the Decode arm of the unified error
+        // Bad bytes give the Decode variant of the shared error
         let err = from_bytes::<String>(&[0xFF; 3]).unwrap_err();
         assert!(matches!(err, SerdeError::Decode(_)));
     }

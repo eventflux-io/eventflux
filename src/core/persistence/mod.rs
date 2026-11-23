@@ -18,15 +18,15 @@
 // src/core/persistence/mod.rs
 
 pub mod data_source;
-pub mod persistence_store; // For PersistenceStore traits
+pub mod persistence_store; // PersistenceStore traits and stores
 pub mod snapshot_service;
 
-// Enhanced state management system (Phase 1)
+// State holders, the unified state manager and the component registry.
 pub mod state_holder;
 pub mod state_manager;
 pub mod state_registry;
 
-// Incremental checkpointing system (Phase 2)
+// Incremental checkpoints, write ahead log, merging and recovery.
 pub mod incremental;
 
 pub use self::data_source::{DataSource, DataSourceConfig, SqliteDataSource};
@@ -36,7 +36,7 @@ pub use self::persistence_store::{
 };
 pub use self::snapshot_service::{PersistReport, SnapshotService};
 
-// Enhanced state management exports
+// State management exports.
 pub use self::state_holder::{
     AccessPattern, ChangeLog, CheckpointId, ComponentId, CompressionType, SchemaVersion,
     SerializationHints, StateError, StateHolder, StateMetadata, StateSize, StateSnapshot,
@@ -50,7 +50,7 @@ pub use self::state_registry::{
     StateRegistry, StateTopology,
 };
 
-// Incremental checkpointing exports
+// Incremental checkpoint exports.
 pub use self::incremental::checkpoint_merger::MergerConfig;
 pub use self::incremental::recovery_engine::RecoveryConfig;
 pub use self::incremental::write_ahead_log::WALConfig;

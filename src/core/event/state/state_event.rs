@@ -15,16 +15,16 @@
  * limitations under the License.
  */
 
-// src/core/event/state/state_event.rs
-// Corresponds to io.eventflux.core.event.state.StateEvent
+// Port of the Java StateEvent. It holds one StreamEvent chain per pattern or join position.
 use crate::core::event::complex_event::{ComplexEvent, ComplexEventType};
-use crate::core::event::stream::StreamEvent; // StateEvent holds StreamEvents
+use crate::core::event::stream::StreamEvent;
 use crate::core::event::value::AttributeValue;
+// The methods below import these constants locally where they need them.
 // use crate::core::util::eventflux_constants::{
 //     BEFORE_WINDOW_DATA_INDEX, CURRENT, LAST, ON_AFTER_WINDOW_DATA_INDEX, OUTPUT_DATA_INDEX,
 //     STATE_OUTPUT_DATA_INDEX, STREAM_ATTRIBUTE_INDEX_IN_TYPE, STREAM_ATTRIBUTE_TYPE_INDEX,
 //     STREAM_EVENT_CHAIN_INDEX, STREAM_EVENT_INDEX_IN_CHAIN,
-// }; // TODO: Will be used when implementing state event operations
+// };
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::fmt::Debug;
@@ -32,20 +32,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_STATE_EVENT_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Default, Serialize, Deserialize)] // Default is placeholder
+// `Default` gives id 0 and timestamp 0, unlike `new`, which takes a fresh id and uses -1.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StateEvent {
-    // Fields from Java StateEvent
-    pub stream_events: Vec<Option<StreamEvent>>, // Java: StreamEvent[], can have nulls
+    pub stream_events: Vec<Option<StreamEvent>>, // Java: StreamEvent[], slots can be empty
     pub timestamp: i64,
-    pub event_type: ComplexEventType, // Corresponds to type field
-    pub output_data: Option<Vec<AttributeValue>>, // Corresponds to outputData field
+    pub event_type: ComplexEventType,             // Java: type
+    pub output_data: Option<Vec<AttributeValue>>, // Java: outputData
 
-    // For ComplexEvent linked list
+    // Next event in the chunk. Not serialized, so it is None after deserializing.
     #[serde(default, skip_serializing, skip_deserializing)]
     pub next: Option<Box<dyn ComplexEvent>>,
 
-    // Java StateEvent has an 'id' field too (long)
-    pub id: u64, // Using u64 to match Event.id, though Java StateEvent.id is not static atomic
+    // Java uses a long id. Here new ids come from a global atomic counter.
+    pub id: u64,
 }
 
 impl Clone for StateEvent {
@@ -65,9 +65,9 @@ impl Clone for StateEvent {
 }
 
 impl StateEvent {
-    /// Generate a new unique ID for StateEvent
+    /// Returns a new unique StateEvent id from the global counter.
     ///
-    /// **Used by**: StateEventCloner for 'every' patterns (need fresh IDs)
+    /// StateEventCloner uses it for `every` patterns, where each clone needs a fresh id.
     pub fn next_id() -> u64 {
         NEXT_STATE_EVENT_ID.fetch_add(1, Ordering::Relaxed)
     }
@@ -82,8 +82,9 @@ impl StateEvent {
             id: self.id,
         }
     }
+    // Builds a state event with `stream_events_size` empty slots, timestamp -1 and a fresh
+    // id. Output data holds `output_size` Null values, or is None when `output_size` is 0.
     pub fn new(stream_events_size: usize, output_size: usize) -> Self {
-        // Initialize stream_events with None
         let mut stream_events_vec = Vec::with_capacity(stream_events_size);
         for _ in 0..stream_events_size {
             stream_events_vec.push(None);
@@ -91,7 +92,7 @@ impl StateEvent {
 
         Self {
             stream_events: stream_events_vec,
-            timestamp: -1, // Default timestamp
+            timestamp: -1,
             event_type: ComplexEventType::default(),
             output_data: if output_size > 0 {
                 Some(vec![AttributeValue::default(); output_size])
@@ -110,27 +111,32 @@ impl StateEvent {
         &self.stream_events
     }
 
-    /// Get the number of stream event positions in this StateEvent
+    /// Returns the number of stream event slots, including empty ones.
     pub fn stream_event_count(&self) -> usize {
         self.stream_events.len()
     }
 
+    // Replaces the whole chain at `position`. Does nothing if `position` is out of range.
     pub fn set_event(&mut self, position: usize, event: StreamEvent) {
         if position < self.stream_events.len() {
             self.stream_events[position] = Some(event);
         }
     }
 
-    /// Expand the StateEvent to have at least `min_size` positions
-    /// Used when forwarding StateEvents to next processors that need more positions
+    /// Grows the event to at least `min_size` slots by adding empty ones.
+    ///
+    /// Used when a state event is passed to a later processor that needs more slots.
     pub fn expand_to_size(&mut self, min_size: usize) {
         while self.stream_events.len() < min_size {
             self.stream_events.push(None);
         }
     }
 
-    /// Add event to chain at position (for count quantifiers)
-    /// Properly builds a chain: first -> second -> third -> ...
+    /// Appends `stream_event` to the end of the chain at `position`, for count quantifiers.
+    ///
+    /// The chain grows in arrival order, first -> second -> third. Does nothing if
+    /// `position` is out of range. If a link in the chain is not a StreamEvent, the
+    /// event is dropped.
     pub fn add_event(&mut self, position: usize, stream_event: StreamEvent) {
         if position >= self.stream_events.len() {
             return;
@@ -138,11 +144,10 @@ impl StateEvent {
 
         match &mut self.stream_events[position] {
             None => {
-                // First event at this position
                 self.stream_events[position] = Some(stream_event);
             }
             Some(existing) => {
-                // Find the last event in chain and append
+                // Walk to the last event and append there.
                 let mut current = existing;
                 loop {
                     let has_next = current.next.is_some();
@@ -151,14 +156,12 @@ impl StateEvent {
                         break;
                     }
 
-                    // Get the next stream event
                     if let Some(ref mut next_box) = current.next {
                         if let Some(stream_event_ref) =
                             next_box.as_any_mut().downcast_mut::<StreamEvent>()
                         {
                             current = stream_event_ref;
                         } else {
-                            // Not a StreamEvent, break
                             break;
                         }
                     } else {
@@ -169,7 +172,14 @@ impl StateEvent {
         }
     }
 
-    /// Retrieve a stream event based on EventFlux position array logic.
+    /// Finds a stream event using a position array.
+    ///
+    /// `position[STREAM_EVENT_CHAIN_INDEX]` picks the slot and
+    /// `position[STREAM_EVENT_INDEX_IN_CHAIN]` picks the event in that chain. 0 or more is a
+    /// plain index from the head. `CURRENT` is the last event and `LAST` is the one before
+    /// it, so `LAST` needs at least two events. Any other negative value counts back from
+    /// the end, so -3 is the third from last. Returns `None` if the array is too short, the
+    /// slot is empty, or the index is out of range.
     pub fn get_stream_event_by_position(&self, position: &[i32]) -> Option<&StreamEvent> {
         use crate::core::util::eventflux_constants::{
             CURRENT, LAST, STREAM_EVENT_CHAIN_INDEX, STREAM_EVENT_INDEX_IN_CHAIN,
@@ -215,7 +225,10 @@ impl StateEvent {
         Some(stream_event)
     }
 
-    /// Remove last event from chain at position (backtracking for count quantifiers)
+    /// Removes and returns the last event of the chain at `position`.
+    ///
+    /// Count quantifiers use this to backtrack. Returns `None` if `position` is out of
+    /// range or the slot is empty. The returned event is a copy of the removed one.
     pub fn remove_last_event(&mut self, position: usize) -> Option<StreamEvent> {
         if position >= self.stream_events.len() {
             return None;
@@ -227,10 +240,10 @@ impl StateEvent {
             None => None,
             Some(first) => {
                 if first.next.is_none() {
-                    // Only one event in chain, remove it
+                    // Only one event, so empty the slot.
                     slot.take()
                 } else {
-                    // Find second-to-last event
+                    // Walk to the second to last event and cut off its next.
                     let mut current = first;
                     loop {
                         let next_is_last = if let Some(ref next_box) = current.next {
@@ -246,14 +259,12 @@ impl StateEvent {
                         };
 
                         if next_is_last {
-                            // Take the last event
                             if let Some(last_box) = current.next.take() {
                                 return last_box.as_any().downcast_ref::<StreamEvent>().cloned();
                             }
                             return None;
                         }
 
-                        // Move to next
                         if let Some(ref mut next_box) = current.next {
                             if let Some(next_stream) =
                                 next_box.as_any_mut().downcast_mut::<StreamEvent>()
@@ -272,7 +283,9 @@ impl StateEvent {
         }
     }
 
-    /// Get all events in chain at position
+    /// Returns all events in the chain at `position`, head first.
+    ///
+    /// Stops at the first link that is not a StreamEvent. Empty if the slot is empty.
     pub fn get_event_chain(&self, position: usize) -> Vec<&StreamEvent> {
         let mut result = Vec::new();
 
@@ -293,14 +306,15 @@ impl StateEvent {
         result
     }
 
-    /// Count events in chain at position
+    /// Returns how many events are in the chain at `position`.
     pub fn count_events_at(&self, position: usize) -> usize {
         self.get_event_chain(position).len()
     }
 }
 
-// Inherent methods for StateEvent
 impl StateEvent {
+    // Sets one output value. If output data is None, only index 0 works, and it creates
+    // a one element vector. Errors when the index is out of range.
     pub fn set_output_data_at_idx(
         &mut self,
         value: AttributeValue,
@@ -335,6 +349,9 @@ impl StateEvent {
         self.output_data.as_deref()
     }
 
+    // Reads one attribute by position array. STATE_OUTPUT_DATA_INDEX reads this event's
+    // own output data. Other types find the stream event through
+    // get_stream_event_by_position and read the matching data array.
     pub fn get_attribute(&self, position: &[i32]) -> Option<&AttributeValue> {
         use crate::core::util::eventflux_constants::{
             BEFORE_WINDOW_DATA_INDEX, ON_AFTER_WINDOW_DATA_INDEX, OUTPUT_DATA_INDEX,
@@ -362,6 +379,9 @@ impl StateEvent {
         }
     }
 
+    // Writes one attribute by position array. Unlike get_attribute, this ignores
+    // STREAM_EVENT_INDEX_IN_CHAIN and always writes to the head of the chain.
+    // Errors on a short array, an empty slot, a missing data array or a bad index.
     pub fn set_attribute(&mut self, value: AttributeValue, position: &[i32]) -> Result<(), String> {
         use crate::core::util::eventflux_constants::{
             BEFORE_WINDOW_DATA_INDEX, ON_AFTER_WINDOW_DATA_INDEX, OUTPUT_DATA_INDEX,
@@ -480,7 +500,7 @@ impl ComplexEvent for StateEvent {
 mod tests {
     use super::*;
 
-    // ===== DAY 1 TESTS: StateEvent Basic Functionality =====
+    // ===== Basic StateEvent behaviour =====
 
     #[test]
     fn test_new_state_event() {
@@ -527,10 +547,9 @@ mod tests {
         let mut state = StateEvent::new(2, 0);
         let stream_event = StreamEvent::new(1000, 1, 0, 0);
 
-        // Should not panic when setting position >= len
+        // Setting past the end must not panic.
         state.set_event(10, stream_event);
 
-        // Should return None for out of bounds
         assert!(state.get_stream_event(10).is_none());
     }
 
@@ -548,7 +567,7 @@ mod tests {
         assert_eq!(state.get_event_type(), ComplexEventType::Current);
     }
 
-    // ===== DAY 2 TESTS: Event Chain Operations =====
+    // ===== Event chain operations =====
 
     #[test]
     fn test_add_event_chain() {
@@ -643,7 +662,6 @@ mod tests {
     fn test_multiple_event_chain() {
         let mut state = StateEvent::new(1, 0);
 
-        // Add 5 events
         for i in 0..5 {
             let event = StreamEvent::new(((i + 1) * 100) as i64, 1, 0, 0);
             state.add_event(0, event);

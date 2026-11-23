@@ -22,7 +22,6 @@ use eventflux::core::event::value::AttributeValue;
 
 #[tokio::test]
 async fn test_filter_projection() {
-    // Test WHERE clause filtering with projection
     let app = "\
         CREATE STREAM InputStream (a INT);\n\
         CREATE STREAM OutStream (a INT);\n\
@@ -37,7 +36,7 @@ async fn test_filter_projection() {
 
 #[tokio::test]
 async fn test_length_window() {
-    // Converted to SQL syntax - length window is M1 feature
+    // A length 2 window emits each new event and then the expired one it pushes out
     let app = "\
         CREATE STREAM In (v INT);\n\
         CREATE STREAM Out (v INT);\n\
@@ -61,7 +60,7 @@ async fn test_length_window() {
 
 #[tokio::test]
 async fn test_sum_aggregation() {
-    // Converted to SQL syntax - sum aggregation is M1 feature
+    // SUM over INT returns BIGINT, so the output is Long
     let app = "\
         CREATE STREAM InStream (v INT);\n\
         CREATE STREAM OutStream (total BIGINT);\n\
@@ -79,7 +78,6 @@ async fn test_sum_aggregation() {
 
 #[tokio::test]
 async fn test_join_query() {
-    // Converted to SQL JOIN syntax - JOINs are M1 feature and now working
     let app = "\
         CREATE STREAM Left (a INT);\n\
         CREATE STREAM Right (a INT);\n\
@@ -99,8 +97,8 @@ async fn test_join_query() {
 #[tokio::test]
 #[ignore = "Namespaced functions (str:length) not yet supported - needs LENGTH() or similar"]
 async fn test_builtin_function_in_query() {
-    // TODO: Converted to SQL syntax, but str:length() function not in M1
-    // Need to determine if we support LENGTH() or need to implement str namespace
+    // TODO: The query already uses LENGTH() instead of the namespaced str:length(),
+    // and length is now a built in function. Check whether this passes and drop the ignore.
     let app = "\
         CREATE STREAM In (v VARCHAR);\n\
         CREATE STREAM Out (len INT);\n\

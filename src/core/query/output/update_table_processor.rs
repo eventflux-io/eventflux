@@ -25,22 +25,26 @@ use crate::core::table::{InMemoryCompiledCondition, InMemoryCompiledUpdateSet, T
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Processor that handles UPDATE table operations triggered by stream events.
+/// Runs a table UPDATE for each incoming stream event.
 ///
-/// Supports two modes:
-/// 1. Legacy mode: Uses `before_window_data` as condition and `output_data` as new values
-/// 2. Expression mode: Uses a condition executor to match rows and value executors for SET clause
+/// Two modes:
+/// 1. Legacy mode: rows equal to `before_window_data` get `output_data` as new values
+/// 2. Expression mode: the WHERE condition picks the rows and the SET executors give
+///    the new values
+///
+/// Only StreamEvent input is handled. Anything else is counted and skipped. Errors
+/// from the table are ignored. This is the last processor in the chain.
 pub struct UpdateTableProcessor {
     meta: CommonProcessorMeta,
     table: Arc<dyn Table>,
-    /// Expression executor for evaluating WHERE condition (stream-triggered mode)
+    /// WHERE condition for expression mode. None means legacy mode.
     condition_executor: Option<Box<dyn ExpressionExecutor>>,
-    /// Expression executors for evaluating SET clause values (stream-triggered mode)
+    /// One executor per SET value, in expression mode
     set_value_executors: Vec<Box<dyn ExpressionExecutor>>,
-    /// Column indices in the table that correspond to each SET clause (stream-triggered mode)
+    /// Table column index for each SET entry, in expression mode
     set_column_indices: Vec<usize>,
-    /// Counter for dropped events (e.g., non-StreamEvent inputs that can't be processed).
-    /// Wrapped in Arc so metric is shared across processor clones for accurate observability.
+    /// Number of events skipped, such as non StreamEvent input.
+    /// In an Arc so all clones of this processor share one count.
     dropped_events: Arc<AtomicU64>,
 }
 
@@ -57,7 +61,7 @@ impl std::fmt::Debug for UpdateTableProcessor {
 }
 
 impl UpdateTableProcessor {
-    /// Creates a legacy UpdateTableProcessor (uses event data directly)
+    /// Create a processor in legacy mode, which uses the event data directly
     pub fn new(
         table: Arc<dyn Table>,
         app_ctx: Arc<EventFluxAppContext>,
@@ -73,13 +77,13 @@ impl UpdateTableProcessor {
         }
     }
 
-    /// Creates an expression-based UpdateTableProcessor for stream-triggered updates
+    /// Create a processor in expression mode, for updates driven by stream events.
     ///
     /// # Arguments
-    /// * `table` - The target table to update
-    /// * `condition_executor` - Executor for the WHERE condition expression
-    /// * `set_value_executors` - Executors for each SET clause value expression
-    /// * `set_column_indices` - Column indices in the table for each SET clause attribute
+    /// * `table` - Table to update
+    /// * `condition_executor` - Runs the WHERE condition
+    /// * `set_value_executors` - One executor per SET value
+    /// * `set_column_indices` - Table column index for each SET entry
     pub fn new_with_expression(
         table: Arc<dyn Table>,
         app_ctx: Arc<EventFluxAppContext>,
@@ -98,13 +102,14 @@ impl UpdateTableProcessor {
         }
     }
 
-    /// Returns the count of dropped events (events that couldn't be processed).
-    /// Useful for monitoring and alerting on data loss.
+    /// Number of events skipped because they could not be processed, summed across all
+    /// clones. Useful for alerts on lost data.
     pub fn dropped_events(&self) -> u64 {
         self.dropped_events.load(Ordering::Relaxed)
     }
 
-    /// Process using legacy mode (before_window_data -> condition, output_data -> new values)
+    /// Legacy mode. Rows equal to before_window_data get output_data as new values.
+    /// Does nothing when the event has no output_data.
     fn process_legacy(&self, se: &StreamEvent) {
         let old = se.before_window_data.clone();
         if let Some(new) = se.get_output_data() {
@@ -116,21 +121,21 @@ impl UpdateTableProcessor {
         }
     }
 
-    /// Process using expression mode - delegates to Table trait methods for extensibility.
+    /// Expression mode. Hands the work to the Table trait's update methods.
     ///
-    /// SET expressions are evaluated with a StateEvent containing both the stream event
-    /// and the matched table row, allowing expressions like `SET price = stockTable.price + stream.delta`
+    /// SET expressions run on a StateEvent that holds both the stream event and the
+    /// matched table row, so expressions like
+    /// `SET price = stockTable.price + stream.delta` work.
     ///
-    /// This method delegates to the Table trait's update methods, allowing JDBC/external
-    /// tables to override the default in-memory implementation with database-native operations.
+    /// Going through the Table trait lets JDBC and other outside tables replace the
+    /// default in memory code with their own database operations.
     fn process_with_expression(
         &self,
         se: &StreamEvent,
         condition_executor: &dyn ExpressionExecutor,
     ) {
         if !self.set_value_executors.is_empty() {
-            // SET executors present - use per-row evaluation via table method
-            // This allows SET expressions to reference table columns
+            // Run the SET executors once per matched row, so they can read table columns
             let _ = self.table.update_with_set_executors(
                 se,
                 condition_executor,
@@ -138,8 +143,9 @@ impl UpdateTableProcessor {
                 &self.set_value_executors,
             );
         } else {
-            // No SET executors - use stream values directly via table method
-            // Extract values from stream output_data or before_window_data
+            // No SET executors, so the new values come straight from the stream event:
+            // output_data, or before_window_data when there is none. Nothing happens
+            // when the values are empty.
             let set_values = if let Some(output) = se.get_output_data() {
                 output.to_vec()
             } else {
@@ -163,22 +169,19 @@ impl Processor for UpdateTableProcessor {
         while let Some(mut event) = chunk {
             let next = event.set_next(None);
 
-            // UPDATE requires direct StreamEvent input. Join/window sources (StateEvent)
-            // are not supported because WHERE/SET expressions are built with stream positions
-            // that would be lost when collapsing multi-stream data into a synthetic event.
+            // UPDATE needs a StreamEvent. Join and window sources send a StateEvent, which
+            // is not supported. The WHERE and SET expressions refer to stream positions,
+            // and those would be lost if the streams were merged into one made up event.
             if let Some(se) = event.as_any().downcast_ref::<StreamEvent>() {
                 if let Some(ref cond_exec) = self.condition_executor {
-                    // Expression-based mode
                     self.process_with_expression(se, cond_exec.as_ref());
                 } else {
-                    // Legacy mode
                     self.process_legacy(se);
                 }
             } else {
-                // Track dropped events for monitoring
                 let count = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
 
-                // Log initial warning, then periodic reminders every 1000 drops
+                // Warn on the first drop, then again every 1000 drops
                 if count == 1 {
                     log::warn!(
                         "UPDATE processor received non-StreamEvent input (likely from JOIN/WINDOW). \
@@ -202,7 +205,6 @@ impl Processor for UpdateTableProcessor {
     }
     fn set_next_processor(&mut self, _next: Option<Arc<Mutex<dyn Processor>>>) {}
     fn clone_processor(&self, query_ctx: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
-        // Clone executors if present
         let condition_executor = self
             .condition_executor
             .as_ref()
@@ -222,7 +224,7 @@ impl Processor for UpdateTableProcessor {
             condition_executor,
             set_value_executors,
             set_column_indices: self.set_column_indices.clone(),
-            // Share metrics across clones for accurate aggregate observability
+            // Share one drop count across all clones
             dropped_events: Arc::clone(&self.dropped_events),
         })
     }

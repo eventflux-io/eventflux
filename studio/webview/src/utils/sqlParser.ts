@@ -1,6 +1,7 @@
 /**
- * EventFlux SQL Parser
- * Parses EventFlux SQL statements and converts them to visual model elements
+ * EventFlux SQL parser for the studio.
+ * Reads EventFlux SQL statements and turns them into visual model elements.
+ * It is a small hand written parser and understands only a subset of the language.
  */
 
 import type { VisualElement, ElementType, AttributeType, Expression, WindowType, AggregationType } from '../types';
@@ -82,7 +83,8 @@ const KEYWORDS = new Set([
 ]);
 
 /**
- * Tokenizer - converts SQL string to tokens
+ * Splits SQL text into tokens. Always ends with an EOF token.
+ * Characters it does not recognize are skipped.
  */
 function tokenize(sql: string): Token[] {
   const tokens: Token[] = [];
@@ -99,7 +101,7 @@ function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // Single-line comment
+    // Line comment, up to the newline
     if (sql.slice(pos, pos + 2) === '--') {
       const start = pos;
       while (pos < sql.length && sql[pos] !== '\n') pos++;
@@ -107,7 +109,7 @@ function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // Multi-line comment
+    // Block comment
     if (sql.slice(pos, pos + 2) === '/*') {
       const start = pos;
       pos += 2;
@@ -117,7 +119,7 @@ function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // String (single quotes)
+    // Single quoted string. A backslash escapes the next character.
     if (char === "'") {
       const start = pos;
       pos++;
@@ -130,7 +132,7 @@ function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // String (double quotes) - treated as identifier
+    // Double quoted text is an identifier, not a string. The quotes are kept.
     if (char === '"') {
       const start = pos;
       pos++;
@@ -140,7 +142,7 @@ function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // Number
+    // Number, with an optional exponent
     if (/\d/.test(char) || (char === '.' && /\d/.test(sql[pos + 1] || ''))) {
       const start = pos;
       while (pos < sql.length && /[\d.]/.test(sql[pos])) pos++;
@@ -161,7 +163,7 @@ function tokenize(sql: string): Token[] {
       const upper = value.toUpperCase();
       tokens.push({
         type: KEYWORDS.has(upper) ? 'KEYWORD' : 'IDENTIFIER',
-        value: upper === value ? value : value, // preserve case for identifiers
+        value: upper === value ? value : value, // keeps the original case for keywords and identifiers
         position: start,
       });
       continue;
@@ -170,7 +172,7 @@ function tokenize(sql: string): Token[] {
     // Operators
     if (/[=<>!+\-*/%&|^~]/.test(char)) {
       const start = pos;
-      // Handle multi-char operators
+      // Two character operators first, including -> for patterns
       const twoChar = sql.slice(pos, pos + 2);
       if (['<=', '>=', '!=', '<>', '||', '&&', '->'].includes(twoChar)) {
         pos += 2;
@@ -188,7 +190,7 @@ function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // Unknown character - skip
+    // Unknown character, skip it
     pos++;
   }
 
@@ -197,14 +199,14 @@ function tokenize(sql: string): Token[] {
 }
 
 /**
- * Parser class
+ * Parses tokens into statements. Throws an Error with the expected and actual
+ * token when a statement does not match.
  */
 class Parser {
   private tokens: Token[];
   private pos: number = 0;
 
   constructor(sql: string) {
-    // Filter out whitespace and comments
     this.tokens = tokenize(sql).filter(
       (t) => t.type !== 'WHITESPACE' && t.type !== 'COMMENT'
     );
@@ -246,11 +248,10 @@ class Parser {
       } else if (this.matchKeyword('SELECT', 'INSERT')) {
         statements.push(this.parseQuery());
       } else {
-        // Skip unknown tokens
+        // Skip anything that does not start a CREATE, SELECT or INSERT statement
         this.advance();
       }
 
-      // Skip semicolons
       while (this.match('PUNCTUATION', ';')) {
         this.advance();
       }
@@ -292,7 +293,7 @@ class Parser {
 
     const result: ParsedTable = { type: 'table', name, attributes };
 
-    // Check for PRIMARY KEY
+    // Optional PRIMARY KEY (...)
     if (this.matchKeyword('PRIMARY')) {
       this.advance();
       this.expect('KEYWORD', 'KEY');
@@ -301,7 +302,7 @@ class Parser {
       this.expect('PUNCTUATION', ')');
     }
 
-    // Check for WITH clause
+    // Optional WITH (...) clause. Keys and values must be single quoted strings.
     if (this.matchKeyword('WITH')) {
       this.advance();
       this.expect('PUNCTUATION', '(');
@@ -327,7 +328,7 @@ class Parser {
       return { type: 'trigger', name, triggerType: 'periodic', atEvery, unit };
     } else if (this.matchKeyword('CRON')) {
       this.advance();
-      const cronExpression = this.expect('STRING').value.slice(1, -1); // Remove quotes
+      const cronExpression = this.expect('STRING').value.slice(1, -1); // strip the quotes
       return { type: 'trigger', name, triggerType: 'cron', cronExpression };
     }
 
@@ -372,37 +373,33 @@ class Parser {
   private parseQuery(): ParsedQuery {
     let insertInto = '';
 
-    // Handle INSERT INTO at beginning
+    // INSERT INTO may come first or last. If both appear, the last one wins.
     if (this.matchKeyword('INSERT')) {
       this.advance();
       this.expect('KEYWORD', 'INTO');
       insertInto = this.expect('IDENTIFIER').value;
     }
 
-    // SELECT clause
     this.expect('KEYWORD', 'SELECT');
-    // Skip DISTINCT if present
+    // DISTINCT is accepted but ignored
     if (this.matchKeyword('DISTINCT')) this.advance();
     const select = this.parseSelectList();
 
-    // FROM clause
     this.expect('KEYWORD', 'FROM');
     const from = this.parseFromClause();
 
-    // Optional JOIN
+    // At most one JOIN
     let join: ParsedQuery['join'];
     if (this.matchKeyword('JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL')) {
       join = this.parseJoinClause();
     }
 
-    // WHERE clause
     let where: string | undefined;
     if (this.matchKeyword('WHERE')) {
       this.advance();
       where = this.parseExpression();
     }
 
-    // GROUP BY clause
     let groupBy: string[] | undefined;
     if (this.matchKeyword('GROUP')) {
       this.advance();
@@ -410,14 +407,12 @@ class Parser {
       groupBy = this.parseIdentifierList();
     }
 
-    // HAVING clause
     let having: string | undefined;
     if (this.matchKeyword('HAVING')) {
       this.advance();
       having = this.parseExpression();
     }
 
-    // INSERT INTO at end
     if (this.matchKeyword('INSERT')) {
       this.advance();
       this.expect('KEYWORD', 'INTO');
@@ -469,7 +464,6 @@ class Parser {
         alias = this.advance().value;
       }
 
-      // Check for WINDOW clause
       if (this.matchKeyword('WINDOW')) {
         window = this.parseWindowClause();
       }
@@ -524,7 +518,7 @@ class Parser {
 
       if (this.match('NUMBER')) {
         const num = this.advance().value;
-        // Check for time unit
+        // A number followed by a time unit is kept as text, such as "5 SECONDS"
         if (this.matchKeyword('MILLISECONDS', 'SECONDS', 'MINUTES', 'HOURS', 'DAYS')) {
           params.push(`${num} ${this.advance().value}`);
         } else {
@@ -542,14 +536,14 @@ class Parser {
   }
 
   private parseExpression(): string {
-    // Simple expression parsing - collect tokens until we hit a boundary
+    // Does not build a tree. It joins token text up to the next clause keyword, a comma,
+    // a semicolon or an unmatched ')' outside parentheses, and returns it as a string.
     const parts: string[] = [];
     let parenDepth = 0;
 
     while (!this.match('EOF')) {
       const token = this.current();
 
-      // Check for expression boundaries
       if (parenDepth === 0) {
         if (token.type === 'PUNCTUATION' && [',', ';'].includes(token.value)) break;
         if (token.type === 'KEYWORD' && ['FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'INSERT', 'JOIN', 'ON', 'AS', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'WINDOW'].includes(token.value.toUpperCase())) break;
@@ -570,7 +564,8 @@ class Parser {
 }
 
 /**
- * Convert parsed statements to visual elements
+ * Parses SQL and turns each statement into visual elements laid out on the canvas.
+ * On a parse error it returns no elements and the error message in errors.
  */
 export function parseSQL(sql: string): { elements: VisualElement[]; errors: string[] } {
   const elements: VisualElement[] = [];
@@ -641,7 +636,7 @@ export function parseSQL(sql: string): { elements: VisualElement[]; errors: stri
           break;
 
         case 'query':
-          // Create elements for the query pipeline
+          // A query becomes a row of elements, one column to the right of the definitions
           const queryElements = convertQueryToElements(stmt, xPos + xSpacing, yPos);
           elements.push(...queryElements);
           yPos += ySpacing * 2;
@@ -732,7 +727,7 @@ function convertQueryToElements(query: ParsedQuery, startX: number, startY: numb
   let xPos = startX;
   let elementIndex = 0;
 
-  // Create window element if present
+  // Only the window on the first FROM source is used. A JOIN is not turned into an element.
   if (query.from[0]?.window) {
     const window = query.from[0].window;
     elements.push({
@@ -747,7 +742,6 @@ function convertQueryToElements(query: ParsedQuery, startX: number, startY: numb
     xPos += 200;
   }
 
-  // Create filter element if WHERE clause present
   if (query.where) {
     const condition = parseExpressionToAst(query.where);
     if (condition) {
@@ -763,13 +757,14 @@ function convertQueryToElements(query: ParsedQuery, startX: number, startY: numb
     }
   }
 
-  // Create projection if specific columns selected
+  // A select list with any aggregation call becomes an aggregation element holding only
+  // the aggregations. Otherwise a select list other than * becomes a projection.
   const hasAggregations = query.select.some((s) =>
     /^(COUNT|SUM|AVG|MIN|MAX|FIRST|LAST|STDDEV|VARIANCE)\s*\(/i.test(s.expression)
   );
 
   if (hasAggregations) {
-    // Create aggregation element
+    // Without an alias, the alias is the function name in lower case
     const aggregations = query.select
       .filter((s) => /^(COUNT|SUM|AVG|MIN|MAX|FIRST|LAST|STDDEV|VARIANCE)\s*\(/i.test(s.expression))
       .map((s) => {
@@ -797,7 +792,7 @@ function convertQueryToElements(query: ParsedQuery, startX: number, startY: numb
       xPos += 200;
     }
   } else if (query.select.length > 0 && query.select[0].expression !== '*') {
-    // Create projection element
+    // Each select item is stored as a variable named by its raw expression text
     elements.push({
       id: `projection-${Date.now()}-${elementIndex++}`,
       type: 'projection' as ElementType,
@@ -812,7 +807,7 @@ function convertQueryToElements(query: ParsedQuery, startX: number, startY: numb
     xPos += 200;
   }
 
-  // Create groupBy element if present
+  // HAVING is kept only when there is a GROUP BY
   if (query.groupBy && query.groupBy.length > 0) {
     const havingCondition = query.having ? parseExpressionToAst(query.having) : undefined;
     elements.push({
@@ -827,8 +822,7 @@ function convertQueryToElements(query: ParsedQuery, startX: number, startY: numb
     xPos += 200;
   }
 
-  // Create target stream element for INSERT INTO
-  // This represents the output stream that receives query results
+  // The INSERT INTO target becomes a new stream element that receives the results
   if (query.insertInto) {
     elements.push({
       id: `stream-${Date.now()}-${elementIndex++}`,
@@ -836,7 +830,7 @@ function convertQueryToElements(query: ParsedQuery, startX: number, startY: numb
       position: { x: xPos, y: startY },
       properties: {
         streamName: query.insertInto,
-        attributes: [], // Schema will be inferred from query projection
+        attributes: [], // left empty. The parser does not work out the output schema.
       },
     });
   }
@@ -906,7 +900,7 @@ function parseDuration(value: string | number | undefined): { value: number; uni
 function parseExpressionToAst(expr: string): Expression | null {
   if (!expr || expr.trim() === '') return null;
 
-  // Try to parse simple comparison: attr op value
+  // A single comparison, attr op value. <> is stored as !=.
   const comparisonMatch = expr.match(/^(\w+(?:\.\w+)?)\s*(=|!=|<>|>|<|>=|<=)\s*(.+)$/);
   if (comparisonMatch) {
     const [, left, op, right] = comparisonMatch;
@@ -931,7 +925,7 @@ function parseExpressionToAst(expr: string): Expression | null {
     };
   }
 
-  // Return a simple variable reference for unrecognized expressions
+  // Anything else is kept as a variable whose name is the whole expression text
   return {
     type: 'variable',
     variableName: expr,
@@ -939,7 +933,7 @@ function parseExpressionToAst(expr: string): Expression | null {
 }
 
 /**
- * Validate SQL syntax
+ * Checks that the SQL parses. Stops at the first error, so errors holds at most one message.
  */
 export function validateSQL(sql: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];

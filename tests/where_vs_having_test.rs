@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-//! Critical test to verify WHERE (pre-aggregation) vs HAVING (post-aggregation) distinction
+//! Critical test that WHERE runs before aggregation and HAVING runs after it.
 //!
-//! This test ensures that:
-//! 1. WHERE filters individual rows BEFORE aggregation
+//! It checks that
+//! 1. WHERE filters single rows BEFORE aggregation
 //! 2. HAVING filters aggregated groups AFTER aggregation
-//! 3. The COUNT in HAVING reflects only rows that passed WHERE filter
+//! 3. The COUNT in HAVING counts only rows that passed the WHERE filter
 
 #[path = "common/mod.rs"]
 mod common;
@@ -29,7 +29,6 @@ use eventflux::core::event::value::AttributeValue;
 
 #[tokio::test]
 async fn test_where_before_having_after_aggregation() {
-    // This query tests that WHERE and HAVING execute in the correct order
     let app = r#"
         CREATE STREAM Products (category STRING, price INT);
         CREATE STREAM Output (category STRING, count BIGINT);
@@ -44,21 +43,21 @@ async fn test_where_before_having_after_aggregation() {
 
     let runner = AppRunner::new(app, "Output").await;
 
-    // Send test data:
-    // Category A: 4 products (3 with price > 100, 1 with price <= 100)
-    //   - WHERE should filter out 1 product
+    // Test data
+    // Category A has 4 products, 3 with price > 100 and 1 with price <= 100.
+    //   - WHERE filters out 1 product
     //   - COUNT(*) after WHERE = 3
-    //   - HAVING COUNT(*) > 2 should PASS (3 > 2)
+    //   - HAVING COUNT(*) > 2 PASSES (3 > 2)
     //
-    // Category B: 4 products (2 with price > 100, 2 with price <= 100)
-    //   - WHERE should filter out 2 products
+    // Category B has 4 products, 2 with price > 100 and 2 with price <= 100.
+    //   - WHERE filters out 2 products
     //   - COUNT(*) after WHERE = 2
-    //   - HAVING COUNT(*) > 2 should FAIL (2 not > 2)
+    //   - HAVING COUNT(*) > 2 FAILS (2 is not > 2)
     //
-    // Category C: 5 products (ALL with price > 100)
+    // Category C has 5 products, ALL with price > 100.
     //   - WHERE filters out nothing
     //   - COUNT(*) after WHERE = 5
-    //   - HAVING COUNT(*) > 2 should PASS (5 > 2)
+    //   - HAVING COUNT(*) > 2 PASSES (5 > 2)
 
     runner.send_batch(
         "Products",
@@ -123,14 +122,14 @@ async fn test_where_before_having_after_aggregation() {
 
     let output = runner.shutdown();
 
-    // Expected output:
-    // - Category A: count=3 (passes HAVING)
-    // - Category B: count=2 (filtered by HAVING)
-    // - Category C: count=5 (passes HAVING)
+    // Expected output
+    // - Category A with count=3, passes HAVING
+    // - Category B with count=2, filtered out by HAVING
+    // - Category C with count=5, passes HAVING
 
     println!("Output events: {:?}", output);
 
-    // Should have exactly 2 groups (A and C, B filtered by HAVING)
+    // Exactly 2 groups, A and C. HAVING filters out B.
     assert_eq!(
         output.len(),
         2,
@@ -180,7 +179,7 @@ async fn test_where_before_having_after_aggregation() {
         }
     }
 
-    // Verify Category B is NOT in output (filtered by HAVING)
+    // Category B must NOT be in the output because HAVING filters it out
     let category_b = output.iter().find(|row| {
         if let AttributeValue::String(cat) = &row[0] {
             cat == "B"
@@ -196,7 +195,7 @@ async fn test_where_before_having_after_aggregation() {
 
 #[tokio::test]
 async fn test_having_without_where() {
-    // Verify HAVING works correctly when there's no WHERE clause
+    // HAVING must work when there is no WHERE clause
     let app = r#"
         CREATE STREAM Sales (product STRING, amount INT);
         CREATE STREAM Output (product STRING, total BIGINT);
@@ -220,7 +219,7 @@ async fn test_having_without_where() {
             vec![
                 AttributeValue::String("A".to_string()),
                 AttributeValue::Int(400),
-            ], // Total: 600 > 500
+            ], // total 600 > 500
             vec![
                 AttributeValue::String("B".to_string()),
                 AttributeValue::Int(100),
@@ -228,13 +227,13 @@ async fn test_having_without_where() {
             vec![
                 AttributeValue::String("B".to_string()),
                 AttributeValue::Int(200),
-            ], // Total: 300 <= 500
+            ], // total 300 <= 500
         ],
     );
 
     let output = runner.shutdown();
 
-    // Only product A should pass (600 > 500), B filtered by HAVING (300 <= 500)
+    // Only product A passes (600 > 500). HAVING filters out B (300 <= 500).
     assert_eq!(output.len(), 1, "Expected only product A in output");
 
     if let (AttributeValue::String(product), AttributeValue::Long(total)) =
@@ -249,7 +248,7 @@ async fn test_having_without_where() {
 
 #[tokio::test]
 async fn test_where_without_having() {
-    // Verify WHERE works correctly when there's no HAVING clause
+    // WHERE must work when there is no HAVING clause
     let app = r#"
         CREATE STREAM Data (category STRING, value INT);
         CREATE STREAM Output (category STRING, count BIGINT);
@@ -287,7 +286,7 @@ async fn test_where_without_having() {
 
     let output = runner.shutdown();
 
-    // Both X and Y should be in output (no HAVING filter)
+    // Both X and Y must be in the output since there is no HAVING filter
     assert_eq!(output.len(), 2, "Expected both categories in output");
 
     // Find X

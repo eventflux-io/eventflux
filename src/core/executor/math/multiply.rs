@@ -15,23 +15,31 @@
  * limitations under the License.
  */
 
-// src/core/executor/math/multiply.rs
-use super::common::CoerceNumeric; // Use CoerceNumeric from common.rs
+use super::common::CoerceNumeric;
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Corrected import
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use std::sync::Arc;
 
+/// Multiplies two numbers with `*`.
+///
+/// NULL on either side gives NULL. No value on either side gives `None`. INT and LONG
+/// products wrap on overflow.
 #[derive(Debug)]
 pub struct MultiplyExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
     right_executor: Box<dyn ExpressionExecutor>,
-    return_type: ApiAttributeType, // Corrected type
+    return_type: ApiAttributeType,
 }
 
 impl MultiplyExpressionExecutor {
+    /// The result type is the widest operand type, in the order INT < LONG < FLOAT < DOUBLE.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either operand is STRING, BOOL or OBJECT.
     pub fn new(
         left: Box<dyn ExpressionExecutor>,
         right: Box<dyn ExpressionExecutor>,
@@ -40,7 +48,7 @@ impl MultiplyExpressionExecutor {
         let right_type = right.get_return_type();
 
         let return_type = match (left_type, right_type) {
-            // Handle error cases first
+            // Unsupported types first
             (ApiAttributeType::STRING, _)
             | (_, ApiAttributeType::STRING)
             | (ApiAttributeType::BOOL, _)
@@ -51,7 +59,7 @@ impl MultiplyExpressionExecutor {
                     "Multiplication not supported for input types {left_type:?} and {right_type:?}"
                 ));
             }
-            // Handle numeric types in order of precedence
+            // Then numeric types, widest first
             (ApiAttributeType::DOUBLE, ApiAttributeType::DOUBLE) => ApiAttributeType::DOUBLE,
             (ApiAttributeType::DOUBLE, _) | (_, ApiAttributeType::DOUBLE) => {
                 ApiAttributeType::DOUBLE
@@ -112,7 +120,7 @@ impl ExpressionExecutor for MultiplyExpressionExecutor {
     }
     fn get_return_type(&self) -> ApiAttributeType {
         self.return_type
-    } // Corrected
+    }
 
     fn clone_executor(
         &self,

@@ -17,10 +17,10 @@
 
 // src/core/persistence/state_manager.rs
 
-//! Unified State Manager - Central coordinator for state management operations
+//! Unified state manager.
 //!
-//! This module provides the main interface for state management operations including
-//! checkpointing, recovery, and schema migration.
+//! The main entry point for state checkpoints, recovery and schema migration
+//! across every component in a [`StateRegistry`].
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -37,26 +37,30 @@ use super::state_registry::StateRegistry;
 #[cfg(test)]
 use super::state_holder::{AccessPattern, ChangeLog, StateSize};
 
-/// Handle for tracking checkpoint operations
+/// Tracks one checkpoint.
 #[derive(Debug, Clone)]
 pub struct CheckpointHandle {
     pub checkpoint_id: CheckpointId,
     pub started_at: Instant,
     pub mode: CheckpointMode,
+    /// Always `None` for now.
     pub estimated_completion: Option<Instant>,
 }
 
-/// Recovery statistics
+/// Result of a recovery.
 #[derive(Debug, Clone)]
 pub struct RecoveryStats {
     pub checkpoint_id: CheckpointId,
     pub recovery_time: Duration,
     pub components_recovered: usize,
+    /// Bytes in the checkpoint.
     pub total_state_size: usize,
+    /// The configured `recovery_parallelism`. Recovery itself runs one component
+    /// at a time.
     pub parallel_workers: usize,
 }
 
-/// Schema migration configuration
+/// A request to move a component's state to a new schema version.
 #[derive(Debug, Clone)]
 pub struct SchemaMigration {
     pub component_id: ComponentId,
@@ -65,39 +69,45 @@ pub struct SchemaMigration {
     pub migration_strategy: MigrationStrategy,
 }
 
+/// How a schema migration is rolled out. None of these are carried out yet.
 #[derive(Debug, Clone)]
 pub enum MigrationStrategy {
-    /// Direct migration without downtime
+    /// Migrate the live state directly, with no downtime.
     InPlace,
-    /// Create new version alongside old, then switch
+    /// Build the new version next to the old one, then switch over.
     BlueGreen,
-    /// Gradual migration with dual writes
+    /// Migrate a share of traffic at a time, writing to both versions.
+    /// `percentage` is a fraction, so 0.1 means 10 percent.
     CanaryRollout { percentage: f64 },
 }
 
-/// Checkpoint modes for different use cases
+/// Kinds of checkpoint.
+///
+/// [`UnifiedStateManager::checkpoint`] records the mode but always takes a full
+/// snapshot of every component.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckpointMode {
-    /// Full snapshot of all components
+    /// Full snapshot of every component.
     Full,
 
-    /// Incremental changes only
+    /// Only the changes since checkpoint `base`.
     Incremental { base: CheckpointId },
 
-    /// Combination of incremental and full for optimization
+    /// Mix of incremental and full checkpoints. Thresholds are in bytes.
     Hybrid {
         incremental_threshold: usize,
         differential_threshold: usize,
     },
 
-    /// Aligned checkpoint with barriers (for consistency)
+    /// Waits for barriers to line up across inputs, for consistency.
+    /// `timeout` caps the wait.
     Aligned { timeout: Duration },
 
-    /// Unaligned checkpoint for low latency
+    /// Does not wait for barriers, for lower latency.
     Unaligned,
 }
 
-/// State management configuration
+/// State management settings.
 #[derive(Debug, Clone)]
 pub struct StateConfig {
     pub checkpoint_mode: CheckpointMode,
@@ -113,8 +123,8 @@ impl Default for StateConfig {
     fn default() -> Self {
         Self {
             checkpoint_mode: CheckpointMode::Hybrid {
-                incremental_threshold: 1024 * 1024,       // 1MB
-                differential_threshold: 10 * 1024 * 1024, // 10MB
+                incremental_threshold: 1024 * 1024,       // 1 MB
+                differential_threshold: 10 * 1024 * 1024, // 10 MB
             },
             checkpoint_interval: Duration::from_secs(30),
             max_concurrent_checkpoints: 2,
@@ -126,7 +136,7 @@ impl Default for StateConfig {
     }
 }
 
-/// Metrics for state management operations
+/// Counters for checkpoints and recoveries.
 #[derive(Debug, Clone, Default)]
 pub struct StateMetrics {
     pub total_checkpoints: u64,
@@ -140,13 +150,15 @@ pub struct StateMetrics {
 }
 
 impl StateMetrics {
+    /// Count a checkpoint. Time and size only count toward the averages when
+    /// `success` is true.
     pub fn record_checkpoint(&mut self, duration: Duration, size: usize, success: bool) {
         self.total_checkpoints += 1;
         if success {
             self.successful_checkpoints += 1;
             self.total_checkpoint_time += duration;
 
-            // Update rolling average
+            // Running average over successful checkpoints, in whole bytes.
             let total_successful = self.successful_checkpoints;
             self.average_checkpoint_size =
                 (self.average_checkpoint_size * (total_successful - 1) as usize + size)
@@ -161,6 +173,8 @@ impl StateMetrics {
         self.total_recovery_time += duration;
     }
 
+    /// Returns successful over total checkpoints, from 0.0 to 1.0. Returns 0.0
+    /// when there are none.
     pub fn checkpoint_success_rate(&self) -> f64 {
         if self.total_checkpoints == 0 {
             0.0
@@ -169,6 +183,8 @@ impl StateMetrics {
         }
     }
 
+    /// Returns the average time of successful checkpoints, or zero when there
+    /// are none.
     pub fn average_checkpoint_time(&self) -> Duration {
         if self.successful_checkpoints == 0 {
             Duration::default()
@@ -178,23 +194,31 @@ impl StateMetrics {
     }
 }
 
-/// Unified State Manager - Main state management coordinator
+/// Takes checkpoints of every registered component and recovers from them.
+///
+/// Checkpoints are kept in memory only, so they are lost when the process ends.
 pub struct UnifiedStateManager {
     registry: Arc<StateRegistry>,
     config: StateConfig,
     metrics: RwLock<StateMetrics>,
+    /// Checkpoints in progress.
     active_checkpoints: Mutex<HashMap<CheckpointId, CheckpointHandle>>,
+    /// Next checkpoint id. Starts at 1.
     checkpoint_counter: Mutex<CheckpointId>,
+    /// Completed checkpoints.
     checkpoints: RwLock<HashMap<CheckpointId, CheckpointMetadata>>,
 }
 
+/// A completed checkpoint and its component snapshots.
 #[derive(Debug, Clone)]
 pub struct CheckpointMetadata {
     pub checkpoint_id: CheckpointId,
     pub created_at: Instant,
     pub mode: CheckpointMode,
     pub component_snapshots: HashMap<ComponentId, StateSnapshot>,
+    /// Sum of snapshot data sizes in bytes.
     pub total_size: usize,
+    /// Always 1.0 for now, since sizes are not measured before compression.
     pub compression_ratio: f64,
 }
 
@@ -210,9 +234,12 @@ impl UnifiedStateManager {
         }
     }
 
-    /// Initialize state management system
+    /// Check the registry before use.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the component dependencies form a cycle.
     pub fn initialize(&self) -> Result<(), StateError> {
-        // Validate registry state
         let analysis = self.registry.analyze_dependencies();
         if !analysis.circular_dependencies.is_empty() {
             return Err(StateError::InvalidStateData {
@@ -232,11 +259,19 @@ impl UnifiedStateManager {
         Ok(())
     }
 
-    /// Trigger a checkpoint
+    /// Take a checkpoint and wait for it to finish.
+    ///
+    /// Always takes a full snapshot of every component, whatever `mode` says.
+    /// The mode is only recorded. Updates the metrics either way.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if `max_concurrent_checkpoints` are already
+    /// running, in which case the checkpoint id is still used up. Also returns the
+    /// first error from serializing a component.
     pub fn checkpoint(&self, mode: CheckpointMode) -> Result<CheckpointHandle, StateError> {
         let start_time = Instant::now();
 
-        // Get next checkpoint ID
         let checkpoint_id = {
             let mut counter = self.checkpoint_counter.lock().unwrap();
             let id = *counter;
@@ -244,7 +279,6 @@ impl UnifiedStateManager {
             id
         };
 
-        // Check if we've exceeded max concurrent checkpoints
         {
             let active = self.active_checkpoints.lock().unwrap();
             if active.len() >= self.config.max_concurrent_checkpoints {
@@ -261,22 +295,19 @@ impl UnifiedStateManager {
             estimated_completion: None,
         };
 
-        // Register active checkpoint
         {
             let mut active = self.active_checkpoints.lock().unwrap();
             active.insert(checkpoint_id, handle.clone());
         }
 
-        // Execute checkpoint synchronously (simplified version)
+        // Runs on the calling thread. Async checkpoints are not supported yet.
         let result = self.execute_checkpoint(checkpoint_id, mode);
 
-        // Remove from active checkpoints
         {
             let mut active = self.active_checkpoints.lock().unwrap();
             active.remove(&checkpoint_id);
         }
 
-        // Record metrics
         let duration = start_time.elapsed();
         let mut metrics = self.metrics.write().unwrap();
 
@@ -299,7 +330,9 @@ impl UnifiedStateManager {
         Ok(handle)
     }
 
-    /// Execute checkpoint process
+    /// Serialize every component in dependency order and store the result.
+    ///
+    /// Stops at the first component that fails, and stores nothing in that case.
     fn execute_checkpoint(
         &self,
         checkpoint_id: CheckpointId,
@@ -313,14 +346,14 @@ impl UnifiedStateManager {
 
         let hints = SerializationHints {
             prefer_compression: Some(self.config.compression_type.clone()),
-            target_chunk_size: Some(64 * 1024), // 64KB chunks
+            target_chunk_size: Some(64 * 1024), // 64 KB chunks
             priority: super::state_holder::SerializationPriority::Balanced,
         };
 
-        // Process components in dependency order for consistency
+        // Go stage by stage in dependency order so the snapshot is consistent.
         let topology = self.registry.get_topology();
         for stage in &topology.recovery_stages {
-            // Components in the same stage can be checkpointed sequentially (simplified)
+            // Components in one stage could run in parallel, but run one by one.
             for component_id in stage {
                 if let Some(component) = self.registry.get_component(component_id) {
                     match Self::checkpoint_component(component, &hints, checkpoint_id) {
@@ -353,7 +386,6 @@ impl UnifiedStateManager {
             compression_ratio,
         };
 
-        // Store checkpoint metadata
         {
             let mut checkpoints = self.checkpoints.write().unwrap();
             checkpoints.insert(checkpoint_id, metadata.clone());
@@ -362,7 +394,7 @@ impl UnifiedStateManager {
         Ok(metadata)
     }
 
-    /// Checkpoint a single component
+    /// Serialize one component and stamp the snapshot with `checkpoint_id`.
     fn checkpoint_component(
         component: Arc<dyn StateHolder>,
         hints: &SerializationHints,
@@ -373,11 +405,19 @@ impl UnifiedStateManager {
         Ok(snapshot)
     }
 
-    /// Recover from a specific checkpoint
+    /// Restore every component from a checkpoint, in dependency order.
+    ///
+    /// Components with no snapshot in the checkpoint are skipped. Stops at the
+    /// first failure, leaving components restored before it in their new state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CheckpointNotFound` if the id is unknown, `IncompatibleVersion` if
+    /// a snapshot's schema version cannot be read by its component, or any error
+    /// from restoring a component.
     pub fn recover(&self, checkpoint_id: CheckpointId) -> Result<RecoveryStats, StateError> {
         let start_time = Instant::now();
 
-        // Get checkpoint metadata
         let metadata = {
             let checkpoints = self.checkpoints.read().unwrap();
             checkpoints
@@ -389,7 +429,7 @@ impl UnifiedStateManager {
         let topology = self.registry.get_topology();
         let mut recovered_components = 0;
 
-        // Recover components in dependency order (simplified sequential recovery)
+        // One component at a time, in dependency order.
         for stage in &topology.recovery_stages {
             for component_id in stage {
                 if let Some(component) = self.registry.get_component(component_id) {
@@ -411,7 +451,6 @@ impl UnifiedStateManager {
 
         let recovery_time = start_time.elapsed();
 
-        // Record recovery metrics
         {
             let mut metrics = self.metrics.write().unwrap();
             metrics.record_recovery(recovery_time);
@@ -430,12 +469,11 @@ impl UnifiedStateManager {
         Ok(stats)
     }
 
-    /// Recover a single component from a snapshot
+    /// Restore one component from a snapshot after checking the schema version.
     fn recover_component(
         component: Arc<dyn StateHolder>,
         snapshot: StateSnapshot,
     ) -> Result<(), StateError> {
-        // Verify version compatibility
         let current_version = component.schema_version();
         if !current_version.is_compatible_with(&snapshot.version) {
             return Err(StateError::IncompatibleVersion {
@@ -444,9 +482,8 @@ impl UnifiedStateManager {
             });
         }
 
-        // Deserialize the snapshot into the component
-        // Note: StateHolder implementations use interior mutability (Arc<Mutex<T>>)
-        // so we can call deserialize_state with &self
+        // State holders use interior mutability, such as Arc<Mutex<T>>, so
+        // deserialize_state works through a shared reference.
         component.deserialize_state(&snapshot)?;
 
         info!(
@@ -456,7 +493,13 @@ impl UnifiedStateManager {
         Ok(())
     }
 
-    /// Perform live state schema migration
+    /// Migrate a component's state to a new schema version while running.
+    ///
+    /// Not carried out yet. Every strategy only logs a warning and returns `Ok`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStateData` if the component is not registered.
     pub fn migrate_schema(&self, migration: SchemaMigration) -> Result<(), StateError> {
         let _component = self
             .registry
@@ -472,8 +515,7 @@ impl UnifiedStateManager {
                     migration.component_id, migration.from_version, migration.to_version
                 );
 
-                // In-place migration would require careful coordination
-                // This is a placeholder for the complex migration logic
+                // TODO: in place migration. Needs careful coordination.
                 warn!("In-place migration not yet implemented");
                 Ok(())
             }
@@ -483,8 +525,8 @@ impl UnifiedStateManager {
                     migration.component_id
                 );
 
-                // Blue-green would involve creating a new component version
-                // This is a placeholder for the blue-green migration logic
+                // TODO: blue green migration. Needs a new component version
+                // built next to the old one.
                 warn!("Blue-green migration not yet implemented");
                 Ok(())
             }
@@ -495,21 +537,21 @@ impl UnifiedStateManager {
                     percentage * 100.0
                 );
 
-                // Canary rollout would gradually migrate traffic
-                // This is a placeholder for the canary migration logic
+                // TODO: canary migration. Needs traffic moved over a share at a
+                // time.
                 warn!("Canary rollout migration not yet implemented");
                 Ok(())
             }
         }
     }
 
-    /// Get state management metrics
+    /// Returns a copy of the metrics.
     pub fn get_metrics(&self) -> StateMetrics {
         let metrics = self.metrics.read().unwrap();
         metrics.clone()
     }
 
-    /// Get checkpoint history
+    /// Returns every stored checkpoint, oldest id first.
     pub fn get_checkpoint_history(&self) -> Vec<CheckpointMetadata> {
         let checkpoints = self.checkpoints.read().unwrap();
         let mut history: Vec<_> = checkpoints.values().cloned().collect();
@@ -517,7 +559,8 @@ impl UnifiedStateManager {
         history
     }
 
-    /// Clean up old checkpoints based on retention policy
+    /// Remove checkpoints older than `state_retention_time` and return how many
+    /// were removed. Never returns an error.
     pub fn cleanup_old_checkpoints(&self) -> Result<usize, StateError> {
         let mut removed_count = 0;
         let retention_cutoff = Instant::now() - self.config.state_retention_time;
@@ -549,7 +592,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // Mock component for testing
+    // Holds one number as its state.
     struct MockStateHolder {
         id: String,
         data: Arc<AtomicUsize>,
@@ -633,7 +676,6 @@ mod tests {
     fn test_checkpoint_and_recovery() {
         let registry = Arc::new(StateRegistry::new());
 
-        // Register a mock component
         let component = Arc::new(MockStateHolder {
             id: "test1".to_string(),
             data: Arc::new(AtomicUsize::new(42)),
@@ -665,10 +707,8 @@ mod tests {
 
         assert!(manager.initialize().is_ok());
 
-        // Create checkpoint
         let _handle = manager.checkpoint(CheckpointMode::Full).unwrap();
 
-        // Verify checkpoint was created
         let history = manager.get_checkpoint_history();
         assert!(!history.is_empty());
     }

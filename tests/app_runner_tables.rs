@@ -15,16 +15,13 @@
  * limitations under the License.
  */
 
-// ✅ MIGRATED: All tests converted to SQL WITH syntax
-//
-// These tests verify table functionality (cache tables, JDBC tables, stream-table joins)
-// using modern SQL WITH clauses, replacing legacy @store annotations.
-//
-// Migration completed: 2025-10-24
-// - All 5 tests migrated to SQL CREATE TABLE ... WITH (...) syntax
-// - Cache table configuration via SQL WITH ('extension' = 'cache', 'max_size' = '...')
-// - JDBC table configuration via SQL WITH ('extension' = 'jdbc', 'data_source' = '...')
-// - Pure SQL syntax with no custom annotations
+// Table tests for cache tables, JDBC tables and joins between streams and tables.
+// Tables are configured with SQL WITH clauses, which replace the old @store
+// annotations. The original 5 tests were moved over on 2025-10-24.
+// - Tables use CREATE TABLE ... WITH (...)
+// - Cache tables use WITH ('extension' = 'cache', 'max_size' = '...')
+// - JDBC tables use WITH ('extension' = 'jdbc', 'data_source' = '...')
+// - Plain SQL syntax, with no custom annotations
 
 #[path = "common/mod.rs"]
 mod common;
@@ -124,7 +121,7 @@ async fn cache_table_crud_via_app_runner() {
     );
     assert!(table.delete(&*cond_b).unwrap());
     assert!(!table.contains(&*cond_b).unwrap());
-    // runner already shut down above
+    // the runner was already shut down above
 }
 
 #[tokio::test]
@@ -139,7 +136,7 @@ async fn jdbc_table_crud_via_app_runner() {
     let ctx = manager.eventflux_context();
     setup_sqlite_table(&ctx, "J");
 
-    // MIGRATED: Old EventFluxQL with @store annotation replaced with SQL WITH
+    // SQL WITH in place of the old @store annotation
     let query = "\
         CREATE STREAM In (v STRING);\n\
         CREATE STREAM Out (v STRING);\n\
@@ -185,7 +182,7 @@ async fn jdbc_table_crud_via_app_runner() {
 
 #[tokio::test]
 async fn stream_table_join_basic() {
-    // MIGRATED: Old EventFluxQL with @store annotation replaced with SQL WITH
+    // SQL WITH in place of the old @store annotation
     let query = "\
         CREATE STREAM L (roomNo INT, val STRING);\n\
         CREATE TABLE R (roomNo INT, type STRING) WITH ('extension' = 'cache', 'max_size' = '5');\n\
@@ -226,7 +223,7 @@ async fn stream_table_join_jdbc() {
     let ctx = manager.eventflux_context();
     setup_sqlite_table(&ctx, "J2");
 
-    // MIGRATED: Old EventFluxQL with @store annotation replaced with SQL WITH
+    // SQL WITH in place of the old @store annotation
     let query = "\
         CREATE STREAM L (roomNo INT, val STRING);\n\
         CREATE TABLE J2 (roomNo INT, type STRING) WITH ('extension' = 'jdbc', 'data_source' = 'DS1');\n\
@@ -268,7 +265,7 @@ async fn cache_and_jdbc_tables_eviction_and_queries() {
     let ctx = manager.eventflux_context();
     setup_sqlite_table(&ctx, "J3");
 
-    // MIGRATED: Old EventFluxQL with @store annotations replaced with SQL WITH
+    // SQL WITH in place of the old @store annotations
     let query = "\
         CREATE STREAM In (v STRING);\n\
         CREATE STREAM Out (v STRING);\n\
@@ -350,13 +347,13 @@ async fn cache_and_jdbc_tables_eviction_and_queries() {
 }
 
 // ============================================================================
-// COMPREHENSIVE RELATION ARCHITECTURE TESTS
-// Testing stream-table handling with edge cases and error scenarios
+// STREAM AND TABLE RELATION TESTS
+// Joins between streams and tables, edge cases and error cases
 // ============================================================================
 
 #[tokio::test]
 async fn test_table_on_left_stream_on_right_join() {
-    // Test: Table-Stream JOIN (reversed order from typical stream-table)
+    // Table JOIN stream, the reverse of the usual stream JOIN table order
     let query = "\
         CREATE STREAM S (id INT, data STRING);\n\
         CREATE TABLE T (id INT, label STRING) WITH ('extension' = 'cache', 'max_size' = '10');\n\
@@ -388,8 +385,8 @@ async fn test_table_on_left_stream_on_right_join() {
 
     let out = runner.shutdown();
     assert_eq!(out.len(), 1, "Should have exactly one joined result");
-    // NOTE: Current runtime behavior swaps field order when table is on left
-    // SELECT T.id, T.label, S.data produces: T.id, S.data, T.label
+    // The runtime currently swaps field order when the table is on the left.
+    // SELECT T.id, T.label, S.data gives T.id, S.data, T.label.
     assert_eq!(
         out[0],
         vec![
@@ -403,8 +400,8 @@ async fn test_table_on_left_stream_on_right_join() {
 #[tokio::test]
 #[ignore = "Multiple table JOINs not fully supported - runtime limitation with chained table joins"]
 async fn test_multiple_tables_in_query() {
-    // Test: Query with multiple table references (Stream-Table-Table chain)
-    // NOTE: Using full names instead of aliases due to current parser limitations
+    // One stream joined with two tables in a chain.
+    // Uses full names instead of aliases because of a current parser limitation.
     let query = "\
         CREATE STREAM events (userId INT, productId INT);\n\
         CREATE TABLE users (userId INT, name STRING) WITH ('extension' = 'cache', 'max_size' = '100');\n\
@@ -460,7 +457,7 @@ async fn test_multiple_tables_in_query() {
 
 #[tokio::test]
 async fn test_table_join_no_match() {
-    // Test: Stream-table JOIN with no matching rows (empty result)
+    // Stream JOIN table with no matching rows gives an empty result
     let query = "\
         CREATE STREAM S (id INT, val STRING);\n\
         CREATE TABLE T (id INT, label STRING) WITH ('extension' = 'cache', 'max_size' = '10');\n\
@@ -500,7 +497,7 @@ async fn test_table_join_no_match() {
 
 #[tokio::test]
 async fn test_table_join_multiple_matches() {
-    // Test: Stream event joins with multiple table rows
+    // One stream event joins with several table rows
     let query = "\
         CREATE STREAM S (category INT, event STRING);\n\
         CREATE TABLE T (category INT, label STRING) WITH ('extension' = 'cache', 'max_size' = '10');\n\
@@ -544,8 +541,7 @@ async fn test_table_join_multiple_matches() {
 
 #[tokio::test]
 async fn test_stream_table_join_with_qualified_names() {
-    // Test: Table and stream JOIN using fully qualified column names
-    // Verifies that both relation types work correctly in JOIN queries
+    // Stream JOIN table using fully qualified column names for both sides
     let query = "\
         CREATE STREAM orders (orderId INT, userId INT);\n\
         CREATE TABLE user_profiles (userId INT, country STRING) WITH ('extension' = 'cache', 'max_size' = '100');\n\
@@ -587,13 +583,13 @@ async fn test_stream_table_join_with_qualified_names() {
 }
 
 // ============================================================================
-// ERROR CASE TESTS - Validation and proper error messages
+// ERROR CASE TESTS. Validation and clear error messages
 // ============================================================================
 
 #[tokio::test]
 #[should_panic(expected = "Schema not found for relation")]
 async fn test_error_unknown_table_in_join() {
-    // Test: JOIN with non-existent table should fail with clear error
+    // JOIN with a table that does not exist must fail with a clear error
     let query = "\
         CREATE STREAM S (id INT, val STRING);\n\
         CREATE STREAM Out (id INT, val STRING);\n\
@@ -607,7 +603,7 @@ async fn test_error_unknown_table_in_join() {
 #[tokio::test]
 #[should_panic(expected = "Schema not found for relation")]
 async fn test_error_unknown_stream_in_join() {
-    // Test: JOIN with non-existent stream should fail
+    // JOIN with a stream that does not exist must fail
     let query = "\
         CREATE TABLE T (id INT, label STRING) WITH ('extension' = 'cache', 'max_size' = '10');\n\
         CREATE STREAM Out (id INT, label STRING);\n\
@@ -621,7 +617,7 @@ async fn test_error_unknown_stream_in_join() {
 #[tokio::test]
 #[should_panic(expected = "not found")]
 async fn test_error_unknown_column_in_table() {
-    // Test: Reference to non-existent column in table
+    // A reference to a table column that does not exist must fail
     let query = "\
         CREATE STREAM S (id INT, val STRING);\n\
         CREATE TABLE T (id INT, label STRING) WITH ('extension' = 'cache', 'max_size' = '10');\n\

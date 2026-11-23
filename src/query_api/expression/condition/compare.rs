@@ -15,11 +15,11 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.expression.condition.Compare
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)] // Added Eq, Hash, Copy
+/// Comparison operator. Defaults to `Equal`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy, Default)]
 pub enum Operator {
     LessThan,
     GreaterThan,
@@ -30,17 +30,16 @@ pub enum Operator {
     NotEqual,
 }
 
-// This From impl was for a placeholder Java enum, can be removed or adapted if JNI is used.
-// For now, assuming it's not needed for pure Rust logic.
+// Old conversion from a placeholder Java enum. Not used.
 // impl From<io_eventflux_query_api_expression_condition_Compare_Operator> for Operator { ... }
 // #[allow(non_camel_case_types)]
 // enum io_eventflux_query_api_expression_condition_Compare_Operator { ... }
 
-#[derive(Clone, Debug, PartialEq)] // Removed Default
+/// A comparison of two expressions, as in `price > 10`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Compare {
-    pub eventflux_element: EventFluxElement, // Composed EventFluxElement
+    pub eventflux_element: EventFluxElement,
 
-    // Compare specific fields
     pub left_expression: Box<Expression>,
     pub operator: Operator,
     pub right_expression: Box<Expression>,

@@ -38,20 +38,19 @@ pub use log_sink::LogSink;
 pub use sink_factory::{create_sink_from_stream_config, SinkFactoryRegistry};
 pub use sink_trait::Sink;
 
-/// Adapter that connects the new Sink architecture (publish bytes) with old StreamCallback interface
+/// Connects a Sink, which publishes bytes, to the StreamCallback interface.
 ///
-/// This adapter implements the clean architecture flow:
 /// ```text
 /// Events → per event: SinkMapper::map_event() → Vec<u8> → Sink::publish() → External System
 /// ```
 ///
-/// The adapter receives Events via StreamCallback and iterates the batch:
-/// one event = one payload = one publish. This matches the per-record
-/// semantics of real transports (Kafka record, AMQP message, WebSocket frame)
-/// and guarantees no event in a batch is silently dropped.
+/// It gets events through StreamCallback and walks through the batch. One
+/// event gives one payload and one publish. This matches how real transports
+/// work one record at a time (a Kafka record, an AMQP message, a WebSocket
+/// frame), so no event in a batch is lost by being merged with others.
 ///
-/// A mapper or publish failure for one event is logged and does not affect
-/// the remaining events in the batch.
+/// A mapper or publish failure for one event is logged and skipped, and does
+/// not affect the rest of the batch. Both locks are held for the whole batch.
 #[derive(Debug)]
 pub struct SinkCallbackAdapter {
     pub sink: Arc<Mutex<Box<dyn Sink>>>,
@@ -64,16 +63,14 @@ impl StreamCallback for SinkCallbackAdapter {
         let sink = self.sink.lock().unwrap();
 
         for event in events {
-            // Transform ONE event → bytes via mapper
             let payload = match mapper.map_event(event) {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     log::error!("Mapper failed to serialize event: {}", e);
-                    continue; // Skip this event, keep processing the batch
+                    continue; // skip this event and go on with the batch
                 }
             };
 
-            // Publish bytes to sink
             if let Err(e) = sink.publish(&payload) {
                 log::error!("Sink publish failed: {}", e);
             }
@@ -104,8 +101,8 @@ mod tests {
         }
     }
 
-    /// Mapper that serializes the first attribute as a string, failing on
-    /// events whose first attribute equals "fail"
+    /// Mapper that outputs the first attribute as a string. Fails on events
+    /// whose first attribute is "fail".
     #[derive(Debug, Clone)]
     struct TestMapper;
 

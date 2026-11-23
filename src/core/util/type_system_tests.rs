@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// src/core/util/type_system_tests.rs
-// Comprehensive tests for the type system implementation
+// Tests for the type system in type_system.rs
 
 #[cfg(test)]
 mod tests {
@@ -63,20 +62,20 @@ mod tests {
             AttributeType::DOUBLE
         );
 
-        // Test symmetric property
+        // Operand order does not matter
         assert_eq!(
             get_arithmetic_result_type(AttributeType::FLOAT, AttributeType::LONG).unwrap(),
             get_arithmetic_result_type(AttributeType::LONG, AttributeType::FLOAT).unwrap()
         );
 
-        // Test error cases
+        // Non numeric types are errors
         assert!(get_arithmetic_result_type(AttributeType::STRING, AttributeType::INT).is_err());
         assert!(get_arithmetic_result_type(AttributeType::BOOL, AttributeType::INT).is_err());
     }
 
     #[test]
     fn test_boolean_conversions_comprehensive() {
-        // Int to Boolean (Java rules: 1 = true, everything else = false)
+        // Int to Boolean. Java rules, so 1 is true and anything else is false.
         assert_eq!(
             TypeConverter::convert(AttributeValue::Int(1), AttributeType::BOOL),
             Some(AttributeValue::Bool(true))
@@ -124,7 +123,7 @@ mod tests {
             Some(AttributeValue::Bool(false))
         );
 
-        // String to Boolean (case insensitive)
+        // String to Boolean, ignoring case
         assert_eq!(
             TypeConverter::convert(
                 AttributeValue::String("true".to_string()),
@@ -163,7 +162,7 @@ mod tests {
             None
         );
 
-        // Boolean to Numeric (Java rules: true = 1, false = 0)
+        // Boolean to Numeric. Java rules, so true is 1 and false is 0.
         assert_eq!(
             TypeConverter::convert(AttributeValue::Bool(true), AttributeType::INT),
             Some(AttributeValue::Int(1))
@@ -262,7 +261,7 @@ mod tests {
             Some(AttributeValue::Double(42.5))
         );
 
-        // String to numeric (invalid - return None like Java)
+        // String to numeric, invalid. Returns None where Java returns null.
         assert_eq!(
             TypeConverter::convert(
                 AttributeValue::String("not_a_number".to_string()),
@@ -320,7 +319,8 @@ mod tests {
     fn test_object_type_handling() {
         let obj = AttributeValue::Object(None);
 
-        // Object to Object (identity) - Note: Objects don't have proper equality, so we just check the type
+        // Object to Object returns it unchanged. Objects never compare equal, so only the
+        // variant is checked.
         let converted = TypeConverter::convert(obj.clone(), AttributeType::OBJECT).unwrap();
         assert!(matches!(converted, AttributeValue::Object(_)));
 
@@ -364,15 +364,15 @@ mod tests {
         assert_eq!(TypeConverter::get_numeric_value(&float_val), Some(42.5));
         assert_eq!(TypeConverter::get_numeric_value(&double_val), Some(42.5));
 
-        // Non-numeric types - strings should NOT be converted by get_numeric_value
-        // (that's for to_number() method on AttributeValue)
+        // get_numeric_value only reads values that are already numeric. It does not
+        // parse strings. AttributeValue::to_number() does that.
         assert_eq!(
             TypeConverter::get_numeric_value(&AttributeValue::String("42".to_string())),
-            None // get_numeric_value only extracts from already-numeric types
+            None
         );
         assert_eq!(
             TypeConverter::get_numeric_value(&AttributeValue::Bool(true)),
-            None // booleans are not considered numeric for arithmetic
+            None // Booleans are not numeric for arithmetic
         );
         assert_eq!(
             TypeConverter::get_numeric_value(&AttributeValue::Null),
@@ -470,16 +470,14 @@ mod tests {
 
     #[test]
     fn test_java_compatibility_edge_cases() {
-        // Test specific Java behavior edge cases
-
-        // Boolean parsing in Java is case-sensitive and only "true" (case-insensitive) returns true
-        // Actually, Java's Boolean.parseBoolean() is case-insensitive for "true" but anything else is false
+        // Java's Boolean.parseBoolean() ignores case for "true" and returns false for
+        // anything else. Here case is ignored for both "true" and "false".
         assert_eq!(
             TypeConverter::convert(
                 AttributeValue::String("True".to_string()),
                 AttributeType::BOOL
             ),
-            Some(AttributeValue::Bool(true)) // Our implementation should be case-insensitive for "true"
+            Some(AttributeValue::Bool(true))
         );
         assert_eq!(
             TypeConverter::convert(
@@ -501,8 +499,8 @@ mod tests {
         if let Some(AttributeValue::Double(d)) =
             TypeConverter::convert(float_val, AttributeType::DOUBLE)
         {
-            // Due to floating point precision, 0.1f as f64 is not exactly 0.1
-            assert!((d - 0.1).abs() < 0.01); // Allow some precision loss
+            // 0.1 as f32 widened to f64 is not exactly 0.1, so allow some error
+            assert!((d - 0.1).abs() < 0.01);
         } else {
             panic!("Float to Double conversion should succeed");
         }

@@ -656,7 +656,7 @@ fn build_rpad(
     Ok(Box::new(RpadFunctionExecutor::new(str_arg, len, pad)?))
 }
 
-/// Register default builtin scalar functions into the provided EventFluxContext.
+/// Registers the default builtin scalar functions, aliases included, in `ctx`.
 pub fn register_builtin_scalar_functions(
     ctx: &crate::core::config::eventflux_context::EventFluxContext,
 ) {

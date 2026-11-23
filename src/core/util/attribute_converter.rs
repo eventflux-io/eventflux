@@ -15,18 +15,17 @@
  * limitations under the License.
  */
 
-// src/core/util/attribute_converter.rs
-// Utility helpers for converting between arbitrary values and AttributeValue
-// according to the desired Attribute::Type.  This is a comprehensive port of
-// io.eventflux.core.util.AttributeConverter with Java-compatible behavior.
+// Helpers that convert values to an AttributeValue of a given Attribute::Type. A port of
+// io.eventflux.core.util.AttributeConverter that keeps the Java behaviour. The actual rules
+// live in TypeConverter in type_system.rs.
 
 use crate::core::event::value::AttributeValue;
 use crate::core::util::type_system::TypeConverter;
 use crate::query_api::definition::attribute::Type as AttributeType;
 
-/// Convert a generic AttributeValue to the requested `AttributeType`.
-/// The conversion rules exactly mirror the Java implementation.
-/// Returns None for invalid conversions (matching Java's null return behavior).
+/// Converts an AttributeValue to the requested `AttributeType` with
+/// `TypeConverter::convert`, which follows the Java rules.
+/// Returns None when the conversion is not possible, where Java returns null.
 pub fn get_property_value(
     value: AttributeValue,
     attribute_type: AttributeType,
@@ -34,7 +33,7 @@ pub fn get_property_value(
     TypeConverter::convert(value, attribute_type)
 }
 
-/// Legacy version that returns Result<AttributeValue, String> for backward compatibility
+/// Same as [`get_property_value`], but returns an error message instead of None.
 pub fn get_property_value_result(
     value: AttributeValue,
     attribute_type: AttributeType,
@@ -53,7 +52,7 @@ pub fn get_property_value_from_str(
     get_property_value(value, attribute_type)
 }
 
-/// Legacy version that returns Result for backward compatibility
+/// Same as [`get_property_value_from_str`], but returns an error message instead of None.
 pub fn get_property_value_from_str_result(
     text: &str,
     attribute_type: AttributeType,
@@ -62,7 +61,13 @@ pub fn get_property_value_from_str_result(
         .ok_or_else(|| format!("Cannot convert string '{text}' to {attribute_type:?}"))
 }
 
-/// Get property value with type validation
+/// Converts `value` to `attribute_type` after checking that the type pair is allowed.
+///
+/// # Errors
+///
+/// Returns the error from `TypeConverter::validate_conversion` when the pair is not
+/// allowed, or a type error when the conversion itself fails, such as a string that does
+/// not parse.
 pub fn get_validated_property_value(
     value: AttributeValue,
     attribute_type: AttributeType,
@@ -70,13 +75,11 @@ pub fn get_validated_property_value(
     use crate::core::exception::EventFluxError;
     use crate::core::util::type_system::TypeConverter;
 
-    // Store the type before moving the value
+    // Read the type before the value is moved
     let value_type = value.get_type();
 
-    // Validate conversion is possible
     crate::core::util::type_system::TypeConverter::validate_conversion(value_type, attribute_type)?;
 
-    // Perform conversion
     TypeConverter::convert(value, attribute_type).ok_or_else(|| {
         EventFluxError::type_error(
             "Type conversion failed at runtime",
@@ -86,12 +89,12 @@ pub fn get_validated_property_value(
     })
 }
 
-/// Helper function for getting numeric value for arithmetic operations
+/// Returns the value as f64 for arithmetic. See `TypeConverter::get_numeric_value`.
 pub fn get_numeric_value_for_arithmetic(value: &AttributeValue) -> Option<f64> {
     crate::core::util::type_system::TypeConverter::get_numeric_value(value)
 }
 
-/// Helper function to cast value for arithmetic operations
+/// Casts a value to `target_type` for arithmetic. See `TypeConverter::cast_for_arithmetic`.
 pub fn cast_for_arithmetic(
     value: &AttributeValue,
     target_type: AttributeType,
@@ -99,12 +102,13 @@ pub fn cast_for_arithmetic(
     crate::core::util::type_system::TypeConverter::cast_for_arithmetic(value, target_type)
 }
 
-/// Check if value is numeric type
+/// True if the value is a numeric type. See `TypeConverter::is_numeric`.
 pub fn is_numeric_type(value: &AttributeValue) -> bool {
     crate::core::util::type_system::TypeConverter::is_numeric(value)
 }
 
-/// Get the arithmetic result type for two operand types
+/// Returns the result type of an arithmetic operation on the two operand types, or an
+/// error if they cannot be combined.
 pub fn get_arithmetic_result_type(
     left: AttributeType,
     right: AttributeType,
@@ -130,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_boolean_conversion() {
-        // Test Java-style boolean conversion
+        // Java style boolean conversion
         let v = get_property_value(AttributeValue::Int(1), AttributeType::BOOL).unwrap();
         assert!(matches!(v, AttributeValue::Bool(true)));
 
@@ -156,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_invalid_conversion() {
-        // Test that invalid conversions return None (Java behavior)
+        // Invalid conversions return None, as Java returns null
         let v = get_property_value(
             AttributeValue::String("not_a_number".to_string()),
             AttributeType::INT,
@@ -166,7 +170,6 @@ mod tests {
 
     #[test]
     fn test_type_widening() {
-        // Test automatic type widening
         let v = get_property_value(AttributeValue::Int(42), AttributeType::DOUBLE).unwrap();
         assert!(matches!(v, AttributeValue::Double(d) if (d - 42.0).abs() < f64::EPSILON));
     }

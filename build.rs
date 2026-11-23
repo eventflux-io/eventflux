@@ -16,7 +16,7 @@
  */
 
 fn main() {
-    // Compile protobuf definitions
+    // Generate the gRPC transport code from proto/transport.proto into src/core/distributed/grpc.
     if let Err(e) = tonic_build::configure()
         .build_server(true)
         .build_client(true)
@@ -24,6 +24,6 @@ fn main() {
         .compile(&["proto/transport.proto"], &["proto"])
     {
         eprintln!("Protobuf compilation failed: {e}");
-        // Don't exit here, as gRPC might be optional
+        // Warn and keep building. gRPC transport is optional.
     }
 }

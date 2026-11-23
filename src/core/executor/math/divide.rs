@@ -15,21 +15,27 @@
  * limitations under the License.
  */
 
-// src/core/executor/math/divide.rs
 use super::common::CoerceNumeric;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum // Use CoerceNumeric from common.rs
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
 
+/// Divides two numbers with `/`. Always returns a DOUBLE, even for INT / INT.
+///
+/// NULL on either side, or dividing by zero, gives NULL. No value on either side gives
+/// `None`.
 #[derive(Debug)]
 pub struct DivideExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
     right_executor: Box<dyn ExpressionExecutor>,
-    return_type: ApiAttributeType, // Division often results in float/double
+    return_type: ApiAttributeType, // Always DOUBLE today
 }
 
 impl DivideExpressionExecutor {
+    /// # Errors
+    ///
+    /// Returns an error if either operand is STRING, BOOL or OBJECT.
     pub fn new(
         left: Box<dyn ExpressionExecutor>,
         right: Box<dyn ExpressionExecutor>,
@@ -37,11 +43,10 @@ impl DivideExpressionExecutor {
         let left_type = left.get_return_type();
         let right_type = right.get_return_type();
 
-        // Determine return type: typically Double for division, unless both are Int/Long and result should be Int/Long (integer division).
-        // EventFlux's Java typed executors (e.g., DivideExpressionExecutorInt) suggest it maintains integer division if possible.
-        // However, to avoid loss of precision and match general SQL behavior for `/`, promoting to DOUBLE is safest.
-        // If strict integer division is needed, a separate DivInt executor or different operator could be used.
-        // For now, promoting to DOUBLE for `/` operator.
+        // The result is always DOUBLE, which avoids losing precision and matches common SQL
+        // behaviour for `/`. The Java typed executors (such as DivideExpressionExecutorInt)
+        // keep integer division instead. Integer division would need its own executor or
+        // operator.
         let return_type = match (left_type, right_type) {
             (ApiAttributeType::STRING, _)
             | (_, ApiAttributeType::STRING)
@@ -53,11 +58,9 @@ impl DivideExpressionExecutor {
                     "Division not supported for input types {left_type:?} and {right_type:?}"
                 ));
             }
-            // Any division involving numbers results in DOUBLE for safety and precision by default
             _ => ApiAttributeType::DOUBLE,
         };
-        // One could refine this: if both are INT, maybe return INT (integer division), or if both are LONG, return LONG.
-        // Or, if strict type matching like Java's per-type executors is desired:
+        // To match the Java per type executors instead, with INT / INT giving INT and so on:
         // let return_type = match (left_type, right_type) {
         //     (ApiAttributeType::DOUBLE, _) | (_, ApiAttributeType::DOUBLE) => ApiAttributeType::DOUBLE,
         //     (ApiAttributeType::FLOAT, _) | (_, ApiAttributeType::FLOAT) => ApiAttributeType::FLOAT,
@@ -65,9 +68,6 @@ impl DivideExpressionExecutor {
         //     (ApiAttributeType::INT, _) | (_, ApiAttributeType::INT) => ApiAttributeType::INT, // if int div int -> int
         //     _ => return Err(...)
         // };
-        // The prompt example for Add determined return type by promoting. Let's follow that.
-        // The Add example promotes to the "largest" type present. Division is trickier.
-        // For now, will default to Double as per the prompt's general approach of a single executor per op.
 
         Ok(Self {
             left_executor: left,
@@ -90,20 +90,20 @@ impl ExpressionExecutor for DivideExpressionExecutor {
                     return Some(AttributeValue::Null);
                 }
 
-                // Coerce both to f64 for division, then cast to return_type if needed (though return_type is usually DOUBLE)
+                // Divide as f64, then cast to the return type
                 let l = left_val.to_f64_or_err_str("Divide")?;
                 let r = right_val.to_f64_or_err_str("Divide")?;
 
                 if r == 0.0 {
-                    // Division by zero. EventFlux might return null or throw an error.
-                    // Returning Null is a common SQL behavior.
+                    // Dividing by zero gives NULL, as is common in SQL, instead of an error
                     // log_error!("Division by zero error");
                     return Some(AttributeValue::Null);
                 }
                 let result = l / r;
 
                 match self.return_type {
-                    // This logic might be simplified if return_type is always DOUBLE
+                    // Only DOUBLE is reachable today. The other arms cover a future change
+                    // to the return type.
                     ApiAttributeType::DOUBLE => Some(AttributeValue::Double(result)),
                     ApiAttributeType::FLOAT => Some(AttributeValue::Float(result as f32)),
                     ApiAttributeType::LONG => Some(AttributeValue::Long(result as i64)), // Truncating

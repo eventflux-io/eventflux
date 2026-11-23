@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-// src/core/executor/math/common.rs
 use crate::core::event::value::AttributeValue;
 
-// Helper trait for AttributeValue to handle coercion for math operations
+// Converts numeric AttributeValues for the math executors. Each method returns None for a
+// non numeric value. Narrowing casts truncate or wrap silently. `op_name` is unused.
+// pub(super) keeps it inside the math module.
 pub(super) trait CoerceNumeric {
-    // pub(super) to be visible only within math module
     fn to_i32_or_err_str(&self, op_name: &str) -> Option<i32>;
     fn to_i64_or_err_str(&self, op_name: &str) -> Option<i64>;
     fn to_f32_or_err_str(&self, op_name: &str) -> Option<f32>;
@@ -35,7 +35,7 @@ impl CoerceNumeric for AttributeValue {
             AttributeValue::Float(v) => Some(*v as i32),
             AttributeValue::Double(v) => Some(*v as i32),
             _ => {
-                // TODO: Log warning: log_warn!("Type mismatch for {}: expected numeric, found {:?}", op_name, self);
+                // TODO: log a warning, for example log_warn!("Type mismatch for {}: expected numeric, found {:?}", op_name, self);
                 None
             }
         }

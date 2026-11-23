@@ -17,11 +17,15 @@
 
 //! Cast Expression Executor
 //!
-//! Executes CAST expressions for type conversion between:
-//! - String to numeric types (INT, LONG, FLOAT, DOUBLE)
-//! - Numeric types to String
-//! - Numeric type widening (INT -> LONG, FLOAT -> DOUBLE)
-//! - Numeric type narrowing (LONG -> INT, DOUBLE -> FLOAT)
+//! Runs CAST expressions. Supported conversions:
+//! - String to numeric types (INT, LONG, FLOAT, DOUBLE). The string is trimmed first.
+//! - Numeric and BOOL values to String
+//! - Numeric widening (INT -> LONG, INT/LONG/FLOAT -> DOUBLE, INT/LONG -> FLOAT)
+//! - Numeric narrowing (LONG -> INT, DOUBLE -> FLOAT, DOUBLE/FLOAT -> INT or LONG).
+//!   A value out of the target range gives `None`.
+//! - String, INT and LONG to BOOL
+//!
+//! NULL stays NULL. Any other pair, or a string that does not parse, gives `None`.
 
 use super::expression_executor::ExpressionExecutor;
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
@@ -30,17 +34,15 @@ use crate::core::event::value::AttributeValue;
 use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use std::sync::Arc;
 
-/// Executor for CAST expressions
+/// Runs a CAST expression.
 #[derive(Debug)]
 pub struct CastExecutor {
-    /// The inner expression to evaluate before casting
+    /// Expression whose result gets cast.
     inner_executor: Box<dyn ExpressionExecutor>,
-    /// The target type to cast to
     target_type: ApiAttributeType,
 }
 
 impl CastExecutor {
-    /// Create a new CastExecutor
     pub fn new(inner_executor: Box<dyn ExpressionExecutor>, target_type: ApiAttributeType) -> Self {
         Self {
             inner_executor,
@@ -48,7 +50,10 @@ impl CastExecutor {
         }
     }
 
-    /// Perform the actual type conversion
+    /// Converts `value` to the target type.
+    ///
+    /// Returns `None` when the pair is not supported, a string does not parse, or a
+    /// narrowing cast is out of range.
     fn cast_value(&self, value: &AttributeValue) -> Option<AttributeValue> {
         match (&self.target_type, value) {
             // === String conversions ===
@@ -105,13 +110,13 @@ impl CastExecutor {
                 Some(AttributeValue::Float(*l as f32))
             }
 
-            // === Numeric narrowing conversions (with overflow checking) ===
+            // === Numeric narrowing conversions (with range checks) ===
             (ApiAttributeType::INT, AttributeValue::Long(l)) => {
-                // Check if long value fits in i32 range
                 i32::try_from(*l).ok().map(AttributeValue::Int)
             }
             (ApiAttributeType::FLOAT, AttributeValue::Double(d)) => {
-                // Check if double is within f32 range (not infinite after conversion)
+                // Too large for f32 turns into infinity. NaN passes through. An infinite
+                // input also gives None.
                 let f = *d as f32;
                 if f.is_finite() || d.is_nan() {
                     Some(AttributeValue::Float(f))
@@ -120,7 +125,7 @@ impl CastExecutor {
                 }
             }
             (ApiAttributeType::INT, AttributeValue::Double(d)) => {
-                // Check if double is within i32 range
+                // NaN fails both checks, so it gives None too
                 if *d >= (i32::MIN as f64) && *d <= (i32::MAX as f64) {
                     Some(AttributeValue::Int(*d as i32))
                 } else {
@@ -128,7 +133,6 @@ impl CastExecutor {
                 }
             }
             (ApiAttributeType::INT, AttributeValue::Float(f)) => {
-                // Check if float is within i32 range
                 if *f >= (i32::MIN as f32) && *f <= (i32::MAX as f32) {
                     Some(AttributeValue::Int(*f as i32))
                 } else {
@@ -136,7 +140,6 @@ impl CastExecutor {
                 }
             }
             (ApiAttributeType::LONG, AttributeValue::Double(d)) => {
-                // Check if double is within i64 range
                 if *d >= (i64::MIN as f64) && *d <= (i64::MAX as f64) {
                     Some(AttributeValue::Long(*d as i64))
                 } else {
@@ -144,7 +147,6 @@ impl CastExecutor {
                 }
             }
             (ApiAttributeType::LONG, AttributeValue::Float(f)) => {
-                // Check if float is within i64 range
                 if *f >= (i64::MIN as f32) && *f <= (i64::MAX as f32) {
                     Some(AttributeValue::Long(*f as i64))
                 } else {
@@ -186,10 +188,7 @@ impl CastExecutor {
 
 impl ExpressionExecutor for CastExecutor {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
-        // First evaluate the inner expression
         let inner_value = self.inner_executor.execute(event)?;
-
-        // Then cast the result to the target type
         self.cast_value(&inner_value)
     }
 
@@ -267,7 +266,7 @@ mod tests {
         let cast = CastExecutor::new(inner, ApiAttributeType::STRING);
 
         let result = cast.execute(None);
-        // Note: floating point to string might have precision variations
+        // Float to string text can vary in precision, so only check the variant
         assert!(matches!(result, Some(AttributeValue::String(_))));
     }
 

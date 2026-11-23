@@ -21,29 +21,26 @@ use crate::core::persistence::StateHolder;
 use crate::core::util::id_generator::IdGenerator;
 use crate::query_api::execution::query::output::OutputEventType;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex}; // From query_api, as Java uses it.
+use std::sync::{Arc, Mutex}; // Mutex wraps the registered state holders
                              // use crate::core::util::statistics::LatencyTracker; // TODO: Define LatencyTracker
                              // use crate::core::util::IdGenerator; // TODO: Define IdGenerator
 
-// Placeholders
+// Stand in until a latency tracker is ported
 #[derive(Debug, Clone, Default)]
 pub struct LatencyTrackerPlaceholder {}
 
-#[derive(Debug)] // Custom Clone below
+#[derive(Debug)] // Clone is written by hand below because of the atomics
 pub struct EventFluxQueryContext {
-    // transient EventFluxAppContext eventfluxAppContext in Java
-    // Store as Arc<EventFluxAppContext> because EventFluxAppContext is likely shared.
-    // Or, if EventFluxQueryContext has a lifetime tied to EventFluxAppContext, it could be a reference.
-    // Arc is safer for now.
+    // Transient in Java. Held as an Arc because many queries share one app context.
     pub eventflux_app_context: Arc<EventFluxAppContext>,
     pub name: String,                                       // Query name
-    pub partition_id: String,                               // Defaulted in Java if null
-    pub partitioned: bool,                                  // Java default false
-    pub output_event_type: Option<OutputEventType>,         // Java type, optional
-    pub latency_tracker: Option<LatencyTrackerPlaceholder>, // transient in Java, Option in Rust
-    pub id_generator: IdGenerator,                          // new-ed in Java constructor
-    pub stateful: AtomicBool,                               // whether any state holders registered
-    pub aggregator_counter: AtomicUsize,                    // counter for unique aggregator IDs
+    pub partition_id: String,                               // Placeholder id when none is given
+    pub partitioned: bool,                                  // Defaults to false, as in Java
+    pub output_event_type: Option<OutputEventType>,         // None until set
+    pub latency_tracker: Option<LatencyTrackerPlaceholder>, // Transient in Java, None until set
+    pub id_generator: IdGenerator,                          // Created fresh for each context
+    pub stateful: AtomicBool,                               // Set once a state holder registers
+    pub aggregator_counter: AtomicUsize,                    // Source of unique aggregator ids
 }
 
 impl Clone for EventFluxQueryContext {
@@ -87,7 +84,7 @@ impl EventFluxQueryContext {
         Arc::clone(&self.eventflux_app_context)
     }
 
-    // In Java, getEventFluxContext() delegates through eventfluxAppContext.
+    // Java getEventFluxContext() goes through eventfluxAppContext. Not ported yet.
     // pub fn get_eventflux_context(&self) -> Arc<EventFluxContext> { // Assuming EventFluxContext is the type
     //     self.eventflux_app_context.get_eventflux_context()
     // }
@@ -132,14 +129,17 @@ impl EventFluxQueryContext {
         self.stateful.load(Ordering::SeqCst)
     }
 
-    /// Get the next unique aggregator ID for this query.
-    /// Each call returns an incremented counter, ensuring unique IDs per aggregator instance.
+    /// Get the next unique aggregator id for this query.
+    ///
+    /// Starts at 0 and goes up by one on each call, so each aggregator gets its own id.
     pub fn next_aggregator_id(&self) -> usize {
         self.aggregator_counter.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Register a state holder with the application's `SnapshotService`.
-    /// The provided `name` is namespaced by the query name to ensure uniqueness.
+    ///
+    /// The key is `"<query name>::<name>"` so names from different queries do not clash.
+    /// Marks the query as stateful. Does nothing when the app has no snapshot service.
     pub fn register_state_holder(&self, name: String, holder: Arc<Mutex<dyn StateHolder>>) {
         if let Some(service) = self.eventflux_app_context.get_snapshot_service() {
             let key = format!("{}::{}", self.name, name);

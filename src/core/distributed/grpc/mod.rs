@@ -17,14 +17,14 @@
 
 // src/core/distributed/grpc/mod.rs
 
-//! gRPC transport implementation using Tonic
+//! gRPC transport built on Tonic.
 //!
-//! This module provides the gRPC transport layer for distributed communication.
-//! It includes both client and server implementations with streaming support,
-//! compression, and advanced features like load balancing and health checks.
+//! Carries messages between nodes over gRPC. `transport` adapts the gRPC client to
+//! the shared [`Transport`](crate::core::distributed::transport::Transport) trait.
+//! `simple_transport` is a smaller client that talks to the gRPC service directly.
 
 pub mod simple_transport;
 pub mod transport;
 
-// Include generated protobuf code
+// Code generated from the protobuf definitions.
 include!("eventflux.transport.rs");

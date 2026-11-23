@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// CASE Expression Compatibility Tests
+// CASE expression compatibility tests
 // Reference: query/function/FunctionTestCase.java
 
 use crate::compatibility::common::AppRunner;
@@ -25,7 +25,7 @@ use eventflux::core::event::value::AttributeValue;
 // CASE EXPRESSION TESTS
 // ============================================================================
 
-/// CASE WHEN expression - simple case
+/// CASE WHEN maps INT codes to labels, with an ELSE fallback
 /// Reference: Function tests
 #[tokio::test]
 async fn function_test_case_when_simple() {
@@ -45,7 +45,7 @@ async fn function_test_case_when_simple() {
     assert_eq!(out[2][0], AttributeValue::String("Unknown".to_string()));
 }
 
-/// CASE WHEN expression - with comparison
+/// CASE WHEN with range comparisons, where the first matching branch wins
 /// Reference: Function tests
 #[tokio::test]
 async fn function_test_case_when_comparison() {
@@ -65,8 +65,8 @@ async fn function_test_case_when_comparison() {
     assert_eq!(out[2][0], AttributeValue::String("Expensive".to_string()));
 }
 
-/// CASE WHEN with numeric return
-/// Note: CASE WHEN returns BIGINT for integer constants
+/// CASE WHEN that returns numbers
+/// Integer constants in the branches come out as BIGINT
 #[tokio::test]
 async fn function_test_case_when_numeric() {
     let app = "\
@@ -85,7 +85,7 @@ async fn function_test_case_when_numeric() {
     assert_eq!(out[2][0], AttributeValue::Long(0));
 }
 
-/// CASE WHEN with boolean result
+/// CASE WHEN that returns a BOOLEAN
 #[tokio::test]
 async fn function_test_case_when_boolean() {
     let app = "\
@@ -104,7 +104,7 @@ async fn function_test_case_when_boolean() {
     assert_eq!(out[2][0], AttributeValue::Bool(false));
 }
 
-/// Conditional expression using CASE WHEN
+/// CASE WHEN with one branch and an ELSE
 #[tokio::test]
 async fn function_test_case_conditional() {
     let app = "\

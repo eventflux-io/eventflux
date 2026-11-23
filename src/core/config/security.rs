@@ -17,27 +17,27 @@
 
 //! Configuration Security Management
 //!
-//! Provides security utilities for handling sensitive configuration values
-//! including encryption, secret management, and secure storage.
+//! Looks up secret configuration values, such as passwords and tokens, from the
+//! environment, files, Kubernetes Secrets and external secret stores.
 
 use crate::core::config::{ConfigError, ConfigResult};
 use std::collections::HashMap;
 
-/// Security provider for configuration secrets
+/// Looks up secrets through a list of providers and caches what it finds
 #[derive(Debug)]
 pub struct SecretManager {
-    /// Secret providers by priority
+    /// Providers, tried in the order they were added. `priority()` is not used.
     providers: Vec<Box<dyn SecretProvider>>,
 
-    /// Cached secrets
+    /// Secrets already found, keyed by secret key
     cache: HashMap<String, String>,
 
-    /// Enable caching
+    /// Whether found secrets are cached. Defaults to true.
     cache_enabled: bool,
 }
 
 impl SecretManager {
-    /// Create a new secret manager
+    /// Create a manager with no providers and caching on
     pub fn new() -> Self {
         Self {
             providers: Vec::new(),
@@ -46,33 +46,35 @@ impl SecretManager {
         }
     }
 
-    /// Add a secret provider
+    /// Add a provider. It is tried after the ones already added.
     pub fn add_provider(&mut self, provider: Box<dyn SecretProvider>) {
         self.providers.push(provider);
     }
 
-    /// Retrieve a secret by key
+    /// Get a secret by key.
+    ///
+    /// Returns the cached value if there is one. Otherwise asks each provider that
+    /// has the key, in the order added, and returns the first success. A provider
+    /// error is printed to stderr and the next provider is tried.
+    ///
+    /// Returns `SecretNotFound` when no provider returns the secret.
     pub fn get_secret(&mut self, key: &str) -> ConfigResult<String> {
-        // Check cache first
         if self.cache_enabled {
             if let Some(value) = self.cache.get(key) {
                 return Ok(value.clone());
             }
         }
 
-        // Try each provider
         for provider in &self.providers {
             if provider.has_secret(key) {
                 match provider.get_secret(key) {
                     Ok(value) => {
-                        // Cache the result
                         if self.cache_enabled {
                             self.cache.insert(key.to_string(), value.clone());
                         }
                         return Ok(value);
                     }
                     Err(e) => {
-                        // Continue to next provider on error
                         eprintln!("Provider {} failed for key {}: {}", provider.name(), key, e);
                         continue;
                     }
@@ -88,7 +90,7 @@ impl SecretManager {
         self.cache.clear();
     }
 
-    /// Enable or disable secret caching
+    /// Turn secret caching on or off. Turning it off also clears the cache.
     pub fn set_cache_enabled(&mut self, enabled: bool) {
         self.cache_enabled = enabled;
         if !enabled {
@@ -103,37 +105,38 @@ impl Default for SecretManager {
     }
 }
 
-/// Trait for secret providers
+/// A source of secrets
 pub trait SecretProvider: Send + Sync + std::fmt::Debug {
     /// Get the provider name
     fn name(&self) -> &str;
 
-    /// Check if the provider has a secret
+    /// Check if the provider has a secret for `key`
     fn has_secret(&self, key: &str) -> bool;
 
     /// Get a secret by key
     fn get_secret(&self, key: &str) -> ConfigResult<String>;
 
-    /// Get provider priority (higher = more important)
+    /// Provider priority, where a higher number means more important. Defaults to 50.
+    /// [`SecretManager`] does not use it yet.
     fn priority(&self) -> u32 {
         50
     }
 }
 
-/// Environment variable secret provider
+/// Reads secrets from environment variables
 #[derive(Debug, Clone)]
 pub struct EnvironmentSecretProvider {
-    /// Environment variable prefix
+    /// When set, the variable read is `<prefix><KEY IN UPPER CASE>`
     prefix: Option<String>,
 }
 
 impl EnvironmentSecretProvider {
-    /// Create a new environment secret provider
+    /// Create a provider that reads the variable named exactly like the key
     pub fn new() -> Self {
         Self { prefix: None }
     }
 
-    /// Create with a prefix
+    /// Create a provider that reads `<prefix><KEY IN UPPER CASE>`
     pub fn with_prefix(prefix: impl Into<String>) -> Self {
         Self {
             prefix: Some(prefix.into()),
@@ -173,19 +176,21 @@ impl SecretProvider for EnvironmentSecretProvider {
     }
 
     fn priority(&self) -> u32 {
-        30 // Medium priority
+        30 // Lowest of the built in providers
     }
 }
 
-/// File-based secret provider
+/// Reads each secret from a file named after its key
 #[derive(Debug, Clone)]
 pub struct FileSecretProvider {
-    /// Base directory for secret files
+    /// Directory that holds the secret files
     base_dir: String,
 }
 
 impl FileSecretProvider {
-    /// Create a new file secret provider
+    /// Create a provider that reads `<base_dir>/<key>`.
+    ///
+    /// The key is joined to the path as is, so it must come from trusted config.
     pub fn new(base_dir: impl Into<String>) -> Self {
         Self {
             base_dir: base_dir.into(),
@@ -206,7 +211,7 @@ impl SecretProvider for FileSecretProvider {
     fn get_secret(&self, key: &str) -> ConfigResult<String> {
         let file_path = format!("{}/{}", self.base_dir, key);
         std::fs::read_to_string(&file_path)
-            .map(|s| s.trim().to_string()) // Remove trailing newlines
+            .map(|s| s.trim().to_string()) // Drops the trailing newline and other edge whitespace
             .map_err(|e| {
                 ConfigError::internal_error(format!(
                     "Failed to read secret file {}: {}",
@@ -220,20 +225,20 @@ impl SecretProvider for FileSecretProvider {
     }
 }
 
-/// Kubernetes Secret provider
+/// Reads secrets from the keys of one Kubernetes Secret
 #[cfg(feature = "kubernetes")]
 #[derive(Debug, Clone)]
 pub struct KubernetesSecretProvider {
     /// Secret name
     secret_name: String,
 
-    /// Kubernetes namespace
+    /// Kubernetes namespace. `default` when None.
     namespace: Option<String>,
 }
 
 #[cfg(feature = "kubernetes")]
 impl KubernetesSecretProvider {
-    /// Create a new Kubernetes secret provider
+    /// Create a provider for the named Secret in the `default` namespace
     pub fn new(secret_name: impl Into<String>) -> Self {
         Self {
             secret_name: secret_name.into(),
@@ -247,7 +252,11 @@ impl KubernetesSecretProvider {
         self
     }
 
-    /// Load secret from Kubernetes
+    /// Fetch one key of the Secret and decode it from base64 to UTF-8 text.
+    ///
+    /// Returns `None` if the Secret does not exist (HTTP 404), has no data, or has no
+    /// such key. Returns `InternalError` if the client cannot be created, the API call
+    /// fails, or the value does not decode.
     async fn load_secret(&self, key: &str) -> ConfigResult<Option<String>> {
         use base64::Engine;
         use k8s_openapi::api::core::v1::Secret;
@@ -286,7 +295,7 @@ impl KubernetesSecretProvider {
                 }
             }
             Err(kube::Error::Api(kube::error::ErrorResponse { code: 404, .. })) => {
-                Ok(None) // Secret not found
+                Ok(None) // A missing Secret is not an error
             }
             Err(e) => Err(ConfigError::internal_error(format!(
                 "Failed to get secret '{}': {}",
@@ -303,8 +312,9 @@ impl SecretProvider for KubernetesSecretProvider {
     }
 
     fn has_secret(&self, key: &str) -> bool {
-        // For async operations, we can't easily check availability synchronously
-        // In practice, this would be used in conjunction with a cache
+        // The trait is sync but the lookup is async, so this blocks on the current
+        // tokio runtime. Returns false with no runtime or on any error. Fetches the
+        // Secret, so pair it with the SecretManager cache.
         tokio::runtime::Handle::try_current()
             .and_then(|handle| {
                 let provider = self.clone();
@@ -321,8 +331,8 @@ impl SecretProvider for KubernetesSecretProvider {
     }
 
     fn get_secret(&self, key: &str) -> ConfigResult<String> {
-        // This is a blocking version for compatibility
-        // In practice, you'd use the async version with proper runtime handling
+        // Blocks on the current tokio runtime because the trait is sync. Fails with
+        // InternalError when there is no runtime.
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
             ConfigError::internal_error(
                 "No async runtime available for Kubernetes secret access".to_string(),
@@ -341,23 +351,24 @@ impl SecretProvider for KubernetesSecretProvider {
     }
 
     fn priority(&self) -> u32 {
-        70 // High priority for Kubernetes secrets
+        70 // Highest of the built in providers
     }
 }
 
-/// External secret provider interface for HashiCorp Vault, AWS Secrets Manager, etc.
+/// Placeholder for external secret stores such as HashiCorp Vault or AWS Secrets
+/// Manager. Not built yet. It never has a secret and `get_secret` always fails.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ExternalSecretProvider {
     /// Provider name
     name: String,
 
-    /// Provider configuration
+    /// Provider configuration. Not read yet.
     config: HashMap<String, String>,
 }
 
 impl ExternalSecretProvider {
-    /// Create a new external secret provider
+    /// Create an external secret provider
     pub fn new(name: impl Into<String>, config: HashMap<String, String>) -> Self {
         Self {
             name: name.into(),
@@ -372,12 +383,12 @@ impl SecretProvider for ExternalSecretProvider {
     }
 
     fn has_secret(&self, _key: &str) -> bool {
-        // Implementation pending: Provider-specific secret retrieval logic
+        // Not built yet
         false
     }
 
     fn get_secret(&self, key: &str) -> ConfigResult<String> {
-        // Implementation pending: Provider-specific secret retrieval logic for Vault, AWS Secrets Manager, etc.
+        // Not built yet. Always returns InternalError.
         Err(ConfigError::internal_error(format!(
             "External secret provider {} not yet implemented for key {}",
             self.name, key
@@ -385,7 +396,7 @@ impl SecretProvider for ExternalSecretProvider {
     }
 
     fn priority(&self) -> u32 {
-        60 // Highest priority for external providers
+        60 // Below Kubernetes, above file and environment
     }
 }
 
@@ -486,7 +497,7 @@ mod tests {
     fn test_secret_manager_priority_ordering() {
         let mut manager = SecretManager::new();
 
-        // Add providers in different order
+        // Providers are tried in the order added, not by priority
         manager.add_provider(Box::new(EnvironmentSecretProvider::new())); // Priority 30
         manager.add_provider(Box::new(FileSecretProvider::new(
             "/tmp/secrets".to_string(),
@@ -495,7 +506,7 @@ mod tests {
         #[cfg(feature = "kubernetes")]
         manager.add_provider(Box::new(KubernetesSecretProvider::new("test-secrets"))); // Priority 70
 
-        // Test that it works with environment variables
+        // The environment provider was added first, so it answers
         std::env::set_var("PRIORITY_TEST_SECRET", "env_value");
 
         let result = manager.get_secret("PRIORITY_TEST_SECRET");

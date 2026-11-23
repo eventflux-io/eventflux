@@ -35,7 +35,7 @@ async fn partition_async_ordered() {
     let manager = EventFluxManager::new();
     let runner = AppRunner::new_with_manager(manager, app, "Out").await;
     for i in 0..10 {
-        // Reduced to 10 for simpler test
+        // Only 10 events, so this is a smoke test rather than real stress
         let p = if i % 2 == 0 { "a" } else { "b" };
         runner.send(
             "In",
@@ -48,6 +48,6 @@ async fn partition_async_ordered() {
     thread::sleep(Duration::from_millis(100));
     let out = runner.shutdown();
     assert_eq!(out.len(), 10);
-    // Just verify basic functionality - order less important for now
+    // Order across partitions is not checked, only that the first event comes out first
     assert!(out[0][0] == AttributeValue::Int(0));
 }

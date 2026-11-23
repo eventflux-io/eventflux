@@ -15,8 +15,6 @@
  * limitations under the License.
  */
 
-// src/core/trigger/trigger_runtime.rs
-
 use crate::core::event::event::Event;
 use crate::core::event::value::AttributeValue;
 use crate::core::stream::stream_junction::StreamJunction;
@@ -31,8 +29,8 @@ pub struct TriggerRuntime {
     pub stream_junction: Arc<Mutex<StreamJunction>>,
     scheduler: Arc<Scheduler>,
     started: AtomicBool,
-    /// Flag shared with the current generation's TriggerTask.
-    /// Set to false on shutdown so old periodic tasks become no-ops.
+    /// Flag shared with the TriggerTask of the current start.
+    /// Set to false on shutdown so tasks from earlier starts stop emitting.
     active_flag: Mutex<Arc<AtomicBool>>,
 }
 
@@ -51,13 +49,17 @@ impl TriggerRuntime {
         }
     }
 
+    // Schedules the trigger. `at_every` emits on a fixed period, `at = 'start'` emits
+    // once right away, and any other `at` value is scheduled as a cron expression.
+    // A cron scheduling error is ignored. Does nothing if already started.
+    // Each event carries the fire time in ms as a single Long attribute.
     pub fn start(&self) {
-        // Idempotent: skip if already started
         if self.started.swap(true, Ordering::AcqRel) {
             return;
         }
 
-        // Create a new active flag for this generation; old tasks see their flag as false
+        // A new flag per start. Tasks from an earlier start keep their old flag,
+        // which shutdown set to false.
         let active = Arc::new(AtomicBool::new(true));
         *self.active_flag.lock().unwrap() = Arc::clone(&active);
 
@@ -70,7 +72,7 @@ impl TriggerRuntime {
                 .schedule_periodic(period, task, None, Some(Arc::clone(&active)));
         } else if let Some(at) = &self.definition.at {
             if at.trim().eq_ignore_ascii_case("start") {
-                // Emit immediately
+                // Emit once, now, on the calling thread.
                 let now = chrono::Utc::now().timestamp_millis();
                 TriggerTask {
                     junction: Arc::clone(&self.stream_junction),
@@ -87,7 +89,7 @@ impl TriggerRuntime {
 
     pub fn shutdown(&self) {
         self.started.store(false, Ordering::Release);
-        // Deactivate current generation's tasks so old periodic loops become no-ops
+        // Turn off this start's tasks so their scheduled runs stop emitting.
         self.active_flag
             .lock()
             .unwrap()

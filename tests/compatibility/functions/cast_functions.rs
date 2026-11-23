@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// Cast Function Compatibility Tests
+// CAST function compatibility tests
 // Reference: query/function/ConversionFunctionTestCase.java
 
 use crate::compatibility::common::AppRunner;
@@ -25,7 +25,7 @@ use eventflux::core::event::value::AttributeValue;
 // BASIC CAST OPERATIONS
 // ============================================================================
 
-/// Test cast function
+/// CAST STRING to INT and INT to STRING in one query
 /// Reference: ConversionFunctionTestCase.java:testConversionQuery1
 #[tokio::test]
 async fn function_test_cast() {
@@ -87,7 +87,7 @@ async fn function_test_cast_float_to_double() {
     }
 }
 
-/// Cast DOUBLE to INT (truncation)
+/// Cast DOUBLE to INT drops the fraction instead of rounding
 #[tokio::test]
 async fn function_test_cast_double_to_int() {
     let app = "\
@@ -99,7 +99,7 @@ async fn function_test_cast_double_to_int() {
     runner.send("inputStream", vec![AttributeValue::Double(9.99)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // Truncates to 9
+    // 9.99 becomes 9, not 10
     assert_eq!(out[0][0], AttributeValue::Int(9));
 }
 
@@ -125,7 +125,7 @@ async fn function_test_cast_string_to_float() {
     }
 }
 
-/// concat with numbers converted to string
+/// concat with a number cast to STRING
 #[tokio::test]
 async fn function_test_concat_with_cast() {
     let app = "\

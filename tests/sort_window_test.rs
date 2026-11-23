@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-// Sort window tests using SQL WINDOW() syntax
-// Sort window is implemented and ready for testing
+// Sort window tests using the SQL WINDOW() syntax
 
 #[path = "common/mod.rs"]
 mod common;
@@ -35,7 +34,6 @@ async fn test_basic_sort_window() {
 
     let runner = AppRunner::new(app, "Out").await;
 
-    // Send some events
     runner.send(
         "In",
         vec![AttributeValue::Double(100.0), AttributeValue::Int(50)],
@@ -54,7 +52,7 @@ async fn test_basic_sort_window() {
     let output = runner.shutdown();
     println!("Sort window output: {:?}", output);
 
-    // Should have output for all events sent (3 current)
+    // All 3 events fit in the window, so each comes out as a current event
     assert!(!output.is_empty(), "Should have sort window output");
     assert!(output.len() >= 3, "Should have at least 3 events");
 }
@@ -78,7 +76,7 @@ async fn test_sort_window_with_parameters() {
     let output = runner.shutdown();
     println!("Sort window with parameters output: {:?}", output);
 
-    // Should have output for all sent events (2 current + 1 expired)
+    // 3 current events, plus 1 expired once the third event overflows the window of 2
     assert!(!output.is_empty(), "Should have output events");
     assert!(output.len() >= 3, "Should have at least 3 events");
 }
@@ -100,7 +98,7 @@ async fn test_sort_window_length_validation() {
     let output = runner.shutdown();
     println!("Sort window length validation output: {:?}", output);
 
-    // Should work with length 1
+    // A window of length 1 is valid
     assert!(!output.is_empty(), "Should work with length 1");
     assert_eq!(output.len(), 1, "Should have exactly 1 event");
 }
@@ -117,7 +115,7 @@ async fn test_sort_window_expiry() {
 
     let runner = AppRunner::new(app, "Out").await;
 
-    // Send 3 events to a window of size 2 - should get expired events
+    // 3 events into a window of size 2, so one event must expire
     runner.send("In", vec![AttributeValue::Int(10)]);
     runner.send("In", vec![AttributeValue::Int(20)]);
     runner.send("In", vec![AttributeValue::Int(30)]);
@@ -125,8 +123,7 @@ async fn test_sort_window_expiry() {
     let output = runner.shutdown();
     println!("Sort window expiry output: {:?}", output);
 
-    // Should have output for all events (both current and expired)
-    // First event: 10 (current), Second event: 20 (current), Third event: 30 (current) + expired event
+    // 10, 20 and 30 each come out as current, then the expired event follows
     assert!(
         output.len() >= 3,
         "Should have at least 3 events (current + expired)"
@@ -145,7 +142,7 @@ async fn test_sort_window_ordering() {
 
     let runner = AppRunner::new(app, "Out").await;
 
-    // Send events - the sort window should maintain them in sorted order
+    // The window keeps events sorted, but output order is not checked here
     runner.send("In", vec![AttributeValue::Int(100)]);
     runner.send("In", vec![AttributeValue::Int(200)]);
     runner.send("In", vec![AttributeValue::Int(300)]);
@@ -153,10 +150,9 @@ async fn test_sort_window_ordering() {
     let output = runner.shutdown();
     println!("Sort window ordering output: {:?}", output);
 
-    // Should have output for all sent events
+    // Nothing expires because all 3 events fit in the window
     assert_eq!(output.len(), 3, "Should have exactly 3 output events");
 
-    // All events should be present
     for event in &output {
         assert_eq!(event.len(), 1, "Each event should have one attribute");
         match &event[0] {

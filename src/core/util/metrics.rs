@@ -189,7 +189,8 @@ impl BufferedEventsTracker {
     }
 }
 
-/// Retrieve the average latency in nanoseconds for a stream if metrics exist.
+/// Returns the average latency of a stream in nanoseconds. None if the stream has no
+/// latency tracker or no samples yet.
 pub fn get_stream_latency(stream_id: &str) -> Option<u64> {
     LATENCY_BY_STREAM
         .lock()
@@ -198,7 +199,8 @@ pub fn get_stream_latency(stream_id: &str) -> Option<u64> {
         .and_then(|t| t.average_latency_ns())
 }
 
-/// Retrieve the total number of events processed for a stream if metrics exist.
+/// Returns the total number of events counted for a stream. None if the stream has no
+/// throughput tracker.
 pub fn get_stream_throughput(stream_id: &str) -> Option<u64> {
     THROUGHPUT_BY_STREAM
         .lock()

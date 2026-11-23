@@ -17,7 +17,7 @@
 
 //! # Kafka Sink
 //!
-//! Produces formatted event payloads to a Kafka topic.
+//! Sends formatted event payloads to a Kafka topic.
 //!
 //! ## Architecture
 //!
@@ -25,22 +25,22 @@
 //! Events → per event: SinkMapper → bytes → KafkaSink::publish() → ThreadedProducer → Kafka
 //! ```
 //!
-//! No tokio runtime is needed: `ThreadedProducer` runs librdkafka's own
-//! background poll thread, which batches records (`linger.ms`, `batch.size`)
-//! and invokes the delivery callback per record.
+//! No tokio runtime is needed. `ThreadedProducer` runs librdkafka's own
+//! background poll thread, which groups records into batches (`linger.ms`,
+//! `batch.size`) and calls the delivery callback for each record.
 //!
 //! ## Delivery semantics
 //!
-//! - Default (async): `publish()` enqueues into librdkafka's local queue and
-//!   returns; delivery reports arrive on the producer poll thread and
-//!   failures are counted/logged. librdkafka retries internally until
+//! - Default (async): `publish()` puts the record in librdkafka's local queue
+//!   and returns. Delivery reports arrive on the producer poll thread, and
+//!   failures are counted and logged. librdkafka retries on its own until
 //!   `kafka.message.timeout.ms`.
-//! - `kafka.delivery.sync = true`: `publish()` flushes and returns an error
-//!   if the record's delivery report came back failed — strict per-message
-//!   confirmation at the cost of throughput.
+//! - `kafka.delivery.sync = true`: `publish()` flushes and returns an error if
+//!   the record's delivery report came back failed. Each message is confirmed,
+//!   at the cost of throughput.
 //!
-//! `stop()` flushes in-flight records (bounded by `kafka.flush.timeout.ms`)
-//! and logs lifetime counters.
+//! `stop()` flushes records still in flight, waiting up to
+//! `kafka.flush.timeout.ms`, and logs the totals.
 
 use super::sink_trait::Sink;
 use crate::core::exception::EventFluxError;
@@ -57,8 +57,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// librdkafka settings owned by first-class config fields — rejected when
-/// passed through the `kafka.rdkafka.*` escape hatch.
+/// librdkafka settings that have their own config field. They are rejected
+/// when passed through the raw `kafka.rdkafka.*` keys.
 const RESERVED_RDKAFKA_KEYS: &[&str] = &[
     "bootstrap.servers",
     "acks",
@@ -72,46 +72,57 @@ const RESERVED_RDKAFKA_KEYS: &[&str] = &[
 /// What `publish()` does when librdkafka's local queue is full
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueFullStrategy {
-    /// Backpressure: retry the enqueue until it succeeds or the flush
-    /// timeout elapses (default)
+    /// Keep trying to queue the record until it fits or the flush timeout
+    /// passes. This slows the pipeline down. The default.
     Block,
-    /// Fail fast: surface the error to the pipeline's error handling
+    /// Fail at once and pass the error to the pipeline's error handling
     Error,
 }
 
 /// Configuration for Kafka sink
 #[derive(Debug, Clone)]
 pub struct KafkaSinkConfig {
-    /// Broker connection + security settings (shared with the source)
+    /// Broker connection and security settings, shared with the source
     pub connection: KafkaConnectionConfig,
-    /// Target topic
+    /// Topic to write to
     pub topic: String,
-    /// Static record key (optional; keyless records use the default
-    /// partitioner)
+    /// Optional fixed key for every record. Records with no key use the
+    /// default partitioner.
     pub key: Option<String>,
-    /// Durability vs latency: `0`, `1`, `all` (default `all`)
+    /// Trade safety for speed with `0`, `1`, or `all`. Default `all`.
     pub acks: String,
-    /// `none`, `gzip`, `snappy`, `lz4`, `zstd` (default `none`)
+    /// `none`, `gzip`, `snappy`, `lz4`, or `zstd`. Default `none`.
     pub compression: String,
-    /// Batching delay in ms (default 5)
+    /// How long to wait to fill a batch, in ms. Default 5.
     pub linger_ms: u64,
-    /// Max batch bytes (librdkafka default when unset)
+    /// Largest batch in bytes. librdkafka's default when not set.
     pub batch_size: Option<u64>,
-    /// Exactly-once producer semantics — no duplicates on retry
+    /// Idempotent producer, so retries do not write duplicates. Needs
+    /// `acks = all`. Default false.
     pub enable_idempotence: bool,
-    /// Total time to deliver a record before it is reported failed
+    /// Total time in ms to deliver a record before it is reported failed.
+    /// Default 30000.
     pub message_timeout_ms: u64,
-    /// true: `publish()` flushes and surfaces delivery failures (strict, slow)
+    /// true: `publish()` flushes and returns delivery failures. Strict but
+    /// slow. Default false.
     pub delivery_sync: bool,
-    /// Bounds every wait in the sink: the `stop()` flush, sync-mode flushes,
-    /// and queue-full enqueue backpressure (default 30000)
+    /// Limit in ms for every wait in the sink: the `stop()` flush, sync mode
+    /// flushes, and waiting for room in a full queue. Default 30000.
     pub flush_timeout_ms: u64,
-    /// Behavior when librdkafka's local queue is full
+    /// What to do when librdkafka's local queue is full
     pub queue_full_strategy: QueueFullStrategy,
 }
 
 impl KafkaSinkConfig {
-    /// Parse configuration from properties HashMap
+    /// Reads the config from properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection config is invalid or uses a
+    /// reserved `kafka.rdkafka.*` key, `kafka.topic` is missing or blank,
+    /// `kafka.acks`, `kafka.compression`, or `kafka.queue.full.strategy` has an
+    /// unknown value, idempotence is on without `acks = all`, or a number or
+    /// bool does not parse.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         let connection = KafkaConnectionConfig::from_properties(properties, RESERVED_RDKAFKA_KEYS)?;
 
@@ -147,8 +158,8 @@ impl KafkaSinkConfig {
         }
 
         let enable_idempotence = parse_or(properties, "kafka.enable.idempotence", false)?;
-        // Kafka rejects this combination at the protocol level — fail with a
-        // clear message at parse time instead of a librdkafka create error
+        // Kafka rejects this pair at the protocol level. Fail with a clear
+        // message while parsing instead of a librdkafka create error.
         if enable_idempotence && acks != "all" {
             return Err(format!(
                 "kafka.enable.idempotence requires kafka.acks = 'all' (got '{acks}')"
@@ -190,7 +201,8 @@ impl KafkaSinkConfig {
         })
     }
 
-    /// Build the librdkafka client configuration
+    /// Builds the librdkafka client config. Connection settings and raw
+    /// `kafka.rdkafka.*` settings are applied last.
     pub fn to_client_config(&self) -> rdkafka::config::ClientConfig {
         let mut config = rdkafka::config::ClientConfig::new();
         config
@@ -215,7 +227,7 @@ struct SinkMetrics {
     records_failed: AtomicU64,
 }
 
-/// Producer context that receives per-record delivery reports
+/// Producer context that gets the delivery report for each record
 struct DeliveryTracker {
     metrics: Arc<SinkMetrics>,
 }
@@ -251,25 +263,24 @@ impl ProducerContext for DeliveryTracker {
 
 type KafkaProducer = ThreadedProducer<DeliveryTracker>;
 
-/// Kafka sink that produces records to a topic
+/// Kafka sink that writes records to a topic.
 ///
-/// This implementation:
-/// - Uses `ThreadedProducer` — librdkafka batches and delivers in the
-///   background; `publish()` is a non-blocking enqueue by default
-/// - Reports delivery failures via callback counters (logged on `stop()`)
-/// - Supports strict per-record confirmation via `kafka.delivery.sync`
+/// - Uses `ThreadedProducer`. librdkafka batches and delivers in the
+///   background, and by default `publish()` only queues the record and does
+///   not wait, unless the queue is full
+/// - Counts delivery failures in the callback and logs them on `stop()`
+/// - Can confirm each record with `kafka.delivery.sync`
 pub struct KafkaSink {
-    /// Configuration
     config: KafkaSinkConfig,
-    /// Producer (created in start()). The Arc lets publish() clone a handle
-    /// out and do all I/O outside the lock — the mutex only guards the
-    /// start()/stop() transitions of the Option.
+    /// Producer, created in start(). The Arc lets publish() take a handle and
+    /// do all I/O outside the lock. The mutex only guards start() and stop()
+    /// setting or clearing the Option.
     producer: Mutex<Option<Arc<KafkaProducer>>>,
-    /// Produced/failed counters (shared with the delivery callback)
+    /// Produced and failed counters, shared with the delivery callback
     metrics: Arc<SinkMetrics>,
 }
 
-// Manual Debug impl: ThreadedProducer does not implement Debug
+// Written by hand because ThreadedProducer does not implement Debug
 impl Debug for KafkaSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KafkaSink")
@@ -283,7 +294,7 @@ impl Debug for KafkaSink {
 }
 
 impl KafkaSink {
-    /// Create a new Kafka sink
+    /// Creates a Kafka sink. `start()` creates the producer.
     pub fn new(config: KafkaSinkConfig) -> Self {
         Self {
             config,
@@ -292,11 +303,12 @@ impl KafkaSink {
         }
     }
 
-    /// Create a Kafka sink from properties
+    /// Creates a Kafka sink from properties. Fails when the config is invalid.
     pub fn from_properties(properties: &HashMap<String, String>) -> Result<Self, String> {
         Ok(Self::new(KafkaSinkConfig::from_properties(properties)?))
     }
 
+    /// Builds a record for the topic, with the fixed key when one is set
     fn make_record<'a>(&'a self, payload: &'a [u8]) -> BaseRecord<'a, str, [u8]> {
         let record = BaseRecord::to(&self.config.topic).payload(payload);
         match &self.config.key {
@@ -308,7 +320,8 @@ impl KafkaSink {
 
 impl Clone for KafkaSink {
     fn clone(&self) -> Self {
-        // A clone starts unconnected; the producer is created on start()
+        // A clone starts with no producer and its own counters. start()
+        // creates the producer.
         Self {
             config: self.config.clone(),
             producer: Mutex::new(None),
@@ -338,9 +351,9 @@ impl Sink for KafkaSink {
     }
 
     fn publish(&self, payload: &[u8]) -> Result<(), EventFluxError> {
-        // Clone the Arc and drop the guard immediately — all I/O below
-        // (queue-full retries, sync flush) happens outside the lock, so
-        // stop() and other callers never stall behind a slow publish.
+        // Clone the Arc and drop the guard at once. All I/O below (retries on a
+        // full queue, the sync flush) happens outside the lock, so stop() and
+        // other callers never wait behind a slow publish.
         let producer =
             {
                 let guard = self.producer.lock().map_err(|_| {
@@ -354,17 +367,17 @@ impl Sink for KafkaSink {
                 })?
             };
 
-        // Sync mode surfaces delivery failures via the failed-counter delta;
-        // publishes are serialized by the SinkCallbackAdapter, so the delta
-        // is attributable to this record.
+        // Sync mode spots a delivery failure by a rise in the failed counter.
+        // SinkCallbackAdapter runs publishes one at a time, so any rise belongs
+        // to this record.
         let failed_before = self
             .config
             .delivery_sync
             .then(|| self.metrics.records_failed.load(Ordering::Relaxed));
 
-        // Enqueue with bounded retry when the local queue is full (block
-        // strategy applies backpressure to the pipeline; error fails fast).
-        // The deadline clock only starts on the first QueueFull.
+        // Queue the record, retrying for a limited time while the local queue
+        // is full. The block strategy slows the pipeline down, and the error
+        // strategy fails at once. The deadline starts at the first QueueFull.
         let mut deadline: Option<Instant> = None;
         let mut record = self.make_record(payload);
         loop {
@@ -382,7 +395,7 @@ impl Sink for KafkaSink {
                                 .to_string(),
                         ));
                     }
-                    // Local queue full — give the poll thread time to drain
+                    // The local queue is full, so give the poll thread time to empty it
                     std::thread::sleep(Duration::from_millis(10));
                     record = returned;
                 }
@@ -395,7 +408,7 @@ impl Sink for KafkaSink {
         }
 
         if let Some(failed_before) = failed_before {
-            // Strict mode: wait for the delivery report, then check it
+            // Strict mode. Wait for the delivery report, then check it.
             producer
                 .flush(Duration::from_millis(self.config.flush_timeout_ms))
                 .map_err(|e| EventFluxError::app_runtime(format!("Kafka flush failed: {e}")))?;
@@ -436,13 +449,13 @@ impl Sink for KafkaSink {
     fn validate_connectivity(&self) -> Result<(), EventFluxError> {
         use rdkafka::consumer::{BaseConsumer, Consumer};
 
-        // Probe with a consumer client built from the connection settings
-        // only: producer metadata requests AUTO-CREATE missing topics on
-        // permissive brokers (verified against apache/kafka defaults), which
-        // would false-pass this validation and mutate broker state. Consumer
-        // clients never auto-create, and the fabricated group id below never
-        // materializes on the broker — group state only exists after a
-        // subscribe/commit, neither of which happens here.
+        // Check with a consumer client built from the connection settings
+        // only. On lenient brokers a producer metadata request CREATES missing
+        // topics (checked against apache/kafka defaults). That would make this
+        // check pass wrongly and change the broker. Consumer clients never
+        // create topics. The made up group id below never shows up on the
+        // broker either, since group state only exists after a subscribe or a
+        // commit, and neither happens here.
         let mut probe = rdkafka::config::ClientConfig::new();
         self.config.connection.apply_to(&mut probe);
         probe.set("group.id", "eventflux-validate");
@@ -467,10 +480,10 @@ impl Sink for KafkaSink {
 // Kafka Sink Factory
 // ============================================================================
 
-/// Factory for creating Kafka sink instances.
+/// Factory for Kafka sinks.
 ///
-/// This factory is registered with EventFluxContext and used to create
-/// Kafka sinks from SQL WITH clause configuration.
+/// Registered with EventFluxContext and used to build Kafka sinks from the SQL
+/// WITH clause config.
 #[derive(Debug, Clone)]
 pub struct KafkaSinkFactory;
 
@@ -504,7 +517,7 @@ impl SinkFactory for KafkaSinkFactory {
             "kafka.sasl.username",
             "kafka.sasl.password",
             "kafka.ssl.ca.location",
-            // kafka.rdkafka.<prop> passthrough is also accepted
+            // kafka.rdkafka.<prop> keys are also accepted
         ]
     }
 
@@ -557,7 +570,7 @@ mod tests {
     fn test_config_from_properties_all_options() {
         let mut props = base_props();
         props.insert("kafka.key".to_string(), "my-key".to_string());
-        // acks=all kept explicit: idempotence below requires it
+        // acks=all is set on purpose, since idempotence below needs it
         props.insert("kafka.acks".to_string(), "all".to_string());
         props.insert("kafka.compression".to_string(), "lz4".to_string());
         props.insert("kafka.linger.ms".to_string(), "20".to_string());
@@ -628,10 +641,10 @@ mod tests {
 
     #[test]
     fn test_all_compression_codecs_compiled_in() {
-        // Producer creation validates compression.type against the codecs
-        // librdkafka was BUILT with — this guards the Cargo feature set
-        // (libz for gzip, zstd feature for zstd; snappy/lz4 are bundled).
-        // No broker needed: creation is a local operation.
+        // Creating a producer checks compression.type against the codecs
+        // librdkafka was BUILT with. This guards the Cargo feature set (libz
+        // for gzip, the zstd feature for zstd, and snappy and lz4 are built
+        // in). No broker is needed, since creation is local.
         for codec in ["none", "gzip", "snappy", "lz4", "zstd"] {
             let mut props = base_props();
             props.insert("kafka.compression".to_string(), codec.to_string());
@@ -658,7 +671,7 @@ mod tests {
 
     #[test]
     fn test_config_rdkafka_reserved_keys_rejected() {
-        // Producer-owned settings must go through first-class options
+        // Settings the producer owns must be set through their own options
         for reserved in RESERVED_RDKAFKA_KEYS {
             let mut props = base_props();
             props.insert(format!("kafka.rdkafka.{reserved}"), "x".to_string());
@@ -702,8 +715,8 @@ mod tests {
     #[test]
     fn test_stop_without_start_is_noop() {
         let sink = KafkaSink::from_properties(&base_props()).unwrap();
-        sink.stop(); // Must not panic — no producer was created
-        sink.stop(); // Idempotent
+        sink.stop(); // must not panic, since no producer was created
+        sink.stop(); // safe to repeat
     }
 
     #[test]

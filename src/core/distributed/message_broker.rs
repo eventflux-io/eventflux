@@ -17,31 +17,32 @@
 
 // src/core/distributed/message_broker.rs
 
-//! Message Broker Abstraction
+//! Message broker.
 //!
-//! This module provides the message broker abstraction for event distribution
-//! across nodes. It supports multiple broker implementations (Kafka, Pulsar, NATS, etc.).
+//! Defines the trait for passing events between nodes through a broker. The trait
+//! is meant to fit brokers such as Kafka, Pulsar or NATS. Only an in memory test
+//! broker exists here.
 
 use super::DistributedResult;
 use async_trait::async_trait;
 
-/// Message broker trait for event distribution
+/// Sends and receives events between nodes through a broker.
 #[async_trait]
 pub trait MessageBroker: Send + Sync {
-    /// Produce a message to a topic
+    /// Send a message to a topic.
     async fn produce(&self, topic: &str, message: BrokerMessage) -> DistributedResult<()>;
 
-    /// Consume messages from a topic
+    /// Read the waiting messages from a topic.
     async fn consume(&self, topic: &str) -> DistributedResult<Vec<BrokerMessage>>;
 
-    /// Subscribe to a topic
+    /// Subscribe to a topic.
     async fn subscribe(&self, topic: &str) -> DistributedResult<()>;
 
-    /// Unsubscribe from a topic
+    /// Unsubscribe from a topic.
     async fn unsubscribe(&self, topic: &str) -> DistributedResult<()>;
 }
 
-/// Message for broker
+/// One message passed through a broker.
 #[derive(Debug, Clone)]
 pub struct BrokerMessage {
     pub id: String,
@@ -50,7 +51,8 @@ pub struct BrokerMessage {
     pub headers: std::collections::HashMap<String, String>,
 }
 
-/// In-memory broker (for testing)
+/// In memory broker for tests. Does nothing. Sends are dropped and reads return
+/// no messages.
 pub struct InMemoryBroker;
 
 #[async_trait]

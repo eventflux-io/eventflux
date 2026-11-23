@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! StateHolder implementation for FirstAttributeAggregatorExecutor
+//! StateHolder for FirstAttributeAggregatorExecutor. Checkpoints and restores its queue
+//! of values.
 
 use super::aggregator_state_holder_base::{
     compress_and_build_snapshot, default_compression_hints, verify_and_decompress, StateHolderBase,

@@ -18,22 +18,22 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-// Thread local flag used to request a full snapshot.
+// Per thread flag that asks for a full snapshot instead of an incremental one
 thread_local! {
     static REQUEST_FULL: RefCell<bool> = const { RefCell::new(false) };
 }
 
-/// Enable or disable full snapshot for the current thread.
+/// Turns the full snapshot request on or off for the current thread only.
 pub fn request_for_full_snapshot(enable: bool) {
     REQUEST_FULL.with(|f| *f.borrow_mut() = enable);
 }
 
-/// Whether the current thread requested a full snapshot.
+/// Whether the current thread asked for a full snapshot. False by default.
 pub fn is_request_for_full_snapshot() -> bool {
     REQUEST_FULL.with(|f| *f.borrow())
 }
 
-/// Serialized incremental snapshot information placeholder.
+/// Placeholder for serialized incremental snapshot data.
 #[derive(Debug, Default, Clone)]
 pub struct IncrementalSnapshot {
     pub incremental_state: HashMap<String, HashMap<String, Vec<u8>>>,
@@ -41,7 +41,7 @@ pub struct IncrementalSnapshot {
     pub periodic_state: HashMap<String, HashMap<String, Vec<u8>>>,
 }
 
-/// Reference to persistence futures returned when persisting snapshots.
+/// Returned when a snapshot is persisted. Holds the revision it was saved under.
 #[derive(Debug, Clone)]
 pub struct PersistenceReference {
     pub revision: String,
@@ -53,25 +53,22 @@ impl PersistenceReference {
     }
 }
 
-/// State management trait for pattern processing components
-/// Provides snapshot/restore capabilities for checkpointing and recovery
+/// Snapshot and restore trait for pattern processing components, used for
+/// checkpointing and recovery
 pub mod state {
     use serde_json::Value;
     use std::collections::HashMap;
 
-    /// State trait for components that need snapshot/restore capabilities
-    /// Used for pattern processing state persistence and recovery
+    /// State of a component that can be saved and restored, used to persist and
+    /// recover pattern processing state
     pub trait State {
-        /// Take a snapshot of the current state
-        /// Returns a map of state keys to JSON values for persistence
+        /// Returns the current state as a map of state keys to JSON values
         fn snapshot(&self) -> HashMap<String, Value>;
 
-        /// Restore state from a snapshot
-        /// Takes a map of state keys to JSON values and restores internal state
+        /// Replaces the internal state with one taken by `snapshot`
         fn restore(&mut self, state: HashMap<String, Value>);
 
-        /// Check if this state can be safely destroyed
-        /// Returns true if the state is empty/idle and can be cleaned up
+        /// True when the state is empty or idle and can be cleaned up safely
         fn can_destroy(&self) -> bool;
     }
 }

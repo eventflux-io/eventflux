@@ -15,45 +15,50 @@
  * limitations under the License.
  */
 
-//! Backpressure Management for Event Pipeline
+//! Backpressure handling for the event pipeline
 //!
-//! Provides sophisticated backpressure handling strategies to maintain
-//! system stability under high load conditions.
+//! Decides what happens to an event when the pipeline queue or its holder pool is full.
+//! The handler never retries the publish itself. Every strategy ends with the event
+//! not queued.
 
 use super::event_pipeline::PipelineResult;
 use crate::core::event::stream::StreamEvent;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-/// Backpressure strategies for handling pipeline overload
+/// What to do when the pipeline is full
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum BackpressureStrategy {
-    /// Drop new events when pipeline is full (fire-and-forget)
+    /// Drop the new event and return `Full`
     #[default]
     Drop,
-    /// Block producers until space is available (guaranteed delivery)
+    /// Meant to block producers until there is space. Today it only yields once and
+    /// returns `Full`, so the event is dropped.
     Block,
-    /// Block with timeout, then drop (hybrid approach)
+    /// Meant to wait up to `timeout_ms` for space. Today it busy waits the whole timeout
+    /// without checking for space, then returns `Timeout`.
     BlockWithTimeout { timeout_ms: u64 },
-    /// Apply exponential backoff before dropping
+    /// Sleeps for a delay that doubles on each call (starting at 1 ms, capped at
+    /// `max_delay_ms`), then drops the event and returns `Full`
     ExponentialBackoff { max_delay_ms: u64 },
-    /// Circuit breaker pattern - fail fast after threshold
+    /// Circuit breaker. Drops events until `failure_threshold` failures, then fails fast
+    /// with `Error` until `recovery_timeout_ms` has passed.
     CircuitBreaker {
         failure_threshold: u64,
         recovery_timeout_ms: u64,
     },
 }
 
-/// Backpressure handler that implements various strategies
+/// Applies a [`BackpressureStrategy`] and counts what happened
 pub struct BackpressureHandler {
     strategy: BackpressureStrategy,
     // Circuit breaker state
     circuit_failures: AtomicU64,
     circuit_last_failure: std::sync::Mutex<Option<Instant>>,
     circuit_state: std::sync::atomic::AtomicU8, // 0=Closed, 1=Open, 2=HalfOpen
-    // Exponential backoff state
+    // Exponential backoff delay for the next call, in ms
     current_delay_ms: AtomicU64,
-    // Metrics
+    // Counters
     total_backpressure_events: AtomicU64,
     total_dropped_events: AtomicU64,
     total_timeout_events: AtomicU64,
@@ -61,7 +66,6 @@ pub struct BackpressureHandler {
 }
 
 impl BackpressureHandler {
-    /// Create a new backpressure handler
     pub fn new(strategy: BackpressureStrategy) -> Self {
         Self {
             strategy,
@@ -76,7 +80,8 @@ impl BackpressureHandler {
         }
     }
 
-    /// Handle queue full condition
+    /// Applies the strategy when the queue is full and returns the publish result. Can
+    /// sleep or busy wait on the caller's thread, depending on the strategy.
     pub fn handle_queue_full(&self, sequence: u64) -> PipelineResult {
         self.total_backpressure_events
             .fetch_add(1, Ordering::Relaxed);
@@ -87,10 +92,10 @@ impl BackpressureHandler {
                 PipelineResult::Full
             }
             BackpressureStrategy::Block => {
-                // In a real implementation, this would block until space is available
-                // For now, we simulate blocking behavior
+                // Real blocking is not built yet. Yield once and give up, which drops the
+                // event. Not counted as dropped.
                 std::thread::yield_now();
-                PipelineResult::Full // Would retry in actual implementation
+                PipelineResult::Full
             }
             BackpressureStrategy::BlockWithTimeout { timeout_ms } => {
                 self.handle_block_with_timeout(sequence, timeout_ms)
@@ -105,47 +110,48 @@ impl BackpressureHandler {
         }
     }
 
-    /// Handle pool exhausted condition
+    /// Same as a full queue. The event is dropped.
     pub fn handle_pool_exhausted(&self, _event: StreamEvent, sequence: u64) -> PipelineResult {
-        // Pool exhaustion is treated similarly to queue full
         self.handle_queue_full(sequence)
     }
 
-    /// Handle block with timeout strategy
+    /// Busy waits (yielding) for `timeout_ms`, then returns `Timeout`
     fn handle_block_with_timeout(&self, _sequence: u64, timeout_ms: u64) -> PipelineResult {
         let start = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
 
-        // Simulate waiting for space
+        // Placeholder wait. It never checks for space, so it always runs to the timeout.
         while start.elapsed() < timeout {
             std::thread::yield_now();
-            // In real implementation, would check if space became available
-            // For simulation, we just timeout
         }
 
         self.total_timeout_events.fetch_add(1, Ordering::Relaxed);
         PipelineResult::Timeout
     }
 
-    /// Handle exponential backoff strategy
+    /// Sleeps for the current delay, doubles it for next time (up to `max_delay_ms`),
+    /// then drops the event
     fn handle_exponential_backoff(&self, _sequence: u64, max_delay_ms: u64) -> PipelineResult {
         let current_delay = self.current_delay_ms.load(Ordering::Relaxed);
 
-        // Apply backoff delay
         if current_delay > 0 {
             std::thread::sleep(Duration::from_millis(current_delay.min(max_delay_ms)));
         }
 
-        // Double the delay for next time (exponential backoff)
         let next_delay = (current_delay * 2).min(max_delay_ms);
         self.current_delay_ms.store(next_delay, Ordering::Relaxed);
 
-        // After backoff, still drop the event
+        // The event is dropped even after the wait
         self.total_dropped_events.fetch_add(1, Ordering::Relaxed);
         PipelineResult::Full
     }
 
-    /// Handle circuit breaker strategy
+    /// Circuit breaker strategy.
+    ///
+    /// Closed counts failures and drops events. Reaching `failure_threshold` opens the
+    /// circuit and returns `Error`. Open returns `Error` until `recovery_timeout_ms` has
+    /// passed since it opened, then moves to half open. Half open closes the circuit and
+    /// returns `Success`, even though the event was never queued.
     fn handle_circuit_breaker(
         &self,
         _sequence: u64,
@@ -156,11 +162,10 @@ impl BackpressureHandler {
 
         match current_state {
             0 => {
-                // Closed - normal operation
+                // Closed, normal operation
                 let failures = self.circuit_failures.fetch_add(1, Ordering::Relaxed) + 1;
 
                 if failures >= failure_threshold {
-                    // Open the circuit
                     self.circuit_state.store(1, Ordering::Release);
                     if let Ok(mut last_failure) = self.circuit_last_failure.lock() {
                         *last_failure = Some(Instant::now());
@@ -173,12 +178,11 @@ impl BackpressureHandler {
                 }
             }
             1 => {
-                // Open - failing fast
-                // Check if recovery timeout has passed
+                // Open, so fail fast unless the recovery timeout has passed
                 if let Ok(last_failure) = self.circuit_last_failure.lock() {
                     if let Some(failure_time) = *last_failure {
                         if failure_time.elapsed() > Duration::from_millis(recovery_timeout_ms) {
-                            // Move to half-open state
+                            // Move to half open and handle this event there
                             self.circuit_state.store(2, Ordering::Release);
                             return self.handle_circuit_breaker(
                                 _sequence,
@@ -191,9 +195,8 @@ impl BackpressureHandler {
                 PipelineResult::Error("Circuit breaker open".to_string())
             }
             2 => {
-                // Half-open - testing recovery
-                // Try to process - in real implementation would attempt operation
-                // For simulation, we'll succeed and close circuit
+                // Half open. A real version would retry the publish here. This placeholder
+                // just closes the circuit and reports Success, although the event is lost.
                 self.circuit_state.store(0, Ordering::Release);
                 self.circuit_failures.store(0, Ordering::Relaxed);
                 PipelineResult::Success {
@@ -204,12 +207,13 @@ impl BackpressureHandler {
         }
     }
 
-    /// Reset backoff delay (called on successful operations)
+    /// Sets the backoff delay back to 1 ms. Meant to be called after a successful
+    /// publish, but EventPipeline does not call it today.
     pub fn reset_backoff(&self) {
         self.current_delay_ms.store(1, Ordering::Relaxed);
     }
 
-    /// Reset circuit breaker (manual recovery)
+    /// Closes the circuit by hand and clears its failure count
     pub fn reset_circuit(&self) {
         self.circuit_state.store(0, Ordering::Release);
         self.circuit_failures.store(0, Ordering::Relaxed);
@@ -218,7 +222,6 @@ impl BackpressureHandler {
         }
     }
 
-    /// Get current backpressure statistics
     pub fn get_stats(&self) -> BackpressureStats {
         BackpressureStats {
             strategy: self.strategy,
@@ -237,7 +240,8 @@ impl BackpressureHandler {
         }
     }
 
-    /// Check if backpressure is currently active
+    /// True when the circuit is not closed, or the backoff delay is above 1 ms. Always
+    /// false for the other strategies.
     pub fn is_active(&self) -> bool {
         match self.strategy {
             BackpressureStrategy::CircuitBreaker { .. } => {
@@ -250,7 +254,10 @@ impl BackpressureHandler {
         }
     }
 
-    /// Get recommended action based on current state
+    /// Suggests an action from the counters, checked in this order. No backpressure
+    /// yet is Healthy, a drop rate over 0.5 is IncreaseCapacity, a timeout rate over 0.3
+    /// is AdjustTimeout, an open circuit is CheckDownstream, a backoff delay over
+    /// 1000 ms is ReduceLoad, and anything else is Monitor.
     pub fn get_recommendation(&self) -> BackpressureRecommendation {
         let stats = self.get_stats();
 
@@ -281,8 +288,8 @@ impl BackpressureHandler {
 pub enum CircuitState {
     Closed,   // Normal operation
     Open,     // Failing fast
-    HalfOpen, // Testing recovery
-    Unknown,  // Invalid state
+    HalfOpen, // Trying to recover
+    Unknown,  // Not a valid state value
 }
 
 /// Backpressure statistics
@@ -299,7 +306,7 @@ pub struct BackpressureStats {
 }
 
 impl BackpressureStats {
-    /// Calculate drop rate (0.0 to 1.0)
+    /// Dropped events over backpressure events (0.0 to 1.0). 0.0 when there were none.
     pub fn drop_rate(&self) -> f64 {
         if self.total_backpressure_events == 0 {
             0.0
@@ -308,7 +315,7 @@ impl BackpressureStats {
         }
     }
 
-    /// Calculate timeout rate (0.0 to 1.0)
+    /// Timeouts over backpressure events (0.0 to 1.0). 0.0 when there were none.
     pub fn timeout_rate(&self) -> f64 {
         if self.total_backpressure_events == 0 {
             0.0
@@ -317,13 +324,13 @@ impl BackpressureStats {
         }
     }
 
-    /// Check if backpressure handling is effective
+    /// Whether the strategy is coping, by a rule of thumb per strategy
     pub fn is_effective(&self) -> bool {
         match self.strategy {
-            BackpressureStrategy::Drop => self.drop_rate() < 0.1, // <10% drop rate is good
-            BackpressureStrategy::Block => true,                  // Blocking is always effective
-            BackpressureStrategy::BlockWithTimeout { .. } => self.timeout_rate() < 0.2, // <20% timeout rate
-            BackpressureStrategy::ExponentialBackoff { .. } => self.current_delay_ms < 5000, // <5s delay
+            BackpressureStrategy::Drop => self.drop_rate() < 0.1, // Under 10% dropped
+            BackpressureStrategy::Block => true,                  // Always counts as coping
+            BackpressureStrategy::BlockWithTimeout { .. } => self.timeout_rate() < 0.2, // Under 20% timeouts
+            BackpressureStrategy::ExponentialBackoff { .. } => self.current_delay_ms < 5000, // Delay under 5 s
             BackpressureStrategy::CircuitBreaker { .. } => {
                 matches!(self.current_circuit_state, CircuitState::Closed)
             }
@@ -331,58 +338,53 @@ impl BackpressureStats {
     }
 }
 
-/// Recommendations for improving backpressure handling
+/// Suggested actions from [`BackpressureHandler::get_recommendation`]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BackpressureRecommendation {
-    /// System is healthy, no action needed
+    /// No backpressure so far, nothing to do
     Healthy,
     /// Increase pipeline capacity (buffer size, consumer threads)
     IncreaseCapacity,
     /// Adjust timeout values
     AdjustTimeout,
-    /// Check downstream systems for bottlenecks
+    /// Look for a bottleneck downstream
     CheckDownstream,
-    /// Reduce input load
+    /// Reduce the input load
     ReduceLoad,
-    /// Continue monitoring
+    /// Keep monitoring
     Monitor,
 }
 
-/// Builder for configuring backpressure strategies
+/// Builder for a [`BackpressureHandler`], one constructor per strategy
 pub struct BackpressureBuilder {
     strategy: BackpressureStrategy,
 }
 
 impl BackpressureBuilder {
-    /// Create a new builder with drop strategy
     pub fn drop() -> Self {
         Self {
             strategy: BackpressureStrategy::Drop,
         }
     }
 
-    /// Create a new builder with block strategy
     pub fn block() -> Self {
         Self {
             strategy: BackpressureStrategy::Block,
         }
     }
 
-    /// Create a new builder with block-with-timeout strategy
     pub fn block_with_timeout(timeout_ms: u64) -> Self {
         Self {
             strategy: BackpressureStrategy::BlockWithTimeout { timeout_ms },
         }
     }
 
-    /// Create a new builder with exponential backoff strategy
     pub fn exponential_backoff(max_delay_ms: u64) -> Self {
         Self {
             strategy: BackpressureStrategy::ExponentialBackoff { max_delay_ms },
         }
     }
 
-    /// Create a new builder with circuit breaker strategy
     pub fn circuit_breaker(failure_threshold: u64, recovery_timeout_ms: u64) -> Self {
         Self {
             strategy: BackpressureStrategy::CircuitBreaker {
@@ -392,7 +394,6 @@ impl BackpressureBuilder {
         }
     }
 
-    /// Build the backpressure handler
     pub fn build(self) -> BackpressureHandler {
         BackpressureHandler::new(self.strategy)
     }
@@ -419,7 +420,7 @@ mod tests {
         let handler = BackpressureBuilder::block().build();
 
         let result = handler.handle_queue_full(1);
-        assert_eq!(result, PipelineResult::Full); // Would be different in real implementation
+        assert_eq!(result, PipelineResult::Full); // Block does not really block yet
 
         let stats = handler.get_stats();
         assert_eq!(stats.total_backpressure_events, 1);
@@ -444,11 +445,11 @@ mod tests {
     fn test_exponential_backoff() {
         let handler = BackpressureBuilder::exponential_backoff(1000).build();
 
-        // First call should have minimal delay
+        // The first call sleeps 1 ms
         let result1 = handler.handle_queue_full(1);
         assert_eq!(result1, PipelineResult::Full);
 
-        // Second call should have more delay
+        // and doubles the delay for the next call
         let stats = handler.get_stats();
         assert!(stats.current_delay_ms > 1);
 
@@ -462,7 +463,7 @@ mod tests {
     fn test_circuit_breaker() {
         let handler = BackpressureBuilder::circuit_breaker(3, 100).build();
 
-        // First few failures should be normal
+        // Failures below the threshold just drop
         for i in 1..=2 {
             let result = handler.handle_queue_full(i);
             assert_eq!(result, PipelineResult::Full);
@@ -489,7 +490,6 @@ mod tests {
     fn test_backpressure_stats() {
         let handler = BackpressureBuilder::drop().build();
 
-        // Generate some events
         for i in 1..=10 {
             handler.handle_queue_full(i);
         }
@@ -510,7 +510,6 @@ mod tests {
             BackpressureRecommendation::Healthy
         );
 
-        // Generate many drops
         for i in 1..=100 {
             handler.handle_queue_full(i);
         }

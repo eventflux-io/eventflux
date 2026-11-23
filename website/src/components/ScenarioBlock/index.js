@@ -4,10 +4,10 @@ import CodeBlock from '@theme/CodeBlock';
 import styles from './styles.module.css';
 
 /**
- * ScenarioBlock - A scroll-triggered animation component
+ * ScenarioBlock animates in once when it scrolls into view.
  *
- * Displays a scenario description on the left that fades in,
- * followed by a code solution that slides in from the right.
+ * The scenario text slides and fades in from the left, then the code solution
+ * slides in from the right. Set reversed to swap the sides.
  */
 export default function ScenarioBlock({
   title,

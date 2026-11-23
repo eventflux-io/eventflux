@@ -15,15 +15,17 @@
  * limitations under the License.
  */
 
-// src/core/executor/condition/bool_expression_executor.rs
 // Corresponds to io.eventflux.core.executor.condition.BoolConditionExpressionExecutor
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
-use crate::query_api::definition::attribute::Type as ApiAttributeType; // Import Type enum
-use std::sync::Arc; // For EventFluxAppContext in clone_executor // For clone_executor
+use crate::query_api::definition::attribute::Type as ApiAttributeType;
+use std::sync::Arc;
 
+/// Wraps a BOOL expression so it can be used as a condition.
+///
+/// NULL, no value, or a non BOOL result counts as false.
 #[derive(Debug)]
 pub struct BoolExpressionExecutor {
     condition_executor: Box<dyn ExpressionExecutor>,
@@ -45,11 +47,11 @@ impl ExpressionExecutor for BoolExpressionExecutor {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
         match self.condition_executor.execute(event) {
             Some(AttributeValue::Bool(b)) => Some(AttributeValue::Bool(b)),
-            Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // null is false in boolean context
-            None => Some(AttributeValue::Bool(false)), // Error/no-value treated as false
+            Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // NULL counts as false
+            None => Some(AttributeValue::Bool(false)), // No value counts as false
             _ => {
-                // This case should ideally be prevented by the constructor check,
-                // but as a fallback, non-bool result is treated as false.
+                // The constructor checks the declared type. A non BOOL value at runtime
+                // still counts as false.
                 Some(AttributeValue::Bool(false))
             }
         }
@@ -69,6 +71,6 @@ impl ExpressionExecutor for BoolExpressionExecutor {
                     .clone_executor(eventflux_app_context),
             )
             .expect("Cloning BoolExpressionExecutor failed"),
-        ) // new returns Result
+        ) // Cannot fail, since the original passed the same type check
     }
 }

@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 //
-// Combined Function Tests
-// Tests that combine multiple function types
+// Combined function tests
+// Tests that nest functions or use several kinds of function in one query
 
 use crate::compatibility::common::AppRunner;
 use eventflux::core::event::value::AttributeValue;
@@ -25,7 +25,7 @@ use eventflux::core::event::value::AttributeValue;
 // FUNCTION COMBINATIONS
 // ============================================================================
 
-/// Combine multiple string functions
+/// Nest one string function inside another
 #[tokio::test]
 async fn function_test_string_chain() {
     let app = "\
@@ -46,7 +46,7 @@ async fn function_test_string_chain() {
     );
 }
 
-/// Combine math and string functions
+/// Use a string function and a math function in the same SELECT
 #[tokio::test]
 async fn function_test_mixed_functions() {
     let app = "\
@@ -68,7 +68,7 @@ async fn function_test_mixed_functions() {
     assert_eq!(out[0][1], AttributeValue::Double(86.0));
 }
 
-/// Nested function calls
+/// Nest a math function inside another
 #[tokio::test]
 async fn function_test_nested_calls() {
     let app = "\
@@ -80,6 +80,6 @@ async fn function_test_nested_calls() {
     runner.send("inputStream", vec![AttributeValue::Double(17.0)]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    // sqrt(17) ≈ 4.12, round = 4.0
+    // sqrt(17) is about 4.12, which rounds to 4.0
     assert_eq!(out[0][0], AttributeValue::Double(4.0));
 }

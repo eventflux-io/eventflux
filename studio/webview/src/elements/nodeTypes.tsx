@@ -16,7 +16,7 @@ import {
   ArrowUpFromLine,
 } from 'lucide-react';
 
-// Source Node - External data ingestion
+// Source node. Brings external data in. It has only an output handle.
 const SourceNode = memo(({ data, selected }: NodeProps) => {
   const props = data as { sourceName?: string; sourceType?: string; config?: Record<string, string> };
 
@@ -52,7 +52,7 @@ const SourceNode = memo(({ data, selected }: NodeProps) => {
   );
 });
 
-// Sink Node - External data output
+// Sink node. Sends data out. It has only an input handle.
 const SinkNode = memo(({ data, selected }: NodeProps) => {
   const props = data as { sinkName?: string; sinkType?: string; config?: Record<string, string> };
 
@@ -88,13 +88,13 @@ const SinkNode = memo(({ data, selected }: NodeProps) => {
   );
 });
 
-// Stream Node - Central data channel
+// Stream node. Carries events between elements. Shows the first 4 attributes.
 const StreamNode = memo(({ data, selected }: NodeProps) => {
   const props = data as { streamName?: string; attributes?: { name: string; type: string }[] };
 
   return (
     <div className={`element-node stream ${selected ? 'selected ring-stream' : ''}`}>
-      {/* Input handle - receives from Source or INSERT INTO */}
+      {/* Input handle. Fed by a source or by a query that inserts into this stream. */}
       <Handle type="target" position={Position.Left} id="input" className="!bg-stream" />
       <div className="element-node-header">
         <Database className="w-4 h-4" />
@@ -111,7 +111,7 @@ const StreamNode = memo(({ data, selected }: NodeProps) => {
           <div className="text-gray-500 text-center">+{props.attributes.length - 4} more</div>
         )}
       </div>
-      {/* Output handle - feeds to processing or Sink */}
+      {/* Output handle. Feeds processing nodes or a sink. */}
       <Handle type="source" position={Position.Right} id="output" className="!bg-stream" />
     </div>
   );
@@ -382,7 +382,7 @@ const PartitionNode = memo(({ data, selected }: NodeProps) => {
   );
 });
 
-// Export all node types
+// Maps each element type to the component React Flow renders for it
 export const nodeTypes = {
   source: SourceNode,
   stream: StreamNode,

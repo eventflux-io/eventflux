@@ -84,7 +84,7 @@ export type ElementProperties =
   | PartitionProperties
   | SinkProperties;
 
-// Source Properties (External data ingestion)
+// Source Properties. A source brings external data in.
 export type SourceType = 'kafka' | 'http' | 'mqtt' | 'file' | 'timer' | 'websocket';
 
 export interface SourceProperties {
@@ -93,7 +93,7 @@ export interface SourceProperties {
   config: Record<string, string>;
 }
 
-// Sink Properties (External data output)
+// Sink Properties. A sink sends data out.
 export type SinkType = 'kafka' | 'http' | 'mqtt' | 'file' | 'log' | 'websocket';
 
 export interface SinkProperties {
@@ -269,7 +269,7 @@ export interface PartitionAttribute {
   streamName: string;
 }
 
-// Expression Types
+// Expression Types. One shape for every kind. Which fields are set depends on type.
 export interface Expression {
   type: ExpressionType;
   // Constants

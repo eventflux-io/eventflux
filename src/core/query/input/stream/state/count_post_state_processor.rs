@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// count_post_state_processor.rs - Count quantifier validation and coordination
+// count_post_state_processor.rs - post processor for count quantifiers like A{2,5}
 
 use super::post_state_processor::PostStateProcessor;
 use super::pre_state_processor::PreStateProcessor;
@@ -24,31 +24,30 @@ use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
 use std::sync::{Arc, Mutex};
 
-/// CountPostStateProcessor validates count ranges and coordinates with CountPreStateProcessor
+/// Post processor for a count quantifier step such as `A{2,5}`.
 ///
-/// **Responsibilities**:
-/// 1. Count events in chain at this state_id position
-/// 2. Set success_condition on PreStateProcessor if count >= min_count
-/// 3. Mark state_changed if count == max_count (can't add more)
-/// 4. Forward to next processors if count is valid
+/// CountPreStateProcessor checks the count range before it calls this processor. This
+/// processor only forwards the matched StateEvent to the next processors through the
+/// wrapped StreamPostStateProcessor. It keeps `min_count` and `max_count` so callers
+/// can read the range back.
 pub struct CountPostStateProcessor {
-    /// Minimum count required (set by CountPreStateProcessor)
+    /// Fewest events this step needs
     min_count: usize,
 
-    /// Maximum count allowed (set by CountPreStateProcessor)
+    /// Most events this step accepts
     max_count: usize,
 
-    /// Underlying stream post processor (delegates most operations)
+    /// Wrapped stream post processor. Most trait methods delegate to it.
     stream_processor: StreamPostStateProcessor,
 }
 
 impl CountPostStateProcessor {
-    /// Create new CountPostStateProcessor
+    /// Create a count post processor.
     ///
     /// **Parameters**:
-    /// - `min_count`: Minimum events required
-    /// - `max_count`: Maximum events allowed
-    /// - `state_id`: Position in pattern
+    /// - `min_count`: Fewest events this step needs
+    /// - `max_count`: Most events this step accepts
+    /// - `state_id`: Position of this step in the pattern
     pub fn new(min_count: usize, max_count: usize, state_id: usize) -> Self {
         Self {
             min_count,
@@ -57,19 +56,18 @@ impl CountPostStateProcessor {
         }
     }
 
-    /// Get minimum count
     pub fn get_min_count(&self) -> usize {
         self.min_count
     }
 
-    /// Get maximum count
     pub fn get_max_count(&self) -> usize {
         self.max_count
     }
 
-    /// Count events in chain at state_id position
+    /// Count the StreamEvents chained at this step's `state_id` position.
     ///
-    /// Walks the linked list of StreamEvents at this position and counts them.
+    /// Returns 0 when the position is empty. A link that is not a StreamEvent is still
+    /// counted, but the walk stops there. Only used by tests today.
     ///
     /// **Example**:
     /// For pattern `A{2,3}` with events e1, e2, e3 at position 0:
@@ -83,18 +81,16 @@ impl CountPostStateProcessor {
 
         let state_id = self.stream_processor.state_id();
 
-        // Get first event in chain at this position
         let mut current = match state_event.get_stream_event(state_id) {
             Some(se) => se,
             None => return 0,
         };
 
-        let mut count = 1; // First event
+        let mut count = 1;
 
-        // Walk the chain counting events
         while let Some(next) = current.get_next() {
             count += 1;
-            // Check if next is a StreamEvent (should always be for count patterns)
+            // Count patterns only chain StreamEvents, so this branch should always match
             if let Some(se) = next.as_any().downcast_ref::<StreamEvent>() {
                 current = se;
             } else {
@@ -105,16 +101,11 @@ impl CountPostStateProcessor {
         count
     }
 
-    /// Process count validation and forward to next processors
+    /// Forward a matched StateEvent to the next processors.
     ///
-    /// **Simplified Algorithm**:
-    /// CountPreStateProcessor already validated the count before calling us.
-    /// We just need to forward the StateEvent to next processors.
-    ///
-    /// **Called by**: CountPreStateProcessor after validating count is in [min, max]
+    /// No range check happens here. CountPreStateProcessor calls this only after it has
+    /// checked that the count is in `[min, max]`.
     fn process_count_validation(&mut self, state_event: &StateEvent) {
-        // CountPreStateProcessor already validated count is in [min, max]
-        // Just forward to next processors using base StreamPostStateProcessor logic
         self.stream_processor.process_state_event(state_event);
     }
 }
@@ -123,11 +114,10 @@ impl PostStateProcessor for CountPostStateProcessor {
     fn process(&mut self, chunk: Option<Box<dyn ComplexEvent>>) -> Option<Box<dyn ComplexEvent>> {
         if let Some(event) = chunk.as_ref() {
             if let Some(state_event) = event.as_any().downcast_ref::<StateEvent>() {
-                // Process count validation
                 self.process_count_validation(state_event);
             }
         }
-        // Return chunk for potential forwarding to next processor
+        // Hand the chunk back so the caller can pass it on
         chunk
     }
 

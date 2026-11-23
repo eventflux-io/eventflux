@@ -24,10 +24,15 @@ use crate::core::executor::expression_executor::ExpressionExecutor;
 use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use std::sync::Arc;
 
+/// Collects one attribute from every event in a pattern chain.
+///
+/// Walks the StreamEvent chain at `chain_index` in a StateEvent and returns the values as
+/// an OBJECT holding a `Vec<AttributeValue>`. A missing value becomes NULL. Returns `None`
+/// when the event is not a StateEvent or the position does not exist.
 #[derive(Debug, Clone)]
 pub struct MultiValueVariableFunctionExecutor {
     chain_index: i32,
-    // Position array information for attribute retrieval
+    // Where to read the attribute in each event, as [data_type_index, attribute_index]
     attribute_position: [i32; 2],
 }
 

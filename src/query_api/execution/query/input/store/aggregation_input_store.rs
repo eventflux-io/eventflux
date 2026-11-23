@@ -15,30 +15,30 @@
  * limitations under the License.
  */
 
-// Corresponds to io.eventflux.query.api.execution.query.input.store.AggregationInputStore
 use super::input_store::InputStoreTrait;
-use super::store::Store; // The base Store
+use super::store::Store;
 use crate::query_api::aggregation::Within;
 use crate::query_api::eventflux_element::EventFluxElement;
-use crate::query_api::expression::Expression; // Using the actual Within struct
+use crate::query_api::expression::Expression;
 
-#[derive(Clone, Debug, PartialEq)] // Default not straightforward
+/// A read from an aggregation over a time range, with an optional ON condition.
+///
+/// Holds the Store and the condition itself instead of wrapping a ConditionInputStore.
+/// Has no `Default`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct AggregationInputStore {
-    // In Java, it extends ConditionInputStore. We will compose Store and add fields.
-    // Or compose ConditionInputStore if that's more aligned.
-    // Let's compose Store directly and manage on_condition here too.
     pub eventflux_element: EventFluxElement,
 
     pub store: Store,
-    pub on_condition: Option<Expression>, // From ConditionInputStore part
+    pub on_condition: Option<Expression>,
 
-    // AggregationInputStore specific fields
+    /// Time range to read. Both constructors set it.
     pub within: Option<Within>,
+    /// Time unit to read results at. Both constructors set it.
     pub per: Option<Expression>,
 }
 
 impl AggregationInputStore {
-    // Constructor for when there's an ON condition
     pub fn new_with_condition(
         store: Store,
         on_condition: Expression,
@@ -54,7 +54,7 @@ impl AggregationInputStore {
         }
     }
 
-    // Constructor for when there's no ON condition (onCondition is null in Java)
+    /// Same as `new_with_condition` but with no ON condition.
     pub fn new_no_condition(store: Store, within: Within, per: Expression) -> Self {
         AggregationInputStore {
             eventflux_element: EventFluxElement::default(),
@@ -66,14 +66,12 @@ impl AggregationInputStore {
     }
 }
 
-// `impl EventFluxElement for AggregationInputStore` removed.
-
 impl InputStoreTrait for AggregationInputStore {
     fn get_store_id(&self) -> &str {
-        self.store.get_store_id() // Delegate
+        self.store.get_store_id()
     }
 
     fn get_store_reference_id(&self) -> Option<&str> {
-        self.store.get_store_reference_id() // Delegate
+        self.store.get_store_reference_id()
     }
 }

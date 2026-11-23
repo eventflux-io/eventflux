@@ -15,24 +15,21 @@
  * limitations under the License.
  */
 
-//! Sink mapper trait and implementations
+//! Sink mappers.
 //!
-//! Re-exports the canonical `SinkMapper` trait from `stream::mapper` module.
+//! Re-exports the `SinkMapper` trait from the `stream::mapper` module, which is
+//! where it is defined, and adds the default `PassthroughMapper`.
 
-// Re-export the canonical SinkMapper trait from mapper module
 pub use crate::core::stream::mapper::SinkMapper;
 
 use crate::core::event::event::Event;
 use crate::core::exception::EventFluxError;
 
-/// Default passthrough mapper for Events
+/// Default sink mapper, used when no format such as JSON or CSV is set.
 ///
-/// When no format is specified (no JSON/CSV/XML mapper), this mapper
-/// serializes Events to an efficient binary format using bincode.
-///
-/// This is used for:
-/// - Debug sinks like LogSink that need to deserialize back to Events
-/// - Internal event passing where no external format is needed
+/// Writes events in the compact bincode binary encoding. It is used for
+/// - debug sinks like LogSink that decode the bytes back into events
+/// - passing events inside the engine where no outside format is needed
 ///
 /// # Example
 ///
@@ -49,9 +46,10 @@ impl PassthroughMapper {
         Self
     }
 
-    /// Deserialize bytes back to Events
+    /// Decodes bytes from `map_event` back into events.
     ///
-    /// Used by debug sinks that need to recover Events from binary format.
+    /// Used by debug sinks that need the events back. Returns an error string
+    /// if the bytes do not decode.
     pub fn deserialize(bytes: &[u8]) -> Result<Vec<Event>, String> {
         crate::core::util::serialization::from_bytes(bytes)
             .map_err(|e| format!("Failed to deserialize events: {}", e))
@@ -66,8 +64,8 @@ impl Default for PassthroughMapper {
 
 impl SinkMapper for PassthroughMapper {
     fn map_event(&self, event: &Event) -> Result<Vec<u8>, EventFluxError> {
-        // Serialize as a one-element slice so the payload stays a bincode
-        // sequence — `deserialize` (used by LogSink) returns Vec<Event>.
+        // Encode as a slice of one event so the payload stays a bincode
+        // sequence, since `deserialize` (used by LogSink) returns Vec<Event>.
         crate::core::util::serialization::to_bytes(std::slice::from_ref(event))
             .map_err(|e| EventFluxError::app_runtime(format!("Failed to serialize event: {}", e)))
     }

@@ -17,14 +17,15 @@
 
 //! Pipeline Performance Metrics
 //!
-//! Comprehensive metrics collection for monitoring pipeline performance,
-//! latency distribution, and throughput characteristics.
+//! Counters for pipeline throughput, latency (average and max), backpressure and
+//! errors, plus a collector that combines snapshots from several pipelines.
 
 use crossbeam_utils::CachePadded;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-/// Core pipeline metrics for performance monitoring
+/// Counters for one pipeline. All updates are atomic, so it is safe to share between
+/// threads. Each counter sits on its own cache line.
 pub struct PipelineMetrics {
     // Throughput metrics
     pub(crate) events_published: CachePadded<AtomicU64>,
@@ -43,12 +44,11 @@ pub struct PipelineMetrics {
     pub(crate) max_publish_latency_ns: CachePadded<AtomicU64>,
     pub(crate) max_consume_latency_ns: CachePadded<AtomicU64>,
 
-    // Timing
+    // Timing. Set at creation and not changed by reset().
     start_time: Instant,
 }
 
 impl PipelineMetrics {
-    /// Create new metrics instance
     pub fn new() -> Self {
         Self {
             events_published: CachePadded::new(AtomicU64::new(0)),
@@ -66,17 +66,17 @@ impl PipelineMetrics {
         }
     }
 
-    /// Record a successful publish operation
+    /// Records a successful publish and its latency
     pub fn record_publish_success(&self, latency: Duration) {
-        // Release pairs with the Acquire loads in events_published_count() so
-        // shutdown-drain polling observes the push that preceded this count.
+        // Release pairs with the Acquire load in events_published_count(), so the
+        // shutdown drain polling sees the push that came before this count.
         self.events_published.fetch_add(1, Ordering::Release);
 
         let latency_ns = latency.as_nanos() as u64;
         self.total_publish_latency_ns
             .fetch_add(latency_ns, Ordering::Relaxed);
 
-        // Update max latency using compare-and-swap loop
+        // Raise the max with a compare and swap loop
         let mut current_max = self.max_publish_latency_ns.load(Ordering::Relaxed);
         while latency_ns > current_max {
             match self.max_publish_latency_ns.compare_exchange_weak(
@@ -91,17 +91,16 @@ impl PipelineMetrics {
         }
     }
 
-    /// Record a successful consume operation
+    /// Records a successful consume and its latency
     pub fn record_consume_success(&self, latency: Duration) {
-        // Release: the consumer handler (including any subscriber dispatches it
-        // issued) must be visible before the count that covers it.
+        // Release, so the consumer handler's work (including any subscriber
+        // dispatches it started) is visible before the count that covers it.
         self.events_consumed.fetch_add(1, Ordering::Release);
 
         let latency_ns = latency.as_nanos() as u64;
         self.total_consume_latency_ns
             .fetch_add(latency_ns, Ordering::Relaxed);
 
-        // Update max latency
         let mut current_max = self.max_consume_latency_ns.load(Ordering::Relaxed);
         while latency_ns > current_max {
             match self.max_consume_latency_ns.compare_exchange_weak(
@@ -116,7 +115,8 @@ impl PipelineMetrics {
         }
     }
 
-    /// Record a successful batch operation
+    /// Records a consumed batch. Counts `batch_size` events as consumed and adds the
+    /// whole batch latency once.
     pub fn record_batch_success(&self, batch_size: usize, latency: Duration) {
         self.batches_processed.fetch_add(1, Ordering::Relaxed);
         self.events_consumed
@@ -126,7 +126,6 @@ impl PipelineMetrics {
         self.total_consume_latency_ns
             .fetch_add(latency_ns, Ordering::Relaxed);
 
-        // Update max latency
         let mut current_max = self.max_consume_latency_ns.load(Ordering::Relaxed);
         while latency_ns > current_max {
             match self.max_consume_latency_ns.compare_exchange_weak(
@@ -141,47 +140,43 @@ impl PipelineMetrics {
         }
     }
 
-    /// Record an event that was popped from the queue but whose handler
-    /// failed. It still counts as consumed — `events_consumed` means "removed
-    /// from the pipeline", and the shutdown drain relies on
-    /// `published == consumed` becoming reachable once the queue empties —
-    /// while the failure is tracked in `processing_errors`. (No latency is
-    /// recorded, so sustained failures skew `avg_consume_latency_us` low;
-    /// use `processing_errors` to detect that state.)
+    /// Records an event that was taken from the queue but whose handler failed.
+    /// It still counts as consumed, because `events_consumed` means "removed from
+    /// the pipeline" and the shutdown drain needs `published == consumed` to be
+    /// reachable once the queue is empty. The failure is counted in
+    /// `processing_errors`. No latency is recorded, so many failures pull
+    /// `avg_consume_latency_us` down. Watch `processing_errors` for that.
     pub fn record_consume_error(&self) {
         self.events_consumed.fetch_add(1, Ordering::Release);
         self.processing_errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record events discarded by `EventPipeline::purge` (restart after an
-    /// abandoned drain). Counted as consumed — removed from the pipeline — so
-    /// the drain predicate stays balanced; they are NOT processing errors and
-    /// were already counted dropped at the junction level when abandoned.
+    /// Records events thrown away by `EventPipeline::purge` (a restart after an
+    /// abandoned drain). They count as consumed, meaning removed from the pipeline,
+    /// so the drain check stays balanced. They are NOT processing errors, and the
+    /// junction already counted them as dropped when it abandoned them.
     pub fn record_purged(&self, count: u64) {
         self.events_consumed.fetch_add(count, Ordering::Release);
     }
 
-    /// Increment queue full counter
     pub fn increment_queue_full(&self) {
         self.queue_full_events.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment pool exhausted counter
     pub fn increment_pool_exhausted(&self) {
         self.pool_exhausted_events.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment dropped events counter
     pub fn increment_dropped(&self) {
         self.events_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment processing errors counter
     pub fn increment_processing_errors(&self) {
         self.processing_errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Get current throughput (events/second)
+    /// Published events per second since the metrics were created. reset() does not
+    /// restart the clock.
     pub fn throughput(&self) -> f64 {
         let elapsed = self.start_time.elapsed().as_secs_f64();
         if elapsed == 0.0 {
@@ -192,7 +187,7 @@ impl PipelineMetrics {
         total_events / elapsed
     }
 
-    /// Get average publish latency in microseconds
+    /// Average publish latency in microseconds, or 0.0 with no publishes
     pub fn avg_publish_latency_us(&self) -> f64 {
         let total_events = self.events_published.load(Ordering::Relaxed);
         if total_events == 0 {
@@ -203,7 +198,8 @@ impl PipelineMetrics {
         (total_latency as f64 / total_events as f64) / 1000.0
     }
 
-    /// Get average consume latency in microseconds
+    /// Average consume latency in microseconds, or 0.0 with nothing consumed. Divides by
+    /// all consumed events, errors and purges included.
     pub fn avg_consume_latency_us(&self) -> f64 {
         let total_events = self.events_consumed.load(Ordering::Relaxed);
         if total_events == 0 {
@@ -214,17 +210,17 @@ impl PipelineMetrics {
         (total_latency as f64 / total_events as f64) / 1000.0
     }
 
-    /// Get maximum publish latency in microseconds
+    /// Max publish latency in microseconds
     pub fn max_publish_latency_us(&self) -> f64 {
         self.max_publish_latency_ns.load(Ordering::Relaxed) as f64 / 1000.0
     }
 
-    /// Get maximum consume latency in microseconds
+    /// Max consume latency in microseconds
     pub fn max_consume_latency_us(&self) -> f64 {
         self.max_consume_latency_ns.load(Ordering::Relaxed) as f64 / 1000.0
     }
 
-    /// Get error rate (0.0 to 1.0)
+    /// Processing errors over published events (0.0 to 1.0). 0.0 with no publishes.
     pub fn error_rate(&self) -> f64 {
         let total_attempts = self.events_published.load(Ordering::Relaxed);
         if total_attempts == 0 {
@@ -235,7 +231,7 @@ impl PipelineMetrics {
         errors as f64 / total_attempts as f64
     }
 
-    /// Get drop rate (0.0 to 1.0)
+    /// Dropped events over published plus dropped (0.0 to 1.0). 0.0 when both are zero.
     pub fn drop_rate(&self) -> f64 {
         let total_attempts = self.events_published.load(Ordering::Relaxed)
             + self.events_dropped.load(Ordering::Relaxed);
@@ -247,19 +243,20 @@ impl PipelineMetrics {
         dropped as f64 / total_attempts as f64
     }
 
-    /// Raw published-event count. Cheap (single Acquire load) — safe to call
-    /// from a tight polling loop, unlike `snapshot()`.
+    /// Published event count. Cheap (one Acquire load), so it is fine in a tight
+    /// polling loop, unlike `snapshot()`.
     pub fn events_published_count(&self) -> u64 {
         self.events_published.load(Ordering::Acquire)
     }
 
-    /// Raw consumed-event count. Cheap (single Acquire load) — safe to call
-    /// from a tight polling loop, unlike `snapshot()`.
+    /// Consumed event count. Cheap (one Acquire load), so it is fine in a tight
+    /// polling loop, unlike `snapshot()`.
     pub fn events_consumed_count(&self) -> u64 {
         self.events_consumed.load(Ordering::Acquire)
     }
 
-    /// Get comprehensive metrics snapshot
+    /// Reads every counter and the derived rates. The counters are read one by one,
+    /// so they may not all come from the same instant.
     pub fn snapshot(&self) -> MetricsSnapshot {
         let elapsed = self.start_time.elapsed();
 
@@ -287,7 +284,10 @@ impl PipelineMetrics {
         }
     }
 
-    /// Reset all metrics
+    /// Sets every counter back to zero. The start time is kept.
+    ///
+    /// Resetting published and consumed while events are in the queue breaks the
+    /// shutdown drain's `published == consumed` check.
     pub fn reset(&self) {
         self.events_published.store(0, Ordering::Relaxed);
         self.events_consumed.store(0, Ordering::Relaxed);
@@ -335,41 +335,38 @@ pub struct MetricsSnapshot {
 }
 
 impl MetricsSnapshot {
-    /// Check if pipeline is performing within acceptable bounds
+    /// True when every limit below holds
     pub fn is_healthy(&self) -> bool {
-        self.error_rate < 0.01 &&     // <1% error rate
-        self.drop_rate < 0.05 &&      // <5% drop rate
-        self.throughput_events_per_sec > 1000.0 && // >1K events/sec minimum
-        self.max_publish_latency_us < 10000.0 // <10ms max latency
+        self.error_rate < 0.01 &&     // Under 1% errors
+        self.drop_rate < 0.05 &&      // Under 5% drops
+        self.throughput_events_per_sec > 1000.0 && // Over 1K events/sec
+        self.max_publish_latency_us < 10000.0 // Max publish latency under 10 ms
     }
 
-    /// Get health score (0.0 to 1.0, higher is better)
+    /// Health score from 0.0 to 1.0, higher is better. Starts at 1.0 and subtracts
+    /// twice the error rate, the drop rate, and up to 0.5 for max publish latency.
     pub fn health_score(&self) -> f64 {
         let mut score = 1.0;
 
-        // Penalize high error rates
-        score -= self.error_rate * 2.0; // 2x penalty for errors
+        score -= self.error_rate * 2.0; // Errors count double
 
-        // Penalize high drop rates
         score -= self.drop_rate;
 
-        // Penalize high latency (normalize to 0-1 range assuming 10ms is bad)
+        // Latency penalty scales to the full 0.5 at 10 ms
         let latency_penalty = (self.max_publish_latency_us / 10000.0).min(1.0);
         score -= latency_penalty * 0.5;
 
-        // Ensure score is in valid range
         score.clamp(0.0, 1.0)
     }
 }
 
-/// Metrics collector for aggregating metrics across multiple pipelines
+/// Combines metric snapshots from several named pipelines
 pub struct MetricsCollector {
     pipelines: Vec<String>,
     snapshots: std::collections::HashMap<String, MetricsSnapshot>,
 }
 
 impl MetricsCollector {
-    /// Create a new metrics collector
     pub fn new() -> Self {
         Self {
             pipelines: Vec::new(),
@@ -377,19 +374,24 @@ impl MetricsCollector {
         }
     }
 
-    /// Add a pipeline to track
+    /// Adds a pipeline name, once. The name list is not used by `aggregate`.
     pub fn add_pipeline(&mut self, name: String) {
         if !self.pipelines.contains(&name) {
             self.pipelines.push(name);
         }
     }
 
-    /// Update metrics for a pipeline
+    /// Stores the latest snapshot for a pipeline, replacing the old one. The name does
+    /// not need to be added first.
     pub fn update_pipeline(&mut self, name: String, snapshot: MetricsSnapshot) {
         self.snapshots.insert(name, snapshot);
     }
 
-    /// Get aggregated metrics across all pipelines
+    /// Combines all stored snapshots, or None if there are none.
+    ///
+    /// Counts and throughput are summed. Max latencies and uptime take the largest.
+    /// Average latencies are weighted by event count. Error and drop rates are worked
+    /// out again from the summed counts.
     pub fn aggregate(&self) -> Option<MetricsSnapshot> {
         if self.snapshots.is_empty() {
             return None;
@@ -422,7 +424,7 @@ impl MetricsCollector {
             max_consume_latency = max_consume_latency.max(snapshot.max_consume_latency_us);
             max_uptime = max_uptime.max(snapshot.uptime_seconds);
 
-            // Weight average latencies by event count
+            // Weight each average latency by its event count
             weighted_avg_publish +=
                 snapshot.avg_publish_latency_us * snapshot.events_published as f64;
             weighted_avg_consume +=
@@ -472,7 +474,7 @@ impl MetricsCollector {
         })
     }
 
-    /// Get individual pipeline snapshots
+    /// The latest snapshot per pipeline name
     pub fn get_snapshots(&self) -> &std::collections::HashMap<String, MetricsSnapshot> {
         &self.snapshots
     }

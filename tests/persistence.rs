@@ -59,7 +59,7 @@ fn test_snapshot_service_persist_restore() {
     service.set_state(b"changed".to_vec());
     service.restore_revision(&rev).unwrap();
     assert_eq!(service.snapshot(), b"state1".to_vec());
-    // ensure store recorded revision
+    // the store must report the persisted revision as the latest one
     assert_eq!(store.get_last_revision("app1").unwrap(), rev);
 }
 

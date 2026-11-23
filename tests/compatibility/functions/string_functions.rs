@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 //
-// String Function Compatibility Tests
+// String function compatibility tests
 // Reference: query/function/FunctionTestCase.java
 
 use crate::compatibility::common::AppRunner;
@@ -25,7 +25,7 @@ use eventflux::core::event::value::AttributeValue;
 // BASIC STRING FUNCTIONS
 // ============================================================================
 
-/// String function - concat
+/// concat
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn function_test_concat() {
@@ -47,7 +47,7 @@ async fn function_test_concat() {
     assert_eq!(out[0][0], AttributeValue::String("John Doe".to_string()));
 }
 
-/// String function - upper
+/// upper
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn function_test_upper() {
@@ -66,7 +66,7 @@ async fn function_test_upper() {
     assert_eq!(out[0][0], AttributeValue::String("HELLO WORLD".to_string()));
 }
 
-/// String function - lower
+/// lower
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn function_test_lower() {
@@ -85,7 +85,7 @@ async fn function_test_lower() {
     assert_eq!(out[0][0], AttributeValue::String("hello world".to_string()));
 }
 
-/// String function - length
+/// length
 /// Reference: FunctionTestCase.java
 #[tokio::test]
 async fn function_test_length() {
@@ -104,7 +104,7 @@ async fn function_test_length() {
     assert_eq!(out[0][0], AttributeValue::Int(5));
 }
 
-/// String function: substring
+/// substring
 /// Reference: String function tests
 #[tokio::test]
 async fn function_test_substring() {
@@ -120,8 +120,8 @@ async fn function_test_substring() {
     );
     let out = runner.shutdown();
     assert!(!out.is_empty());
-    // substring(1, 4) should give characters 1-4 (0-indexed: "ello")
-    // Note: Exact behavior depends on implementation (0-indexed or 1-indexed)
+    // SQL substring is 1 based, so substring(text, 1, 4) gives "Hell". This test
+    // only checks the length.
     let result = &out[0][0];
     if let AttributeValue::String(s) = result {
         assert!(s.len() <= 4);
@@ -132,7 +132,7 @@ async fn function_test_substring() {
 // TRIM AND REPLACE FUNCTIONS
 // ============================================================================
 
-/// String function - trim
+/// trim
 /// Reference: String function tests
 #[tokio::test]
 async fn function_test_trim() {
@@ -151,7 +151,7 @@ async fn function_test_trim() {
     assert_eq!(out[0][0], AttributeValue::String("hello".to_string()));
 }
 
-/// String function - replace
+/// replace
 /// Reference: String function tests
 #[tokio::test]
 async fn function_test_replace() {
@@ -233,10 +233,10 @@ async fn function_test_concat_multiple() {
 }
 
 // ============================================================================
-// ADDITIONAL STRING EDGE CASES
+// MORE STRING EDGE CASES
 // ============================================================================
 
-/// length function edge case - basic
+/// length of a plain string
 #[tokio::test]
 async fn function_test_length_basic() {
     let app = "\
@@ -254,7 +254,7 @@ async fn function_test_length_basic() {
     assert_eq!(out[0][0], AttributeValue::Int(5));
 }
 
-/// length function with empty string - edge case
+/// length of an empty string
 #[tokio::test]
 async fn function_test_length_empty_string() {
     let app = "\
@@ -269,7 +269,7 @@ async fn function_test_length_empty_string() {
     assert_eq!(out[0][0], AttributeValue::Int(0));
 }
 
-/// trim function edge case - basic
+/// trim of a plain padded string
 #[tokio::test]
 async fn function_test_trim_basic() {
     let app = "\
@@ -287,7 +287,7 @@ async fn function_test_trim_basic() {
     assert_eq!(out[0][0], AttributeValue::String("hello".to_string()));
 }
 
-/// replace function edge case - basic
+/// replace of one word
 #[tokio::test]
 async fn function_test_replace_basic() {
     let app = "\
@@ -305,7 +305,7 @@ async fn function_test_replace_basic() {
     assert_eq!(out[0][0], AttributeValue::String("hello there".to_string()));
 }
 
-/// substring function edge case - basic
+/// substr, an alias for substring, with a 1 based start
 #[tokio::test]
 async fn function_test_substring_basic() {
     let app = "\
@@ -429,7 +429,7 @@ async fn function_test_upper_empty() {
     assert_eq!(out[0][0], AttributeValue::String("".to_string()));
 }
 
-/// nested function calls: upper(concat(...))
+/// Nested call upper(concat(...))
 #[tokio::test]
 async fn function_test_nested_upper_concat() {
     let app = "\
@@ -450,7 +450,7 @@ async fn function_test_nested_upper_concat() {
     assert_eq!(out[0][0], AttributeValue::String("JOHN DOE".to_string()));
 }
 
-/// nested function calls: length(concat(...))
+/// Nested call length(concat(...))
 #[tokio::test]
 async fn function_test_nested_length_concat() {
     let app = "\
@@ -471,7 +471,8 @@ async fn function_test_nested_length_concat() {
     assert_eq!(out[0][0], AttributeValue::Int(10)); // "HelloWorld" = 10 chars
 }
 
-/// substring function with start and length indices
+/// substring with start 0 and a length. SQL substring is 1 based, and a start
+/// before the first character is clamped to it, so this gives "Hello".
 #[tokio::test]
 async fn function_test_substring_indices() {
     let app = "\
@@ -489,7 +490,7 @@ async fn function_test_substring_indices() {
     assert_eq!(out[0][0], AttributeValue::String("Hello".to_string()));
 }
 
-/// trim function to remove surrounding whitespace
+/// trim removes whitespace on both sides
 #[tokio::test]
 async fn function_test_trim_whitespace() {
     let app = "\
@@ -508,10 +509,10 @@ async fn function_test_trim_whitespace() {
 }
 
 // ============================================================================
-// NEW STRING FUNCTIONS - left, right, ltrim, rtrim, reverse, repeat, position, ascii, chr
+// LEFT, RIGHT, LTRIM, RTRIM, REVERSE, REPEAT, POSITION, ASCII AND CHR
 // ============================================================================
 
-/// Test left function - get leftmost n characters
+/// Test left, which returns the first n characters
 #[tokio::test]
 async fn function_test_left_basic() {
     let app = "\
@@ -565,7 +566,7 @@ async fn function_test_left_zero() {
     assert_eq!(out[0][0], AttributeValue::String("".to_string()));
 }
 
-/// Test right function - get rightmost n characters
+/// Test right, which returns the last n characters
 #[tokio::test]
 async fn function_test_right_basic() {
     let app = "\
@@ -601,7 +602,7 @@ async fn function_test_right_exceed_length() {
     assert_eq!(out[0][0], AttributeValue::String("Hello".to_string())); // Returns entire string
 }
 
-/// Test ltrim function - trim leading whitespace
+/// Test ltrim, which removes leading whitespace
 #[tokio::test]
 async fn function_test_ltrim_basic() {
     let app = "\
@@ -640,7 +641,7 @@ async fn function_test_ltrim_no_leading() {
     assert_eq!(out[0][0], AttributeValue::String("Hello   ".to_string())); // Unchanged
 }
 
-/// Test rtrim function - trim trailing whitespace
+/// Test rtrim, which removes trailing whitespace
 #[tokio::test]
 async fn function_test_rtrim_basic() {
     let app = "\
@@ -784,7 +785,7 @@ async fn function_test_repeat_one() {
     assert_eq!(out[0][0], AttributeValue::String("Hello".to_string()));
 }
 
-/// Test position function - find substring (1-based index)
+/// Test position, which returns the 1 based index of a substring
 #[tokio::test]
 async fn function_test_position_found() {
     let app = "\
@@ -799,10 +800,10 @@ async fn function_test_position_found() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][0], AttributeValue::Int(6)); // 1-based index: 'W' is at position 6
+    assert_eq!(out[0][0], AttributeValue::Int(6)); // 'W' is at 1 based position 6
 }
 
-/// Test position function - substring not found
+/// Test position when the substring is not found
 #[tokio::test]
 async fn function_test_position_not_found() {
     let app = "\
@@ -835,10 +836,10 @@ async fn function_test_position_at_start() {
     );
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][0], AttributeValue::Int(1)); // At position 1 (1-based)
+    assert_eq!(out[0][0], AttributeValue::Int(1)); // 1 based, so the start is 1
 }
 
-/// Test locate alias for position (MySQL compatibility)
+/// Test locate, a MySQL style alias for position
 #[tokio::test]
 async fn function_test_locate_alias() {
     let app = "\
@@ -856,7 +857,7 @@ async fn function_test_locate_alias() {
     assert_eq!(out[0][0], AttributeValue::Int(3)); // 'llo' starts at position 3
 }
 
-/// Test instr alias for position (MySQL/Oracle compatibility)
+/// Test instr, a MySQL and Oracle style alias for position
 #[tokio::test]
 async fn function_test_instr_alias() {
     let app = "\
@@ -874,7 +875,7 @@ async fn function_test_instr_alias() {
     assert_eq!(out[0][0], AttributeValue::Int(6));
 }
 
-/// Test ascii function - get ASCII code of first character
+/// Test ascii, which returns the ASCII code of the first character
 #[tokio::test]
 async fn function_test_ascii_basic() {
     let app = "\
@@ -904,7 +905,7 @@ async fn function_test_ascii_lowercase() {
     assert_eq!(out[0][0], AttributeValue::Int(97)); // ASCII code of 'a'
 }
 
-/// Test ascii with multi-character string (returns first char)
+/// Test ascii with a longer string. Only the first character counts.
 #[tokio::test]
 async fn function_test_ascii_multi_char() {
     let app = "\
@@ -922,7 +923,7 @@ async fn function_test_ascii_multi_char() {
     assert_eq!(out[0][0], AttributeValue::Int(72)); // ASCII code of 'H'
 }
 
-/// Test chr function - get character from ASCII code
+/// Test chr, which returns the character for an ASCII code
 #[tokio::test]
 async fn function_test_chr_basic() {
     let app = "\
@@ -952,7 +953,7 @@ async fn function_test_chr_lowercase() {
     assert_eq!(out[0][0], AttributeValue::String("a".to_string()));
 }
 
-/// Test char alias for chr (MySQL compatibility)
+/// Test char, a MySQL style alias for chr
 #[tokio::test]
 async fn function_test_char_alias() {
     let app = "\
@@ -967,7 +968,7 @@ async fn function_test_char_alias() {
     assert_eq!(out[0][0], AttributeValue::String("Z".to_string()));
 }
 
-/// Test ascii and chr roundtrip
+/// Test that chr(ascii(x)) gives back x
 #[tokio::test]
 async fn function_test_ascii_chr_roundtrip() {
     let app = "\
@@ -979,14 +980,14 @@ async fn function_test_ascii_chr_roundtrip() {
     runner.send("inputStream", vec![AttributeValue::String("X".to_string())]);
     let out = runner.shutdown();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][0], AttributeValue::String("X".to_string())); // Should get back 'X'
+    assert_eq!(out[0][0], AttributeValue::String("X".to_string()));
 }
 
 // ============================================================================
 // LPAD AND RPAD STRING FUNCTIONS
 // ============================================================================
 
-/// Test lpad function - basic left padding
+/// Test lpad, which pads on the left
 #[tokio::test]
 async fn function_test_lpad_basic() {
     let app = "\
@@ -1004,7 +1005,7 @@ async fn function_test_lpad_basic() {
     assert_eq!(out[0][0], AttributeValue::String("*****Hello".to_string()));
 }
 
-/// Test lpad with multi-char pad string
+/// Test lpad with a pad string of several characters
 #[tokio::test]
 async fn function_test_lpad_multichar_pad() {
     let app = "\
@@ -1022,7 +1023,7 @@ async fn function_test_lpad_multichar_pad() {
     assert_eq!(out[0][0], AttributeValue::String("xyxyxyxyHi".to_string()));
 }
 
-/// Test lpad when string is already longer than target length
+/// Test lpad cuts the string to the target length when it is already longer
 #[tokio::test]
 async fn function_test_lpad_truncate() {
     let app = "\
@@ -1040,7 +1041,7 @@ async fn function_test_lpad_truncate() {
     assert_eq!(out[0][0], AttributeValue::String("Hel".to_string()));
 }
 
-/// Test lpad with exact length (no padding needed)
+/// Test lpad when the string already has the target length, so no padding is added
 #[tokio::test]
 async fn function_test_lpad_exact_length() {
     let app = "\
@@ -1058,7 +1059,7 @@ async fn function_test_lpad_exact_length() {
     assert_eq!(out[0][0], AttributeValue::String("Hello".to_string()));
 }
 
-/// Test rpad function - basic right padding
+/// Test rpad, which pads on the right
 #[tokio::test]
 async fn function_test_rpad_basic() {
     let app = "\
@@ -1076,7 +1077,7 @@ async fn function_test_rpad_basic() {
     assert_eq!(out[0][0], AttributeValue::String("Hello*****".to_string()));
 }
 
-/// Test rpad with multi-char pad string
+/// Test rpad with a pad string of several characters
 #[tokio::test]
 async fn function_test_rpad_multichar_pad() {
     let app = "\
@@ -1094,7 +1095,7 @@ async fn function_test_rpad_multichar_pad() {
     assert_eq!(out[0][0], AttributeValue::String("Hixyxyxyxy".to_string()));
 }
 
-/// Test rpad when string is already longer than target length
+/// Test rpad cuts the string to the target length when it is already longer
 #[tokio::test]
 async fn function_test_rpad_truncate() {
     let app = "\
