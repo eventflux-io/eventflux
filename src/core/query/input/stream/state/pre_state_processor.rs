@@ -16,7 +16,7 @@
  */
 
 // src/core/query/input/stream/state/pre_state_processor.rs
-// Core pattern matching interface for state processors
+// PreStateProcessor trait, the step that matches events in a pattern
 
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::state::state_event::StateEvent;
@@ -25,128 +25,104 @@ use crate::core::query::input::stream::state::shared_processor_state::ProcessorS
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// PreStateProcessor is the core pattern matching interface.
+/// Matches incoming events for one step of a pattern or sequence.
 ///
-/// **Architecture**: PreStateProcessors form a chain for sequential patterns:
-/// - Pattern `A and B -> C`: PreA → PostA → PreC, PreB → PostB → PreC (parallel)
-/// - Sequence `A -> B -> C`: PreA → PostA → PreB → PostB → PreC → PostC (sequential)
+/// Pre processors and their post processors form a chain:
+/// - `A and B -> C`: PreA → PostA → PreC and PreB → PostB → PreC, side by side
+/// - `A -> B -> C`: PreA → PostA → PreB → PostB → PreC → PostC, one after another
 ///
 /// **Lifecycle**:
-/// 1. **init()**: Initialize processor, start state creates empty StateEvent
-/// 2. **add_state()**: Add new candidate state to new/every list
-/// 3. **update_state()**: Move new events to pending (sorted by timestamp)
-/// 4. **process_and_return()**: Process incoming event against all pending states
-/// 5. **reset_state()**: Clear after match, reinitialize if start state
+/// 1. **init()**: set up. A start state creates an empty StateEvent.
+/// 2. **add_state()**: add a candidate state to the new list
+/// 3. **update_state()**: move new states to pending, sorted by timestamp
+/// 4. **process_and_return()**: try the incoming event against every pending state
+/// 5. **reset_state()**: clear after a match. A start state sets itself up again.
 ///
-/// **State Management**:
-/// Each processor maintains three lists (via StreamPreState):
-/// - `current`: Current working set being processed
-/// - `pending`: Events waiting to be matched (sorted by timestamp)
-/// - `new`: New candidates + 'every' pattern events
+/// **State lists** (held in StreamPreState):
+/// - `current`: the chunk being worked on
+/// - `pending`: states waiting for a matching event, sorted by timestamp
+/// - `new`: new candidates and 'every' states, not yet pending
 ///
-/// **Concrete Implementations**:
-/// - `StreamPreStateProcessor`: Base for single stream patterns
-/// - `LogicalPreStateProcessor`: Handles AND/OR with partner processor
-/// - `CountPreStateProcessor`: Handles A{n}, A{m,n} quantifiers
-/// - `AbsentStreamPreStateProcessor`: Handles NOT operator with scheduler
+/// **Implementations**:
+/// - `StreamPreStateProcessor`: default for a single stream step
+/// - `LogicalPreStateProcessor`: one side of AND/OR, linked to a partner
+/// - `CountPreStateProcessor`: count quantifiers such as A{n} and A{m,n}
 ///
-/// **Key Pattern Types**:
-/// - **Sequence**: A -> B -> C (temporal ordering, each processor waits for previous)
-/// - **Pattern**: A and B, A or B (no ordering, check partners)
-/// - **Count**: A{2,5} (accumulate 2-5 events at position, backtrack if not satisfied)
-/// - **Absent**: not A for 10s (scheduler-based, expire if A arrives within time)
-/// - **'every'**: every A -> B (restart pattern on each A match)
+/// **Pattern kinds**:
+/// - **Sequence**: A -> B -> C, where events must follow one another with nothing between
+/// - **Logical**: A and B, A or B, where the two sides check each other
+/// - **Count**: A{2,5}, which collects 2 to 5 events at one position
+/// - **Absent**: not A for 10s. Planned, no implementation yet.
+/// - **'every'**: every A -> B, which starts the pattern again on each match
 ///
 pub trait PreStateProcessor: Debug + Send + Sync {
     // ===== Core Lifecycle Methods =====
 
-    /// Initialize the processor
+    /// Set up the processor. Called once at query start, before any events arrive.
     ///
-    /// For start states (first in chain), creates an empty StateEvent to begin matching.
-    /// For non-start states, prepares internal structures but doesn't create initial state.
-    ///
-    /// **When called**: During query initialization, before any events arrive
+    /// A start state (first in the chain) creates an empty StateEvent to begin
+    /// matching. Other states create nothing.
     fn init(&mut self);
 
-    /// Process an incoming event chunk
+    /// Entry point for events arriving at this processor.
     ///
-    /// This is the entry point for events arriving at this processor.
-    /// Returns processed events if any, None otherwise.
+    /// Returns matched events if any, otherwise None.
     fn process(&mut self, chunk: Option<Box<dyn ComplexEvent>>) -> Option<Box<dyn ComplexEvent>>;
 
-    /// Add a new candidate state event to the new/every list
+    /// Add a candidate StateEvent to the new list.
     ///
-    /// Used when:
-    /// - Previous processor in chain matched and chains forward
-    /// - Fresh event arrives at start state
-    ///
-    /// **Pattern behavior**:
-    /// - Sequence A->B: When A matches, calls B.add_state(stateWithA)
-    /// - Pattern A and B: Each side independently receives states
+    /// Called when the previous step matched and passes its state on. For example in
+    /// A -> B, a match on A calls B.add_state(state_with_a). In A and B, each side gets
+    /// its own states.
     ///
     /// **Parameters**:
-    /// - `state_event`: StateEvent containing matched events so far
+    /// - `state_event`: StateEvent holding the events matched so far
     fn add_state(&mut self, state_event: StateEvent);
 
-    /// Add a state event to the new/every list for 'every' pattern matching
+    /// Add a StateEvent sent back by an 'every' loop, so the pattern can start again.
     ///
-    /// Used for continuous pattern matching: `every A -> B`
-    /// - When A matches, adds state to both next processor (B) AND every-next processor
-    /// - Allows pattern to restart on each A occurrence
+    /// For `every A -> B`, a match passes the state both to the next step and back
+    /// through this method.
     ///
     /// **Difference from add_state()**:
-    /// - `add_state()`: Normal forward chaining (A -> B)
-    /// - `add_every_state()`: Restart pattern (every A -> B, triggers on every A)
+    /// - `add_state()`: normal forward step (A -> B)
+    /// - `add_every_state()`: restart from an 'every' loop
     fn add_every_state(&mut self, state_event: StateEvent);
 
-    /// Move new/every events to pending list
+    /// Move states from the new list to pending, sorted by timestamp.
     ///
-    /// Called before processing events to prepare the pending queue.
-    /// Events are **sorted by timestamp** before moving (critical for temporal correctness).
-    ///
-    /// **When called**: At start of each processing iteration, after all add_state() calls
-    ///
-    /// **Why sorting matters**:
-    /// - Pattern `A -> B within 5s`: Must check B arrivals in order relative to A
-    /// - Out-of-order events can cause false positives/negatives
+    /// Called after the add_state() calls and before the next events are processed.
+    /// The sort matters for timing. In `A -> B within 5s`, B must be checked in time
+    /// order against A, or matches can be wrongly found or missed.
     fn update_state(&mut self);
 
-    /// Reset state after a complete match or expiration
+    /// Clear state after a full match or after events expire.
     ///
-    /// Called when:
-    /// - Pattern completes successfully (all processors matched)
-    /// - Events expire (WITHIN time exceeded)
-    /// - Query needs to reset (e.g., partitioning)
-    ///
-    /// **Behavior**:
-    /// - Clear pending list
-    /// - If start state: reinitialize with empty StateEvent
-    /// - If not start: wait for new states from previous processor
+    /// Default behavior:
+    /// - Clear the pending list
+    /// - A start state with an empty new list sets itself up again with an empty
+    ///   StateEvent
+    /// - Other states wait for new states from the previous step
     fn reset_state(&mut self);
 
     // ===== Event Processing =====
 
-    /// Process an incoming event against all pending states
+    /// Try the incoming event against every pending StateEvent.
     ///
-    /// **Core pattern matching logic**:
-    /// 1. Iterate through all pending StateEvents
-    /// 2. For each StateEvent, check if incoming event matches this processor's condition
-    /// 3. If match:
-    ///    - Clone StateEvent
-    ///    - Add incoming event at this processor's position
-    ///    - Forward to PostStateProcessor for chaining/output
-    /// 4. Return matched StateEvents (or empty if no matches)
+    /// For each pending StateEvent:
+    /// 1. Copy it and put the incoming event at this processor's position
+    /// 2. Check this step's condition
+    /// 3. On a match, send it to the PostStateProcessor
     ///
-    /// **Pattern vs Sequence**:
-    /// - **Sequence** (A -> B): B waits for A to match, then checks B events
-    /// - **Pattern** (A and B): Both run in parallel, check partner match status
+    /// What happens to a pending state after a match or a miss depends on the
+    /// implementation and on Pattern or Sequence mode.
     ///
     /// **Parameters**:
-    /// - `chunk`: Linked list of incoming events (Option<Box<dyn ComplexEvent>>)
+    /// - `chunk`: incoming events as `Option<Box<dyn ComplexEvent>>`
     ///
     /// **Returns**:
-    /// - Chain of matched StateEvents to process further or output
-    /// - Empty (None) if no matches
+    /// - Matched StateEvents for the caller to pass on, or None when nothing matched.
+    ///   Some implementations return only the first match or always return None.
     fn process_and_return(
         &mut self,
         chunk: Option<Box<dyn ComplexEvent>>,
@@ -154,98 +130,62 @@ pub trait PreStateProcessor: Debug + Send + Sync {
 
     // ===== Time Management =====
 
-    /// Set the WITHIN time constraint (in milliseconds)
+    /// Set the WITHIN limit in milliseconds.
     ///
-    /// Example: `A -> B within 5 sec` sets within_time = 5000
-    ///
-    /// Events older than (latest_timestamp - within_time) are expired.
+    /// Example: `A -> B within 5 sec` sets within_time = 5000.
     ///
     /// **Parameters**:
-    /// - `within_time`: Time window in milliseconds (0 = no constraint)
+    /// - `within_time`: limit in milliseconds. 0 or less means no limit in the default
+    ///   implementation.
     fn set_within_time(&mut self, within_time: i64);
 
-    /// Expire events older than the given timestamp
-    ///
-    /// Called periodically or when WITHIN constraint is set.
-    /// Removes StateEvents from pending list where timestamp < (current - within_time).
+    /// Drop pending StateEvents that are older than the WITHIN limit at `timestamp`.
     ///
     /// **Parameters**:
-    /// - `timestamp`: Current processing timestamp
+    /// - `timestamp`: current processing time in milliseconds
     fn expire_events(&mut self, timestamp: i64);
 
     // ===== State Identification =====
 
-    /// Get the state ID (stream position) this processor manages
+    /// StateEvent position this processor writes to, starting at 0.
     ///
-    /// In a sequence `A -> B -> C`:
-    /// - A has state_id = 0
-    /// - B has state_id = 1
-    /// - C has state_id = 2
-    ///
-    /// The state_id determines which position in StateEvent.stream_events[] this processor writes to.
-    ///
-    /// **Returns**: Position index (0-based)
+    /// In `A -> B -> C`, A is 0, B is 1 and C is 2. It is the index in
+    /// StateEvent.stream_events[].
     fn state_id(&self) -> usize;
 
-    /// Check if this is the start state (first processor in chain)
+    /// True when this is the first step in the chain.
     ///
-    /// Start states:
-    /// - Create initial empty StateEvent in init()
-    /// - Receive fresh events directly from stream
-    /// - Must reinitialize after reset_state()
-    ///
-    /// Non-start states:
-    /// - Wait for previous processor to chain forward via add_state()
-    ///
-    /// **Returns**: true if this is the first processor
+    /// A start state creates an empty StateEvent in init() and sets itself up again
+    /// after reset_state(). Other states wait for the previous step to call
+    /// add_state().
     fn is_start_state(&self) -> bool;
 
     // ===== Shared State Management =====
 
-    /// Get the shared state for lock-free communication with PostStateProcessor
+    /// State shared with the PostStateProcessor.
     ///
-    /// The shared state allows PostStateProcessor to notify PreStateProcessor of
-    /// state changes without acquiring locks, preventing deadlock.
-    ///
-    /// **Returns**: Shared state instance
+    /// The post processor marks state changes through it without locking this
+    /// processor, which avoids deadlock.
     fn get_shared_state(&self) -> Arc<ProcessorSharedState>;
 
     // ===== Post Processor Integration =====
 
-    /// Get the associated PostStateProcessor
+    /// The PostStateProcessor paired with this processor, if set.
     ///
-    /// Every PreStateProcessor has a matching PostStateProcessor that handles:
-    /// - Chaining to next PreStateProcessor (A -> B)
-    /// - Chaining to every-next PreStateProcessor (every A -> B)
-    /// - Final output if this is last processor
-    ///
-    /// Get the PostStateProcessor associated with this PreStateProcessor
-    ///
-    /// **Returns**: Arc<Mutex> to the PostStateProcessor for this processor
-    ///
-    /// **Used For**:
-    /// - Forwarding matched StateEvents to PostStateProcessor
-    /// - Processor chain coordination
+    /// Matched StateEvents are sent to it. It passes them to the next step, to the
+    /// 'every' loop, or to the output when this is the last step.
     fn this_state_post_processor(&self) -> Option<Arc<Mutex<dyn PostStateProcessor>>>;
 
     // ===== State Change Notification =====
 
-    /// Mark that state has changed (for optimization)
+    /// Mark that the state changed, for example when a state is added or a match moves
+    /// forward.
     ///
-    /// Called when:
-    /// - New state added
-    /// - Match progresses
-    /// - Events expired
-    ///
-    /// Used to skip processing when state is unchanged (optimization).
-    ///
-    /// **CRITICAL**: Takes `&self` not `&mut self` to avoid deadlock when called
-    /// from PostStateProcessor while PreStateProcessor Arc is locked.
+    /// Takes `&self`, not `&mut self`, so a PostStateProcessor can call it without a
+    /// mutable borrow and without deadlocking while the pre processor is locked.
     fn state_changed(&self);
 
-    /// Check if state has changed since last check
-    ///
-    /// **Returns**: true if state changed
+    /// True when the state has been marked changed
     fn has_state_changed(&self) -> bool;
 }
 

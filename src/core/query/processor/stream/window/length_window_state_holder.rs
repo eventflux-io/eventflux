@@ -17,10 +17,11 @@
 
 // src/core/query/processor/stream/window/length_window_state_holder.rs
 
-//! Enhanced StateHolder implementation for LengthWindowProcessor
+//! StateHolder for LengthWindowProcessor, so its buffer can be checkpointed and
+//! restored.
 //!
-//! This implementation provides enterprise-grade state management for length windows
-//! with versioning, incremental checkpointing, and comprehensive metadata.
+//! Adds a schema version, a change log for incremental checkpoints, and metadata about
+//! the window.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -35,30 +36,30 @@ use crate::core::util::compression::{
     CompressibleStateHolder, CompressionHints, DataCharacteristics, DataSizeRange,
 };
 
-/// Enhanced state holder for LengthWindowProcessor with StateHolder capabilities
+/// State holder for LengthWindowProcessor. Saves and restores the window buffer and
+/// records changes for incremental checkpoints.
 #[derive(Debug, Clone)]
 pub struct LengthWindowStateHolder {
-    /// Window buffer containing events
+    /// Events in the window, shared with the processor
     buffer: Arc<Mutex<VecDeque<Arc<StreamEvent>>>>,
 
-    /// Component identifier
     component_id: String,
 
-    /// Window length configuration
+    /// Most events the window holds
     window_length: usize,
 
-    /// Last checkpoint ID for incremental tracking
+    /// Checkpoint the change log was last cleared at
     last_checkpoint_id: Arc<Mutex<Option<CheckpointId>>>,
 
-    /// Change log for incremental checkpointing
+    /// Changes since the last checkpoint, for incremental checkpoints
     change_log: Arc<Mutex<Vec<StateOperation>>>,
 
-    /// Event counter for size estimation
+    /// Events added so far. Saved in snapshots.
     total_events_processed: Arc<Mutex<u64>>,
 }
 
 impl LengthWindowStateHolder {
-    /// Create a new enhanced state holder
+    /// Create a holder for `buffer` with an empty change log
     pub fn new(
         buffer: Arc<Mutex<VecDeque<Arc<StreamEvent>>>>,
         component_id: String,
@@ -74,7 +75,7 @@ impl LengthWindowStateHolder {
         }
     }
 
-    /// Record an event addition for incremental checkpointing
+    /// Log an Insert for an added event and count it
     #[allow(dead_code)]
     pub fn record_event_added(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
@@ -85,11 +86,10 @@ impl LengthWindowStateHolder {
             value: event_data,
         });
 
-        // Update event counter
         *self.total_events_processed.lock().unwrap() += 1;
     }
 
-    /// Record an event removal for incremental checkpointing
+    /// Log a Delete for an event that left the window
     #[allow(dead_code)]
     pub fn record_event_removed(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
@@ -101,21 +101,21 @@ impl LengthWindowStateHolder {
         });
     }
 
-    /// Generate a unique key for an event
+    /// Changelog key for an event, made of the timestamp followed by a hash of
+    /// before_window_data, both little endian. Two equal events get the same key.
     #[allow(dead_code)]
     fn generate_event_key(&self, event: &StreamEvent) -> Vec<u8> {
-        // Use timestamp and a hash of the event data as key
         let mut key = Vec::new();
         key.extend_from_slice(&event.timestamp.to_le_bytes());
 
-        // Add a simple hash of the event data
         let data_hash = self.hash_event_data(&event.before_window_data);
         key.extend_from_slice(&data_hash.to_le_bytes());
 
         key
     }
 
-    /// Simple hash function for event data
+    /// Hash the value count, then each value through its Debug text. DefaultHasher
+    /// output can change between Rust versions, so the key is not stable across builds.
     #[allow(dead_code)]
     fn hash_event_data(&self, data: &[crate::core::event::value::AttributeValue]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
@@ -123,12 +123,9 @@ impl LengthWindowStateHolder {
 
         let mut hasher = DefaultHasher::new();
 
-        // Hash the length first
         data.len().hash(&mut hasher);
 
-        // Hash each attribute value
         for attr in data {
-            // Create a string representation for hashing
             let attr_str = format!("{attr:?}");
             attr_str.hash(&mut hasher);
         }
@@ -136,12 +133,11 @@ impl LengthWindowStateHolder {
         hasher.finish()
     }
 
-    /// Serialize an event to bytes
+    /// Encode the timestamp, before_window_data and expired flag. Returns empty bytes
+    /// if encoding fails.
     fn serialize_event(&self, event: &StreamEvent) -> Vec<u8> {
         use crate::core::util::to_bytes;
 
-        // Simple serialization using bincode
-        // Serialize the essential event data directly
         let event_data = (
             event.timestamp,
             &event.before_window_data,
@@ -151,11 +147,14 @@ impl LengthWindowStateHolder {
         to_bytes(&event_data).unwrap_or_default()
     }
 
-    /// Deserialize an event from bytes
+    /// Decode bytes from serialize_event back into a StreamEvent. Other fields are left
+    /// at their defaults.
+    ///
+    /// # Errors
+    /// Returns StateError::DeserializationError when the bytes cannot be decoded.
     fn deserialize_event(&self, data: &[u8]) -> Result<StreamEvent, StateError> {
         use crate::core::util::from_bytes;
 
-        // Deserialize using bincode - direct approach
         if let Ok((timestamp, data, is_expired)) =
             from_bytes::<(i64, Vec<crate::core::event::value::AttributeValue>, bool)>(data)
         {
@@ -174,7 +173,8 @@ impl LengthWindowStateHolder {
         })
     }
 
-    /// Clear the change log (called after successful checkpoint)
+    /// Empty the change log and remember `checkpoint_id`. Call after a checkpoint
+    /// succeeds.
     #[allow(dead_code)]
     pub fn clear_change_log(&self, checkpoint_id: CheckpointId) {
         let mut change_log = self.change_log.lock().unwrap();
@@ -191,11 +191,10 @@ impl StateHolder for LengthWindowStateHolder {
     fn serialize_state(&self, hints: &SerializationHints) -> Result<StateSnapshot, StateError> {
         use crate::core::util::to_bytes;
 
-        // Create state data structure by gathering data with minimal lock time
+        // Copy what is needed in a short block so the buffer lock is held briefly
         let (serialized_events, total_events) = {
             let buffer = self.buffer.lock().unwrap();
 
-            // Serialize all events in the buffer
             let mut serialized_events = Vec::new();
             for event in buffer.iter() {
                 let event_data = self.serialize_event(event);
@@ -204,7 +203,7 @@ impl StateHolder for LengthWindowStateHolder {
 
             let total_events = *self.total_events_processed.lock().unwrap();
             (serialized_events, total_events)
-        }; // Release buffer lock early
+        }; // buffer lock released here
 
         let state_data = LengthWindowStateData {
             events: serialized_events,
@@ -212,7 +211,6 @@ impl StateHolder for LengthWindowStateHolder {
             total_events_processed: total_events,
         };
 
-        // Serialize to bytes
         let data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
             message: format!("Failed to serialize length window state: {e}"),
         })?;
@@ -227,7 +225,7 @@ impl StateHolder for LengthWindowStateHolder {
 
         Ok(StateSnapshot {
             version: self.schema_version(),
-            checkpoint_id: 0, // Will be set by the checkpoint coordinator
+            checkpoint_id: 0, // the checkpoint coordinator sets the real id
             data,
             compression,
             checksum,
@@ -238,21 +236,18 @@ impl StateHolder for LengthWindowStateHolder {
     fn deserialize_state(&self, snapshot: &StateSnapshot) -> Result<(), StateError> {
         use crate::core::util::from_bytes;
 
-        // Verify integrity
         if !snapshot.verify_integrity() {
             return Err(StateError::ChecksumMismatch);
         }
 
-        // Decompress data if needed using the shared compression utility
         let data = self.decompress_state_data(&snapshot.data, snapshot.compression.clone())?;
 
-        // Deserialize state data
         let state_data: LengthWindowStateData =
             from_bytes(&data).map_err(|e| StateError::DeserializationError {
                 message: format!("Failed to deserialize length window state: {e}"),
             })?;
 
-        // Restore window buffer
+        // Replace the buffer contents with the saved events
         let mut buffer = self.buffer.lock().unwrap();
         buffer.clear();
 
@@ -260,13 +255,13 @@ impl StateHolder for LengthWindowStateHolder {
             match self.deserialize_event(event_data) {
                 Ok(event) => buffer.push_back(Arc::new(event)),
                 Err(_e) => {
-                    // Warning: Failed to deserialize event, skipping
+                    // Skip an event that cannot be decoded, without logging
                     continue;
                 }
             }
         }
 
-        // Restore metadata (window_length is configuration and doesn't need to be restored)
+        // window_length comes from the query config, so it is not restored
         *self.total_events_processed.lock().unwrap() = state_data.total_events_processed;
 
         Ok(())
@@ -299,7 +294,6 @@ impl StateHolder for LengthWindowStateHolder {
         let mut buffer = self.buffer.lock().unwrap();
 
         for operation in &changes.operations {
-            // Use shared helper for all simple window operations
             apply_operation_to_simple_window(&mut buffer, operation, &|data| {
                 self.deserialize_event(data)
             })?;
@@ -312,21 +306,19 @@ impl StateHolder for LengthWindowStateHolder {
         let entries = if let Ok(buffer) = self.buffer.try_lock() {
             buffer.len()
         } else {
-            // Return conservative estimate if buffer is locked to avoid hanging
-            5 // Conservative estimate
+            // The buffer is locked. Guess instead of waiting, so this never hangs.
+            5
         };
 
-        // Estimate bytes per event (rough calculation)
-        let estimated_bytes_per_event = 200; // Conservative estimate
+        // Rough guess of bytes per event
+        let estimated_bytes_per_event = 200;
         let total_bytes = entries * estimated_bytes_per_event;
 
-        // Estimate growth rate based on window length
+        // A full window stops growing. Otherwise assume one event's worth of growth.
         let growth_rate = if self.window_length > 0 {
-            // If we're at capacity, growth rate is 0 (stable)
             if entries >= self.window_length {
                 0.0
             } else {
-                // Otherwise, estimate based on typical event size
                 estimated_bytes_per_event as f64
             }
         } else {
@@ -341,8 +333,7 @@ impl StateHolder for LengthWindowStateHolder {
     }
 
     fn access_pattern(&self) -> AccessPattern {
-        // Length windows have a sequential access pattern
-        // Events are added to the end and removed from the front
+        // Events are added at the back and removed from the front
         AccessPattern::Sequential
     }
 
@@ -354,7 +345,6 @@ impl StateHolder for LengthWindowStateHolder {
         metadata.access_pattern = self.access_pattern();
         metadata.size_estimation = self.estimate_size();
 
-        // Add custom metadata
         metadata
             .custom_metadata
             .insert("window_length".to_string(), self.window_length.to_string());
@@ -376,17 +366,17 @@ impl StateHolder for LengthWindowStateHolder {
 impl CompressibleStateHolder for LengthWindowStateHolder {
     fn compression_hints(&self) -> CompressionHints {
         CompressionHints {
-            prefer_speed: true, // Length windows need low latency for real-time processing
+            prefer_speed: true, // live processing needs low latency
             prefer_ratio: false,
-            data_type: DataCharacteristics::ModeratelyRepetitive, // Event streams have moderate patterns
-            target_latency_ms: Some(1),                           // Target < 1ms compression time
-            min_compression_ratio: Some(0.3), // At least 30% space savings to be worthwhile
-            expected_size_range: DataSizeRange::Small, // Length windows typically have small state
+            data_type: DataCharacteristics::ModeratelyRepetitive, // events repeat somewhat
+            target_latency_ms: Some(1),                           // aim for under 1 ms
+            min_compression_ratio: Some(0.3), // worth it only if it saves at least 30%
+            expected_size_range: DataSizeRange::Small, // length windows usually hold little
         }
     }
 }
 
-/// Serializable state data for LengthWindowProcessor
+/// Snapshot contents for LengthWindowProcessor
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct LengthWindowStateData {
     events: Vec<Vec<u8>>,

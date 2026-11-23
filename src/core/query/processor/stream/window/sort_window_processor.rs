@@ -16,7 +16,7 @@
  */
 
 // src/core/query/processor/stream/window/sort_window_processor.rs
-// Rust implementation of EventFlux SortWindowProcessor
+// Sort window processor, ported from Siddhi's SortWindowProcessor
 
 use crate::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_query_context::EventFluxQueryContext,
@@ -35,28 +35,30 @@ use crate::query_api::expression::{constant::ConstantValueWithFloat, Expression}
 
 use std::sync::{Arc, Mutex};
 
-/// A sort window maintains a fixed-size sliding window of events in sorted order
+/// Sliding window that keeps at most `length_to_keep` events. When one more arrives,
+/// the events are sorted and the last one in sort order is expired.
 #[derive(Debug)]
 pub struct SortWindowProcessor {
-    /// Common processor metadata
     meta: CommonProcessorMeta,
-    /// Maximum number of events to keep in the window
+    /// Most events to keep, after any config scaling
     length_to_keep: usize,
-    /// Sorted buffer of events
+    /// Kept events. Only sorted when the window overflows.
     sorted_window: Arc<Mutex<Vec<Arc<StreamEvent>>>>,
-    /// Comparator for sorting events
+    /// Sort order from the window's attribute and order parameters
     comparator: OrderByEventComparator,
 }
 
 impl SortWindowProcessor {
-    /// Create a new sort window processor
+    /// Create a sort window.
+    ///
+    /// The length is scaled by the `distributed_size_factor` setting when set, and the
+    /// buffer is sized from config. Prints the settings to stdout.
     pub fn new(
         length_to_keep: usize,
         comparator: OrderByEventComparator,
         app_ctx: Arc<EventFluxAppContext>,
         query_ctx: Arc<EventFluxQueryContext>,
     ) -> Self {
-        // Configuration-driven initialization
         let effective_length = Self::calculate_effective_window_size(length_to_keep, &app_ctx);
         let initial_capacity = Self::calculate_initial_capacity(effective_length, &app_ctx);
 
@@ -67,54 +69,52 @@ impl SortWindowProcessor {
             comparator,
         };
 
-        // Log configuration-driven setup
         processor.log_window_configuration();
 
         processor
     }
 
-    /// Calculate effective window size based on configuration
+    /// Window length to use, which is the requested size times the sort window's
+    /// `distributed_size_factor` setting, rounded up. The requested size when the
+    /// setting or config reader is missing.
     fn calculate_effective_window_size(
         requested_size: usize,
         app_ctx: &EventFluxAppContext,
     ) -> usize {
         let base_size = requested_size;
 
-        // Use the configuration reader to get distributed size factor
         if let Some(config_reader) = app_ctx.get_config_reader() {
             if let Some(ConfigValue::Float(factor)) =
                 config_reader.get_window_config("sort", "distributed_size_factor")
             {
-                // Apply scaling factor - for now we'll use a simple approach
                 return (base_size as f64 * factor).ceil() as usize;
             }
         }
 
-        // Fallback to base size if configuration is unavailable
         base_size
     }
 
-    /// Calculate initial capacity for the sorted buffer
+    /// Starting capacity for the buffer, which is the window size times
+    /// `initial_capacity_multiplier` (default 1.2), times 1.25 more when
+    /// `batch_processing_enabled` is true, rounded up.
     fn calculate_initial_capacity(window_size: usize, app_ctx: &EventFluxAppContext) -> usize {
-        // Get multiplier from configuration
         let multiplier = if let Some(config_reader) = app_ctx.get_config_reader() {
             if let Some(ConfigValue::Float(mult)) =
                 config_reader.get_window_config("sort", "initial_capacity_multiplier")
             {
                 mult
             } else {
-                1.2 // Default multiplier
+                1.2 // default multiplier
             }
         } else {
             1.2
         };
 
-        // Check for batch processing mode from performance config
         let batch_multiplier = if let Some(config_reader) = app_ctx.get_config_reader() {
             if let Some(ConfigValue::Boolean(true)) =
                 config_reader.get_performance_config("batch_processing_enabled")
             {
-                1.25 // Additional multiplier for batch mode
+                1.25 // extra room in batch mode
             } else {
                 1.0
             }
@@ -125,12 +125,11 @@ impl SortWindowProcessor {
         (window_size as f64 * multiplier * batch_multiplier).ceil() as usize
     }
 
-    /// Log configuration-driven initialization
+    /// Print the window size and any sort settings to stdout with println!
     fn log_window_configuration(&self) {
         println!("SortWindowProcessor configured:");
         println!("  - Window size: {} events", self.length_to_keep);
 
-        // Log configuration if available through config reader
         if let Some(config_reader) = self.meta.eventflux_app_context.get_config_reader() {
             if let Some(ConfigValue::Float(factor)) =
                 config_reader.get_window_config("sort", "distributed_size_factor")
@@ -145,15 +144,22 @@ impl SortWindowProcessor {
         }
     }
 
-    /// Check if memory-optimized processing should be used
+    /// Whether to use memory saving processing. Always false, since the runtime config
+    /// is not reachable from here.
     #[allow(dead_code)]
     fn should_use_memory_optimization(&self) -> bool {
-        // For now, return false since we don't have direct access to runtime config
-        // TODO: Implement memory optimization detection through config reader
+        // TODO: read this from the config reader
         false
     }
 
-    /// Create from window handler (standard factory pattern)
+    /// Build the window from `sort(length, attr1, 'asc', attr2, 'desc', ...)`.
+    ///
+    /// Each order after an attribute is optional and defaults to ascending.
+    ///
+    /// # Errors
+    /// Returns an error message when the length is missing, not a positive integer
+    /// constant, when an attribute is not a plain stream attribute, when an order is
+    /// not 'asc' or 'desc', or when no attribute is given.
     pub fn from_handler(
         handler: &WindowHandler,
         app_ctx: Arc<EventFluxAppContext>,
@@ -166,7 +172,7 @@ impl SortWindowProcessor {
             return Err("Sort window requires at least a length parameter".to_string());
         }
 
-        // First parameter: window length (required)
+        // First parameter: window length, required
         let length_to_keep = match params.first() {
             Some(Expression::Constant(c)) => match &c.value {
                 ConstantValueWithFloat::Int(i) if *i > 0 => *i as usize,
@@ -179,7 +185,7 @@ impl SortWindowProcessor {
             _ => return Err("Sort window length must be a constant".to_string()),
         };
 
-        // Parse remaining parameters as attribute/order pairs
+        // The rest are attributes, each optionally followed by its order
         // Format: sort(length, attr1, 'asc', attr2, 'desc', ...)
         let mut executors: Vec<
             Box<dyn crate::core::executor::expression_executor::ExpressionExecutor>,
@@ -190,39 +196,38 @@ impl SortWindowProcessor {
         let mut i = 0;
 
         while i < remaining_params.len() {
-            // Each iteration should process an attribute expression
+            // Each pass starts at an attribute expression
             let attr_expr = &remaining_params[i];
 
-            // Parse the attribute expression using the context
             let executor = crate::core::util::parser::expression_parser::parse_expression(
                 attr_expr, parse_ctx,
             )
             .map_err(|e| format!("Failed to parse sort attribute: {}", e))?;
 
-            // CRITICAL VALIDATION: Only accept Variable expressions (attributes), not constants or complex expressions
+            // Only plain stream attributes are allowed, not constants or other expressions
             if !executor.is_variable_executor() {
                 return Err(format!(
                     "Sort window requires variable expressions (stream attributes), not constants or complex expressions. \
                     Invalid parameter at position {}. Use attribute names only (e.g., 'price', 'volume').",
-                    i + 2  // +2 because: +1 for 1-based indexing, +1 to skip size param
+                    i + 2  // +1 to count from 1, +1 to skip the size parameter
                 ));
             }
 
             executors.push(executor);
 
-            // Check for optional order specification ('asc' or 'desc')
+            // An optional 'asc' or 'desc' may follow the attribute
             let is_ascending = if i + 1 < remaining_params.len() {
                 if let Expression::Constant(c) = &remaining_params[i + 1] {
                     if let ConstantValueWithFloat::String(order_str) = &c.value {
                         let order_lower = order_str.to_lowercase();
                         if order_lower == "asc" {
-                            i += 1; // Consume the order parameter
+                            i += 1; // skip past the order parameter
                             true
                         } else if order_lower == "desc" {
-                            i += 1; // Consume the order parameter
+                            i += 1; // skip past the order parameter
                             false
                         } else {
-                            // STRICT VALIDATION: Reject invalid order strings
+                            // Any other string is rejected
                             return Err(format!(
                                 "Sort window order parameter must be 'asc' or 'desc', found: '{}'. \
                                 Valid usage: WINDOW('sort', size, attribute, 'asc') or WINDOW('sort', size, attribute, 'desc')",
@@ -230,20 +235,19 @@ impl SortWindowProcessor {
                             ));
                         }
                     } else {
-                        true // Default to ascending if not a string
+                        true // not a string, so ascending. The next pass parses it.
                     }
                 } else {
-                    true // Default to ascending if next param is not a constant
+                    true // next parameter is not a constant, so ascending
                 }
             } else {
-                true // Default to ascending if no order specified
+                true // no order given, so ascending
             };
 
             ascending.push(is_ascending);
             i += 1;
         }
 
-        // Validate that we have at least one sort attribute
         if executors.is_empty() {
             return Err("Sort window requires at least one sort attribute".to_string());
         }
@@ -253,37 +257,40 @@ impl SortWindowProcessor {
         Ok(Self::new(length_to_keep, comparator, app_ctx, query_ctx))
     }
 
-    /// Process an incoming event
+    /// Add one event to the window.
+    ///
+    /// Returns the event as Current, followed by the expired event when the window
+    /// overflowed.
+    ///
+    /// # Errors
+    /// Returns an error message when the window lock is poisoned.
     fn process_event(&self, event: Arc<StreamEvent>) -> Result<Vec<Box<dyn ComplexEvent>>, String> {
         let mut sorted_buffer = self
             .sorted_window
             .lock()
             .map_err(|_| "Failed to acquire sort window lock".to_string())?;
 
-        // Add the new event to the buffer
-        // Note: We store Arc references for efficiency. Events are immutable in EventFlux,
-        // so sharing via Arc is safe and more idiomatic than cloning.
+        // Events do not change once created, so sharing the Arc is safe and cheaper
+        // than a copy
         sorted_buffer.push(Arc::clone(&event));
 
         let mut result = Vec::new();
 
-        // Always emit the current event first
+        // The new event always goes out first, as Current
         let mut current_stream_event = event.as_ref().clone_without_next();
         current_stream_event.set_event_type(ComplexEventType::Current);
         result.push(Box::new(current_stream_event) as Box<dyn ComplexEvent>);
 
-        // If we exceed the window size, sort and remove the last element
+        // Over the limit, so sort and expire the last event in sort order
         if sorted_buffer.len() > self.length_to_keep {
-            // Sort using the OrderByEventComparator with attribute-based sorting
             sorted_buffer.sort_by(|a, b| self.comparator.compare(a.as_ref(), b.as_ref()));
 
-            // Remove the last element (highest in sort order) and mark it as expired
             if let Some(expired_event) = sorted_buffer.pop() {
                 let mut expired_stream_event = expired_event.as_ref().clone_without_next();
                 expired_stream_event.set_event_type(ComplexEventType::Expired);
 
-                // CRITICAL: Update timestamp on expired event to current time
-                // Required for downstream processors that depend on event ordering by timestamp
+                // Stamp it with the new event's time. Later processors rely on events
+                // arriving in timestamp order.
                 expired_stream_event.set_timestamp(event.timestamp);
 
                 result.push(Box::new(expired_stream_event) as Box<dyn ComplexEvent>);
@@ -315,7 +322,7 @@ impl Processor for SortWindowProcessor {
                     current_opt = ev.get_next();
                 }
 
-                // Send all events to next processor
+                // Link every result into one chunk for the next processor
                 if !all_events.is_empty() {
                     let mut head: Option<Box<dyn ComplexEvent>> = None;
                     let mut tail = &mut head;
@@ -342,7 +349,7 @@ impl Processor for SortWindowProcessor {
     fn clone_processor(&self, query_ctx: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
         Box::new(Self::new(
             self.length_to_keep,
-            // TODO: Clone comparator properly
+            // TODO: clone the comparator. The clone gets one with no sort attributes.
             OrderByEventComparator::new(Vec::new(), Vec::new()),
             Arc::clone(&self.meta.eventflux_app_context),
             Arc::clone(query_ctx),

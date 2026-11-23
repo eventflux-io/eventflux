@@ -16,38 +16,37 @@
  */
 
 // src/core/query/input/stream/state/state_stream_runtime.rs
-// StateStreamRuntime - manages InnerStateRuntime lifecycle
+// StateStreamRuntime, which wraps an InnerStateRuntime with higher level steps
 
 use crate::core::query::input::stream::state::inner_state_runtime::InnerStateRuntime;
 use crate::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// StateStreamRuntime manages the lifecycle of InnerStateRuntime.
+/// Wraps an InnerStateRuntime and runs its setup, reset and update steps for a pattern
+/// or sequence.
 ///
-/// **Purpose**: Provides high-level operations for pattern/sequence processing runtime.
+/// **Main steps**:
+/// - `reset_and_update()` resets the chain, then moves new states to pending
+/// - `update()` only moves new states to pending
+/// - `init_partition()` sets the chain up for a new partition instance
 ///
-/// **Key Operations**:
-/// - `reset_and_update()` - Reset state then update (used by SequenceReceiver)
-/// - `init_partition()` - Initialize runtime for partitioned processing
-///
-/// **Usage in Receivers**:
-/// - **PatternReceiver**: Calls expireEvents() then updateState() directly on processors
-/// - **SequenceReceiver**: Calls expireEvents() on processors, then stateStreamRuntime.resetAndUpdate()
+/// **How the receivers use it**:
+/// - **PatternStreamReceiver** does not use it. It calls expire_events() and
+///   update_state() on the processors directly.
+/// - **SequenceStreamReceiver** calls expire_events() and reset_state() on the
+///   processors, then `update()` here.
 #[derive(Debug)]
 pub struct StateStreamRuntime {
-    /// The inner state runtime managing processor chains
+    /// Runtime that holds the processor chain
     inner_state_runtime: Arc<Mutex<dyn InnerStateRuntime>>,
 
-    /// List of startup PreStateProcessors (for partition initialization)
+    /// Start processors to notify when a partition is created
     startup_pre_state_processors: Vec<Arc<Mutex<dyn PreStateProcessor>>>,
 }
 
 impl StateStreamRuntime {
-    /// Create a new StateStreamRuntime
-    ///
-    /// # Arguments
-    /// * `inner_state_runtime` - The InnerStateRuntime to manage
+    /// Create a runtime wrapping `inner_state_runtime`, with no startup processors.
     pub fn new(inner_state_runtime: Arc<Mutex<dyn InnerStateRuntime>>) -> Self {
         Self {
             inner_state_runtime,
@@ -55,12 +54,11 @@ impl StateStreamRuntime {
         }
     }
 
-    /// Get the inner state runtime
     pub fn inner_state_runtime(&self) -> Arc<Mutex<dyn InnerStateRuntime>> {
         self.inner_state_runtime.clone()
     }
 
-    /// Add a startup PreStateProcessor (for partition initialization)
+    /// Add a start processor to notify when a partition is created
     pub fn add_startup_pre_state_processor(
         &mut self,
         processor: Arc<Mutex<dyn PreStateProcessor>>,
@@ -68,13 +66,9 @@ impl StateStreamRuntime {
         self.startup_pre_state_processors.push(processor);
     }
 
-    /// Reset and update state.
+    /// Reset the chain, then move new states to pending.
     ///
-    /// **Purpose**: Used by SequenceReceiver to clear state and process pending events.
-    ///
-    /// **Flow**:
-    /// 1. reset() - Clears all pending events and state
-    /// 2. update() - Processes any new pending events
+    /// Does nothing when the inner runtime's lock is poisoned.
     pub fn reset_and_update(&mut self) {
         if let Ok(mut guard) = self.inner_state_runtime.lock() {
             guard.reset();
@@ -82,32 +76,27 @@ impl StateStreamRuntime {
         }
     }
 
-    /// Update state only (without reset).
+    /// Move new states to pending, without a reset.
     ///
-    /// **Purpose**: Used when reset has already been done on all processors.
-    /// Moves new events to pending for processing.
+    /// Used when every processor has already been reset. Does nothing when the inner
+    /// runtime's lock is poisoned.
     pub fn update(&mut self) {
         if let Ok(mut guard) = self.inner_state_runtime.lock() {
             guard.update();
         }
     }
 
-    /// Initialize runtime for partitioned processing.
+    /// Set the chain up for a new partition instance.
     ///
-    /// **Purpose**: Called when creating a new partition instance.
-    ///
-    /// **Flow**:
-    /// 1. init() - Initialize the InnerStateRuntime
-    /// 2. Notify all startup processors (if they support PartitionCreationListener)
+    /// Calls init() on the InnerStateRuntime. The startup processors are not notified
+    /// yet, because there is no PartitionCreationListener in Rust.
     pub fn init_partition(&mut self) {
-        // Initialize the inner state runtime
         if let Ok(mut guard) = self.inner_state_runtime.lock() {
             guard.init();
         }
 
-        // Notify startup processors of partition creation
-        // Note: PartitionCreationListener is not yet implemented in Rust
-        // This will be added when partition support is implemented
+        // Placeholder for notifying startup processors. Needs PartitionCreationListener,
+        // which does not exist yet.
         for _processor in &self.startup_pre_state_processors {
             // Future: if processor implements PartitionCreationListener {
             //     processor.partition_created();

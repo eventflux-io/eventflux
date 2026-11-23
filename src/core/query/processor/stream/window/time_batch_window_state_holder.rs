@@ -17,10 +17,11 @@
 
 // src/core/query/processor/stream/window/time_batch_window_state_holder.rs
 
-//! Enhanced StateHolder implementation for TimeBatchWindowProcessor
+//! StateHolder for TimeBatchWindowProcessor, so its batches and batch start time can
+//! be checkpointed and restored.
 //!
-//! This implementation provides enterprise-grade state management for time batch windows
-//! with versioning, incremental checkpointing, and comprehensive metadata.
+//! Adds a schema version, a change log for incremental checkpoints, and metadata about
+//! the window.
 
 use std::sync::{Arc, Mutex};
 
@@ -34,42 +35,45 @@ use crate::core::util::compression::{
 };
 use crate::core::util::event_serialization::{EventSerializationService, StorageStrategy};
 
-/// Enhanced state holder for TimeBatchWindowProcessor with StateHolder capabilities
+/// State holder for TimeBatchWindowProcessor. Saves and restores the current batch,
+/// the expired batch, the batch start time and the reset event, and records changes
+/// for incremental checkpoints.
 #[derive(Debug, Clone)]
 pub struct TimeBatchWindowStateHolder {
-    /// Current batch buffer
+    /// Batch being filled
     buffer: Arc<Mutex<Vec<StreamEvent>>>,
 
-    /// Expired batch buffer
+    /// Last flushed batch, sent out as expired events
     expired: Arc<Mutex<Vec<StreamEvent>>>,
 
-    /// Batch start time tracking
+    /// Start time of the current batch, in milliseconds. None before the first event.
     start_time: Arc<Mutex<Option<i64>>>,
 
-    /// Reset event template - emitted between expired and current to clear aggregator state
+    /// Reset event template. Sent between the expired and current events so
+    /// aggregators clear their state.
     reset_event: Arc<Mutex<Option<StreamEvent>>>,
 
-    /// Component identifier
     component_id: String,
 
-    /// Batch duration in milliseconds
+    /// Batch length in milliseconds
     duration_ms: i64,
 
-    /// Last checkpoint ID for incremental tracking
+    /// Checkpoint the change log was last cleared at
     last_checkpoint_id: Arc<Mutex<Option<CheckpointId>>>,
 
-    /// Change log for incremental checkpointing
+    /// Changes since the last checkpoint, for incremental checkpoints
     change_log: Arc<Mutex<Vec<StateOperation>>>,
 
-    /// Event counter for size estimation
+    /// Events added so far. Saved in snapshots.
     total_events_processed: Arc<Mutex<u64>>,
 
-    /// Event serialization service with proper AttributeValue handling
+    /// Encodes and decodes events, including every AttributeValue type
     serialization_service: EventSerializationService,
 }
 
 impl TimeBatchWindowStateHolder {
-    /// Create a new enhanced state holder
+    /// Create a holder for the given buffers with an empty change log. Events are
+    /// encoded with StorageStrategy::Essential.
     pub fn new(
         buffer: Arc<Mutex<Vec<StreamEvent>>>,
         expired: Arc<Mutex<Vec<StreamEvent>>>,
@@ -92,7 +96,7 @@ impl TimeBatchWindowStateHolder {
         }
     }
 
-    /// Record an event addition to current batch for incremental checkpointing
+    /// Log an Insert into the current batch and count the event
     pub fn record_event_added(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
         let event_data = self.serialize_event(event);
@@ -102,11 +106,14 @@ impl TimeBatchWindowStateHolder {
             value: event_data,
         });
 
-        // Update event counter
         *self.total_events_processed.lock().unwrap() += 1;
     }
 
-    /// Record a batch flush for incremental checkpointing  
+    /// Log a batch flush at `timestamp`.
+    ///
+    /// Written as a Delete with the key `time_batch_flush_marker`. Replaying it moves
+    /// the current batch into expired. The value holds only the batch sizes, the flush
+    /// time and the duration, not the events.
     pub fn record_batch_flushed(
         &self,
         current_batch: &[StreamEvent],
@@ -115,7 +122,6 @@ impl TimeBatchWindowStateHolder {
     ) {
         let mut change_log = self.change_log.lock().unwrap();
 
-        // Record batch transition with timing information
         change_log.push(StateOperation::Delete {
             key: b"time_batch_flush_marker".to_vec(),
             old_value: self.serialize_time_batch_transition(
@@ -126,7 +132,7 @@ impl TimeBatchWindowStateHolder {
         });
     }
 
-    /// Record start time change for incremental checkpointing
+    /// Log an Update of the batch start time, under the key `start_time`
     pub fn record_start_time_updated(
         &self,
         old_start_time: Option<i64>,
@@ -144,8 +150,8 @@ impl TimeBatchWindowStateHolder {
         });
     }
 
-    /// Record reset event template change for incremental checkpointing
-    /// Called when the first event of a new batch is captured as the reset template
+    /// Log that the reset event template was set. Called when the first event of a new
+    /// batch becomes the template.
     pub fn record_reset_event_set(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
         let event_data = self.serialize_event(event);
@@ -156,45 +162,43 @@ impl TimeBatchWindowStateHolder {
         });
     }
 
-    /// Record reset event template cleared for incremental checkpointing
-    /// Called when the reset event is consumed during batch flush
+    /// Log that the reset event template was cleared. Called when a batch flush uses
+    /// the reset event up.
     pub fn record_reset_event_cleared(&self) {
         let mut change_log = self.change_log.lock().unwrap();
 
         change_log.push(StateOperation::Delete {
             key: b"reset_event".to_vec(),
-            old_value: Vec::new(), // We don't need the old value for delete
+            old_value: Vec::new(), // replay matches on the key, so no old value is needed
         });
     }
 
-    /// Generate a unique key for an event
+    /// Changelog key for an event, made of the buffer name, `_`, the timestamp, then a
+    /// hash of before_window_data, numbers little endian. apply_changelog reads the buffer name
+    /// back from the key.
     fn generate_event_key(&self, event: &StreamEvent, buffer_type: &str) -> Vec<u8> {
-        // Use timestamp, buffer type, and a hash of event data as key
         let mut key = Vec::new();
         key.extend_from_slice(buffer_type.as_bytes());
         key.push(b'_');
         key.extend_from_slice(&event.timestamp.to_le_bytes());
 
-        // Add a simple hash of the event data
         let data_hash = self.hash_event_data(&event.before_window_data);
         key.extend_from_slice(&data_hash.to_le_bytes());
 
         key
     }
 
-    /// Simple hash function for event data
+    /// Hash the value count, then each value through its Debug text. DefaultHasher
+    /// output can change between Rust versions, so the key is not stable across builds.
     fn hash_event_data(&self, data: &[crate::core::event::value::AttributeValue]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
 
-        // Hash the length first
         data.len().hash(&mut hasher);
 
-        // Hash each attribute value
         for attr in data {
-            // Create a string representation for hashing
             let attr_str = format!("{attr:?}");
             attr_str.hash(&mut hasher);
         }
@@ -202,14 +206,16 @@ impl TimeBatchWindowStateHolder {
         hasher.finish()
     }
 
-    /// Serialize an event to bytes using the enhanced serialization service
+    /// Encode an event with the serialization service. Returns empty bytes if encoding
+    /// fails.
     fn serialize_event(&self, event: &StreamEvent) -> Vec<u8> {
         self.serialization_service
             .serialize_event(event)
             .unwrap_or_default()
     }
 
-    /// Serialize time batch transition for changelog
+    /// Encode the batch sizes, flush time and duration for a flush entry. Returns empty
+    /// bytes if encoding fails.
     fn serialize_time_batch_transition(
         &self,
         current_batch: &[StreamEvent],
@@ -228,18 +234,19 @@ impl TimeBatchWindowStateHolder {
         to_bytes(&transition_data).unwrap_or_default()
     }
 
-    /// Serialize start time for changelog
+    /// Encode a start time for the change log. Returns empty bytes if encoding fails.
     fn serialize_start_time(&self, start_time: Option<i64>) -> Vec<u8> {
         use crate::core::util::to_bytes;
         to_bytes(&start_time).unwrap_or_default()
     }
 
-    /// Deserialize an event from bytes using the enhanced serialization service
+    /// Decode an event with the serialization service
     fn deserialize_event(&self, data: &[u8]) -> Result<StreamEvent, StateError> {
         self.serialization_service.deserialize_event(data)
     }
 
-    /// Clear the change log (called after successful checkpoint)
+    /// Empty the change log and remember `checkpoint_id`. Call after a checkpoint
+    /// succeeds.
     #[allow(dead_code)]
     pub fn clear_change_log(&self, checkpoint_id: CheckpointId) {
         let mut change_log = self.change_log.lock().unwrap();
@@ -258,14 +265,13 @@ impl StateHolder for TimeBatchWindowStateHolder {
 
         let start_time = *self.start_time.lock().unwrap();
 
-        // Determine storage strategy based on hints
+        // Any compression preference switches events to the Compressed strategy
         let storage_strategy = hints
             .prefer_compression
             .as_ref()
             .map(|_| StorageStrategy::Compressed)
             .unwrap_or(StorageStrategy::Essential);
 
-        // Serialize current batch events
         let current_batch = {
             let buffer = self.buffer.lock().unwrap();
             let mut serialized_events = Vec::new();
@@ -276,15 +282,14 @@ impl StateHolder for TimeBatchWindowStateHolder {
                 {
                     Ok(data) => serialized_events.push(data),
                     Err(_e) => {
-                        // Warning: Failed to serialize event, skipping
-                        // Continue with other events rather than failing completely
+                        // Skip this event without logging and keep the rest, so one bad
+                        // event does not fail the snapshot
                     }
                 }
             }
             serialized_events
         };
 
-        // Serialize expired batch events
         let expired_batch = {
             let expired = self.expired.lock().unwrap();
             let mut serialized_events = Vec::new();
@@ -295,15 +300,14 @@ impl StateHolder for TimeBatchWindowStateHolder {
                 {
                     Ok(data) => serialized_events.push(data),
                     Err(_e) => {
-                        // Warning: Failed to serialize expired event, skipping
-                        // Continue with other events rather than failing completely
+                        // Skip this event without logging and keep the rest
                     }
                 }
             }
             serialized_events
         };
 
-        // Serialize reset event if present
+        // A reset event that fails to encode is saved as None
         let reset_event = {
             let reset_guard = self.reset_event.lock().unwrap();
             if let Some(ref event) = *reset_guard {
@@ -324,23 +328,22 @@ impl StateHolder for TimeBatchWindowStateHolder {
             reset_event,
         };
 
-        // Serialize to bytes
         let data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
             message: format!("Failed to serialize time batch window state: {e}"),
         })?;
 
-        // Apply compression if requested using the shared compression utility
+        // Compress with the requested type, or let the shared helper pick one
         let (compressed_data, compression_type) =
             if let Some(ref compression) = hints.prefer_compression {
                 match self.compress_state_data(&data, Some(compression.clone())) {
                     Ok((compressed, comp_type)) => (compressed, comp_type),
                     Err(_) => {
-                        // Fall back to no compression if compression fails
+                        // Store uncompressed if compression fails
                         (data, CompressionType::None)
                     }
                 }
             } else {
-                // Use intelligent compression selection
+                // No preference, so the helper picks based on compression_hints
                 match self.compress_state_data(&data, None) {
                     Ok((compressed, comp_type)) => (compressed, comp_type),
                     Err(_) => (data, CompressionType::None),
@@ -354,7 +357,7 @@ impl StateHolder for TimeBatchWindowStateHolder {
 
         Ok(StateSnapshot {
             version: self.schema_version(),
-            checkpoint_id: 0, // Will be set by the checkpoint coordinator
+            checkpoint_id: 0, // the checkpoint coordinator sets the real id
             data,
             compression,
             checksum,
@@ -365,21 +368,18 @@ impl StateHolder for TimeBatchWindowStateHolder {
     fn deserialize_state(&self, snapshot: &StateSnapshot) -> Result<(), StateError> {
         use crate::core::util::from_bytes;
 
-        // Verify integrity
         if !snapshot.verify_integrity() {
             return Err(StateError::ChecksumMismatch);
         }
 
-        // Decompress data if needed using the shared compression utility
         let data = self.decompress_state_data(&snapshot.data, snapshot.compression.clone())?;
 
-        // Deserialize state data
         let state_data: TimeBatchWindowStateData =
             from_bytes(&data).map_err(|e| StateError::DeserializationError {
                 message: format!("Failed to deserialize time batch window state: {e}"),
             })?;
 
-        // Deserialize and restore current batch events
+        // Replace both batches with the saved events
         {
             let mut buffer = self.buffer.lock().unwrap();
             buffer.clear();
@@ -388,14 +388,13 @@ impl StateHolder for TimeBatchWindowStateHolder {
                 match self.deserialize_event(&serialized_event) {
                     Ok(event) => buffer.push(event),
                     Err(_e) => {
-                        // Warning: Failed to deserialize current batch event, skipping
-                        // Continue with other events rather than failing completely
+                        // Skip an event that cannot be decoded, without logging, and keep
+                        // the rest
                     }
                 }
             }
         }
 
-        // Deserialize and restore expired batch events
         {
             let mut expired = self.expired.lock().unwrap();
             expired.clear();
@@ -404,17 +403,15 @@ impl StateHolder for TimeBatchWindowStateHolder {
                 match self.deserialize_event(&serialized_event) {
                     Ok(event) => expired.push(event),
                     Err(_e) => {
-                        // Warning: Failed to deserialize expired batch event, skipping
-                        // Continue with other events rather than failing completely
+                        // Skip an event that cannot be decoded, without logging
                     }
                 }
             }
         }
 
-        // Restore timing state
         *self.start_time.lock().unwrap() = state_data.start_time;
 
-        // Restore reset event template if present
+        // A reset event that cannot be decoded is restored as None
         {
             let mut reset_guard = self.reset_event.lock().unwrap();
             *reset_guard = if let Some(serialized_event) = state_data.reset_event {
@@ -424,7 +421,7 @@ impl StateHolder for TimeBatchWindowStateHolder {
             };
         }
 
-        // Restore metadata (duration_ms is configuration and doesn't need to be restored)
+        // duration_ms comes from the query config, so it is not restored
         *self.total_events_processed.lock().unwrap() = state_data.total_events_processed;
 
         Ok(())
@@ -458,7 +455,6 @@ impl StateHolder for TimeBatchWindowStateHolder {
         for operation in &changes.operations {
             match operation {
                 StateOperation::Insert { key, value } => {
-                    // Handle reset_event insert
                     if key == b"reset_event" {
                         if let Ok(event) = self.deserialize_event(value) {
                             let mut reset_guard = self.reset_event.lock().unwrap();
@@ -467,16 +463,15 @@ impl StateHolder for TimeBatchWindowStateHolder {
                         continue;
                     }
 
-                    // Deserialize and insert event into appropriate buffer
                     match self.deserialize_event(value) {
                         Ok(event) => {
-                            // Check key to determine target buffer
+                            // The key prefix names the target buffer. Unknown prefixes go
+                            // to the current batch.
                             if key.starts_with(b"current_batch") {
                                 buffer.push(event);
                             } else if key.starts_with(b"expired_batch") {
                                 expired.push(event);
                             } else {
-                                // Default to current buffer
                                 buffer.push(event);
                             }
                         }
@@ -492,17 +487,15 @@ impl StateHolder for TimeBatchWindowStateHolder {
 
                 StateOperation::Delete { key, old_value } => {
                     if key == b"time_batch_flush_marker" {
-                        // Handle batch flush: move current to expired
+                        // A flush. The current batch replaces the expired batch.
                         expired.clear();
                         expired.extend(buffer.drain(..));
                     } else if key == b"reset_event" {
-                        // Clear reset event template
                         let mut reset_guard = self.reset_event.lock().unwrap();
                         *reset_guard = None;
                     } else {
-                        // Deserialize and remove the event
+                        // Remove every matching event from both buffers
                         if let Ok(event_to_remove) = self.deserialize_event(old_value) {
-                            // Remove from both buffers
                             buffer.retain(|e| {
                                 !(e.timestamp == event_to_remove.timestamp
                                     && e.before_window_data == event_to_remove.before_window_data)
@@ -521,14 +514,14 @@ impl StateHolder for TimeBatchWindowStateHolder {
                     new_value,
                 } => {
                     if key == b"start_time" {
-                        // Handle start time update
                         if let Ok(new_start_time) =
                             crate::core::util::from_bytes::<Option<i64>>(new_value)
                         {
                             *self.start_time.lock().unwrap() = new_start_time;
                         }
                     } else {
-                        // Remove old event and insert new one
+                        // Remove the old event from both buffers, then add the new one to
+                        // the current batch
                         if let Ok(old_event) = self.deserialize_event(old_value) {
                             buffer.retain(|e| {
                                 !(e.timestamp == old_event.timestamp
@@ -547,7 +540,6 @@ impl StateHolder for TimeBatchWindowStateHolder {
                 }
 
                 StateOperation::Clear => {
-                    // Clear both buffers, reset start time, and clear reset event template
                     buffer.clear();
                     expired.clear();
                     *self.start_time.lock().unwrap() = None;
@@ -564,16 +556,15 @@ impl StateHolder for TimeBatchWindowStateHolder {
         let expired = self.expired.lock().unwrap();
         let entries = buffer.len() + expired.len();
 
-        // Estimate bytes per event (rough calculation)
-        let estimated_bytes_per_event = 200; // Conservative estimate
+        // Rough guess of bytes per event
+        let estimated_bytes_per_event = 200;
         let total_bytes = entries * estimated_bytes_per_event;
 
-        // Estimate growth rate based on time duration
-        // Time batch windows have variable growth based on event rate
+        // Real growth depends on the event rate, which is not tracked. Guess half an
+        // event's size while a batch is open, otherwise one event's size.
         let start_time = *self.start_time.lock().unwrap();
         let growth_rate = if start_time.is_some() && self.duration_ms > 0 {
-            // If we have an active batch, estimate remaining capacity
-            estimated_bytes_per_event as f64 * 0.5 // Simplified estimate
+            estimated_bytes_per_event as f64 * 0.5
         } else {
             estimated_bytes_per_event as f64
         };
@@ -586,8 +577,7 @@ impl StateHolder for TimeBatchWindowStateHolder {
     }
 
     fn access_pattern(&self) -> AccessPattern {
-        // Time batch windows have a sequential access pattern with temporal locality
-        // Events are added in time order and flushed as time-based batches
+        // Events are added in time order and flushed as whole batches
         AccessPattern::Sequential
     }
 
@@ -599,7 +589,6 @@ impl StateHolder for TimeBatchWindowStateHolder {
         metadata.access_pattern = self.access_pattern();
         metadata.size_estimation = self.estimate_size();
 
-        // Add custom metadata
         metadata
             .custom_metadata
             .insert("duration_ms".to_string(), self.duration_ms.to_string());
@@ -640,17 +629,17 @@ impl StateHolder for TimeBatchWindowStateHolder {
 impl CompressibleStateHolder for TimeBatchWindowStateHolder {
     fn compression_hints(&self) -> CompressionHints {
         CompressionHints {
-            prefer_speed: true, // Time batch windows need low latency for real-time processing
+            prefer_speed: true, // live processing needs low latency
             prefer_ratio: false,
-            data_type: DataCharacteristics::ModeratelyRepetitive, // Event streams have moderate patterns
-            target_latency_ms: Some(2), // Target < 2ms compression time for batch processing
-            min_compression_ratio: Some(0.3), // At least 30% space savings to be worthwhile
-            expected_size_range: DataSizeRange::Small, // Time batch windows typically have small state
+            data_type: DataCharacteristics::ModeratelyRepetitive, // events repeat somewhat
+            target_latency_ms: Some(2),                           // aim for under 2 ms
+            min_compression_ratio: Some(0.3), // worth it only if it saves at least 30%
+            expected_size_range: DataSizeRange::Small, // time batch windows usually hold little
         }
     }
 }
 
-/// Serializable state data for TimeBatchWindowProcessor
+/// Snapshot contents for TimeBatchWindowProcessor
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct TimeBatchWindowStateData {
     current_batch: Vec<Vec<u8>>,
@@ -658,8 +647,8 @@ struct TimeBatchWindowStateData {
     duration_ms: i64,
     start_time: Option<i64>,
     total_events_processed: u64,
-    /// Serialized reset event template (if present)
-    /// Uses serde(default) for backward compatibility with checkpoints created before this field existed
+    /// Encoded reset event template, if one is set.
+    /// serde(default) lets checkpoints saved before this field existed still load.
     #[serde(default)]
     reset_event: Option<Vec<u8>>,
 }

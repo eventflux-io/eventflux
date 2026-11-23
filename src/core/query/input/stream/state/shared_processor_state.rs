@@ -15,82 +15,67 @@
  * limitations under the License.
  */
 
-//! Shared state between Pre and Post state processors
+//! State shared by a PreStateProcessor and its PostStateProcessor.
 //!
-//! This module provides lock-free shared state that allows PreStateProcessor and
-//! PostStateProcessor to communicate without requiring locks on each other.
+//! Lets the two processors signal each other through an atomic flag, without either
+//! one locking the other.
 //!
-//! ## Design Rationale
+//! ## Why
 //!
-//! PostStateProcessor needs to notify PreStateProcessor of state changes without
-//! causing deadlock. Direct method calls would require:
-//! 1. PreStateProcessor is already locked during event processing
-//! 2. PostStateProcessor needs to lock it to call methods
-//! 3. Rust Mutex is not reentrant → deadlock
+//! PostStateProcessor has to tell PreStateProcessor that the state changed. A direct
+//! method call would deadlock:
+//! 1. PreStateProcessor is already locked while it processes an event
+//! 2. PostStateProcessor would have to lock it again to call the method
+//! 3. Rust's Mutex cannot be locked twice by the same caller, so it deadlocks
 //!
-//! Solution: Share atomic state that both can access without locking each other.
+//! Instead both hold an atomic flag they can read and write without locking.
 //!
-//! ## Benefits:
-//! - Lock-free: No contention, faster
-//! - No deadlock possibility
-//! - Cache-friendly atomic operations
-//! - Better for multi-threaded scenarios
+//! ## Benefits
+//! - No lock, so no waiting and no deadlock
+//! - Atomic reads and writes are cheap
+//! - Safe to use from several threads
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Shared state between PreStateProcessor and PostStateProcessor
+/// State shared by a PreStateProcessor and its PostStateProcessor.
 ///
-/// This allows both processors to coordinate without locking each other.
-/// All fields use atomic operations for thread-safe, lock-free access.
+/// Every field is atomic, so either side can use it from any thread without a lock.
 #[derive(Debug)]
 pub struct ProcessorSharedState {
-    /// Flag indicating if processor state has changed
-    ///
-    /// Set to true when:
-    /// - New state added to pending list
-    /// - State matched and progressed
-    /// - State expired or removed
-    ///
-    /// Used for optimization: skip processing if nothing changed
+    /// True once the processor state has changed, for example when a state is added,
+    /// a match moves forward, or a state is removed. Stays true until
+    /// `reset_state_changed` is called.
     state_changed: AtomicBool,
 }
 
 impl ProcessorSharedState {
-    /// Create new shared state
+    /// Create shared state with the changed flag cleared
     pub fn new() -> Self {
         Self {
             state_changed: AtomicBool::new(false),
         }
     }
 
-    /// Mark that state has changed
+    /// Set the changed flag.
     ///
-    /// Called by both PreStateProcessor and PostStateProcessor when they
-    /// modify pending states.
-    ///
-    /// Uses `Ordering::Release` to ensure all prior writes are visible
-    /// to threads that subsequently read the flag.
+    /// Called by either processor when it changes the pending states. Uses
+    /// `Ordering::Release` so writes made before it are visible to a thread that later
+    /// reads the flag.
     #[inline]
     pub fn mark_state_changed(&self) {
         self.state_changed.store(true, Ordering::Release);
     }
 
-    /// Check if state has changed
+    /// True when the flag is set. Reading does not clear it.
     ///
-    /// Uses `Ordering::Acquire` to ensure we see all writes that happened
-    /// before the flag was set.
-    ///
-    /// Returns true if state changed since last check
+    /// Uses `Ordering::Acquire` so the reader sees every write made before the flag
+    /// was set.
     #[inline]
     pub fn is_state_changed(&self) -> bool {
         self.state_changed.load(Ordering::Acquire)
     }
 
-    /// Reset the state changed flag
-    ///
-    /// Called after processing state changes to reset for next check.
-    ///
-    /// Uses `Ordering::Release` for consistency with mark_state_changed.
+    /// Clear the changed flag. Uses `Ordering::Release` to match mark_state_changed.
     #[inline]
     pub fn reset_state_changed(&self) {
         self.state_changed.store(false, Ordering::Release);

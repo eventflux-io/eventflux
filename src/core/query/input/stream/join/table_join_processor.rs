@@ -71,19 +71,20 @@ impl TableJoinProcessor {
     ) -> StreamEvent {
         let total_attr_count = self.stream_attr_count + self.table_attr_count;
 
-        // Create event with output_data capacity set to total attribute count
-        // This ensures callbacks and downstream processors receive the joined payload
+        // Size output_data for all joined attributes so callbacks and later processors
+        // get the full joined row.
         let mut event = StreamEvent::new(
             stream.timestamp,
             total_attr_count, // before_window_data
             0,                // on_after_window_data
-            total_attr_count, // output_data - FIXED: was 0, now has proper size
+            total_attr_count, // output_data
         );
 
-        // Preserve event type (Current/Expired) from upstream event
+        // Keep the upstream event type (Current or Expired)
         event.event_type = stream.event_type;
 
-        // Copy stream attributes to both before_window_data and output_data
+        // Write each value to both before_window_data and output_data. Stream
+        // attributes come first, then table attributes. Missing values become Null.
         for i in 0..self.stream_attr_count {
             let val = stream
                 .before_window_data
@@ -96,7 +97,6 @@ impl TableJoinProcessor {
             }
         }
 
-        // Copy table attributes to both before_window_data and output_data
         for j in 0..self.table_attr_count {
             let val = row
                 .and_then(|r| r.get(j).cloned())
@@ -141,7 +141,7 @@ impl Processor for TableJoinProcessor {
                     }
                     Err(e) => {
                         log::error!("Failed to find rows for join: {}", e);
-                        // For left outer join, still emit the event without join data
+                        // A left outer join still emits the stream event, with Null table values
                         if matches!(self.join_type, JoinType::LeftOuterJoin) {
                             let joined = self.build_joined_event(se, None);
                             self.forward(joined);

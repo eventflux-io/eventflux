@@ -15,33 +15,33 @@
  * limitations under the License.
  */
 
-//! Timer Wheel for O(1) Event Scheduling
+//! Timer wheel that schedules items in constant time.
 //!
-//! **Performance Optimization**: O(1) insert instead of O(log n) BinaryHeap
-//! - Before: BinaryHeap insert = O(log n), pop = O(log n)
-//! - After: Timer wheel insert = O(1), trigger = O(expired_items)
-//! - **Speedup**: Constant time insertion regardless of scheduled items
+//! **Why**: inserting is O(1), where a BinaryHeap insert and pop are each O(log n).
+//! Firing costs O(expired items). Insert time stays the same however many items are
+//! scheduled.
 //!
-//! **Algorithm**: Time-bucketed array with circular indexing
-//! - Array of buckets (e.g., 3600 for 1 hour at 1-second resolution)
-//! - current_index advances with time
+//! **How**: a ring of time buckets
+//! - An array of buckets, for example 3600 for 1 hour at 1 second per bucket
+//! - current_index moves forward as time passes
 //! - Insert: bucket_index = (current + offset) % capacity
-//! - Trigger: advance wheel, collect expired buckets
+//! - Fire: move the wheel forward and collect the buckets passed
 //!
-//! **Use Case**: Absent patterns like `NOT A FOR 10 SECONDS`
+//! **Meant for**: absent patterns like `NOT A FOR 10 SECONDS`. Not used by the engine
+//! yet.
 
-/// Timer wheel for O(1) event scheduling
+/// Timer wheel that schedules items in constant time.
 ///
-/// # Algorithm
-/// - Array of time buckets (e.g., 3600 buckets for 1 hour at 1-second ticks)
-/// - current_index advances with time like a clock
-/// - Insert: calculate bucket offset, add to bucket (O(1))
-/// - Trigger: advance wheel, collect expired items (O(expired), NOT O(total))
+/// # How it works
+/// - An array of time buckets, for example 3600 buckets for 1 hour at 1 second ticks
+/// - current_index moves forward with time, like a clock hand
+/// - Insert: work out the bucket and push the item there, O(1)
+/// - Fire: move forward and collect the items passed, O(expired), not O(total)
 ///
-/// # Performance
-/// - **Insert**: O(1) - just push to bucket
-/// - **Trigger**: O(ticks_advanced + expired_items) - NOT O(total_scheduled)
-/// - **Memory**: num_buckets × Vec overhead + items
+/// # Cost
+/// - **Insert**: O(1), a push into one bucket
+/// - **Fire**: O(ticks moved + expired items), not O(total scheduled)
+/// - **Memory**: one Vec per bucket, plus the items
 ///
 /// # Example
 /// ```ignore
@@ -52,34 +52,37 @@
 /// let expired = wheel.advance_to(current_time_ms);
 /// ```
 pub struct TimerWheel<T> {
-    /// Array of time buckets
     buckets: Box<[Vec<T>]>,
 
-    /// Current bucket index (advances with time)
+    /// Bucket the wheel points at now. Moves forward with time.
     current_index: usize,
 
-    /// Start time (milliseconds)
+    /// Time the wheel starts from, in milliseconds
     start_time: i64,
 
-    /// Tick duration (milliseconds per bucket)
+    /// Milliseconds covered by one bucket
     tick_duration_ms: i64,
 }
 
 impl<T> TimerWheel<T> {
-    /// Create new timer wheel
+    /// Create a timer wheel with start time 0.
     ///
     /// # Arguments
-    /// - `duration_ms`: Total time span covered (e.g., 3_600_000 for 1 hour)
-    /// - `tick_ms`: Time per bucket (e.g., 1000 for 1 second)
+    /// - `duration_ms`: total time span covered, for example 3_600_000 for 1 hour
+    /// - `tick_ms`: time per bucket, for example 1000 for 1 second
     ///
     /// # Buckets
-    /// - num_buckets = duration_ms / tick_ms
-    /// - Example: 3_600_000 / 1000 = 3600 buckets (1 hour at 1-second resolution)
+    /// - num_buckets = duration_ms / tick_ms, rounded down
+    /// - Example: 3_600_000 / 1000 = 3600 buckets, 1 hour at 1 second per bucket
     ///
-    /// # Trade-offs
-    /// - More buckets: Higher resolution, more memory
-    /// - Fewer buckets: Coarser resolution, less memory
-    /// - Recommendation: 100ms - 1000ms tick duration
+    /// # Panics
+    /// Panics when `tick_ms` is 0. When `duration_ms` is less than `tick_ms` there
+    /// are no buckets, and later calls to `schedule` or `advance_to` panic.
+    ///
+    /// # Trade offs
+    /// - More buckets give finer timing and use more memory
+    /// - Fewer buckets give coarser timing and use less memory
+    /// - A tick of 100 ms to 1000 ms is recommended
     pub fn new(duration_ms: i64, tick_ms: i64) -> Self {
         let num_buckets = (duration_ms / tick_ms) as usize;
         let buckets = (0..num_buckets)
@@ -95,22 +98,21 @@ impl<T> TimerWheel<T> {
         }
     }
 
-    /// Initialize start time
-    ///
-    /// Must be called before scheduling events
+    /// Set the start time in milliseconds. Call it before scheduling items.
     pub fn set_start_time(&mut self, start_time: i64) {
         self.start_time = start_time;
     }
 
-    /// Schedule item to trigger at specific time
+    /// Schedule `item` to fire at `trigger_at` milliseconds.
     ///
-    /// # Performance
-    /// - O(1) insert - just push to bucket
-    /// - No heap operations, no sorting
+    /// O(1), a push into one bucket with no heap work or sorting.
     ///
     /// # Behavior
-    /// - If trigger_at is beyond wheel capacity, wraps around
-    /// - Items in same bucket trigger together (bucket resolution)
+    /// - The bucket is current_index plus the ticks from start_time to trigger_at.
+    ///   The ticks are counted from start_time, not from the current position, so
+    ///   after the wheel has moved the item lands later than asked.
+    /// - A time past the wheel's span wraps around
+    /// - Items in the same bucket fire together
     pub fn schedule(&mut self, item: T, trigger_at: i64) {
         let elapsed = trigger_at - self.start_time;
         let ticks = (elapsed / self.tick_duration_ms) as usize;
@@ -119,29 +121,29 @@ impl<T> TimerWheel<T> {
         self.buckets[bucket_index].push(item);
     }
 
-    /// Advance wheel to current time and collect expired items
+    /// Move the wheel to `current_time` and return the items that fired.
     ///
-    /// # Performance
-    /// - O(ticks_to_advance + expired_items)
-    /// - NOT O(total_scheduled)!
-    /// - Only processes buckets between old and new time
+    /// Costs O(ticks moved + expired items), not O(total scheduled). Only the buckets
+    /// between the old and new position are visited.
     ///
     /// # Returns
-    /// Vec of all items that should trigger at or before current_time
+    /// The items in the buckets passed on the way to `current_time`. When the wheel is
+    /// already at the target bucket, returns that bucket's items. Otherwise the bucket
+    /// it starts on is not collected.
     pub fn advance_to(&mut self, current_time: i64) -> Vec<T> {
         let elapsed = current_time - self.start_time;
         let target_index = (elapsed / self.tick_duration_ms) as usize % self.buckets.len();
 
         let mut triggered = Vec::new();
 
-        // Edge case: if current_index == target_index, collect items at current bucket
-        // This handles items scheduled at exactly current_time
+        // Already at the target bucket, so return its items. Covers items scheduled at
+        // exactly current_time.
         if self.current_index == target_index {
             triggered.append(&mut self.buckets[self.current_index]);
             return triggered;
         }
 
-        // Advance wheel, collect expired items from each passed bucket
+        // Step forward one bucket at a time and collect each bucket passed
         while self.current_index != target_index {
             self.current_index = (self.current_index + 1) % self.buckets.len();
             triggered.append(&mut self.buckets[self.current_index]);
@@ -150,27 +152,25 @@ impl<T> TimerWheel<T> {
         triggered
     }
 
-    /// Get number of scheduled items
+    /// Number of scheduled items. Walks every bucket, so O(buckets).
     pub fn len(&self) -> usize {
         self.buckets.iter().map(|b| b.len()).sum()
     }
 
-    /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.buckets.iter().all(|b| b.is_empty())
     }
 
-    /// Clear all scheduled items
+    /// Drop every scheduled item. The position and start time stay as they are.
     pub fn clear(&mut self) {
         self.buckets.iter_mut().for_each(|b| b.clear());
     }
 
-    /// Get number of buckets
     pub fn bucket_count(&self) -> usize {
         self.buckets.len()
     }
 
-    /// Get tick duration in milliseconds
+    /// Milliseconds per bucket
     pub fn tick_duration(&self) -> i64 {
         self.tick_duration_ms
     }

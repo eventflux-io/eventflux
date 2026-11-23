@@ -16,7 +16,7 @@
  */
 
 // src/core/query/input/stream/state/stream_inner_state_runtime.rs
-// StreamInnerStateRuntime - basic InnerStateRuntime implementation
+// StreamInnerStateRuntime, the default InnerStateRuntime
 
 use crate::core::query::input::stream::state::inner_state_runtime::InnerStateRuntime;
 use crate::core::query::input::stream::state::post_state_processor::PostStateProcessor;
@@ -25,38 +25,33 @@ use crate::core::query::input::stream::state::stream_pre_state_processor::StateT
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// StreamInnerStateRuntime - basic implementation of InnerStateRuntime.
+/// Default InnerStateRuntime. Holds the first and last processors of a pattern or
+/// sequence chain.
 ///
-/// **Purpose**: Manages the PreStateProcessor and PostStateProcessor chain for pattern/sequence processing.
-///
-/// **Architecture**:
 /// ```text
 /// [StreamInnerStateRuntime]
 ///      ↓
 /// [First PreStateProcessor] → [Next PreStateProcessor] → ... → [Last PostStateProcessor]
 /// ```
 ///
-/// **Lifecycle**:
-/// - `init()` - Calls firstProcessor.init()
-/// - `reset()` - Calls firstProcessor.resetState() to clear all pending events
-/// - `update()` - Calls firstProcessor.updateState() to process pending events
+/// **Lifecycle** (applied to the first processor only)
+/// - `init()` calls `init()`
+/// - `reset()` calls `reset_state()`
+/// - `update()` calls `update_state()`, which moves its new states to pending
+///
+/// Each step does nothing when no first processor is set or its lock is poisoned.
 #[derive(Debug)]
 pub struct StreamInnerStateRuntime {
-    /// The first PreStateProcessor in the chain
     first_processor: Option<Arc<Mutex<dyn PreStateProcessor>>>,
 
-    /// The last PostStateProcessor in the chain
     last_processor: Option<Arc<Mutex<dyn PostStateProcessor>>>,
 
-    /// State type (Pattern or Sequence)
+    /// Pattern or Sequence
     state_type: StateType,
 }
 
 impl StreamInnerStateRuntime {
-    /// Create a new StreamInnerStateRuntime
-    ///
-    /// # Arguments
-    /// * `state_type` - Pattern or Sequence
+    /// Create a runtime with no processors set
     pub fn new(state_type: StateType) -> Self {
         Self {
             first_processor: None,
@@ -65,7 +60,6 @@ impl StreamInnerStateRuntime {
         }
     }
 
-    /// Get the state type
     pub fn state_type(&self) -> StateType {
         self.state_type
     }
@@ -89,7 +83,6 @@ impl InnerStateRuntime for StreamInnerStateRuntime {
     }
 
     fn init(&mut self) {
-        // Initialize the first processor in the chain
         if let Some(ref first) = self.first_processor {
             if let Ok(mut guard) = first.lock() {
                 guard.init();
@@ -98,7 +91,6 @@ impl InnerStateRuntime for StreamInnerStateRuntime {
     }
 
     fn reset(&mut self) {
-        // Reset state on the first processor (clears pending events)
         if let Some(ref first) = self.first_processor {
             if let Ok(mut guard) = first.lock() {
                 guard.reset_state();
@@ -107,7 +99,6 @@ impl InnerStateRuntime for StreamInnerStateRuntime {
     }
 
     fn update(&mut self) {
-        // Update state on the first processor (processes pending events)
         if let Some(ref first) = self.first_processor {
             if let Ok(mut guard) = first.lock() {
                 guard.update_state();
@@ -233,7 +224,7 @@ mod tests {
         runtime.init();
         runtime.reset();
 
-        // Reset should clear state - verified by successful reset call
+        // Only checks that reset runs without a panic
         assert!(runtime.get_first_processor().is_some());
     }
 
@@ -253,7 +244,7 @@ mod tests {
         runtime.init();
         runtime.update();
 
-        // Update should process pending events - verified by successful update call
+        // Only checks that update runs without a panic
         assert!(runtime.get_first_processor().is_some());
     }
 

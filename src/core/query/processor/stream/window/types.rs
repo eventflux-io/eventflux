@@ -15,41 +15,45 @@
  * limitations under the License.
  */
 
-//! Window Type Constants
+//! Window type name constants
 //!
-//! Defines type-safe constants for all supported window types in EventFlux.
+//! Names for the core window types, so code does not repeat the strings. Some
+//! registered windows, such as unique, firstUnique, delay, frequent, lossyFrequent and
+//! expression, have no constant here.
 
-/// Length-based window: Keeps last N events
+/// Length window: keeps the last N events
 pub const WINDOW_TYPE_LENGTH: &str = "length";
 
-/// Time-based window: Keeps events for duration D
+/// Time window: keeps events for a duration D
 pub const WINDOW_TYPE_TIME: &str = "time";
 
-/// Length batch window: Collects N events, then emits batch
+/// Length batch window: collects N events, then emits them as a batch
 pub const WINDOW_TYPE_LENGTH_BATCH: &str = "lengthBatch";
 
-/// Time batch window: Collects events for duration D, then emits batch (tumbling)
+/// Time batch window: collects events for a duration D, then emits them as a batch
+/// (tumbling)
 pub const WINDOW_TYPE_TIME_BATCH: &str = "timeBatch";
 
-/// External time window: Uses event attribute as timestamp
+/// External time window: driven by event timestamps instead of the clock
 pub const WINDOW_TYPE_EXTERNAL_TIME: &str = "externalTime";
 
-/// External time batch window: Batch processing with event-provided timestamp
+/// External time batch window: batches driven by event timestamps
 pub const WINDOW_TYPE_EXTERNAL_TIME_BATCH: &str = "externalTimeBatch";
 
-/// Session window: Groups events separated by gaps
+/// Session window: groups events into sessions split by gaps
 pub const WINDOW_TYPE_SESSION: &str = "session";
 
-/// Sort window: Maintains sorted order of events
+/// Sort window: keeps a fixed number of events, expiring by sort order
 pub const WINDOW_TYPE_SORT: &str = "sort";
 
-/// Cron window: Periodic window based on cron expression
+/// Cron window: emits batches on a cron schedule
 pub const WINDOW_TYPE_CRON: &str = "cron";
 
-/// Lossy counting window: Approximate frequency counting
+/// Lossy counting window: meant for approximate frequency counting. The current
+/// processor passes events through unchanged.
 pub const WINDOW_TYPE_LOSSY_COUNTING: &str = "lossyCounting";
 
-/// Check if a window type is supported
+/// True when `window_type` is one of the constants above
 pub fn is_supported_window_type(window_type: &str) -> bool {
     matches!(
         window_type,
@@ -76,7 +80,7 @@ mod tests {
         assert!(is_supported_window_type(WINDOW_TYPE_TIME));
         assert!(is_supported_window_type(WINDOW_TYPE_TIME_BATCH));
         assert!(!is_supported_window_type("unknown"));
-        assert!(!is_supported_window_type("tumbling")); // Alias, not a real type
-        assert!(!is_supported_window_type("sliding")); // Not implemented yet
+        assert!(!is_supported_window_type("tumbling")); // an alias, not a real type
+        assert!(!is_supported_window_type("sliding")); // not implemented
     }
 }

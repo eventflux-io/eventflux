@@ -15,22 +15,24 @@
  * limitations under the License.
  */
 
-//! Production-Optimized Event Store with ID-based References
+//! Event store that keeps each event once and hands out 8 byte ids to refer to it.
 //!
-//! **Memory Optimization**: Store events once, reference by 8-byte ID
-//! - Before: Clone 100-byte events = 100MB for 1M states
-//! - After: Store IDs (8 bytes) = 8MB for 1M states
-//! - **12.5x memory reduction**
+//! Not used by the engine yet.
 //!
-//! **Lock-Free Design**: DashMap for zero contention
-//! - Concurrent reads without blocking
-//! - Lock-free insert/get operations
-//! - Scales linearly with cores
+//! **Memory**: states hold an 8 byte id instead of a copy of the event
+//! - Copying 100 byte events for 1M states takes about 100 MB
+//! - Holding 8 byte ids for 1M states takes about 8 MB
+//! - About 12.5 times less memory
 //!
-//! **Memory Safety**: Configurable memory limits prevent OOM
-//! - Default: Unlimited (for backward compatibility)
-//! - Production: Set max_memory_bytes to prevent runaway growth
-//! - Rejects inserts when limit reached (backpressure signal)
+//! **Concurrency**: backed by DashMap, a sharded concurrent map
+//! - Reads do not block each other
+//! - Insert and get take only a short per shard lock
+//! - Scales with the number of cores
+//!
+//! **Memory limit**: an optional cap guards against running out of memory
+//! - Default: no limit
+//! - Set max_memory_bytes in production to stop runaway growth
+//! - Inserts are rejected once the cap is reached, which tells the caller to slow down
 
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -38,21 +40,24 @@ use std::sync::Arc;
 
 use crate::core::event::stream::stream_event::StreamEvent;
 
-/// Event identifier - 8 bytes vs 100+ bytes for full event
+/// Id for a stored event. 8 bytes, against 100 or more for a full event. 0 means no
+/// event.
 pub type EventId = u64;
 
-/// Global event store with lock-free concurrent access
+/// Concurrent store of events, each kept once behind an Arc.
 ///
-/// # Performance Characteristics
-/// - **Insert**: O(1) lock-free
-/// - **Get**: O(1) lock-free
-/// - **Remove**: O(1) lock-free
-/// - **Memory**: Single Arc<StreamEvent> per unique event (no clones)
+/// # Cost
+/// - **Insert**: O(1)
+/// - **Get**: O(1)
+/// - **Remove**: O(1)
+/// - **Memory**: one Arc<StreamEvent> per event, no copies
 ///
-/// # Memory Limits
-/// - Default: Unlimited (backward compatible, but risk of OOM)
-/// - Production: Use `with_memory_limit()` to prevent unbounded growth
-/// - When limit reached: Returns EventId = 0 (null), caller must handle backpressure
+/// # Memory limit
+/// - Default: no limit, so memory can grow without bound
+/// - Use `with_memory_limit()` in production to cap growth
+/// - At the cap, insert returns EventId 0 and the caller must slow down or drop events
+/// - Usage is an estimate of 116 bytes per event, and the cap check is not atomic with
+///   the insert, so concurrent inserts can go slightly over
 ///
 /// # Example
 /// ```no_run
@@ -67,42 +72,42 @@ pub type EventId = u64;
 /// }
 /// ```
 pub struct EventStore {
-    /// Lock-free concurrent hash map: EventId → Arc<StreamEvent>
+    /// EventId → Arc<StreamEvent>
     events: DashMap<EventId, Arc<StreamEvent>>,
-    /// Atomic counter for generating unique IDs
+    /// Next id to hand out
     next_id: AtomicU64,
-    /// Maximum memory bytes allowed (None = unlimited)
+    /// Memory cap in bytes. None means no limit.
     max_memory_bytes: Option<usize>,
-    /// Current approximate memory usage
+    /// Estimated bytes in use, 116 per stored event
     current_memory: AtomicUsize,
 }
 
 impl EventStore {
-    /// Create a new event store with default capacity (unlimited memory)
+    /// Create a store with room for 16384 events and no memory limit
     pub fn new() -> Self {
-        Self::with_capacity(16384) // 16K initial capacity
+        Self::with_capacity(16384)
     }
 
-    /// Create event store with specific initial capacity (unlimited memory)
+    /// Create a store with room for `capacity` events and no memory limit.
     ///
-    /// Pre-allocating capacity reduces resizing overhead for known workloads
+    /// Reserving room up front avoids resizing when the size is known.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             events: DashMap::with_capacity(capacity),
-            next_id: AtomicU64::new(1), // Start from 1 (0 reserved for null)
-            max_memory_bytes: None,     // Unlimited
+            next_id: AtomicU64::new(1), // 0 is reserved to mean no event
+            max_memory_bytes: None,
             current_memory: AtomicUsize::new(0),
         }
     }
 
-    /// Create event store with memory limit (production-safe)
+    /// Create a store with room for 16384 events and a memory cap.
     ///
     /// # Arguments
-    /// - `max_bytes`: Maximum memory allowed for event storage
+    /// - `max_bytes`: most estimated bytes the stored events may use
     ///
     /// # Behavior
-    /// - Inserts will fail (return EventId = 0) when limit reached
-    /// - Caller must handle backpressure by dropping events or pausing input
+    /// - Inserts fail and return EventId 0 once the cap is reached
+    /// - The caller must then drop events or pause input
     ///
     /// # Example
     /// ```
@@ -119,56 +124,44 @@ impl EventStore {
         }
     }
 
-    /// Insert event and return unique ID
+    /// Store an event and return its new id.
     ///
-    /// # Performance
-    /// - O(1) lock-free insertion
-    /// - Event wrapped in Arc for shared ownership
-    /// - Zero-copy when retrieving
+    /// O(1). The event is wrapped in an Arc, so later reads share it without copying.
     ///
     /// # Returns
-    /// - EventId (non-zero) on success
-    /// - 0 if memory limit reached (backpressure signal)
+    /// - A non zero EventId on success
+    /// - 0 when the memory cap would be passed, which tells the caller to slow down
     ///
-    /// # Memory Limits
-    /// - If max_memory_bytes is set, checks before insertion
-    /// - Approximate check: 116 bytes per event (ID + Arc + avg event)
-    /// - Returns 0 when limit would be exceeded
+    /// # Memory limit
+    /// - Checked before the insert, only when max_memory_bytes is set
+    /// - Each event counts as an estimated 116 bytes (id, Arc and an average event)
     pub fn insert(&self, event: StreamEvent) -> EventId {
-        // Check memory limit before insertion
         if let Some(max_bytes) = self.max_memory_bytes {
             let current = self.current_memory.load(Ordering::Relaxed);
             if current + 116 > max_bytes {
-                // Memory limit would be exceeded, reject insertion
-                return 0; // 0 = null EventId (failure signal)
+                return 0; // 0 means no event, the failure signal
             }
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.events.insert(id, Arc::new(event));
 
-        // Update memory tracking (approximate)
         self.current_memory.fetch_add(116, Ordering::Relaxed);
 
         id
     }
 
-    /// Get event by ID (returns Arc for zero-copy sharing)
-    ///
-    /// # Returns
-    /// - `Some(Arc<StreamEvent>)` if event exists
-    /// - `None` if event not found or was removed
+    /// The event for `id`, shared through its Arc without copying. None when the id
+    /// is unknown or was removed.
     pub fn get(&self, id: EventId) -> Option<Arc<StreamEvent>> {
         self.events.get(&id).map(|entry| Arc::clone(entry.value()))
     }
 
-    /// Remove event by ID
-    ///
-    /// Called during state eviction to free memory
+    /// Remove the event for `id` and return it. Meant for freeing memory when states
+    /// are evicted. None when the id is unknown.
     pub fn remove(&self, id: EventId) -> Option<Arc<StreamEvent>> {
         let result = self.events.remove(&id).map(|(_, event)| event);
 
-        // Update memory tracking if removal succeeded
         if result.is_some() {
             self.current_memory.fetch_sub(116, Ordering::Relaxed);
         }
@@ -176,42 +169,36 @@ impl EventStore {
         result
     }
 
-    /// Get current number of events stored
     pub fn len(&self) -> usize {
         self.events.len()
     }
 
-    /// Check if store is empty
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }
 
-    /// Clear all events (used for reset/cleanup)
+    /// Remove every event and reset the memory estimate to 0. Ids keep counting up.
     pub fn clear(&self) {
         self.events.clear();
         self.current_memory.store(0, Ordering::Relaxed);
     }
 
-    /// Get memory usage estimate in bytes
-    ///
-    /// Returns tracked memory usage (updated on insert/remove)
+    /// Estimated bytes in use, 116 per stored event
     pub fn memory_usage_bytes(&self) -> usize {
         self.current_memory.load(Ordering::Relaxed)
     }
 
-    /// Get configured memory limit
-    ///
-    /// Returns None if unlimited
+    /// Memory cap in bytes, or None when there is no limit
     pub fn memory_limit(&self) -> Option<usize> {
         self.max_memory_bytes
     }
 
-    /// Check if memory limit is reached
+    /// True when estimated usage is at or over the cap. Always false with no limit.
     pub fn is_memory_limit_reached(&self) -> bool {
         if let Some(max_bytes) = self.max_memory_bytes {
             self.current_memory.load(Ordering::Relaxed) >= max_bytes
         } else {
-            false // Unlimited
+            false
         }
     }
 }

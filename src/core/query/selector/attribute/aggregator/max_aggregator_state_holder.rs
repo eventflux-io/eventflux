@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! StateHolder implementation for MaxAttributeAggregatorExecutor
+//! StateHolder for MaxAttributeAggregatorExecutor. Checkpoints and restores its current
+//! maximum.
 
 use super::aggregator_state_holder_base::{
     compress_and_build_snapshot, default_compression_hints, verify_and_decompress, StateHolderBase,

@@ -16,22 +16,21 @@
  */
 
 // src/core/query/input/stream/state/post_state_processor.rs
-// PostStateProcessor trait for pattern match handling
+// PostStateProcessor trait, the step that handles a pattern match
 
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// PostStateProcessor handles successful pattern matches from PreStateProcessor.
+/// Handles a match from its PreStateProcessor and passes it along the chain.
 ///
-/// **Purpose**: When a PreStateProcessor successfully matches an event, it forwards
-/// the StateEvent to its PostStateProcessor. The PostStateProcessor then chains the
-/// matched StateEvent to:
-/// 1. Next PreStateProcessor in sequence (A -> B -> C)
-/// 2. 'every' PreStateProcessor for continuous matching
-/// 3. Callback PreStateProcessor for count quantifiers (A{2,5})
-/// 4. Output processor for query results
+/// When a PreStateProcessor matches an event, it sends the StateEvent to its
+/// PostStateProcessor. The PostStateProcessor then passes the StateEvent on to:
+/// 1. The next PreStateProcessor in order (A -> B -> C)
+/// 2. The 'every' PreStateProcessor, so matching starts again
+/// 3. The callback PreStateProcessor, which is only told that the state changed
+/// 4. The next processor, which leads to the query output
 ///
 /// **Pattern Processing Flow**:
 /// ```text
@@ -48,31 +47,27 @@ use std::sync::{Arc, Mutex};
 ///              └───────────────────┘ (loop back for continuous matching)
 /// ```
 ///
-/// **Key Responsibilities**:
-/// - Forward matched StateEvent to next processors in chain
-/// - Set timestamp from matched StreamEvent
-/// - Notify PreStateProcessor that state changed
-/// - Track if event was returned for optimization
+/// **Main jobs**:
+/// - Pass the matched StateEvent to the next processors in the chain
+/// - Set the StateEvent timestamp from the matched StreamEvent
+/// - Tell the PreStateProcessor that its state changed
+/// - Record whether the event was sent toward the output
 pub trait PostStateProcessor: Debug + Send + Sync {
-    /// Process an incoming event chunk (matched StateEvent from PreStateProcessor)
+    /// Handle a matched StateEvent sent by the paired PreStateProcessor.
     ///
-    /// This is the entry point for matched events from the associated PreStateProcessor.
-    /// Returns processed events if any, None otherwise.
+    /// Returns the event when it should travel further, otherwise None.
     fn process(&mut self, chunk: Option<Box<dyn ComplexEvent>>) -> Option<Box<dyn ComplexEvent>>;
 
-    /// Set next processor in the chain
     fn set_next_processor(&mut self, processor: Arc<Mutex<dyn PostStateProcessor>>);
 
-    /// Get next processor in the chain
     fn get_next_processor(&self) -> Option<Arc<Mutex<dyn PostStateProcessor>>>;
 
-    /// Get the state ID this PostStateProcessor is associated with
+    /// StateEvent position this processor handles
     fn state_id(&self) -> usize;
 
-    /// Set the next PreStateProcessor in the sequence chain
-    /// This is used for patterns like A -> B -> C
+    /// Set the next step's PreStateProcessor, for patterns like A -> B -> C.
     ///
-    /// When PostA matches, it forwards StateEvent to PreB via this link
+    /// When PostA handles a match, it sends the StateEvent to PreB through this link.
     fn set_next_state_pre_processor(
         &mut self,
         next_state_pre_processor: Arc<
@@ -80,10 +75,9 @@ pub trait PostStateProcessor: Debug + Send + Sync {
         >,
     );
 
-    /// Set the next PreStateProcessor for 'every' semantics
-    /// This creates a loop for continuous pattern matching
+    /// Set the PreStateProcessor that 'every' loops back to, so matching starts again.
     ///
-    /// Example: "every A" - PostA forwards back to PreA to continue matching
+    /// Example: for "every A", PostA sends the StateEvent back to PreA.
     fn set_next_every_state_pre_processor(
         &mut self,
         next_every_state_pre_processor: Arc<
@@ -91,10 +85,10 @@ pub trait PostStateProcessor: Debug + Send + Sync {
         >,
     );
 
-    /// Set callback PreStateProcessor for count quantifiers
-    /// Used for patterns like A{2,5} to notify when count is reached
+    /// Set a callback PreStateProcessor, meant for count quantifiers like A{2,5}.
     ///
-    /// Example: A{2,3} - After 2nd A, notify callback to check if pattern is complete
+    /// On each match the callback is told that its state changed. Nothing else is sent
+    /// to it.
     fn set_callback_pre_state_processor(
         &mut self,
         callback_pre_state_processor: Arc<
@@ -102,29 +96,20 @@ pub trait PostStateProcessor: Debug + Send + Sync {
         >,
     );
 
-    /// Get the next PreStateProcessor for 'every' semantics
-    /// This allows checking if EVERY loopback is configured
-    ///
-    /// Used by reset_state() to detect EVERY patterns and prevent reset
+    /// The PreStateProcessor that 'every' loops back to, if set. Lets callers check
+    /// whether an EVERY loopback is wired.
     fn get_next_every_state_pre_processor(
         &self,
     ) -> Option<Arc<Mutex<dyn crate::core::query::input::stream::state::PreStateProcessor>>>;
 
-    /// Check if event was returned to output processor
-    /// Used for optimization to skip unnecessary processing
+    /// True when a match was sent on while a next processor was set
     fn is_event_returned(&self) -> bool;
 
-    /// Clear the event returned flag
-    /// Called after processing to reset state
+    /// Clear the flag read by `is_event_returned`
     fn clear_processed_event(&mut self);
 
-    /// Get the PreStateProcessor associated with this PostStateProcessor
-    ///
-    /// **Returns**: Arc<Mutex> to the PreStateProcessor for this processor
-    ///
-    /// **Used For**:
-    /// - Calling state_changed() to notify PreStateProcessor
-    /// - Processor coordination
+    /// The PreStateProcessor paired with this processor, if set. Used to call
+    /// `state_changed()` on it.
     fn this_state_pre_processor(&self) -> Option<Arc<Mutex<dyn PreStateProcessor>>>;
 }
 
@@ -136,7 +121,7 @@ mod tests {
     use crate::core::event::state::state_event::StateEvent;
     use std::sync::{Arc, Mutex};
 
-    /// Mock PostStateProcessor for testing trait contract
+    /// Minimal PostStateProcessor used to test the trait
     #[derive(Debug)]
     struct MockPostStateProcessor {
         state_id: usize,
@@ -168,7 +153,6 @@ mod tests {
             &mut self,
             chunk: Option<Box<dyn ComplexEvent>>,
         ) -> Option<Box<dyn ComplexEvent>> {
-            // Mock: just return the chunk
             chunk
         }
 

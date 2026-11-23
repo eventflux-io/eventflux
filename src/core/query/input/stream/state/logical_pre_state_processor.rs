@@ -16,7 +16,7 @@
  */
 
 // src/core/query/input/stream/state/logical_pre_state_processor.rs
-// LogicalPreStateProcessor for AND/OR pattern matching
+// LogicalPreStateProcessor for AND and OR patterns
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::eventflux_query_context::EventFluxQueryContext;
@@ -29,84 +29,58 @@ use crate::core::query::input::stream::state::stream_pre_state_processor::{
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// Type of logical operation between two pattern streams
+/// How the two sides of a logical pattern combine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogicalType {
-    /// Both patterns must match (A and B)
+    /// Both sides must match (A and B)
     And,
-    /// Either pattern can match (A or B)
+    /// Either side is enough (A or B)
     Or,
 }
 
-/// LogicalPreStateProcessor coordinates AND/OR logic between two pattern streams.
+/// Pre processor for one side of a logical pattern such as "A and B" or "A or B".
 ///
-/// **Purpose**: Handles logical patterns like "A and B" or "A or B" where events
-/// from two different streams must be coordinated according to logical rules.
+/// Two of these are built, one per side, and linked with `set_partner_processor`.
+/// After linking they hold a reference to each other in `partner_processor` and use
+/// the same `shared_lock`, so state changes on one side are mirrored to the other.
 ///
-/// **Key Architecture - Partner Processor Pattern**:
-/// - Two LogicalPreStateProcessors are created (left and right sides)
-/// - They share a reference to each other via `partner_state_pre_processor`
-/// - They share the same lock via `shared_lock` for thread-safe coordination
-/// - State changes in one processor affect the partner
+/// **State sharing**:
+/// - `add_state` adds the StateEvent to this side and also to the partner's new list.
+///   At a start state or in a sequence, the partner gets it only when its new list is
+///   empty.
+/// - `add_every_state` gives both sides a copy with their own position onward reset.
+/// - `update_state` moves new states to pending on both sides.
 ///
-/// **AND Logic** (both must match):
-/// ```text
-/// Pattern: A and B
+/// **AND**: this side fills its position and passes the StateEvent on. The paired
+/// LogicalPostStateProcessor forwards it only once the partner's position is filled too.
 ///
-/// Stream A: event_a1 arrives
-/// - LogicalPreA adds StateEvent to its new list
-/// - LogicalPreA also adds to LogicalPreB's new list (coordination)
+/// **OR**: a pending StateEvent whose partner position is already filled is dropped,
+/// because the other side has already satisfied the OR.
 ///
-/// Stream B: event_b1 arrives
-/// - LogicalPreB adds StateEvent to its new list
-/// - LogicalPreB also adds to LogicalPreA's new list (coordination)
-///
-/// After updateState():
-/// - Both processors have StateEvents with A filled
-/// - Both processors have StateEvents with B filled
-///
-/// When A matches: checks if B is also filled in the StateEvent
-/// When B matches: checks if A is also filled in the StateEvent
-/// ```
-///
-/// **OR Logic** (either can match):
-/// ```text
-/// Pattern: A or B
-///
-/// Stream A: event_a1 arrives and matches
-/// - LogicalPreA processes match
-/// - Sets StateEvent position for A
-/// - Forwards to PostStateProcessor
-///
-/// Stream B: event_b1 arrives
-/// - LogicalPreB checks: did partner (A) already match this StateEvent?
-/// - If yes: skip this StateEvent (OR already satisfied)
-/// - If no: process normally
-/// ```
+/// The step condition is not checked here yet. Every pending StateEvent counts as a
+/// match.
 pub struct LogicalPreStateProcessor {
-    /// The underlying StreamPreStateProcessor for basic pattern matching
+    /// Wrapped stream pre processor that holds the state lists
     base_processor: StreamPreStateProcessor,
 
-    /// Type of logical operation (AND or OR)
     logical_type: LogicalType,
 
-    /// Reference to the partner processor (the other side of AND/OR)
-    /// Both processors coordinate via this reference
+    /// Processor for the other side of the AND or OR
     partner_processor: Option<Arc<Mutex<LogicalPreStateProcessor>>>,
 
-    /// Shared lock for coordinating between partner processors
-    /// Both partners use the same lock to ensure thread-safe coordination
+    /// Lock held by both partners around every state change, so the two sides stay
+    /// in step across threads
     shared_lock: Arc<Mutex<()>>,
 }
 
 impl LogicalPreStateProcessor {
-    /// Create a new LogicalPreStateProcessor
+    /// Create one side of a logical pattern.
     ///
     /// # Arguments
-    /// * `state_id` - Position in the StateEvent for this processor
-    /// * `is_start_state` - Whether this is the first processor in the pattern
-    /// * `logical_type` - AND or OR logic
-    /// * `state_type` - Pattern or Sequence semantics
+    /// * `state_id` - Position of this side in the StateEvent
+    /// * `is_start_state` - Whether this is the first step of the pattern
+    /// * `logical_type` - AND or OR
+    /// * `state_type` - Pattern or Sequence rules
     /// * `app_ctx` - Application context
     /// * `query_ctx` - Query context
     pub fn new(
@@ -131,34 +105,29 @@ impl LogicalPreStateProcessor {
         }
     }
 
-    /// Set the partner processor and establish shared lock coordination
+    /// Link this side to the other side of the logical pattern.
     ///
-    /// This must be called to wire together the two sides of the logical expression.
-    /// After calling this, both processors will share the same lock.
+    /// Call it on both sides. It replaces the partner's lock with this side's lock, so
+    /// afterwards both use the same `shared_lock`.
     pub fn set_partner_processor(&mut self, partner: Arc<Mutex<LogicalPreStateProcessor>>) {
-        // Share the lock with partner
         let lock_to_share = Arc::clone(&self.shared_lock);
 
-        // Set partner reference
         self.partner_processor = Some(partner.clone());
 
-        // Make partner use the same lock
         if let Ok(mut partner_guard) = partner.lock() {
             partner_guard.shared_lock = lock_to_share;
         }
     }
 
-    /// Get the logical type
     pub fn logical_type(&self) -> LogicalType {
         self.logical_type
     }
 
-    /// Get reference to partner processor
     pub fn partner_processor(&self) -> Option<Arc<Mutex<LogicalPreStateProcessor>>> {
         self.partner_processor.clone()
     }
 
-    /// Delegate methods to base processor for testing and lifecycle management
+    // The methods below pass through to the base processor. Tests and the partner use them.
     pub fn new_count(&self) -> usize {
         self.base_processor.new_count()
     }
@@ -186,33 +155,32 @@ impl LogicalPreStateProcessor {
         self.base_processor.process_and_return(chunk)
     }
 
-    /// Check if the new/every state event list is empty
-    /// Used by partner processor for coordination
+    /// True when the new list is empty. The partner calls this from `add_state`.
     pub fn is_new_and_every_list_empty(&self) -> bool {
         self.base_processor.new_count() == 0
     }
 
-    /// Add event to new/every list (used by partner for coordination)
+    /// Add a StateEvent straight to the new list. The partner calls this to mirror its
+    /// states. Unlike `add_state`, it does not mark the state as changed.
     pub fn add_event_to_new_list(&mut self, state_event: StateEvent) {
-        // Direct access to base processor's state
         let mut state = self.base_processor.state.lock().unwrap();
         state.add_to_new_list(state_event);
     }
 
-    /// Move all new/every events to pending (used by partner coordination)
+    /// Move every state in the new list to pending. The partner calls this from
+    /// `update_state`.
     pub fn move_new_to_pending_for_partner(&mut self) {
         let mut state = self.base_processor.state.lock().unwrap();
         state.move_new_to_pending();
     }
 
-    /// Clear pending list (used by partner coordination in resetState)
+    /// Clear the pending list. The partner calls this from `reset_state`.
     pub fn clear_pending_for_partner(&mut self) {
         let mut state = self.base_processor.state.lock().unwrap();
         state.clear_pending();
     }
 }
 
-// Manual Debug implementation
 impl Debug for LogicalPreStateProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogicalPreStateProcessor")
@@ -227,30 +195,29 @@ impl Debug for LogicalPreStateProcessor {
 
 impl PreStateProcessor for LogicalPreStateProcessor {
     fn init(&mut self) {
-        // Delegate to base processor
         self.base_processor.init();
     }
 
     fn process(&mut self, chunk: Option<Box<dyn ComplexEvent>>) -> Option<Box<dyn ComplexEvent>> {
-        // Delegate to process_and_return
         self.process_and_return(chunk)
     }
 
     fn add_state(&mut self, state_event: StateEvent) {
         let _lock = self.shared_lock.lock().unwrap();
 
-        // Add to this processor's new list
         self.base_processor.add_state(state_event.clone());
 
-        // Coordinate with partner
+        // Mirror the state to the partner
         if let Some(ref partner) = self.partner_processor {
             if let Ok(mut partner_guard) = partner.lock() {
-                // For start states or sequences, special logic
+                // At a start state or in a sequence, the partner gets the state only if its
+                // new list is empty
                 if self.base_processor.is_start_state()
                     || self.base_processor.state_type() == StateType::Sequence
                 {
+                    // Meant to skip duplicates. The add above always leaves new_count at
+                    // 1 or more, so this does not return today.
                     if self.base_processor.new_count() == 0 {
-                        // Don't add duplicate
                         return;
                     }
 
@@ -258,7 +225,6 @@ impl PreStateProcessor for LogicalPreStateProcessor {
                         partner_guard.add_event_to_new_list(state_event.clone());
                     }
                 } else {
-                    // Non-start states: always add to partner
                     partner_guard.add_event_to_new_list(state_event);
                 }
             }
@@ -268,11 +234,11 @@ impl PreStateProcessor for LogicalPreStateProcessor {
     fn add_every_state(&mut self, state_event: StateEvent) {
         let _lock = self.shared_lock.lock().unwrap();
 
-        // Clone and clear this state's position and all after
+        // Reset this position and every later one by writing an empty StreamEvent there.
+        // The slot is then filled with a blank event, not left empty.
         let mut cloned = state_event.clone();
         let state_id = self.base_processor.state_id();
 
-        // Clear this position and all following positions
         for i in state_id..cloned.stream_event_count() {
             cloned.set_event(
                 i,
@@ -280,13 +246,11 @@ impl PreStateProcessor for LogicalPreStateProcessor {
             );
         }
 
-        // Add to this processor
         self.base_processor.add_every_state(cloned.clone());
 
-        // Add to partner
         if let Some(ref partner) = self.partner_processor {
             if let Ok(mut partner_guard) = partner.lock() {
-                // Also clear partner's position
+                // Reset the partner's position onward the same way
                 let mut partner_cloned = cloned.clone();
                 let partner_state_id = partner_guard.base_processor.state_id();
                 for i in partner_state_id..partner_cloned.stream_event_count() {
@@ -303,10 +267,9 @@ impl PreStateProcessor for LogicalPreStateProcessor {
     fn update_state(&mut self) {
         let _lock = self.shared_lock.lock().unwrap();
 
-        // Sort and move new->pending for this processor
+        // Move new states to pending on both sides
         self.base_processor.update_state();
 
-        // Coordinate with partner: move their new->pending as well
         if let Some(ref partner) = self.partner_processor {
             if let Ok(mut partner_guard) = partner.lock() {
                 partner_guard.move_new_to_pending_for_partner();
@@ -317,8 +280,8 @@ impl PreStateProcessor for LogicalPreStateProcessor {
     fn reset_state(&mut self) {
         let _lock = self.shared_lock.lock().unwrap();
 
-        // OR logic: always clear both processors
-        // AND logic: only clear if both have same pending count (both matched)
+        // OR always clears both sides. AND clears only when both sides have the same
+        // pending count, or when there is no partner.
         let should_clear = match self.logical_type {
             LogicalType::Or => true,
             LogicalType::And => {
@@ -335,14 +298,13 @@ impl PreStateProcessor for LogicalPreStateProcessor {
         };
 
         if should_clear {
-            // Clear both processors' pending lists
             self.base_processor.reset_state();
 
             if let Some(ref partner) = self.partner_processor {
                 if let Ok(mut partner_guard) = partner.lock() {
                     partner_guard.clear_pending_for_partner();
 
-                    // Reinitialize if start state and new list is empty
+                    // A start state with nothing new needs init again to accept new matches
                     if partner_guard.base_processor.is_start_state()
                         && partner_guard.base_processor.new_count() == 0
                     {
@@ -359,7 +321,6 @@ impl PreStateProcessor for LogicalPreStateProcessor {
     ) -> Option<Box<dyn ComplexEvent>> {
         let _lock = self.shared_lock.lock().unwrap();
 
-        // Get the incoming StreamEvent
         let stream_event = match chunk {
             Some(event) => {
                 match event
@@ -376,19 +337,18 @@ impl PreStateProcessor for LogicalPreStateProcessor {
         let state_id = self.base_processor.state_id();
         let state = self.base_processor.state.lock().unwrap();
         let pending_states: Vec<StateEvent> = state.get_pending_list().iter().cloned().collect();
-        drop(state); // Release lock before processing
+        drop(state); // release the state lock before the loop takes it again
 
         let mut return_events: Vec<StateEvent> = Vec::new();
         let mut indices_to_remove: Vec<usize> = Vec::new();
 
         for (idx, mut pending_state) in pending_states.into_iter().enumerate() {
-            // OR logic: skip if partner already matched this StateEvent
+            // OR: the partner already filled its position, so drop this state
             if self.logical_type == LogicalType::Or {
                 if let Some(ref partner) = self.partner_processor {
                     if let Ok(partner_guard) = partner.lock() {
                         let partner_state_id = partner_guard.base_processor.state_id();
                         if pending_state.get_stream_event(partner_state_id).is_some() {
-                            // Partner already matched, skip this
                             indices_to_remove.push(idx);
                             continue;
                         }
@@ -396,34 +356,33 @@ impl PreStateProcessor for LogicalPreStateProcessor {
                 }
             }
 
-            // Set the stream event at this processor's position
             pending_state.set_event(state_id, stream_event.clone());
 
-            // Check if condition matches (simplified - always matches for now)
+            // The step condition is not checked yet, so every state matches and the
+            // else branch below never runs
             let matches = true;
 
             if matches {
                 return_events.push(pending_state.clone());
                 indices_to_remove.push(idx);
             } else {
-                // Pattern vs Sequence semantics
                 match self.base_processor.state_type() {
                     StateType::Pattern => {
-                        // Clear this position, keep trying
+                        // A pattern may skip events. Reset this position and keep waiting.
                         pending_state.set_event(
                             state_id,
                             crate::core::event::stream::stream_event::StreamEvent::new(0, 0, 0, 0),
                         );
                     }
                     StateType::Sequence => {
-                        // Sequence broken, remove
+                        // A sequence must match each event in turn, so this state is broken
                         indices_to_remove.push(idx);
                     }
                 }
             }
         }
 
-        // Remove processed indices
+        // Remove in reverse so earlier indices stay valid
         if !indices_to_remove.is_empty() {
             let mut state = self.base_processor.state.lock().unwrap();
             let pending_list = state.get_pending_list_mut();
@@ -434,6 +393,8 @@ impl PreStateProcessor for LogicalPreStateProcessor {
             }
         }
 
+        // Only the first matched state is returned. Any others are removed from pending
+        // but not returned.
         if return_events.is_empty() {
             None
         } else {

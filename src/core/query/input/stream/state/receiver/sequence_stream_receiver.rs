@@ -16,44 +16,38 @@
  */
 
 // src/core/query/input/stream/state/receiver/sequence_stream_receiver.rs
-// SequenceStreamReceiver for stabilizing sequence processor state
+// SequenceStreamReceiver, which tidies sequence processor state after events are processed
 
 use crate::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
 use crate::core::query::input::stream::state::state_stream_runtime::StateStreamRuntime;
 use std::sync::{Arc, Mutex};
 
-/// SequenceStreamReceiver stabilizes sequence processor state after event processing.
+/// Tidies the state of a SEQUENCE mode processor chain after a batch of events.
 ///
-/// **Purpose**: After receiving a batch of events, stabilize the state by expiring old events
-/// and resetting/updating state for sequence processing.
+/// **Steps** (see `stabilize_states`):
+/// 1. `expire_events(timestamp)` on every processor, which drops states past WITHIN
+/// 2. `reset_state()` on every processor
+/// 3. `update()` on the StateStreamRuntime, which moves new states to pending
 ///
-/// **Stabilization Flow (Sequence)**:
-/// 1. `expire_events(timestamp)` on all processors - Remove events outside time window
-/// 2. `state_stream_runtime.reset_and_update()` - Clear state and process pending events
+/// **Sequence mode**:
+/// - Events must match in order (A → B → C)
+/// - State is reset after each batch, not kept, so each state yields one match
+/// - WITHIN limits are applied through expire_events()
 ///
-/// **Sequence Semantics**:
-/// - Sequence allows only ONE match per state (clears after match)
-/// - State is reset after match (not retained)
-/// - WITHIN time constraints honored via expire_events()
-/// - Sequential event matching (A → B → C)
-///
-/// **Difference from Pattern**:
-/// - Pattern: expireEvents() + updateState() (retains state)
-/// - Sequence: expireEvents() + resetAndUpdate() (clears state)
+/// **Difference from PatternStreamReceiver**:
+/// - Pattern: expire_events() then update_state() on the first processor. State is kept.
+/// - Sequence: expire_events(), reset_state() on all, then update(). State is cleared.
 #[derive(Debug)]
 pub struct SequenceStreamReceiver {
-    /// All PreStateProcessors in the chain (for expiring events)
+    /// Every PreStateProcessor in the chain. All of them expire and reset.
     all_state_processors: Vec<Arc<Mutex<dyn PreStateProcessor>>>,
 
-    /// The StateStreamRuntime (for reset_and_update)
+    /// Runtime whose update() runs after the reset
     state_stream_runtime: Arc<Mutex<StateStreamRuntime>>,
 }
 
 impl SequenceStreamReceiver {
-    /// Create a new SequenceStreamReceiver
-    ///
-    /// # Arguments
-    /// * `state_stream_runtime` - The StateStreamRuntime to manage
+    /// Create a receiver for the given runtime, with no processors yet.
     pub fn new(state_stream_runtime: Arc<Mutex<StateStreamRuntime>>) -> Self {
         Self {
             all_state_processors: Vec::new(),
@@ -61,55 +55,44 @@ impl SequenceStreamReceiver {
         }
     }
 
-    /// Add a state processor to the chain
     pub fn add_state_processor(&mut self, processor: Arc<Mutex<dyn PreStateProcessor>>) {
         self.all_state_processors.push(processor);
     }
 
-    /// Get all state processors
     pub fn all_state_processors(&self) -> &Vec<Arc<Mutex<dyn PreStateProcessor>>> {
         &self.all_state_processors
     }
 
-    /// Get the state stream runtime
     pub fn state_stream_runtime(&self) -> Arc<Mutex<StateStreamRuntime>> {
         self.state_stream_runtime.clone()
     }
 
-    /// Stabilize states after event processing (Sequence semantics).
+    /// Tidy states after event processing, using SEQUENCE mode rules.
     ///
-    /// **Flow**:
-    /// 1. Call `expire_events(timestamp)` on ALL processors in chain
-    /// 2. Call `reset_state()` on ALL processors (SEQUENCE auto-restart)
-    /// 3. Call `state_stream_runtime.reset_and_update()` for first processor reinit
+    /// 1. Calls `expire_events(timestamp)` on every processor in the chain
+    /// 2. Calls `reset_state()` on every processor, not just the first, so the whole
+    ///    sequence is ready for the next match. A start state sets itself up again.
+    /// 3. Calls `update()` on the StateStreamRuntime to move new states to pending
     ///
-    /// **Sequence Behavior**:
-    /// - Expires old events outside WITHIN time window
-    /// - Resets ALL processors in chain (not just first) for auto-restart
-    /// - Updates state to process new pending events
-    /// - Auto-restarts after each complete match (continuous matching)
+    /// A processor or runtime whose lock is poisoned is skipped.
     ///
     /// # Arguments
-    /// * `timestamp` - Current timestamp for expiring old events
+    /// * `timestamp` - Current time in milliseconds, used to expire old states
     pub fn stabilize_states(&mut self, timestamp: i64) {
-        // Step 1: Expire old events on all processors
         for processor in &self.all_state_processors {
             if let Ok(mut guard) = processor.lock() {
                 guard.expire_events(timestamp);
             }
         }
 
-        // Step 2: Reset ALL processors in chain (SEQUENCE auto-restart)
-        // This ensures all processors in the sequence are ready for the next match
         for processor in &self.all_state_processors {
             if let Ok(mut guard) = processor.lock() {
                 guard.reset_state();
             }
         }
 
-        // Step 3: Update via StateStreamRuntime (moves new->pending)
         if let Ok(mut runtime_guard) = self.state_stream_runtime.lock() {
-            // Only call update, not reset (we already reset all processors above)
+            // update only. Every processor was already reset above.
             runtime_guard.update();
         }
     }

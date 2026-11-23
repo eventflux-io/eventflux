@@ -17,17 +17,17 @@
 
 // src/core/query/processor/stream/window/session_window_state_holder.rs
 
-//! Enhanced StateHolder implementation for SessionWindowProcessor
+//! StateHolder for SessionWindowProcessor, so its sessions can be checkpointed and
+//! restored.
 //!
-//! This implementation provides enterprise-grade state management for session windows
-//! with versioning, incremental checkpointing, and comprehensive metadata.
+//! Adds a schema version, a change log for incremental checkpoints, and metadata about
+//! the window. SessionWindowProcessor does not create one yet.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-// Import the session window structs
 use super::session_window_processor::{SessionContainer, SessionEventChunk, SessionWindowState};
 
 use crate::core::event::stream::stream_event::StreamEvent;
@@ -40,7 +40,7 @@ use crate::core::util::compression::{
 };
 use crate::core::util::event_serialization::SerializableAttributeValue;
 
-/// Serializable representation of SessionEventChunk
+/// Snapshot form of SessionEventChunk
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializableSessionChunk {
     events: Vec<SerializableStreamEvent>,
@@ -49,62 +49,63 @@ struct SerializableSessionChunk {
     alive_timestamp: i64,
 }
 
-/// Serializable representation of StreamEvent (simplified)
+/// Snapshot form of StreamEvent. Keeps only the timestamp, before_window_data,
+/// output_data and event type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializableStreamEvent {
     timestamp: i64,
     before_window_data: Vec<SerializableAttributeValue>,
     output_data: Option<Vec<SerializableAttributeValue>>,
-    event_type: i32, // Serialized as int for simplicity
+    event_type: i32, // 0 Current, 1 Expired, 2 Timer, 3 Reset
 }
 
-// Note: SerializableAttributeValue is now imported from event_serialization module
-// to avoid duplication and use the shared implementation with proper Object handling
+// SerializableAttributeValue comes from the shared event_serialization module, which
+// also handles Object values
 
-/// Serializable representation of SessionContainer
+/// Snapshot form of SessionContainer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializableSessionContainer {
     current_session: SerializableSessionChunk,
     previous_session: SerializableSessionChunk,
 }
 
-/// Serializable representation of SessionWindowState
+/// Snapshot form of SessionWindowState
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializableSessionState {
     session_map: HashMap<String, SerializableSessionContainer>,
     expired_event_chunk: SerializableSessionChunk,
 }
 
-/// Enhanced state holder for SessionWindowProcessor with StateHolder capabilities
+/// State holder for SessionWindowProcessor. Saves and restores every session and
+/// records changes for incremental checkpoints.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct SessionWindowStateHolder {
-    /// Reference to the session window's state
+    /// The window's sessions, shared with the processor
     state: Arc<Mutex<SessionWindowState>>,
 
-    /// Component identifier
     component_id: String,
 
-    /// Session configuration
+    /// Session settings, reported in the metadata
     session_gap: i64,
     allowed_latency: i64,
 
-    /// Last checkpoint ID for incremental tracking
+    /// Checkpoint id of the last snapshot or changelog applied
     last_checkpoint_id: Arc<Mutex<Option<CheckpointId>>>,
 
-    /// Change log for incremental checkpointing
+    /// Changes for incremental checkpoints
     change_log: Arc<Mutex<Vec<StateOperation>>>,
 
-    /// Total sessions processed
+    /// Sessions created so far. Not saved in snapshots.
     total_sessions_processed: Arc<Mutex<u64>>,
 
-    /// Total events processed
+    /// Events added so far. Not saved in snapshots.
     total_events_processed: Arc<Mutex<u64>>,
 }
 
 #[allow(dead_code)]
 impl SessionWindowStateHolder {
-    /// Create a new enhanced state holder
+    /// Create a holder for `state` with an empty change log
     pub fn new(
         state: Arc<Mutex<SessionWindowState>>,
         component_id: String,
@@ -123,19 +124,20 @@ impl SessionWindowStateHolder {
         }
     }
 
-    /// Record a new session creation
+    /// Log an Insert, keyed by the session key, for a new session and count it
     pub fn record_session_created(&self, session_key: String) {
         let mut change_log = self.change_log.lock().unwrap();
 
         change_log.push(StateOperation::Insert {
             key: session_key.as_bytes().to_vec(),
-            value: Vec::new(), // Empty value indicates new session
+            value: Vec::new(), // an empty value marks a new session
         });
 
         *self.total_sessions_processed.lock().unwrap() += 1;
     }
 
-    /// Record an event addition to a session
+    /// Log an Insert for an event added to a session and count it. The key is
+    /// `<session_key>:event:<timestamp>`.
     pub fn record_event_added(&self, session_key: &str, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
 
@@ -147,7 +149,7 @@ impl SessionWindowStateHolder {
         *self.total_events_processed.lock().unwrap() += 1;
     }
 
-    /// Record a session expiry
+    /// Log a Delete, keyed by the session key, for an ended session
     pub fn record_session_expired(&self, session_key: String) {
         let mut change_log = self.change_log.lock().unwrap();
 
@@ -157,7 +159,7 @@ impl SessionWindowStateHolder {
         });
     }
 
-    /// Serialize a StreamEvent
+    /// Encode a StreamEvent in its snapshot form. Returns empty bytes if encoding fails.
     fn serialize_event(&self, event: &StreamEvent) -> Vec<u8> {
         let serializable = SerializableStreamEvent {
             timestamp: event.timestamp,
@@ -181,7 +183,11 @@ impl SessionWindowStateHolder {
         crate::core::util::to_bytes(&serializable).unwrap_or_default()
     }
 
-    /// Deserialize a StreamEvent
+    /// Decode a StreamEvent from its snapshot form. An unknown event type becomes
+    /// Current.
+    ///
+    /// # Errors
+    /// Returns StateError::DeserializationError when the bytes cannot be decoded.
     fn deserialize_event(&self, data: &[u8]) -> Result<StreamEvent, StateError> {
         use crate::core::event::complex_event::ComplexEventType;
         use crate::core::event::value::AttributeValue;
@@ -216,7 +222,7 @@ impl SessionWindowStateHolder {
         Ok(event)
     }
 
-    /// Convert SessionEventChunk to serializable form
+    /// Convert a SessionEventChunk to its snapshot form
     fn chunk_to_serializable(&self, chunk: &SessionEventChunk) -> SerializableSessionChunk {
         SerializableSessionChunk {
             events: chunk
@@ -247,7 +253,8 @@ impl SessionWindowStateHolder {
         }
     }
 
-    /// Convert serializable form back to SessionEventChunk
+    /// Convert a snapshot form back to a SessionEventChunk. An unknown event type
+    /// becomes Current.
     fn serializable_to_chunk(&self, serializable: &SerializableSessionChunk) -> SessionEventChunk {
         use crate::core::event::complex_event::ComplexEventType;
         use crate::core::event::value::AttributeValue;
@@ -303,13 +310,11 @@ impl StateHolder for SessionWindowStateHolder {
                 message: "Failed to acquire session window state lock".to_string(),
             })?;
 
-        // Convert to serializable form
         let mut serializable_state = SerializableSessionState {
             session_map: HashMap::new(),
             expired_event_chunk: self.chunk_to_serializable(&state.expired_event_chunk),
         };
 
-        // Convert each session container
         for (key, container) in &state.session_map {
             let ser_container = SerializableSessionContainer {
                 current_session: self.chunk_to_serializable(&container.current_session),
@@ -320,25 +325,24 @@ impl StateHolder for SessionWindowStateHolder {
                 .insert(key.clone(), ser_container);
         }
 
-        // Serialize the state
         let data = crate::core::util::to_bytes(&serializable_state).map_err(|e| {
             StateError::SerializationError {
                 message: format!("Failed to serialize session window state: {e}"),
             }
         })?;
 
-        // Apply compression if requested using the shared compression utility
+        // Compress with the requested type, or let the shared helper pick one
         let (compressed_data, compression_type) =
             if let Some(ref compression) = hints.prefer_compression {
                 match self.compress_state_data(&data, Some(compression.clone())) {
                     Ok((compressed, comp_type)) => (compressed, comp_type),
                     Err(_) => {
-                        // Fall back to no compression if compression fails
+                        // Store uncompressed if compression fails
                         (data, CompressionType::None)
                     }
                 }
             } else {
-                // Use intelligent compression selection
+                // No preference, so the helper picks based on compression_hints
                 match self.compress_state_data(&data, None) {
                     Ok((compressed, comp_type)) => (compressed, comp_type),
                     Err(_) => (data, CompressionType::None),
@@ -359,12 +363,10 @@ impl StateHolder for SessionWindowStateHolder {
     }
 
     fn deserialize_state(&self, snapshot: &StateSnapshot) -> Result<(), StateError> {
-        // Verify checksum
         if !snapshot.verify_integrity() {
             return Err(StateError::ChecksumMismatch);
         }
 
-        // Check version compatibility
         if !self.can_migrate_from(&snapshot.version) {
             return Err(StateError::IncompatibleVersion {
                 current: self.schema_version(),
@@ -372,10 +374,8 @@ impl StateHolder for SessionWindowStateHolder {
             });
         }
 
-        // Decompress data if needed using the shared compression utility
         let data = self.decompress_state_data(&snapshot.data, snapshot.compression.clone())?;
 
-        // Deserialize the state
         let serializable_state: SerializableSessionState = crate::core::util::from_bytes(&data)
             .map_err(|e| StateError::DeserializationError {
                 message: format!("Failed to deserialize session window state: {e}"),
@@ -388,12 +388,11 @@ impl StateHolder for SessionWindowStateHolder {
                 message: "Failed to acquire session window state lock".to_string(),
             })?;
 
-        // Clear existing state
+        // Replace all sessions with the saved ones
         state.session_map.clear();
         state.expired_event_chunk =
             self.serializable_to_chunk(&serializable_state.expired_event_chunk);
 
-        // Restore session containers
         for (key, ser_container) in serializable_state.session_map {
             let container = SessionContainer {
                 current_session: self.serializable_to_chunk(&ser_container.current_session),
@@ -402,7 +401,6 @@ impl StateHolder for SessionWindowStateHolder {
             state.session_map.insert(key, container);
         }
 
-        // Update checkpoint ID
         *self.last_checkpoint_id.lock().unwrap() = Some(snapshot.checkpoint_id);
 
         Ok(())
@@ -423,12 +421,11 @@ impl StateHolder for SessionWindowStateHolder {
 
         let mut changelog = ChangeLog::new(since, last_checkpoint.unwrap_or(0));
 
-        // Add all operations from the change log
         for operation in change_log.iter() {
             changelog.add_operation(operation.clone());
         }
 
-        // Set compression if the changelog is large
+        // Mark changelogs over 10,000 bytes for LZ4 compression
         if changelog.size_bytes > 10_000 {
             changelog.compression = CompressionType::LZ4;
         }
@@ -445,24 +442,23 @@ impl StateHolder for SessionWindowStateHolder {
                     let key_str = String::from_utf8_lossy(key);
 
                     if key_str.contains(":event:") {
-                        // Event addition - parse session key and deserialize event
+                        // An added event. The session key is the part before ":event:".
+                        // The event goes to the current session, created if missing.
                         if let Some(session_key) = key_str.split(":event:").next() {
                             if !value.is_empty() {
                                 if let Ok(event) = self.deserialize_event(value) {
-                                    // Get or create the session container
                                     let container = state
                                         .session_map
                                         .entry(session_key.to_string())
                                         .or_insert_with(SessionContainer::new);
 
-                                    // Add event to current session
                                     container.current_session.add_event(Arc::new(event));
                                     *self.total_events_processed.lock().unwrap() += 1;
                                 }
                             }
                         }
                     } else {
-                        // Session creation - create new empty session container
+                        // A new session. Create an empty container if missing.
                         let session_key = String::from_utf8_lossy(key).to_string();
                         state
                             .session_map
@@ -476,12 +472,11 @@ impl StateHolder for SessionWindowStateHolder {
                     let key_str = String::from_utf8_lossy(key);
 
                     if key_str.contains(":event:") {
-                        // Event removal - parse session key and remove event
+                        // A removed event. Drop every match from the current session.
                         if let Some(session_key) = key_str.split(":event:").next() {
                             if let Some(container) = state.session_map.get_mut(session_key) {
                                 if !old_value.is_empty() {
                                     if let Ok(event_to_remove) = self.deserialize_event(old_value) {
-                                        // Remove matching event from current session
                                         container.current_session.events.retain(|e| {
                                             !(e.timestamp == event_to_remove.timestamp
                                                 && e.before_window_data
@@ -492,7 +487,7 @@ impl StateHolder for SessionWindowStateHolder {
                             }
                         }
                     } else {
-                        // Session expiry - remove the entire session
+                        // An ended session. Remove it whole.
                         let session_key = String::from_utf8_lossy(key).to_string();
                         state.session_map.remove(&session_key);
                     }
@@ -506,10 +501,10 @@ impl StateHolder for SessionWindowStateHolder {
                     let key_str = String::from_utf8_lossy(key);
 
                     if key_str.contains(":event:") {
-                        // Event update - remove old and add new
+                        // An updated event. Remove the old one and add the new one to
+                        // the current session. Updates to other keys are ignored.
                         if let Some(session_key) = key_str.split(":event:").next() {
                             if let Some(container) = state.session_map.get_mut(session_key) {
-                                // Remove old event
                                 if !old_value.is_empty() {
                                     if let Ok(old_event) = self.deserialize_event(old_value) {
                                         container.current_session.events.retain(|e| {
@@ -520,7 +515,6 @@ impl StateHolder for SessionWindowStateHolder {
                                     }
                                 }
 
-                                // Add new event
                                 if !new_value.is_empty() {
                                     if let Ok(new_event) = self.deserialize_event(new_value) {
                                         container.current_session.add_event(Arc::new(new_event));
@@ -532,44 +526,39 @@ impl StateHolder for SessionWindowStateHolder {
                 }
 
                 StateOperation::Clear => {
-                    // Clear all state
                     state.session_map.clear();
                     state.expired_event_chunk.clear();
                 }
             }
         }
 
-        // Update checkpoint ID
         *self.last_checkpoint_id.lock().unwrap() = Some(changes.to_checkpoint);
 
         Ok(())
     }
 
     fn estimate_size(&self) -> StateSize {
-        // Simplified implementation to avoid lock contention issues
-        // Try to lock state, but don't hang if it fails
+        // try_lock so a busy state gives a guess instead of blocking
         if let Ok(state) = self.state.try_lock() {
             let mut total_events = 0usize;
             let mut estimated_bytes = 0usize;
 
-            // Count events in all sessions
             for (key, container) in &state.session_map {
                 total_events += container.current_session.events.len();
                 total_events += container.previous_session.events.len();
 
-                // Estimate bytes (rough approximation)
+                // Rough guess made of the key, about 100 bytes per event, and the timestamps
                 estimated_bytes += key.len();
                 estimated_bytes += container.current_session.events.len() * 100; // ~100 bytes per event
                 estimated_bytes += container.previous_session.events.len() * 100;
-                estimated_bytes += 24 * 2; // Timestamps
+                estimated_bytes += 24 * 2; // timestamps
             }
 
-            // Add expired events
             total_events += state.expired_event_chunk.events.len();
             estimated_bytes += state.expired_event_chunk.events.len() * 100;
 
-            // Simplified growth rate calculation without additional lock
-            let growth_rate = total_events as f64 * 0.1; // Simple 10% growth estimate
+            // Guess growth as 10% of the current event count
+            let growth_rate = total_events as f64 * 0.1;
 
             StateSize {
                 bytes: estimated_bytes,
@@ -577,18 +566,17 @@ impl StateHolder for SessionWindowStateHolder {
                 estimated_growth_rate: growth_rate,
             }
         } else {
-            // Return conservative estimates if state is locked
+            // The state is locked, so return fixed guesses
             StateSize {
-                bytes: 1024,                 // 1KB default estimate
-                entries: 10,                 // Conservative event count
-                estimated_growth_rate: 10.0, // 10 bytes/second default
+                bytes: 1024,                 // 1 KB
+                entries: 10,                 // a small event count
+                estimated_growth_rate: 10.0, // 10 bytes per second
             }
         }
     }
 
     fn access_pattern(&self) -> AccessPattern {
-        // Session windows have moderate access patterns
-        // They're accessed when events arrive and during timeout processing
+        // Touched when events arrive and when timeouts are checked, so moderately often
         AccessPattern::Warm
     }
 
@@ -601,7 +589,6 @@ impl StateHolder for SessionWindowStateHolder {
         metadata.access_pattern = self.access_pattern();
         metadata.size_estimation = self.estimate_size();
 
-        // Add custom metadata
         metadata
             .custom_metadata
             .insert("session_gap".to_string(), self.session_gap.to_string());
@@ -613,7 +600,7 @@ impl StateHolder for SessionWindowStateHolder {
         let sessions = if let Ok(state) = self.state.try_lock() {
             state.session_map.len()
         } else {
-            0 // Return 0 if state is locked to avoid hanging
+            0 // the state is locked, so report 0 instead of waiting
         };
         metadata
             .custom_metadata
@@ -636,12 +623,12 @@ impl StateHolder for SessionWindowStateHolder {
 impl CompressibleStateHolder for SessionWindowStateHolder {
     fn compression_hints(&self) -> CompressionHints {
         CompressionHints {
-            prefer_speed: false, // Session windows can have large state, so prefer better compression
+            prefer_speed: false, // session state can be large, so favor smaller output
             prefer_ratio: true,
-            data_type: DataCharacteristics::HighlyRepetitive, // Session data often has repetitive patterns
-            target_latency_ms: Some(5), // Allow slightly higher latency for better compression
-            min_compression_ratio: Some(0.3), // At least 30% space savings to be worthwhile
-            expected_size_range: DataSizeRange::Medium, // Session windows can accumulate significant state
+            data_type: DataCharacteristics::HighlyRepetitive, // session data repeats a lot
+            target_latency_ms: Some(5), // accept a bit more time for better compression
+            min_compression_ratio: Some(0.3), // worth it only if it saves at least 30%
+            expected_size_range: DataSizeRange::Medium, // sessions can build up a lot of state
         }
     }
 }

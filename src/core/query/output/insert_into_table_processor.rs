@@ -22,6 +22,8 @@ use crate::core::query::processor::{CommonProcessorMeta, ProcessingMode, Process
 use crate::core::table::Table;
 use std::sync::{Arc, Mutex};
 
+/// Last processor of a query with INSERT INTO a table. Inserts each event's
+/// output_data as a row. Events without output_data are skipped.
 #[derive(Debug)]
 pub struct InsertIntoTableProcessor {
     meta: CommonProcessorMeta,
@@ -48,8 +50,8 @@ impl Processor for InsertIntoTableProcessor {
             if let Some(data) = event.get_output_data() {
                 if let Err(e) = self.table.insert(data) {
                     log::error!("Failed to insert into table: {}", e);
-                    // Best-effort: processor continues so the pipeline is not stalled.
-                    // TODO: Route to error handler / DLQ when error infrastructure is wired.
+                    // Log and keep going so one bad row does not stall the pipeline.
+                    // TODO: send failed rows to the error handler or DLQ.
                 }
             }
             chunk = next;

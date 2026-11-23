@@ -16,7 +16,7 @@
  */
 
 // src/core/query/input/stream/state/stream_pre_state_processor.rs
-// Base implementation of PreStateProcessor for single stream patterns
+// StreamPreStateProcessor, the default PreStateProcessor for a single stream step
 
 use super::post_state_processor::PostStateProcessor;
 use super::pre_state_processor::PreStateProcessor;
@@ -33,105 +33,97 @@ use crate::core::query::processor::{ProcessingMode, Processor};
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-/// StateType distinguishes between Pattern and Sequence semantics
+/// Whether a chain follows PATTERN or SEQUENCE rules.
 ///
-/// **Pattern** (A and B, A or B):
-/// - No temporal ordering required
-/// - Events can arrive in any order
-/// - State event cleared on no match (try again with next event)
+/// **Pattern**:
+/// - Other events may arrive between the steps
+/// - A pending state that does not match the event stays pending and tries the next
+///   event
 ///
-/// **Sequence** (A -> B -> C):
-/// - Temporal ordering enforced
-/// - Events must arrive in order
-/// - State event removed on no match (failed sequence)
+/// **Sequence**:
+/// - Steps must match back to back, with no other events between
+/// - A pending state that does not match the event is dropped, because the sequence
+///   is broken
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateType {
     Pattern,
     Sequence,
 }
 
-/// StreamPreStateProcessor is the base implementation for single stream pattern matching
+/// Default PreStateProcessor. Matches events from a single stream for one step.
 ///
-/// **Responsibilities**:
-/// 1. Maintains StreamPreState (three lists: current/pending/new)
-/// 2. Processes incoming events against pending states
-/// 3. Handles lifecycle (init/add/update/reset)
-/// 4. Manages WITHIN time constraints
-/// 5. Clones events for state tracking
+/// **Jobs**:
+/// 1. Holds the step's StreamPreState (current, pending and new lists)
+/// 2. Tries incoming events against pending states
+/// 3. Runs the init, add, update and reset steps
+/// 4. Applies the WITHIN limit
+/// 5. Copies events so each state keeps its own
 ///
-/// **Pattern Matching Flow**:
-/// 1. **init()**: Start states create empty StateEvent
-/// 2. **add_state()**: Previous processor chains forward StateEvent
-/// 3. **update_state()**: Move new→pending (sorted by timestamp)
-/// 4. **process_and_return()**: Match incoming event against all pending states
-///    - For each pending StateEvent:
-///      - Clone incoming StreamEvent
-///      - Add to StateEvent at this processor's position
-///      - Check condition (via expression executor - simplified for now)
-///      - If match: forward to PostStateProcessor (to be added in Task 1.5)
-///    - Clean up: remove/reset states based on Pattern vs Sequence semantics
-/// 5. **reset_state()**: Clear after complete match
+/// **Flow**:
+/// 1. **init()**: a start state creates an empty StateEvent
+/// 2. **add_state()**: the previous step passes a StateEvent on
+/// 3. **update_state()**: new states move to pending, sorted by timestamp
+/// 4. **process_and_return()**: for each pending StateEvent
+///    - copy the incoming StreamEvent into it at this step's position
+///    - check the condition set with `set_condition`. No condition matches everything.
+///    - on a match, send it to the PostStateProcessor
+///    - then keep or drop the pending state by Pattern or Sequence rules
+/// 5. **reset_state()**: clear after a full match
 ///
-/// **Pattern vs Sequence Semantics**:
-/// - **Pattern**: If event doesn't match, clear event at position, try next pending
-/// - **Sequence**: If event doesn't match, remove StateEvent (sequence broken)
+/// **After a match**: Pattern keeps the pending state so it can match again. Sequence
+/// drops it because it moved to the next step.
+///
+/// **After a miss**: Pattern keeps the pending state for the next event. Sequence
+/// drops it because the sequence is broken.
 ///
 pub struct StreamPreStateProcessor {
-    // Core identification
     state_id: usize,
     is_start_state: bool,
     state_type: StateType,
 
-    // Context
     app_context: Arc<EventFluxAppContext>,
     query_context: Arc<EventFluxQueryContext>,
 
-    // State management
-    // Made public for LogicalPreStateProcessor to access for partner coordination
+    // Public so LogicalPreStateProcessor and CountPreStateProcessor can edit the lists
     pub state: Arc<Mutex<StreamPreState>>,
 
-    // Shared state with PostStateProcessor (lock-free communication)
-    // Prevents deadlock by avoiding need to lock PreStateProcessor from PostStateProcessor
+    // Changed flag shared with the PostStateProcessor, so it never has to lock this
+    // processor and cannot deadlock
     shared_state: Arc<ProcessorSharedState>,
 
-    // Event cloning
     stream_event_cloner: Option<StreamEventCloner>,
     state_event_cloner: Option<StateEventCloner>,
 
-    // Time constraint (None = no constraint)
+    // WITHIN limit in milliseconds. None means no limit.
     within_time: Option<i64>,
 
-    // Start state IDs to check for WITHIN constraint
-    // Java: protected int[] startStateIds
-    // Used to check time elapsed from ALL start states, not just current position
+    // Positions whose event age is checked for WITHIN, so time is measured from the
+    // start of the pattern and not just from the previous step. Empty means check
+    // every filled position.
     start_state_ids: Vec<usize>,
 
-    // Success condition flag for count quantifiers (Phase 2)
-    // Set by CountPostStateProcessor when min count reached
-    // Java: protected boolean isSuccessCondition
+    // Flag meant for count quantifiers. Only set and read through its accessors. No
+    // matching code uses it.
     success_condition: bool,
 
-    // EVERY pattern flag
-    // Set to true if this processor is part of an EVERY pattern
-    // Allows detection of EVERY semantics without checking post processors
+    // True when this processor is part of an EVERY pattern. Set by PatternChainBuilder,
+    // so EVERY can be detected without looking at the post processors.
     is_every_pattern: bool,
 
-    // Processor chain
     next_processor: Option<Arc<Mutex<dyn Processor>>>,
 
-    // PostStateProcessor for this processor (CRITICAL for chaining)
+    // Gets every match. Without it, matches are not passed along the chain.
     this_state_post_processor: Option<Arc<Mutex<dyn PostStateProcessor>>>,
 
-    // Condition function for filter evaluation
-    // Receives StateEvent containing all matched events (e1, e2, ...)
-    // This enables cross-stream references like: e2[price > e1.price]
-    // The current event being evaluated is already in StateEvent at position self.state_id
-    // Uses Arc for shareability across clones (partitioned execution, state restoration)
+    // Step condition. It gets the StateEvent with every event matched so far (e1, e2,
+    // ...), and the event being checked is already at position state_id. That allows
+    // references to earlier events, like e2[price > e1.price]. Held in an Arc so clones
+    // for partitions and state restore share it.
     #[allow(clippy::type_complexity)]
     condition_fn: Option<Arc<dyn Fn(&StateEvent) -> bool + Send + Sync>>,
 }
 
-// Manual Debug implementation (condition_fn doesn't implement Debug)
+// Written by hand because condition_fn does not implement Debug
 impl Debug for StreamPreStateProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamPreStateProcessor")
@@ -145,12 +137,12 @@ impl Debug for StreamPreStateProcessor {
 }
 
 impl StreamPreStateProcessor {
-    /// Create a new StreamPreStateProcessor
+    /// Create a processor with no WITHIN limit, no condition and no cloners.
     ///
     /// **Parameters**:
-    /// - `state_id`: Stream position in StateEvent (0-based index)
-    /// - `is_start_state`: true if this is first processor in chain
-    /// - `state_type`: Pattern or Sequence semantics
+    /// - `state_id`: position in the StateEvent, starting at 0
+    /// - `is_start_state`: true for the first step in the chain
+    /// - `state_type`: Pattern or Sequence rules
     /// - `app_context`: Application context
     /// - `query_context`: Query context
     pub fn new(
@@ -168,10 +160,10 @@ impl StreamPreStateProcessor {
             query_context,
             state: Arc::new(Mutex::new(StreamPreState::new())),
             shared_state: Arc::new(ProcessorSharedState::new()),
-            is_every_pattern: false, // Set later by PatternChainBuilder if EVERY
+            is_every_pattern: false, // PatternChainBuilder sets it for EVERY
             stream_event_cloner: None,
             state_event_cloner: None,
-            within_time: None, // No constraint by default
+            within_time: None,
             start_state_ids: Vec::new(),
             success_condition: false,
             next_processor: None,
@@ -180,32 +172,26 @@ impl StreamPreStateProcessor {
         }
     }
 
-    /// Get the state ID
     pub fn state_id(&self) -> usize {
         self.state_id
     }
 
-    /// Check if this is a start state
     pub fn is_start_state(&self) -> bool {
         self.is_start_state
     }
 
-    /// Get the state type (Pattern or Sequence)
     pub fn state_type(&self) -> StateType {
         self.state_type
     }
 
-    /// Get the shared state (for PostStateProcessor to access)
-    ///
-    /// **Purpose**: Allows PostStateProcessor to share state_changed flag
-    /// without needing to lock this PreStateProcessor
+    /// Shared changed flag, so the PostStateProcessor can mark changes without locking
+    /// this processor
     pub fn get_shared_state(&self) -> Arc<ProcessorSharedState> {
         self.shared_state.clone()
     }
 
-    /// Set the PostStateProcessor for this processor
+    /// Set the PostStateProcessor that gets this processor's matches
     ///
-    /// **Usage**: Wire PreStateProcessor -> PostStateProcessor chain
     /// ```rust,ignore
     /// let post = Arc::new(Mutex::new(StreamPostStateProcessor::new(0)));
     /// processor.set_this_state_post_processor(post);
@@ -217,10 +203,10 @@ impl StreamPreStateProcessor {
         self.this_state_post_processor = Some(post_processor);
     }
 
-    /// Set the start state IDs for WITHIN constraint checking
+    /// Set the positions whose event age is checked against WITHIN.
     ///
-    /// **Purpose**: When checking WITHIN time, need to check against ALL start states,
-    /// not just current position. This is because patterns like:
+    /// WITHIN has to be measured from the start of the pattern, not from the previous
+    /// step:
     /// ```text
     /// Pattern: A -> B -> C within 5 sec
     /// Need to check: (C.timestamp - A.timestamp) < 5 sec
@@ -232,23 +218,24 @@ impl StreamPreStateProcessor {
         self.start_state_ids = ids;
     }
 
-    /// Set success condition flag (for count quantifiers)
+    /// Set the success flag meant for count quantifiers like A{2,5}.
     ///
-    /// **Purpose**: Count quantifiers like A{2,5} use this flag.
-    /// When CountPostStateProcessor reaches min count (2), it sets this to true.
-    /// PreStateProcessor can then forward to next state.
+    /// Nothing in the matching code reads it. CountPreStateProcessor checks counts
+    /// itself.
     ///
     /// **Java Reference**: StreamPreStateProcessor.isSuccessCondition
     pub fn set_success_condition(&mut self, success: bool) {
         self.success_condition = success;
     }
 
-    /// Check success condition flag (for count quantifiers)
     pub fn is_success_condition(&self) -> bool {
         self.success_condition
     }
 
-    /// Set the condition function for filtering events
+    /// Set the step condition used to filter events.
+    ///
+    /// The closure gets the whole StateEvent, with the event being checked already at
+    /// this processor's position. Replaces any earlier condition.
     ///
     /// **Usage**:
     /// ```rust,ignore
@@ -282,32 +269,29 @@ impl StreamPreStateProcessor {
         self.condition_fn = Some(Arc::new(condition));
     }
 
-    /// Check if a state event matches this processor's condition
+    /// True when `state_event` passes this step's condition, or when no condition is set.
     ///
-    /// **Parameters**:
-    /// - `state_event`: Full StateEvent with all matched events (including current at self.state_id)
-    ///
-    /// **Returns**: true if event matches condition, false otherwise
+    /// `state_event` holds every matched event, with the current one at `state_id`.
     fn matches_condition(&self, state_event: &StateEvent) -> bool {
         match &self.condition_fn {
             Some(f) => f(state_event),
-            None => true, // No condition = match all
+            None => true,
         }
     }
 
-    /// Check if a pending state is expired based on WITHIN constraint
+    /// True when a pending state is past the WITHIN limit at `current_timestamp`.
     ///
-    /// **Correct Implementation**: Check time against ALL start state IDs.
-    /// For pattern A -> B -> C within 5 sec:
-    /// - Check (current_time - A.timestamp) > 5 sec
-    /// - NOT just (current_time - C.timestamp) > 5 sec
+    /// Always false with no limit set. With `start_state_ids` set, checks the events
+    /// at those positions, so for A -> B -> C within 5 sec it checks
+    /// (current_time - A.timestamp) > 5 sec and not (current_time - C.timestamp).
+    /// Without them, checks every filled position. Ages are absolute values, so events
+    /// in the future count too.
     fn is_expired(&self, state_event: &StateEvent, current_timestamp: i64) -> bool {
         let within = match self.within_time {
             Some(w) => w,
-            None => return false, // No time constraint
+            None => return false,
         };
 
-        // Check against ALL start state IDs (not just current position)
         if !self.start_state_ids.is_empty() {
             for &start_id in &self.start_state_ids {
                 if let Some(start_event) = state_event.get_stream_event(start_id) {
@@ -318,7 +302,7 @@ impl StreamPreStateProcessor {
                 }
             }
         } else {
-            // Fallback: check first non-null event (legacy behavior)
+            // No start positions set, so any filled position that is too old expires it
             for stream in state_event.stream_events.iter().flatten() {
                 let age = (current_timestamp - stream.timestamp).abs();
                 if age > within {
@@ -330,7 +314,7 @@ impl StreamPreStateProcessor {
         false
     }
 
-    /// Clone a StreamEvent using the cloner or direct clone
+    /// Copy a StreamEvent with the cloner, or with a plain clone when none is set
     fn clone_stream_event(&self, event: &StreamEvent) -> StreamEvent {
         match &self.stream_event_cloner {
             Some(cloner) => cloner.copy_stream_event(event),
@@ -338,7 +322,7 @@ impl StreamPreStateProcessor {
         }
     }
 
-    /// Clone a StateEvent using the cloner or direct clone
+    /// Copy a StateEvent with the cloner, or with a plain clone when none is set
     fn clone_state_event(&self, event: &StateEvent) -> StateEvent {
         match &self.state_event_cloner {
             Some(cloner) => cloner.copy_state_event(event),
@@ -346,49 +330,47 @@ impl StreamPreStateProcessor {
         }
     }
 
-    /// Get stream event cloner (for CountPreStateProcessor)
+    /// The stream event cloner. Used by CountPreStateProcessor.
+    ///
+    /// # Panics
+    /// Panics when no stream event cloner has been set.
     pub fn get_stream_event_cloner(&self) -> &StreamEventCloner {
         self.stream_event_cloner
             .as_ref()
             .expect("StreamEventCloner not initialized")
     }
 
-    /// Set stream event cloner (for testing and initialization)
     pub fn set_stream_event_cloner(&mut self, cloner: StreamEventCloner) {
         self.stream_event_cloner = Some(cloner);
     }
 
-    /// Set state event cloner (for testing and initialization)
     pub fn set_state_event_cloner(&mut self, cloner: StateEventCloner) {
         self.state_event_cloner = Some(cloner);
     }
 
-    /// Get state event cloner as Option (for CountPreStateProcessor EVERY logic)
+    /// The state event cloner, or None when not set
     pub fn get_state_event_cloner_option(&self) -> Option<&StateEventCloner> {
         self.state_event_cloner.as_ref()
     }
 
-    /// Set EVERY pattern flag
     pub fn set_every_pattern_flag(&mut self, is_every: bool) {
         self.is_every_pattern = is_every;
     }
 
-    /// Get EVERY pattern flag
     pub fn is_every_pattern(&self) -> bool {
         self.is_every_pattern
     }
 
-    /// Get this state post processor (for CountPreStateProcessor)
+    /// The PostStateProcessor, if set. Used by CountPreStateProcessor.
     pub fn get_this_state_post_processor(&self) -> Option<Arc<Mutex<dyn PostStateProcessor>>> {
         self.this_state_post_processor.clone()
     }
 
-    /// Get next processor (for CountPreStateProcessor)
     pub fn get_next_processor(&self) -> Option<Arc<Mutex<dyn Processor>>> {
         self.next_processor.clone()
     }
 
-    /// Clone this processor (for CountPreStateProcessor)
+    /// Copy this processor. The copy shares the same state lists and changed flag.
     pub fn clone_stream_processor(&self) -> StreamPreStateProcessor {
         Self {
             state_id: self.state_id,
@@ -406,7 +388,7 @@ impl StreamPreStateProcessor {
             success_condition: self.success_condition,
             next_processor: self.next_processor.clone(),
             this_state_post_processor: self.this_state_post_processor.clone(),
-            condition_fn: self.condition_fn.clone(), // Arc is cloneable
+            condition_fn: self.condition_fn.clone(),
         }
     }
 }
@@ -415,8 +397,7 @@ impl StreamPreStateProcessor {
 
 impl Processor for StreamPreStateProcessor {
     fn process(&self, _chunk: Option<Box<dyn ComplexEvent>>) {
-        // PreStateProcessor uses process_and_return() instead
-        // This method should not be called directly
+        // Pre processors are driven through process_and_return(). Calling this panics.
         panic!("process() should not be called on PreStateProcessor. Use process_and_return().");
     }
 
@@ -429,16 +410,16 @@ impl Processor for StreamPreStateProcessor {
     }
 
     fn clone_processor(&self, query_context: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
-        // Clone the processor for partitioned execution or state restoration
-        // condition_fn uses Arc and is properly cloned to preserve filtering semantics
+        // Used for partitions and state restore. The copy shares the state lists, the
+        // changed flag and the condition with this processor.
         Box::new(Self {
             state_id: self.state_id,
             is_start_state: self.is_start_state,
             state_type: self.state_type,
             app_context: Arc::clone(&self.app_context),
-            query_context: Arc::clone(query_context), // Use new query context
-            state: Arc::clone(&self.state),           // Shared state across clones
-            shared_state: Arc::clone(&self.shared_state), // Shared state across clones
+            query_context: Arc::clone(query_context), // takes the new query context
+            state: Arc::clone(&self.state),           // shared across clones
+            shared_state: Arc::clone(&self.shared_state), // shared across clones
             is_every_pattern: self.is_every_pattern,
             stream_event_cloner: self.stream_event_cloner.clone(),
             state_event_cloner: self.state_event_cloner.clone(),
@@ -447,7 +428,7 @@ impl Processor for StreamPreStateProcessor {
             success_condition: self.success_condition,
             next_processor: self.next_processor.clone(),
             this_state_post_processor: self.this_state_post_processor.clone(),
-            condition_fn: self.condition_fn.clone(), // Arc is cloneable - preserves filter
+            condition_fn: self.condition_fn.clone(),
         })
     }
 
@@ -464,7 +445,7 @@ impl Processor for StreamPreStateProcessor {
     }
 
     fn is_stateful(&self) -> bool {
-        true // Pattern processors are always stateful
+        true
     }
 }
 
@@ -474,11 +455,11 @@ impl PreStateProcessor for StreamPreStateProcessor {
     fn init(&mut self) {
         let mut state = self.state.lock().unwrap();
 
-        // Only start states create initial empty StateEvent
+        // Only a start state creates the first empty StateEvent, and only once until
+        // reset_initialized
         if self.is_start_state && !state.is_initialized() {
-            // Create empty StateEvent to begin pattern matching
-            // The number of stream positions = state_id + 1 (since this is the first)
-            // In full implementation, would know total stream count from metadata
+            // Sized to state_id + 1 positions. The real stream count is not known here,
+            // and later steps grow the StateEvent as needed.
             let initial_state = StateEvent::new(self.state_id + 1, 0);
             state.add_to_new_list(initial_state);
             state.mark_initialized();
@@ -486,77 +467,64 @@ impl PreStateProcessor for StreamPreStateProcessor {
     }
 
     fn process(&mut self, chunk: Option<Box<dyn ComplexEvent>>) -> Option<Box<dyn ComplexEvent>> {
-        // Entry point for incoming events
-        // Delegates to process_and_return which handles the actual pattern matching
         self.process_and_return(chunk)
     }
 
     fn add_state(&mut self, state_event: StateEvent) {
         let mut state = self.state.lock().unwrap();
 
-        // Add to new/every list
-        // For Sequence, Java has special logic about only adding if list is empty
-        // For Pattern, always adds
-        // Simplified: always add for now
+        // Always adds. The Java version only adds in Sequence mode when the list is
+        // empty. That rule is not ported.
         state.add_to_new_list(state_event);
         state.mark_state_changed();
 
-        // Also mark shared state for lock-free communication with PostStateProcessor
         self.shared_state.mark_state_changed();
     }
 
     fn add_every_state(&mut self, state_event: StateEvent) {
-        // Same as add_state for base implementation
-        // 'every' semantics handled by PostStateProcessor chaining
+        // Same as add_state here. The 'every' loop itself comes from the post processor
+        // wiring.
         self.add_state(state_event);
     }
 
     fn update_state(&mut self) {
         let mut state = self.state.lock().unwrap();
-        // Move new→pending with timestamp sorting
         state.move_new_to_pending();
     }
 
     fn reset_state(&mut self) {
-        // EVERY pattern handling: Check if this is the start of an EVERY pattern
-        // If so, we should NOT clear pending to allow pattern restart with new events
+        // At the start of an EVERY pattern, pending is kept so the pattern can restart
+        // with the states it already has
         let should_skip_reset = self.is_start_state && self.is_every_pattern;
 
         if should_skip_reset {
-            // EVERY pattern: Don't clear pending, keep accepting new events
-            // Just reinitialize so new events can start new pattern instances
             let mut state = self.state.lock().unwrap();
 
-            // Only reinitialize if new list is empty
+            // Set up a fresh StateEvent only when the new list is empty, so new events
+            // can start new instances
             if state.new_count() == 0 {
                 state.reset_initialized();
-                drop(state); // Release lock before calling init
+                drop(state); // init() takes the lock again
                 self.init();
             }
-            // Don't clear pending - this allows pattern to restart with accumulated events
             return;
         }
 
-        // Normal reset logic for non-EVERY patterns
         let mut state = self.state.lock().unwrap();
         state.clear_pending();
 
-        // SEQUENCE mode: Auto-restart after each match (implicit EVERY behavior)
-        // Unlike PATTERN-EVERY which keeps pending for overlapping instances,
-        // SEQUENCE clears pending (strict consecutive) but still restarts for next match
+        // SEQUENCE mode restarts after every match, as if EVERY were set. Unlike EVERY
+        // in PATTERN mode, it clears pending first, because steps must be back to back.
         let is_sequence_auto_restart =
             self.is_start_state && self.state_type == StateType::Sequence;
 
-        // If start state and new list is empty, reinitialize
-        // This applies to both normal patterns and SEQUENCE auto-restart
+        // A start state with an empty new list sets up a fresh StateEvent. This covers
+        // normal patterns and the SEQUENCE restart.
         if self.is_start_state && state.new_count() == 0 {
-            // Reset initialized flag to allow init() to create new StateEvent
             state.reset_initialized();
-            drop(state); // Release lock before calling init
+            drop(state); // init() takes the lock again
             self.init();
 
-            // For SEQUENCE auto-restart, we need to ensure the processor is ready
-            // for the next consecutive match
             if is_sequence_auto_restart {
                 log::trace!(
                     "[StreamPreStateProcessor] SEQUENCE auto-restart: reinitializing state_id={}",
@@ -570,21 +538,20 @@ impl PreStateProcessor for StreamPreStateProcessor {
         &mut self,
         chunk: Option<Box<dyn ComplexEvent>>,
     ) -> Option<Box<dyn ComplexEvent>> {
-        // Extract and clone the StreamEvent from the chunk
-        // We clone it here to avoid lifetime issues
+        // Take an owned copy so the event does not borrow from the chunk
         let stream_event = match chunk {
             Some(event) => {
-                // Downcast to StreamEvent and clone it
+                // Anything that is not a StreamEvent is ignored
                 match event.as_any().downcast_ref::<StreamEvent>() {
                     Some(se) => self.clone_stream_event(se),
-                    None => return None, // Not a StreamEvent
+                    None => return None,
                 }
             }
-            None => return None, // No event to process
+            None => return None,
         };
 
-        // Step 1: Collect pending states and process matches WITHOUT holding the lock
-        // (to avoid deadlock when calling PostStateProcessor which calls back to state_changed)
+        // Step 1: copy the pending states and match them without holding the lock. The
+        // post processor may call back into state_changed, which would deadlock.
         let pending_states = {
             let state = self.state.lock().unwrap();
             state
@@ -599,75 +566,61 @@ impl PreStateProcessor for StreamPreStateProcessor {
         let mut pending_to_remove: Vec<usize> = Vec::new();
         let mut state_changed = false;
 
-        // Iterate through all pending StateEvents
         for (idx, pending_state) in pending_states.iter().enumerate() {
-            // Clone the pending StateEvent
             let mut candidate_state = self.clone_state_event(pending_state);
 
-            // Clone the incoming StreamEvent
             let cloned_stream = self.clone_stream_event(&stream_event);
 
-            // Ensure StateEvent has enough positions for this processor's state_id
-            // Without this, set_event() will fail silently if position >= stream_events.len()
+            // Make room for this position. set_event() silently does nothing when the
+            // position is past the end of stream_events.
             candidate_state.expand_to_size(self.state_id + 1);
 
-            // Add the StreamEvent to the StateEvent at this processor's position
             candidate_state.set_event(self.state_id, cloned_stream);
 
-            // Check if the event matches our condition
-            // StateEvent contains all events including current one at self.state_id
+            // The condition sees every event so far, including this one at state_id
             if self.matches_condition(&candidate_state) {
-                // Match! This state progresses
                 return_events.push(candidate_state.clone());
 
-                // Collect events to forward to PostStateProcessor (will do this AFTER releasing lock)
+                // Sent to the post processor later, after the lock is released
                 if self.this_state_post_processor.is_some() {
                     post_processor_events.push(candidate_state);
                 }
 
-                // Mark state changed
                 state_changed = true;
 
-                // Remove from pending based on Pattern vs Sequence semantics
                 match self.state_type {
                     StateType::Pattern => {
-                        // Pattern: Keep StateEvent in pending for next try
-                        // (Multi-match capability - can match multiple events against same state)
-                        // PostStateProcessor handles forwarding to next states
+                        // Keep the state pending so it can match more events. The post
+                        // processor passes the match on to the next step.
                     }
                     StateType::Sequence => {
-                        // Sequence: Remove StateEvent (progressed to next state)
+                        // The state moved on to the next step, so drop it here
                         pending_to_remove.push(idx);
                     }
                 }
             } else {
-                // No match - handle based on Pattern vs Sequence semantics
                 match self.state_type {
                     StateType::Pattern => {
-                        // Pattern: Clear event at position, keep StateEvent for next try
-                        // Don't remove from pending - try again with next event
-                        // (Already not added to return_events)
+                        // Keep the state pending, unchanged, for the next event
                     }
                     StateType::Sequence => {
-                        // Sequence: Remove StateEvent (sequence broken)
+                        // The sequence is broken, so drop the state
                         pending_to_remove.push(idx);
                     }
                 }
             }
         }
 
-        // Step 2: Update state (mark changed, remove processed) - need lock
+        // Step 2: take the lock to mark the change and drop finished states
         {
             let mut state = self.state.lock().unwrap();
 
-            // Mark state changed if any matches occurred
             if state_changed {
                 state.mark_state_changed();
-                // Also mark shared state for lock-free communication with PostStateProcessor
                 self.shared_state.mark_state_changed();
             }
 
-            // Remove processed states (in reverse order to maintain indices)
+            // Remove in reverse so earlier indices stay valid
             if !pending_to_remove.is_empty() {
                 let pending_list_mut = state.get_pending_list_mut();
                 for &idx in pending_to_remove.iter().rev() {
@@ -676,10 +629,10 @@ impl PreStateProcessor for StreamPreStateProcessor {
                     }
                 }
             }
-        } // Release lock here!
+        } // lock released here
 
-        // Step 3: Forward to PostStateProcessor AFTER releasing lock
-        // This avoids deadlock when PostStateProcessor calls back to state_changed()
+        // Step 3: send matches to the post processor only now, after the lock is
+        // released, so its calls back into state_changed() cannot deadlock
         if !post_processor_events.is_empty() {
             if let Some(ref post) = self.this_state_post_processor {
                 if let Ok(mut post_guard) = post.lock() {
@@ -690,13 +643,11 @@ impl PreStateProcessor for StreamPreStateProcessor {
             }
         }
 
-        // Convert return_events to ComplexEvent chain
-        // Build linked list: first -> second -> third -> ...
+        // Only the first match is returned. The rest are not linked into a chain, though
+        // they did reach the post processor above.
         if return_events.is_empty() {
             None
         } else {
-            // For now, return just the first event as Box<dyn ComplexEvent>
-            // In full implementation, would build proper ComplexEventChunk
             Some(Box::new(return_events.into_iter().next().unwrap()))
         }
     }
@@ -713,18 +664,15 @@ impl PreStateProcessor for StreamPreStateProcessor {
         let mut state = self.state.lock().unwrap();
         let pending_list_mut = state.get_pending_list_mut();
 
-        // Mark expired events and notify 'every' processor before removing
+        // Drop expired states from pending. Nothing is notified here.
         pending_list_mut.retain(|state_event| {
             if self.is_expired(state_event, timestamp) {
-                // Mark as EXPIRED (better lifecycle tracking)
+                // Unused copy, left from a plan to track expired states
                 let _expired = state_event.clone();
-                // Note: StreamPreStateProcessor handles expiration directly by removing from pending.
-                // More complex processors (CountPreStateProcessor, etc.) may notify callbacks
-                // for cleanup and restart logic when events expire.
 
-                false // Remove from pending
+                false
             } else {
-                true // Keep in pending
+                true
             }
         });
     }
@@ -746,32 +694,31 @@ impl PreStateProcessor for StreamPreStateProcessor {
     }
 
     fn state_changed(&self) {
-        // Use shared atomic state instead of locking internal state
-        // This prevents deadlock when PostStateProcessor calls this method
+        // Uses the shared atomic flag, not the state lock, so a post processor can call
+        // this without deadlocking
         self.shared_state.mark_state_changed();
     }
 
     fn has_state_changed(&self) -> bool {
-        // Use shared atomic state for lock-free access
         self.shared_state.is_state_changed()
     }
 }
 
-// ===== Public accessor methods (for testing and integration) =====
+// ===== Public accessors for tests and integration =====
 
 impl StreamPreStateProcessor {
-    /// Get reference to the internal state (for testing)
+    /// Shared handle to the state lists
     pub fn get_state(&self) -> Arc<Mutex<StreamPreState>> {
         Arc::clone(&self.state)
     }
 
-    /// Get pending event count (for testing)
+    /// Number of pending states. Takes the state lock.
     pub fn pending_count(&self) -> usize {
         let state = self.state.lock().unwrap();
         state.pending_count()
     }
 
-    /// Get new event count (for testing)
+    /// Number of states in the new list. Takes the state lock.
     pub fn new_count(&self) -> usize {
         let state = self.state.lock().unwrap();
         state.new_count()
@@ -1015,7 +962,8 @@ mod tests {
 
         // Pattern: no match, but StateEvent stays in pending for next try
         assert!(result.is_none());
-        // For now, simplified impl removes it. Full impl would keep it.
+        // Written when a miss removed the state. Pattern mode now keeps it pending, so
+        // this check should hold, but it is still commented out.
         // assert_eq!(processor.pending_count(), 1);
     }
 
@@ -1510,8 +1458,8 @@ mod tests {
         let state_event_a = state_with_a.as_any().downcast_ref::<StateEvent>().unwrap();
         assert!(state_event_a.get_stream_event(0).is_some()); // A is at position 0
 
-        // In real implementation, PostStateProcessor would expand StateEvent
-        // For now, manually create expanded StateEvent for B
+        // No PostStateProcessor is wired here, so grow the StateEvent for B by hand.
+        // In a wired chain the post processor does this.
         let mut expanded_for_b = StateEvent::new(2, 0); // 2 positions for A and B
         if let Some(a_event) = state_event_a.get_stream_event(0) {
             expanded_for_b.set_event(0, a_event.clone());
@@ -1656,7 +1604,7 @@ mod tests {
         // Initially false
         assert!(!processor.is_success_condition());
 
-        // Set to true (as CountPostStateProcessor would do)
+        // Set to true
         processor.set_success_condition(true);
         assert!(processor.is_success_condition());
 

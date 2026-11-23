@@ -16,35 +16,32 @@
  */
 
 // src/core/query/input/stream/state/receiver/pattern_stream_receiver.rs
-// PatternStreamReceiver for stabilizing pattern processor state
+// PatternStreamReceiver, which tidies pattern processor state after events are processed
 
 use crate::core::query::input::stream::state::pre_state_processor::PreStateProcessor;
 use std::sync::{Arc, Mutex};
 
-/// PatternStreamReceiver stabilizes pattern processor state after event processing.
+/// Tidies the state of a PATTERN mode processor chain after a batch of events.
 ///
-/// **Purpose**: After receiving a batch of events, stabilize the state by expiring old events
-/// and updating pending state for pattern processing.
+/// **Steps** (see `stabilize_states`):
+/// 1. `expire_events(timestamp)` on every processor, which drops states past WITHIN
+/// 2. `update_state()` on the first processor, which moves its new states to pending
 ///
-/// **Stabilization Flow (Pattern)**:
-/// 1. `expire_events(timestamp)` on all processors - Remove events outside time window
-/// 2. `update_state()` on first processor - Process pending events and emit matches
-///
-/// **Pattern Semantics**:
-/// - Pattern allows multiple matches from the same state
-/// - State is retained after match (not cleared)
-/// - WITHIN time constraints honored via expire_events()
+/// **Pattern mode**:
+/// - One state can produce several matches
+/// - A state is kept after a match, not cleared. Clearing on reset is left to the
+///   processors.
+/// - WITHIN limits are applied through expire_events()
 #[derive(Debug)]
 pub struct PatternStreamReceiver {
-    /// All PreStateProcessors in the chain (for expiring events)
+    /// Every PreStateProcessor in the chain. All of them expire events.
     all_state_processors: Vec<Arc<Mutex<dyn PreStateProcessor>>>,
 
-    /// The first processor for the stream (for updating state)
+    /// First processor for the stream. Only this one has update_state() called.
     first_state_processor: Option<Arc<Mutex<dyn PreStateProcessor>>>,
 }
 
 impl PatternStreamReceiver {
-    /// Create a new PatternStreamReceiver
     pub fn new() -> Self {
         Self {
             all_state_processors: Vec::new(),
@@ -52,48 +49,37 @@ impl PatternStreamReceiver {
         }
     }
 
-    /// Add a state processor to the chain
     pub fn add_state_processor(&mut self, processor: Arc<Mutex<dyn PreStateProcessor>>) {
         self.all_state_processors.push(processor);
     }
 
-    /// Set the first state processor (for updating state)
     pub fn set_first_state_processor(&mut self, processor: Arc<Mutex<dyn PreStateProcessor>>) {
         self.first_state_processor = Some(processor);
     }
 
-    /// Get all state processors
     pub fn all_state_processors(&self) -> &Vec<Arc<Mutex<dyn PreStateProcessor>>> {
         &self.all_state_processors
     }
 
-    /// Get the first state processor
     pub fn first_state_processor(&self) -> Option<Arc<Mutex<dyn PreStateProcessor>>> {
         self.first_state_processor.clone()
     }
 
-    /// Stabilize states after event processing (Pattern semantics).
+    /// Tidy states after event processing, using PATTERN mode rules.
     ///
-    /// **Flow**:
-    /// 1. Call `expire_events(timestamp)` on ALL processors in chain
-    /// 2. Call `update_state()` on FIRST processor
-    ///
-    /// **Pattern Behavior**:
-    /// - Expires old events outside WITHIN time window
-    /// - Updates state to process pending events
-    /// - Retains state after match (allows multiple matches)
+    /// Calls `expire_events(timestamp)` on every processor in the chain, then
+    /// `update_state()` on the first processor if one is set. A processor whose lock
+    /// is poisoned is skipped.
     ///
     /// # Arguments
-    /// * `timestamp` - Current timestamp for expiring old events
+    /// * `timestamp` - Current time in milliseconds, used to expire old states
     pub fn stabilize_states(&mut self, timestamp: i64) {
-        // Step 1: Expire old events on all processors
         for processor in &self.all_state_processors {
             if let Ok(mut guard) = processor.lock() {
                 guard.expire_events(timestamp);
             }
         }
 
-        // Step 2: Update state on first processor (if exists)
         if let Some(ref first) = self.first_state_processor {
             if let Ok(mut guard) = first.lock() {
                 guard.update_state();

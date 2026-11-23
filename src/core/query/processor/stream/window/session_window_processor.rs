@@ -16,7 +16,7 @@
  */
 
 // src/core/query/processor/stream/window/session_window_processor.rs
-// Rust implementation of EventFlux SessionWindowProcessor
+// Session window processor, ported from Siddhi's SessionWindowProcessor
 
 use crate::core::config::{
     eventflux_app_context::EventFluxAppContext, eventflux_query_context::EventFluxQueryContext,
@@ -36,51 +36,59 @@ use std::sync::{Arc, Mutex};
 
 const DEFAULT_SESSION_KEY: &str = "default-key";
 
-/// A session window groups events based on a session key and maintains sessions
-/// that expire after a configurable gap period.
+/// Groups events into sessions by session key. A session ends once no event arrives
+/// for `session_gap` milliseconds, and its events are then sent out as expired.
+///
+/// Session timeouts are only checked when an event arrives or `on_time` is called.
+/// Nothing is scheduled with the scheduler yet.
 #[derive(Debug)]
 pub struct SessionWindowProcessor {
-    /// Common processor metadata
     meta: CommonProcessorMeta,
-    /// Time gap in milliseconds after which a session expires
+    /// Milliseconds without events after which a session ends
     session_gap: i64,
-    /// Additional time to accept late events after session expiry
+    /// Extra milliseconds after a session ends during which late events are still
+    /// accepted
     allowed_latency: i64,
-    /// Executor for extracting session key from events
+    /// Reads the session key from an event. None means every event uses
+    /// DEFAULT_SESSION_KEY.
     session_key_executor: Option<Box<dyn ExpressionExecutor>>,
-    /// Scheduler for handling session timeouts
+    /// Meant for session timeouts. Not used to schedule anything yet.
     scheduler: Option<Arc<Scheduler>>,
-    /// Window state containing all sessions
+    /// All sessions, by key
     state: Arc<Mutex<SessionWindowState>>,
 }
 
-/// Internal state for the session window
+/// Sessions of a session window
 #[derive(Debug)]
 pub(super) struct SessionWindowState {
-    /// Map of session key -> session container
+    /// Session key → its sessions
     pub(super) session_map: HashMap<String, SessionContainer>,
-    /// Chunk to collect expired events
+    /// Events from ended sessions, waiting to be sent out as expired
     pub(super) expired_event_chunk: SessionEventChunk,
 }
 
-/// Container for managing current and previous sessions for a session key
+/// The current and previous session of one session key. The previous session is only
+/// used when late events are allowed.
 #[derive(Debug)]
 pub(super) struct SessionContainer {
     pub(super) current_session: SessionEventChunk,
     pub(super) previous_session: SessionEventChunk,
 }
 
-/// Event chunk with session-specific timestamps
+/// Events of one session with its timestamps. Each timestamp is -1 when the session
+/// is empty.
 #[derive(Debug)]
 pub(super) struct SessionEventChunk {
     pub(super) events: Vec<Arc<StreamEvent>>,
+    /// Timestamp of the earliest event
     pub(super) start_timestamp: i64,
+    /// Time the session ends, the latest event plus the gap
     pub(super) end_timestamp: i64,
+    /// Time late events stop being accepted, end_timestamp plus the allowed latency
     pub(super) alive_timestamp: i64,
 }
 
 impl SessionWindowProcessor {
-    /// Create a new session window processor
     pub fn new(
         session_gap: i64,
         session_key_executor: Option<Box<dyn ExpressionExecutor>>,
@@ -99,7 +107,16 @@ impl SessionWindowProcessor {
         }
     }
 
-    /// Create from window handler (standard factory pattern)
+    /// Build the window from its handler parameters, which are the gap, then an optional
+    /// session key, then an optional allowed latency.
+    ///
+    /// The session key parameter is accepted but not parsed yet, so the default key is
+    /// always used.
+    ///
+    /// # Errors
+    /// Returns an error message when the gap is missing, not a constant number, or not
+    /// positive, or when the latency is not a constant number, is negative, or is
+    /// larger than the gap.
     pub fn from_handler(
         handler: &WindowHandler,
         app_ctx: Arc<EventFluxAppContext>,
@@ -108,7 +125,7 @@ impl SessionWindowProcessor {
     ) -> Result<Self, String> {
         let params = handler.get_parameters();
 
-        // First parameter: session gap (required)
+        // First parameter: session gap, required
         let session_gap = match params.first() {
             Some(Expression::Constant(c)) => match &c.value {
                 ConstantValueWithFloat::Time(t) => *t,
@@ -123,15 +140,15 @@ impl SessionWindowProcessor {
             return Err("Session gap must be positive".to_string());
         }
 
-        // Second parameter: session key (optional, dynamic)
+        // Second parameter: session key expression, optional
         let session_key_executor = if params.len() >= 2 {
-            // TODO: Parse session key expression executor
-            None // For now, use default key
+            // TODO: build an executor for the session key expression
+            None // until then, the default key is used
         } else {
             None
         };
 
-        // Third parameter: allowed latency (optional)
+        // Third parameter: allowed latency, optional, default 0
         let allowed_latency = if params.len() >= 3 {
             match &params[2] {
                 Expression::Constant(c) => match &c.value {
@@ -163,7 +180,8 @@ impl SessionWindowProcessor {
         ))
     }
 
-    /// Get the session key from an event
+    /// Session key for an event. Falls back to DEFAULT_SESSION_KEY when there is no
+    /// executor or it does not return a String.
     fn get_session_key(&self, event: &dyn ComplexEvent) -> String {
         if let Some(ref executor) = self.session_key_executor {
             if let Some(AttributeValue::String(key)) = executor.execute(Some(event)) {
@@ -176,7 +194,13 @@ impl SessionWindowProcessor {
         }
     }
 
-    /// Process events and maintain sessions
+    /// Add one event to its session, then end any sessions that timed out.
+    ///
+    /// Returns the events of ended sessions, marked as expired.
+    ///
+    /// # Errors
+    /// Returns an error message when the state lock is poisoned or the event is not a
+    /// StreamEvent.
     fn process_event(
         &self,
         event: Box<dyn ComplexEvent>,
@@ -191,26 +215,23 @@ impl SessionWindowProcessor {
         let max_timestamp = event_timestamp + self.session_gap;
         let alive_timestamp = max_timestamp + self.allowed_latency;
 
-        // Get or create session container for this key
         let session_container = state
             .session_map
             .entry(session_key.clone())
             .or_insert_with(SessionContainer::new);
 
-        // Convert event to StreamEvent for storage
         let stream_event = if let Some(se) = event.as_any().downcast_ref::<StreamEvent>() {
             Arc::new(se.clone_without_next())
         } else {
             return Err("Session window only supports StreamEvent".to_string());
         };
 
-        // Handle event based on session state
         let is_empty = session_container.current_session.is_empty();
         let current_start = session_container.current_session.start_timestamp;
         let current_end = session_container.current_session.end_timestamp;
 
         if is_empty {
-            // First event in session
+            // First event of a new session
             session_container
                 .current_session
                 .add_event(Arc::clone(&stream_event));
@@ -221,9 +242,9 @@ impl SessionWindowProcessor {
             );
             self.schedule_timeout(max_timestamp)?;
         } else if event_timestamp >= current_start {
-            // Event is not late relative to current session start
+            // Not earlier than the current session start, so not late
             if event_timestamp <= current_end {
-                // Event extends current session
+                // Within the gap, so it extends the current session
                 session_container
                     .current_session
                     .add_event(Arc::clone(&stream_event));
@@ -234,9 +255,10 @@ impl SessionWindowProcessor {
                 );
                 self.schedule_timeout(max_timestamp)?;
             } else {
-                // Event starts a new session
+                // Past the gap, so it starts a new session. Only done when late events
+                // are allowed. With no latency the event is not stored.
                 if self.allowed_latency > 0 {
-                    // Move current to previous session
+                    // The current session becomes the previous one, open for late events
                     session_container.move_current_to_previous();
                     session_container.current_session.clear();
                     session_container
@@ -251,7 +273,7 @@ impl SessionWindowProcessor {
                 }
             }
         } else {
-            // Late event - try to add to appropriate session
+            // Earlier than the current session start, so it is late
             self.handle_late_event(
                 event_timestamp,
                 Arc::clone(&stream_event),
@@ -259,10 +281,9 @@ impl SessionWindowProcessor {
             )?;
         }
 
-        // Process any session timeouts
         self.process_session_timeouts(event_timestamp, &mut state)?;
 
-        // Return any expired events, converting to Box<dyn ComplexEvent>
+        // Hand back the ended sessions' events, marked expired
         let mut result = Vec::new();
         if !state.expired_event_chunk.is_empty() {
             let expired_events = state.expired_event_chunk.drain_events();
@@ -276,7 +297,11 @@ impl SessionWindowProcessor {
         Ok(result)
     }
 
-    /// Handle late arriving events
+    /// Place an event that is earlier than the current session start.
+    ///
+    /// An event within the gap before a session joins it. Otherwise it is dropped with
+    /// a println. The previous session is only tried when late events are allowed.
+    /// Always returns Ok.
     fn handle_late_event(
         &self,
         event_timestamp: i64,
@@ -288,16 +313,16 @@ impl SessionWindowProcessor {
             let previous_start = session_container.previous_session.start_timestamp;
             let previous_empty = session_container.previous_session.is_empty();
 
-            // Check if event can extend current session backwards
+            // Within the gap before the current session, so it extends it backwards
             if event_timestamp >= (current_start - self.session_gap) {
                 session_container
                     .current_session
                     .add_event_at_start(Arc::clone(&event));
                 session_container.current_session.start_timestamp = event_timestamp;
-                // Merge sessions if needed
+                // The two sessions may now be close enough to merge
                 self.merge_sessions_in_container(session_container);
             } else if !previous_empty && event_timestamp >= (previous_start - self.session_gap) {
-                // Event belongs to previous session
+                // Belongs to the previous session
                 session_container
                     .previous_session
                     .add_event(Arc::clone(&event));
@@ -305,7 +330,7 @@ impl SessionWindowProcessor {
                 if event_timestamp < previous_start {
                     session_container.previous_session.start_timestamp = event_timestamp;
                 } else {
-                    // Event might extend previous session
+                    // After the previous session start, so it may push its end later
                     let new_end = event_timestamp + self.session_gap;
                     let new_alive = new_end + self.allowed_latency;
                     session_container.previous_session.set_timestamps(
@@ -316,11 +341,11 @@ impl SessionWindowProcessor {
                     self.merge_sessions_in_container(session_container);
                 }
             } else {
-                // Event is too late - log and discard
+                // Too late for any session. Print and drop it.
                 println!("Event {event_timestamp} is too late for any session");
             }
         } else {
-            // No latency allowed - check only current session
+            // No late events allowed, so only the current session is tried
             let current_start = session_container.current_session.start_timestamp;
             if event_timestamp >= (current_start - self.session_gap) {
                 session_container
@@ -335,13 +360,13 @@ impl SessionWindowProcessor {
         Ok(())
     }
 
-    /// Merge sessions within a container
+    /// Merge the previous session into the current one when the previous session ends
+    /// no earlier than the gap before the current start
     fn merge_sessions_in_container(&self, container: &mut SessionContainer) {
         if !container.previous_session.is_empty()
             && container.previous_session.end_timestamp
                 >= (container.current_session.start_timestamp - self.session_gap)
         {
-            // Sessions should be merged
             container
                 .current_session
                 .merge_from(&mut container.previous_session);
@@ -349,13 +374,16 @@ impl SessionWindowProcessor {
         }
     }
 
-    /// Process expired sessions based on current timestamp
+    /// End the sessions that timed out by `current_time`.
+    ///
+    /// A current session past its end moves to previous when late events are allowed,
+    /// otherwise its events go to the expired chunk. A previous session past its alive
+    /// time also goes to the expired chunk. Always returns Ok.
     fn process_session_timeouts(
         &self,
         current_time: i64,
         state: &mut SessionWindowState,
     ) -> Result<(), String> {
-        // Find all current sessions that have expired
         let mut expired_sessions = Vec::new();
 
         for (key, container) in &state.session_map {
@@ -366,15 +394,13 @@ impl SessionWindowProcessor {
             }
         }
 
-        // Process expired current sessions
         for key in expired_sessions {
             if let Some(container) = state.session_map.get_mut(&key) {
                 if self.allowed_latency > 0 {
-                    // Move to previous session
+                    // Keep it as the previous session so late events can still join
                     container.move_current_to_previous();
                     self.schedule_timeout(container.previous_session.alive_timestamp)?;
                 } else {
-                    // Expire immediately
                     state
                         .expired_event_chunk
                         .add_session_events(&container.current_session);
@@ -383,7 +409,7 @@ impl SessionWindowProcessor {
             }
         }
 
-        // Process expired previous sessions (if latency allowed)
+        // Previous sessions only exist when late events are allowed
         if self.allowed_latency > 0 {
             let mut expired_previous = Vec::new();
 
@@ -408,11 +434,12 @@ impl SessionWindowProcessor {
         Ok(())
     }
 
-    /// Schedule a timeout notification
+    /// Meant to schedule a timeout at `timestamp`. Only prints a line for now, when a
+    /// scheduler exists. Always returns Ok.
     fn schedule_timeout(&self, timestamp: i64) -> Result<(), String> {
         if let Some(ref _scheduler) = self.scheduler {
-            // For now, we'll handle timeouts in the main processing loop
-            // TODO: Implement proper schedulable task
+            // Timeouts are checked in process_event for now
+            // TODO: register a Schedulable task with the scheduler
             println!("Session timeout scheduled for timestamp: {timestamp}");
         }
         Ok(())
@@ -440,7 +467,7 @@ impl Processor for SessionWindowProcessor {
                     current_opt = ev.get_next();
                 }
 
-                // Send expired events first, then current events
+                // Expired events go first, then the incoming chunk unchanged
                 if !all_expired.is_empty() {
                     let mut head: Option<Box<dyn ComplexEvent>> = None;
                     let mut tail = &mut head;
@@ -450,7 +477,6 @@ impl Processor for SessionWindowProcessor {
                         tail = tail.as_mut().unwrap().mut_next_ref_option();
                     }
 
-                    // Add current events to the chain
                     *tail = Some(chunk);
 
                     next.lock().unwrap().process(head);
@@ -472,7 +498,7 @@ impl Processor for SessionWindowProcessor {
     fn clone_processor(&self, query_ctx: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
         Box::new(Self::new(
             self.session_gap,
-            // TODO: Clone session key executor properly
+            // TODO: clone the session key executor. The clone uses the default key.
             None,
             self.allowed_latency,
             Arc::clone(&self.meta.eventflux_app_context),
@@ -501,7 +527,8 @@ impl WindowProcessor for SessionWindowProcessor {}
 
 impl Schedulable for SessionWindowProcessor {
     fn on_time(&self, timestamp: i64) {
-        // Handle scheduled session timeouts
+        // End timed out sessions. Their events stay in expired_event_chunk until the
+        // next process_event call sends them.
         let mut state = match self.state.lock() {
             Ok(state) => state,
             Err(_) => {
@@ -534,7 +561,8 @@ impl SessionContainer {
     }
 
     pub(super) fn move_current_to_previous(&mut self) {
-        // Move current session to previous, clearing current
+        // The current session replaces the previous one, and current ends up empty.
+        // Whatever was in previous is dropped without being expired.
         std::mem::swap(&mut self.current_session, &mut self.previous_session);
         self.current_session.clear();
     }
@@ -576,7 +604,8 @@ impl SessionEventChunk {
     }
 
     pub(super) fn merge_from(&mut self, other: &mut SessionEventChunk) {
-        // Insert other's events at the beginning and update start timestamp
+        // Put other's events in front and take its start timestamp. Other is left empty
+        // of events.
         let mut other_events = std::mem::take(&mut other.events);
         other_events.extend(std::mem::take(&mut self.events));
         self.events = other_events;

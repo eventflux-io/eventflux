@@ -16,13 +16,13 @@
  */
 
 // src/core/query/processor/mod.rs
-// This file now acts as the module root for the `processor` directory.
-// Its content is based on the old `processor.rs` file.
+// Root of the `processor` module. Holds the Processor trait and the metadata shared by
+// processors.
 
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::eventflux_query_context::EventFluxQueryContext;
 use crate::core::event::complex_event::ComplexEvent;
-// MetaStreamEvent and ApiAbstractDefinition were commented out, keep as is for now.
+// Unused imports, kept commented out
 // use crate::core::event::stream::meta_stream_event::MetaStreamEvent;
 // use crate::query_api::definition::AbstractDefinition as ApiAbstractDefinition;
 // use crate::core::executor::expression_executor::ExpressionExecutor;
@@ -30,6 +30,8 @@ use crate::core::event::complex_event::ComplexEvent;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
+/// How a processor emits events, one by one (DEFAULT), as a sliding window (SLIDE), or
+/// in batches (BATCH)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ProcessingMode {
     #[default]
@@ -38,7 +40,8 @@ pub enum ProcessingMode {
     BATCH,
 }
 
-/// Common metadata for Processors.
+/// Metadata every processor holds, which is the app and query contexts, the query name
+/// and the next processor.
 #[derive(Debug, Clone)]
 pub struct CommonProcessorMeta {
     pub eventflux_app_context: Arc<EventFluxAppContext>,
@@ -65,7 +68,8 @@ impl CommonProcessorMeta {
     }
 }
 
-/// Trait for stream processors that process event chunks.
+/// A step in a query that takes a chunk of linked events and usually passes results to
+/// the next processor.
 pub trait Processor: Debug + Send + Sync {
     fn process(&self, complex_event_chunk: Option<Box<dyn ComplexEvent>>);
     fn next_processor(&self) -> Option<Arc<Mutex<dyn Processor>>>;
@@ -79,14 +83,12 @@ pub trait Processor: Debug + Send + Sync {
     fn get_processing_mode(&self) -> ProcessingMode;
     fn is_stateful(&self) -> bool;
 
-    /// Clear group states if this processor supports it (e.g., SelectProcessor)
+    /// Clear per group state, for processors that keep it, such as SelectProcessor.
     fn clear_group_states(&self) {
-        // Default implementation does nothing
+        // Does nothing by default
     }
 }
 
-// Declare submodules within processor directory
-pub mod stream; // For StreamProcessors like FilterProcessor
+pub mod stream; // Stream processors such as FilterProcessor and the windows
 
-// Re-export items to be accessed via `crate::core::query::processor::`
-pub use self::stream::FilterProcessor; // Example re-export from stream submodule
+pub use self::stream::FilterProcessor;

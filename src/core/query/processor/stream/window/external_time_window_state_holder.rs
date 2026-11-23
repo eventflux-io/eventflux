@@ -17,9 +17,10 @@
 
 // src/core/query/processor/stream/window/external_time_window_state_holder.rs
 
-//! Enhanced StateHolder implementation for ExternalTimeWindowProcessor
+//! StateHolder for ExternalTimeWindowProcessor, so its buffer can be checkpointed and
+//! restored.
 //!
-//! This is similar to TimeWindowProcessor but uses event timestamps for window boundaries.
+//! Like the time window holder, but the window uses event timestamps for its bounds.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -34,32 +35,32 @@ use crate::core::util::compression::{
     CompressibleStateHolder, CompressionHints, DataCharacteristics, DataSizeRange,
 };
 
-/// Enhanced state holder for ExternalTimpleWindowProcessor with StateHolder capabilities
+/// State holder for ExternalTimeWindowProcessor. Saves and restores the window buffer
+/// and records changes for incremental checkpoints.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ExternalTimeWindowStateHolder {
-    /// Window buffer containing events
+    /// Events in the window, shared with the processor
     buffer: Arc<Mutex<VecDeque<Arc<StreamEvent>>>>,
 
-    /// Component identifier
     component_id: String,
 
-    /// Window duration in milliseconds
+    /// Window length in milliseconds
     window_duration_ms: i64,
 
-    /// Last checkpoint ID for incremental tracking
+    /// Checkpoint the change log was last cleared at
     last_checkpoint_id: Arc<Mutex<Option<CheckpointId>>>,
 
-    /// Change log for incremental checkpointing
+    /// Changes since the last checkpoint, for incremental checkpoints
     change_log: Arc<Mutex<Vec<StateOperation>>>,
 
-    /// Event counter for size estimation
+    /// Events added so far. Saved in snapshots.
     total_events_processed: Arc<Mutex<u64>>,
 }
 
 #[allow(dead_code)]
 impl ExternalTimeWindowStateHolder {
-    /// Create a new enhanced state holder
+    /// Create a holder for `buffer` with an empty change log
     pub fn new(
         buffer: Arc<Mutex<VecDeque<Arc<StreamEvent>>>>,
         component_id: String,
@@ -75,7 +76,7 @@ impl ExternalTimeWindowStateHolder {
         }
     }
 
-    /// Record an event addition for incremental checkpointing
+    /// Log an Insert for an added event and count it
     pub fn record_event_added(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
         let event_data = self.serialize_event(event);
@@ -85,11 +86,10 @@ impl ExternalTimeWindowStateHolder {
             value: event_data,
         });
 
-        // Update event counter
         *self.total_events_processed.lock().unwrap() += 1;
     }
 
-    /// Record an event expiration for incremental checkpointing
+    /// Log a Delete for an event that left the window
     pub fn record_event_expired(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
         let event_data = self.serialize_event(event);
@@ -100,20 +100,20 @@ impl ExternalTimeWindowStateHolder {
         });
     }
 
-    /// Generate a unique key for an event
+    /// Changelog key for an event, made of the timestamp followed by a hash of
+    /// before_window_data, both little endian. Two equal events get the same key.
     fn generate_event_key(&self, event: &StreamEvent) -> Vec<u8> {
-        // Use timestamp and a hash of the event data as key
         let mut key = Vec::new();
         key.extend_from_slice(&event.timestamp.to_le_bytes());
 
-        // Add a simple hash of the event data
         let data_hash = self.hash_event_data(&event.before_window_data);
         key.extend_from_slice(&data_hash.to_le_bytes());
 
         key
     }
 
-    /// Simple hash function for event data
+    /// Hash the attribute values through their Debug text. DefaultHasher output can
+    /// change between Rust versions, so the key is not stable across builds.
     fn hash_event_data(&self, data: &[crate::core::event::value::AttributeValue]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -127,7 +127,8 @@ impl ExternalTimeWindowStateHolder {
         hasher.finish()
     }
 
-    /// Serialize an event to bytes
+    /// Encode the timestamp, before_window_data and expired flag. Returns empty bytes
+    /// if encoding fails.
     fn serialize_event(&self, event: &StreamEvent) -> Vec<u8> {
         use crate::core::util::to_bytes;
         let event_data = (
@@ -138,7 +139,11 @@ impl ExternalTimeWindowStateHolder {
         to_bytes(&event_data).unwrap_or_default()
     }
 
-    /// Deserialize an event from bytes
+    /// Decode bytes from serialize_event back into a StreamEvent. Other fields are left
+    /// at their defaults.
+    ///
+    /// # Errors
+    /// Returns StateError::DeserializationError when the bytes cannot be decoded.
     fn deserialize_event(&self, data: &[u8]) -> Result<StreamEvent, StateError> {
         use crate::core::util::from_bytes;
         if let Ok((timestamp, data, is_expired)) =
@@ -158,7 +163,8 @@ impl ExternalTimeWindowStateHolder {
         })
     }
 
-    /// Clear the change log (called after successful checkpoint)
+    /// Empty the change log and remember `checkpoint_id`. Call after a checkpoint
+    /// succeeds.
     pub fn clear_change_log(&self, checkpoint_id: CheckpointId) {
         let mut change_log = self.change_log.lock().unwrap();
         change_log.clear();
@@ -176,37 +182,34 @@ impl StateHolder for ExternalTimeWindowStateHolder {
 
         let buffer = self.buffer.lock().unwrap();
 
-        // Serialize all events in the buffer
         let mut serialized_events = Vec::new();
         for event in buffer.iter() {
             let event_data = self.serialize_event(event);
             serialized_events.push(event_data);
         }
 
-        // Create state data structure
         let state_data = ExternalTimeWindowStateData {
             events: serialized_events,
             window_duration_ms: self.window_duration_ms,
             total_events_processed: *self.total_events_processed.lock().unwrap(),
         };
 
-        // Serialize to bytes
         let data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
             message: format!("Failed to serialize external time window state: {e}"),
         })?;
 
-        // Apply compression if requested using the shared compression utility
+        // Compress with the requested type, or let the shared helper pick one
         let (compressed_data, compression_type) =
             if let Some(ref compression) = hints.prefer_compression {
                 match self.compress_state_data(&data, Some(compression.clone())) {
                     Ok((compressed, comp_type)) => (compressed, comp_type),
                     Err(_) => {
-                        // Fall back to no compression if compression fails
+                        // Store uncompressed if compression fails
                         (data, CompressionType::None)
                     }
                 }
             } else {
-                // Use intelligent compression selection
+                // No preference, so the helper picks based on compression_hints
                 match self.compress_state_data(&data, None) {
                     Ok((compressed, comp_type)) => (compressed, comp_type),
                     Err(_) => (data, CompressionType::None),
@@ -220,7 +223,7 @@ impl StateHolder for ExternalTimeWindowStateHolder {
 
         Ok(StateSnapshot {
             version: self.schema_version(),
-            checkpoint_id: 0, // Will be set by the checkpoint coordinator
+            checkpoint_id: 0, // the checkpoint coordinator sets the real id
             data,
             compression,
             checksum,
@@ -231,21 +234,18 @@ impl StateHolder for ExternalTimeWindowStateHolder {
     fn deserialize_state(&self, snapshot: &StateSnapshot) -> Result<(), StateError> {
         use crate::core::util::from_bytes;
 
-        // Verify integrity
         if !snapshot.verify_integrity() {
             return Err(StateError::ChecksumMismatch);
         }
 
-        // Decompress data if needed using the shared compression utility
         let data = self.decompress_state_data(&snapshot.data, snapshot.compression.clone())?;
 
-        // Deserialize state data
         let state_data: ExternalTimeWindowStateData =
             from_bytes(&data).map_err(|e| StateError::DeserializationError {
                 message: format!("Failed to deserialize external time window state: {e}"),
             })?;
 
-        // Restore window buffer
+        // Replace the buffer contents with the saved events
         let mut buffer = self.buffer.lock().unwrap();
         buffer.clear();
 
@@ -253,12 +253,12 @@ impl StateHolder for ExternalTimeWindowStateHolder {
             match self.deserialize_event(event_data) {
                 Ok(event) => buffer.push_back(Arc::new(event)),
                 Err(_e) => {
-                    // Warning: Failed to deserialize event, skipping
+                    // Skip an event that cannot be decoded, without logging
                 }
             }
         }
 
-        // Restore metadata (window_duration_ms is configuration and doesn't need to be restored)
+        // window_duration_ms comes from the query config, so it is not restored
         *self.total_events_processed.lock().unwrap() = state_data.total_events_processed;
 
         Ok(())
@@ -291,7 +291,6 @@ impl StateHolder for ExternalTimeWindowStateHolder {
         let mut buffer = self.buffer.lock().unwrap();
 
         for operation in &changes.operations {
-            // Use shared helper for all simple window operations
             apply_operation_to_simple_window(&mut buffer, operation, &|data| {
                 self.deserialize_event(data)
             })?;
@@ -326,7 +325,6 @@ impl StateHolder for ExternalTimeWindowStateHolder {
         metadata.access_pattern = self.access_pattern();
         metadata.size_estimation = self.estimate_size();
 
-        // Add custom metadata
         metadata.custom_metadata.insert(
             "window_duration_ms".to_string(),
             self.window_duration_ms.to_string(),
@@ -349,17 +347,17 @@ impl StateHolder for ExternalTimeWindowStateHolder {
 impl CompressibleStateHolder for ExternalTimeWindowStateHolder {
     fn compression_hints(&self) -> CompressionHints {
         CompressionHints {
-            prefer_speed: true, // External time windows need low latency for real-time processing
+            prefer_speed: true, // live processing needs low latency
             prefer_ratio: false,
-            data_type: DataCharacteristics::ModeratelyRepetitive, // Event streams have moderate patterns
-            target_latency_ms: Some(1),                           // Target < 1ms compression time
-            min_compression_ratio: Some(0.3), // At least 30% space savings to be worthwhile
-            expected_size_range: DataSizeRange::Small, // External time windows typically have small state
+            data_type: DataCharacteristics::ModeratelyRepetitive, // events repeat somewhat
+            target_latency_ms: Some(1),                           // aim for under 1 ms
+            min_compression_ratio: Some(0.3), // worth it only if it saves at least 30%
+            expected_size_range: DataSizeRange::Small, // these windows usually hold little
         }
     }
 }
 
-/// Serializable state data for ExternalTimeWindowProcessor
+/// Snapshot contents for ExternalTimeWindowProcessor
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ExternalTimeWindowStateData {
     events: Vec<Vec<u8>>,

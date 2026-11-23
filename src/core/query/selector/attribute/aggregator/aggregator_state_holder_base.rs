@@ -33,8 +33,9 @@ pub(crate) struct StateHolderBase {
     pub component_id: String,
     pub last_checkpoint_id: Arc<Mutex<Option<CheckpointId>>>,
     pub change_log: Arc<Mutex<Vec<StateOperation>>>,
-    /// Flag set by state holder's `deserialize_state` to signal restoration.
-    /// Executors check this with `swap(false, AcqRel)` instead of per-event mutex comparisons.
+    /// Set by the state holder's `deserialize_state` to signal a restore.
+    /// Executors read and clear it with `swap(false, AcqRel)`, which is cheaper than
+    /// locking a mutex on every event.
     pub restored: Arc<AtomicBool>,
 }
 
@@ -48,14 +49,19 @@ impl StateHolderBase {
         }
     }
 
-    /// Clear the change log (called after successful checkpoint).
+    /// Empty the change log and remember `checkpoint_id`. Call after a checkpoint
+    /// succeeds.
     pub fn clear_change_log(&self, checkpoint_id: CheckpointId) {
         let mut change_log = self.change_log.lock().unwrap();
         change_log.clear();
         *self.last_checkpoint_id.lock().unwrap() = Some(checkpoint_id);
     }
 
-    /// Get changelog since the given checkpoint.
+    /// Every logged change, as a changelog from `since` to `since + 1`.
+    ///
+    /// # Errors
+    /// Returns StateError::CheckpointNotFound when `since` is later than the last
+    /// cleared checkpoint.
     pub fn get_changelog(&self, since: CheckpointId) -> Result<ChangeLog, StateError> {
         let last_checkpoint = self.last_checkpoint_id.lock().unwrap();
         if let Some(last_id) = *last_checkpoint {
@@ -75,7 +81,10 @@ impl StateHolderBase {
     }
 }
 
-/// Compress data and build a state snapshot.
+/// Compress `data` and wrap it in a state snapshot.
+///
+/// Stores the data uncompressed if compression fails. The checkpoint id is left at 0
+/// for the checkpoint coordinator to set. Always returns Ok.
 pub(crate) fn compress_and_build_snapshot(
     holder: &(impl CompressibleStateHolder + StateHolder),
     data: Vec<u8>,
@@ -99,7 +108,11 @@ pub(crate) fn compress_and_build_snapshot(
     })
 }
 
-/// Verify snapshot integrity and decompress data.
+/// Check the snapshot checksum and return the decompressed data.
+///
+/// # Errors
+/// Returns StateError::ChecksumMismatch when the checksum does not match, or the
+/// decompression error.
 pub(crate) fn verify_and_decompress(
     holder: &impl CompressibleStateHolder,
     snapshot: &StateSnapshot,
@@ -110,7 +123,8 @@ pub(crate) fn verify_and_decompress(
     holder.decompress_state_data(&snapshot.data, snapshot.compression.clone())
 }
 
-/// Default compression hints for aggregator state holders.
+/// Default compression hints for aggregator state holders. They favor speed, aim for
+/// 1 ms, need at least 20% savings, and expect small state.
 pub(crate) fn default_compression_hints(data_type: DataCharacteristics) -> CompressionHints {
     CompressionHints {
         prefer_speed: true,

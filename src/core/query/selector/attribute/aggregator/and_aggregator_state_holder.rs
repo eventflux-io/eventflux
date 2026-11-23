@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! StateHolder implementation for AndAttributeAggregatorExecutor
+//! StateHolder for AndAttributeAggregatorExecutor. Checkpoints and restores its true
+//! and false counts.
 
 use super::aggregator_state_holder_base::{
     compress_and_build_snapshot, default_compression_hints, verify_and_decompress, StateHolderBase,

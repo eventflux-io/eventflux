@@ -30,50 +30,53 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Write};
 use std::sync::{Arc, Mutex};
 
-// Import StateHolder trait and related types
+// StateHolder trait and its types, for checkpointing window state
 use crate::core::persistence::state_holder::{
     AccessPattern, ChangeLog, CheckpointId, SchemaVersion, SerializationHints, StateError,
     StateHolder as NewStateHolder, StateMetadata, StateSize, StateSnapshot,
 };
 
-// Window type constants
+// Window type name constants
 pub mod types;
 
-// Import changelog helpers
+// Shared changelog replay helpers
 pub(crate) mod changelog_helpers;
 
-// Import session window processor
+// Session window processor
 mod session_window_processor;
 use session_window_processor::SessionWindowProcessor;
 
-// Import session window state holder
+// Session window state holder
 mod session_window_state_holder;
 
-// Import sort window processor
+// Sort window processor
 mod sort_window_processor;
 use sort_window_processor::SortWindowProcessor;
 
-// Import enhanced length window state holder
+// Length window state holder
 mod length_window_state_holder;
 use length_window_state_holder::LengthWindowStateHolder;
 
-// Import enhanced time window state holder
+// Time window state holder
 mod time_window_state_holder;
 use time_window_state_holder::TimeWindowStateHolder;
 
-// Import enhanced length batch window state holder
+// Length batch window state holder
 mod length_batch_window_state_holder;
 use length_batch_window_state_holder::LengthBatchWindowStateHolder;
 
-// Import enhanced time batch window state holder
+// Time batch window state holder
 mod time_batch_window_state_holder;
 use time_batch_window_state_holder::TimeBatchWindowStateHolder;
 
-// Import enhanced external time window state holder
+// External time window state holder
 mod external_time_window_state_holder;
 
+/// Marker trait for processors that are windows
 pub trait WindowProcessor: Processor {}
 
+/// Sliding window over the last `length` events. Each new event pushes the oldest one
+/// out as an expired event once the window is full.
 #[derive(Debug)]
 pub struct LengthWindowProcessor {
     meta: CommonProcessorMeta,
@@ -89,7 +92,7 @@ impl LengthWindowProcessor {
     ) -> Self {
         let buffer = Arc::new(Mutex::new(VecDeque::new()));
 
-        // Create enhanced StateHolder and register it for persistence
+        // The state holder shares the buffer, so snapshots see the live window
         let component_id = format!("length_window_{}_{}", query_ctx.get_name(), length);
         let state_holder = Arc::new(LengthWindowStateHolder::new(
             Arc::clone(&buffer),
@@ -97,7 +100,7 @@ impl LengthWindowProcessor {
             length,
         ));
 
-        // Register state holder with SnapshotService for persistence
+        // Register with the SnapshotService, when there is one, so it is checkpointed
         let state_holder_clone = (*state_holder).clone();
         let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
             Arc::new(Mutex::new(state_holder_clone));
@@ -287,7 +290,7 @@ impl Schedulable for ExpireTask {
             ev.set_event_type(ComplexEventType::Expired);
             ev.set_timestamp(timestamp);
 
-            // Track state change
+            // Log the expiry for incremental checkpoints
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_event_expired(&ev);
             }
@@ -307,9 +310,10 @@ struct BatchFlushTask {
     duration_ms: i64,
     scheduler: Arc<Scheduler>,
     start_time: Arc<Mutex<Option<i64>>>,
-    /// Reset event template - emitted between expired and current to clear aggregator state
+    /// Reset event template. Sent between the expired and current events so
+    /// aggregators clear their state.
     reset_event: Arc<Mutex<Option<StreamEvent>>>,
-    /// State holder for incremental checkpointing
+    /// Logs changes for incremental checkpoints
     state_holder: Option<TimeBatchWindowStateHolder>,
 }
 
@@ -331,7 +335,7 @@ impl Schedulable for BatchFlushTask {
                 *start_time = Some(timestamp);
                 old
             };
-            // Record start_time update for incremental checkpointing
+            // Log the new start time for incremental checkpoints
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_start_time_updated(old_start_time, Some(timestamp));
             }
@@ -340,8 +344,8 @@ impl Schedulable for BatchFlushTask {
             return;
         }
 
-        // Record batch flush for incremental checkpointing
-        // This must be done before processing to ensure recovery replays correctly
+        // Log the flush before emitting anything, so a recovery replays it in the right
+        // order
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_batch_flushed(&current_batch, &expired_batch, timestamp);
         }
@@ -349,7 +353,7 @@ impl Schedulable for BatchFlushTask {
         let mut head: Option<Box<dyn ComplexEvent>> = None;
         let mut tail = &mut head;
 
-        // 1. Emit expired events first
+        // 1. Expired events go first
         for mut e in expired_batch {
             e.set_event_type(ComplexEventType::Expired);
             e.set_timestamp(timestamp);
@@ -357,8 +361,8 @@ impl Schedulable for BatchFlushTask {
             tail = tail.as_mut().unwrap().mut_next_ref_option();
         }
 
-        // 2. Emit RESET event to clear aggregator state before processing new batch
-        // This follows Siddhi's pattern: EXPIRED → RESET → CURRENT
+        // 2. A RESET event, so aggregators clear their state before the new batch.
+        // Same order as Siddhi: EXPIRED → RESET → CURRENT
         {
             let mut reset_guard = self.reset_event.lock().unwrap();
             if let Some(ref reset_template) = *reset_guard {
@@ -368,15 +372,14 @@ impl Schedulable for BatchFlushTask {
                 *tail = Some(Box::new(reset_ev));
                 tail = tail.as_mut().unwrap().mut_next_ref_option();
             }
-            // Clear reset event after use (will be recreated from first event of next batch)
+            // Used up. The first event of the next batch becomes the new template.
             *reset_guard = None;
-            // Record reset event cleared for incremental checkpointing
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_reset_event_cleared();
             }
         }
 
-        // 3. Emit current events
+        // 3. Current events go last
         for e in &current_batch {
             *tail = Some(Box::new(e.clone_without_next()));
             tail = tail.as_mut().unwrap().mut_next_ref_option();
@@ -399,7 +402,7 @@ impl Schedulable for BatchFlushTask {
             *start_time = Some(timestamp);
             old
         };
-        // Record start_time update for incremental checkpointing
+        // Log the new start time for incremental checkpoints
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_start_time_updated(old_start_time, Some(timestamp));
         }
@@ -422,7 +425,7 @@ impl Processor for TimeWindowProcessor {
                                 buf.push_back(Arc::clone(&arc));
                             }
 
-                            // Track state change
+                            // Log the add for incremental checkpoints
                             if let Some(ref state_holder) = self.state_holder {
                                 state_holder.record_event_added(se);
                             }
@@ -590,14 +593,13 @@ pub fn create_window_processor(
     query_ctx: Arc<EventFluxQueryContext>,
     parse_ctx: &crate::core::util::parser::expression_parser::ExpressionParserContext,
 ) -> Result<Arc<Mutex<dyn Processor>>, String> {
-    // Look up window factory from registry
     if let Some(factory) = app_ctx
         .get_eventflux_context()
         .get_window_factory(&handler.name)
     {
         factory.create(handler, app_ctx, query_ctx, parse_ctx)
     } else {
-        // Provide helpful error message with available window types
+        // List the registered window names in the error to help the user
         let available = app_ctx.get_eventflux_context().list_window_factory_names();
         Err(format!(
             "Unknown window type '{}'. Available: {:?}",
@@ -656,6 +658,7 @@ impl WindowProcessorFactory for TimeWindowFactory {
 
 // ---- LengthBatchWindowProcessor ----
 
+/// Batch window that collects `length` events and then emits them together.
 #[derive(Debug)]
 pub struct LengthBatchWindowProcessor {
     meta: CommonProcessorMeta,
@@ -663,7 +666,8 @@ pub struct LengthBatchWindowProcessor {
     buffer: Arc<Mutex<Vec<StreamEvent>>>,
     expired: Arc<Mutex<Vec<StreamEvent>>>,
     state_holder: Option<LengthBatchWindowStateHolder>,
-    /// Reset event template - created from first event of batch, emitted between expired and current
+    /// Reset event template, copied from the first event of a batch. Sent between the
+    /// expired and current events.
     reset_event: Arc<Mutex<Option<StreamEvent>>>,
 }
 
@@ -677,7 +681,7 @@ impl LengthBatchWindowProcessor {
         let expired = Arc::new(Mutex::new(Vec::new()));
         let reset_event = Arc::new(Mutex::new(None));
 
-        // Create enhanced StateHolder and register it
+        // The state holder shares the buffers, so snapshots see the live window
         let component_id = format!("length_batch_window_{}_{}", query_ctx.get_name(), length);
         let state_holder = LengthBatchWindowStateHolder::new(
             Arc::clone(&buffer),
@@ -687,7 +691,7 @@ impl LengthBatchWindowProcessor {
             length,
         );
 
-        // Register state holder with SnapshotService for persistence
+        // Register with the SnapshotService, when there is one, so it is checkpointed
         let state_holder_clone = state_holder.clone();
         let state_holder_arc: Arc<Mutex<dyn crate::core::persistence::StateHolder>> =
             Arc::new(Mutex::new(state_holder_clone));
@@ -742,7 +746,7 @@ impl LengthBatchWindowProcessor {
                 return;
             }
 
-            // Record batch flush for incremental checkpointing
+            // Log the flush for incremental checkpoints
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_batch_flushed(&current_batch, &expired_batch);
             }
@@ -750,7 +754,7 @@ impl LengthBatchWindowProcessor {
             let mut head: Option<Box<dyn ComplexEvent>> = None;
             let mut tail = &mut head;
 
-            // 1. Emit expired events first
+            // 1. Expired events go first
             for mut e in expired_batch {
                 e.set_event_type(ComplexEventType::Expired);
                 e.set_timestamp(timestamp);
@@ -758,8 +762,8 @@ impl LengthBatchWindowProcessor {
                 tail = tail.as_mut().unwrap().mut_next_ref_option();
             }
 
-            // 2. Emit RESET event to clear aggregator state before processing new batch
-            // This follows Siddhi's pattern: EXPIRED → RESET → CURRENT
+            // 2. A RESET event, so aggregators clear their state before the new batch.
+            // Same order as Siddhi: EXPIRED → RESET → CURRENT
             {
                 let mut reset_guard = self.reset_event.lock().unwrap();
                 if let Some(ref reset_template) = *reset_guard {
@@ -769,15 +773,15 @@ impl LengthBatchWindowProcessor {
                     *tail = Some(Box::new(reset_ev));
                     tail = tail.as_mut().unwrap().mut_next_ref_option();
                 }
-                // Clear reset event after use (will be recreated from first event of next batch)
+                // Used up. The first event of the next batch becomes the new template.
                 *reset_guard = None;
-                // Record reset event cleared for incremental checkpointing
+                // Log the clear for incremental checkpoints
                 if let Some(ref state_holder) = self.state_holder {
                     state_holder.record_reset_event_cleared();
                 }
             }
 
-            // 3. Emit current events
+            // 3. Current events go last
             for e in &current_batch {
                 *tail = Some(Box::new(e.clone_without_next()));
                 tail = tail.as_mut().unwrap().mut_next_ref_option();
@@ -803,20 +807,21 @@ impl Processor for LengthBatchWindowProcessor {
                 if let Some(se) = ev.as_any().downcast_ref::<StreamEvent>() {
                     let se_clone = se.clone_without_next();
 
-                    // Record state change for incremental checkpointing
+                    // Log the add for incremental checkpoints
                     if let Some(ref state_holder) = self.state_holder {
                         state_holder.record_event_added(&se_clone);
                     }
 
-                    // Fix race condition: hold lock for entire check-and-modify operation
+                    // Hold the buffer lock across the check and the push, so two threads
+                    // cannot both see a non full batch
                     let last_ts = se.timestamp;
                     let should_flush = {
                         let mut buffer = self.buffer.lock().unwrap();
-                        // Capture first event of batch as reset template
+                        // The first event of a batch becomes the reset template
                         if buffer.is_empty() {
                             let mut reset_guard = self.reset_event.lock().unwrap();
                             *reset_guard = Some(se_clone.clone());
-                            // Record reset event set for incremental checkpointing
+                            // Log the new template for incremental checkpoints
                             if let Some(ref state_holder) = self.state_holder {
                                 state_holder.record_reset_event_set(&se_clone);
                             }
@@ -975,6 +980,9 @@ impl WindowProcessorFactory for LengthBatchWindowFactory {
 
 // ---- TimeBatchWindowProcessor ----
 
+/// Batch window that collects events for `duration_ms` and then emits them together.
+/// A batch is flushed by the scheduler, or by the first event that arrives after the
+/// batch time is up.
 #[derive(Debug)]
 pub struct TimeBatchWindowProcessor {
     meta: CommonProcessorMeta,
@@ -984,8 +992,8 @@ pub struct TimeBatchWindowProcessor {
     expired: Arc<Mutex<Vec<StreamEvent>>>,
     start_time: Arc<Mutex<Option<i64>>>,
     state_holder: Option<TimeBatchWindowStateHolder>,
-    /// Reset event template - created from first event, emitted between expired and current
-    /// to signal aggregators to clear state before processing new batch
+    /// Reset event template, copied from the first event of a batch. Sent between the
+    /// expired and current events so aggregators clear their state before the new batch.
     reset_event: Arc<Mutex<Option<StreamEvent>>>,
 }
 
@@ -1001,7 +1009,8 @@ impl TimeBatchWindowProcessor {
         let start_time = Arc::new(Mutex::new(None));
         let reset_event = Arc::new(Mutex::new(None));
 
-        // Create enhanced StateHolder
+        // The state holder shares the buffers. Its id is a random UUID and it is not
+        // registered with the SnapshotService here.
         let component_id = format!("time_batch_window_{}", uuid::Uuid::new_v4());
         let state_holder = TimeBatchWindowStateHolder::new(
             Arc::clone(&buffer),
@@ -1061,7 +1070,7 @@ impl TimeBatchWindowProcessor {
                 return;
             }
 
-            // Record batch flush for incremental checkpointing
+            // Log the flush for incremental checkpoints
             if let Some(ref state_holder) = self.state_holder {
                 state_holder.record_batch_flushed(&current_batch, &expired_batch, timestamp);
             }
@@ -1069,7 +1078,7 @@ impl TimeBatchWindowProcessor {
             let mut head: Option<Box<dyn ComplexEvent>> = None;
             let mut tail = &mut head;
 
-            // 1. Emit expired events first
+            // 1. Expired events go first
             for mut e in expired_batch {
                 e.set_event_type(ComplexEventType::Expired);
                 e.set_timestamp(timestamp);
@@ -1077,8 +1086,8 @@ impl TimeBatchWindowProcessor {
                 tail = tail.as_mut().unwrap().mut_next_ref_option();
             }
 
-            // 2. Emit RESET event to clear aggregator state before processing new batch
-            // This follows Siddhi's pattern: EXPIRED → RESET → CURRENT
+            // 2. A RESET event, so aggregators clear their state before the new batch.
+            // Same order as Siddhi: EXPIRED → RESET → CURRENT
             {
                 let mut reset_guard = self.reset_event.lock().unwrap();
                 if let Some(ref reset_template) = *reset_guard {
@@ -1088,15 +1097,15 @@ impl TimeBatchWindowProcessor {
                     *tail = Some(Box::new(reset_ev));
                     tail = tail.as_mut().unwrap().mut_next_ref_option();
                 }
-                // Clear reset event after use (will be recreated from first event of next batch)
+                // Used up. The first event of the next batch becomes the new template.
                 *reset_guard = None;
-                // Record reset event cleared for incremental checkpointing
+                // Log the clear for incremental checkpoints
                 if let Some(ref state_holder) = self.state_holder {
                     state_holder.record_reset_event_cleared();
                 }
             }
 
-            // 3. Emit current events
+            // 3. Current events go last
             for e in &current_batch {
                 *tail = Some(Box::new(e.clone_without_next()));
                 tail = tail.as_mut().unwrap().mut_next_ref_option();
@@ -1117,7 +1126,7 @@ impl TimeBatchWindowProcessor {
             *start_time = Some(timestamp);
             old
         };
-        // Record start_time update for incremental checkpointing
+        // Log the new start time for incremental checkpoints
         if let Some(ref state_holder) = self.state_holder {
             state_holder.record_start_time_updated(old_start_time, Some(timestamp));
         }
@@ -1149,7 +1158,7 @@ impl Processor for TimeBatchWindowProcessor {
                     if start.is_none() {
                         *start = Some(se.timestamp);
 
-                        // Record start time change for incremental checkpointing
+                        // Log the new start time for incremental checkpoints
                         if let Some(ref state_holder) = self.state_holder {
                             state_holder
                                 .record_start_time_updated(old_start_time, Some(se.timestamp));
@@ -1176,20 +1185,20 @@ impl Processor for TimeBatchWindowProcessor {
 
                     let se_clone = se.clone_without_next();
 
-                    // Create reset event from first event of each batch
-                    // This will be emitted between expired and current events to reset aggregators
+                    // The first event of each batch becomes the reset template, sent between
+                    // the expired and current events to reset aggregators
                     {
                         let mut reset_guard = self.reset_event.lock().unwrap();
                         if reset_guard.is_none() {
                             *reset_guard = Some(se_clone.clone());
-                            // Record reset event set for incremental checkpointing
+                            // Log the new template for incremental checkpoints
                             if let Some(ref state_holder) = self.state_holder {
                                 state_holder.record_reset_event_set(&se_clone);
                             }
                         }
                     }
 
-                    // Record state change for incremental checkpointing
+                    // Log the add for incremental checkpoints
                     if let Some(ref state_holder) = self.state_holder {
                         state_holder.record_event_added(&se_clone);
                     }
@@ -1342,6 +1351,9 @@ impl WindowProcessorFactory for TimeBatchWindowFactory {
 
 // ---- ExternalTimeWindowProcessor ----
 
+/// Sliding time window driven by event timestamps instead of the clock. Each event
+/// expires the buffered events that are `duration_ms` or more older than it. The
+/// duration is the second handler parameter.
 #[derive(Debug)]
 pub struct ExternalTimeWindowProcessor {
     meta: CommonProcessorMeta,
@@ -1482,6 +1494,9 @@ impl WindowProcessorFactory for ExternalTimeWindowFactory {
 
 // ---- ExternalTimeBatchWindowProcessor ----
 
+/// Batch window driven by event timestamps. A batch closes when an event arrives
+/// `duration_ms` or more after the batch start. The duration is the second handler
+/// parameter. Keeps no state holder, so it is not checkpointed.
 #[derive(Debug)]
 pub struct ExternalTimeBatchWindowProcessor {
     meta: CommonProcessorMeta,
@@ -1489,7 +1504,8 @@ pub struct ExternalTimeBatchWindowProcessor {
     buffer: Arc<Mutex<Vec<StreamEvent>>>,
     expired: Arc<Mutex<Vec<StreamEvent>>>,
     start_time: Arc<Mutex<Option<i64>>>,
-    /// Reset event template - emitted between expired and current to clear aggregator state
+    /// Reset event template. Sent between the expired and current events so
+    /// aggregators clear their state.
     reset_event: Arc<Mutex<Option<StreamEvent>>>,
 }
 
@@ -1553,7 +1569,7 @@ impl ExternalTimeBatchWindowProcessor {
             let mut head: Option<Box<dyn ComplexEvent>> = None;
             let mut tail = &mut head;
 
-            // 1. Emit expired events first
+            // 1. Expired events go first
             for mut e in expired_batch {
                 e.set_event_type(ComplexEventType::Expired);
                 e.set_timestamp(timestamp);
@@ -1561,8 +1577,8 @@ impl ExternalTimeBatchWindowProcessor {
                 tail = tail.as_mut().unwrap().mut_next_ref_option();
             }
 
-            // 2. Emit RESET event to clear aggregator state before processing new batch
-            // This follows Siddhi's pattern: EXPIRED → RESET → CURRENT
+            // 2. A RESET event, so aggregators clear their state before the new batch.
+            // Same order as Siddhi: EXPIRED → RESET → CURRENT
             {
                 let mut reset_guard = self.reset_event.lock().unwrap();
                 if let Some(ref reset_template) = *reset_guard {
@@ -1572,11 +1588,11 @@ impl ExternalTimeBatchWindowProcessor {
                     *tail = Some(Box::new(reset_ev));
                     tail = tail.as_mut().unwrap().mut_next_ref_option();
                 }
-                // Clear reset event after use (will be recreated from first event of next batch)
+                // Used up. The first event of the next batch becomes the new template.
                 *reset_guard = None;
             }
 
-            // 3. Emit current events
+            // 3. Current events go last
             for e in &current_batch {
                 *tail = Some(Box::new(e.clone_without_next()));
                 tail = tail.as_mut().unwrap().mut_next_ref_option();
@@ -1615,7 +1631,7 @@ impl Processor for ExternalTimeBatchWindowProcessor {
                     let se_clone = se.clone_without_next();
                     {
                         let mut buffer = self.buffer.lock().unwrap();
-                        // Capture reset event template from first event of each batch
+                        // The first event of each batch becomes the reset template
                         if buffer.is_empty() {
                             let mut reset_guard = self.reset_event.lock().unwrap();
                             *reset_guard = Some(se_clone.clone());
@@ -1664,6 +1680,8 @@ impl WindowProcessor for ExternalTimeBatchWindowProcessor {}
 
 // ---- LossyCountingWindowProcessor ----
 
+/// Placeholder for a lossy counting window. It passes every chunk through unchanged
+/// and keeps no state. See LossyFrequentWindowProcessor for the working version.
 #[derive(Debug)]
 pub struct LossyCountingWindowProcessor {
     meta: CommonProcessorMeta,
@@ -1752,6 +1770,8 @@ impl WindowProcessorFactory for LossyCountingWindowFactory {
 
 // ---- CronWindowProcessor ----
 
+/// Batch window flushed on a cron schedule. The schedule is registered once, when the
+/// next processor is set. No RESET event is sent between batches.
 #[derive(Debug)]
 pub struct CronWindowProcessor {
     meta: CommonProcessorMeta,
@@ -2015,6 +2035,13 @@ impl WindowProcessorFactory for SortWindowFactory {
 // ============================================================================
 
 /// Resolve attribute name expressions to their indices in before_window_data.
+///
+/// Looks names up in the default source stream. Parameters that are not variables are
+/// skipped. Returns an empty Vec for no parameters.
+///
+/// # Errors
+/// Returns an error message when there is no metadata for the default source, or when
+/// an attribute is not in the stream.
 fn resolve_key_indices(
     params: &[Expression],
     parse_ctx: &crate::core::util::parser::expression_parser::ExpressionParserContext,
@@ -2038,10 +2065,11 @@ fn resolve_key_indices(
     Ok(indices)
 }
 
-/// Generate a composite key from stream attribute values.
-/// If `key_indices` is non-empty, uses only those attribute positions.
-/// Otherwise, uses all attributes from before_window_data.
-/// Uses a null byte separator to avoid collisions.
+/// Build a key string from the event's attribute values.
+/// With `key_indices` set, uses only those positions, skipping any out of range.
+/// With it empty, uses every value in before_window_data.
+/// Values are joined with a null character so different splits cannot give the same
+/// key.
 fn generate_composite_key(event: &StreamEvent, key_indices: &[usize]) -> String {
     let mut buf = String::new();
     if key_indices.is_empty() {
@@ -2072,19 +2100,19 @@ fn generate_composite_key(event: &StreamEvent, key_indices: &[usize]) -> String 
 // Reference: Similar to Siddhi's unique extension
 // ============================================================================
 
-/// UniqueWindowProcessor keeps only the latest event per unique key value.
-/// When a new event arrives with a key that already exists, the old event is expired.
-/// Supports composite keys (e.g., `unique(symbol, exchange)`).
+/// Keeps only the latest event for each key value.
+/// When an event arrives with a key already held, the old event is expired.
+/// Keys can span several attributes, for example `unique(symbol, exchange)`.
 ///
-/// **Warning**: The `unique_map` grows with each distinct key value seen. For
-/// high-cardinality key spaces (e.g., UUIDs), this will consume increasing memory.
-/// This matches Java Siddhi's unique window behavior.
+/// **Warning**: `unique_map` gains an entry for every new key value. With many
+/// distinct keys, such as UUIDs, memory keeps growing. Java Siddhi's unique window
+/// behaves the same way.
 #[derive(Debug)]
 pub struct UniqueWindowProcessor {
     meta: CommonProcessorMeta,
-    /// Resolved indices of key attributes in before_window_data
+    /// Positions of the key attributes in before_window_data
     key_attribute_indices: Vec<usize>,
-    /// Map from key value to stored event
+    /// Latest event for each key
     unique_map: Arc<Mutex<HashMap<String, Arc<StreamEvent>>>>,
 }
 
@@ -2134,7 +2162,7 @@ impl Processor for UniqueWindowProcessor {
 
                         if let Some(old_event) = map.insert(key, Arc::new(se.clone_without_next()))
                         {
-                            // Expire the old event with the same key
+                            // Send the replaced event out as expired, ahead of the new one
                             let mut ex = old_event.as_ref().clone_without_next();
                             ex.set_event_type(ComplexEventType::Expired);
                             ex.set_timestamp(se.timestamp);
@@ -2224,19 +2252,19 @@ impl WindowProcessorFactory for UniqueWindowFactory {
 // Reference: Siddhi's firstUnique extension
 // ============================================================================
 
-/// FirstUniqueWindowProcessor keeps only the first event per unique key value.
-/// Subsequent events with the same key are ignored (not even emitted).
-/// Supports composite keys (e.g., `firstUnique(user_id, session_id)`).
+/// Keeps only the first event for each key value.
+/// Later events with the same key are dropped and not emitted at all.
+/// Keys can span several attributes, for example `firstUnique(user_id, session_id)`.
 ///
-/// **Warning**: The `seen_keys` set grows unbounded over the lifetime of the window.
-/// For high-cardinality key spaces (e.g., UUIDs, transaction IDs), this will
-/// consume increasing memory. This matches Java Siddhi's firstUnique behavior.
+/// **Warning**: `seen_keys` never shrinks while the window lives. With many distinct
+/// keys, such as UUIDs or transaction ids, memory keeps growing. Java Siddhi's
+/// firstUnique behaves the same way.
 #[derive(Debug)]
 pub struct FirstUniqueWindowProcessor {
     meta: CommonProcessorMeta,
-    /// Resolved indices of key attributes in before_window_data
+    /// Positions of the key attributes in before_window_data
     key_attribute_indices: Vec<usize>,
-    /// Set of keys we've already seen
+    /// Every key seen so far
     seen_keys: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -2364,12 +2392,13 @@ impl WindowProcessorFactory for FirstUniqueWindowFactory {
 
 // ============================================================================
 // DELAY WINDOW PROCESSOR
-// Holds events for a specific delay period before processing them
+// Holds each event for a set delay before emitting it
 // Reference: DelayWindowProcessor.java
 // ============================================================================
 
-/// DelayWindowProcessor delays event emission by a specified time period.
-/// Each event is individually scheduled for emission after the delay.
+/// Holds each event back for `delay_ms` and then emits it on its own, timestamped with
+/// the time it fires. Without a scheduler, chunks pass straight through, but
+/// `from_handler` refuses to build one without a scheduler.
 #[derive(Debug)]
 pub struct DelayWindowProcessor {
     meta: CommonProcessorMeta,
@@ -2548,17 +2577,20 @@ impl WindowProcessorFactory for DelayWindowFactory {
 // Reference: FrequentWindowProcessor.java
 // ============================================================================
 
-/// FrequentWindowProcessor tracks the most frequently occurring events.
-/// Uses a counting algorithm based on Misra-Gries counting algorithm.
+/// Keeps the most frequent events, using Misra-Gries counting.
 ///
-/// Usage: `WINDOW('frequent', count)` groups by all attributes.
-/// `WINDOW('frequent', count, attr1, attr2)` groups by specific attributes.
+/// Usage: `WINDOW('frequent', count)` keys on all attributes.
+/// `WINDOW('frequent', count, attr1, attr2)` keys on the listed attributes.
+///
+/// A repeat of a held key expires the old event and emits the new one. A new key past
+/// capacity lowers every count by one and expires keys whose count runs out. If there
+/// is still no room, the new event is dropped.
 #[derive(Debug)]
 pub struct FrequentWindowProcessor {
     meta: CommonProcessorMeta,
-    /// Number of most frequent events to track
+    /// Most keys to hold at once
     most_frequent_count: usize,
-    /// Attribute indices for key generation (empty = use all attributes)
+    /// Positions of the key attributes. Empty means every attribute.
     key_attribute_indices: Vec<usize>,
     state: Arc<Mutex<FrequentWindowState>>,
 }
@@ -2608,7 +2640,7 @@ impl FrequentWindowProcessor {
             return Err("Frequent window count must be constant".to_string());
         };
 
-        // Resolve optional key attribute indices from remaining parameters
+        // Any parameters after the count name the key attributes
         let key_attribute_indices = resolve_key_indices(&params[1..], parse_ctx)?;
 
         Ok(Self::new(count, key_attribute_indices, app_ctx, query_ctx))
@@ -2631,7 +2663,7 @@ impl Processor for FrequentWindowProcessor {
 
                         if let Some(old) = state.event_map.insert(key.clone(), Arc::clone(&cloned))
                         {
-                            // Key exists — replacement policy: expire old, emit new
+                            // Key already held. Count it, expire the old event, emit the new.
                             *state.count_map.entry(key).or_insert(0) += 1;
                             let mut ex = old.as_ref().clone_without_next();
                             ex.set_event_type(ComplexEventType::Expired);
@@ -2641,9 +2673,9 @@ impl Processor for FrequentWindowProcessor {
                             *output_tail = Some(Box::new(se.clone_without_next()));
                             output_tail = output_tail.as_mut().unwrap().mut_next_ref_option();
                         } else {
-                            // New key
+                            // New key. It is already in event_map, so the length counts it.
                             if state.event_map.len() > self.most_frequent_count {
-                                // Over capacity — decrement all counts, evict zeros
+                                // Over capacity. Lower every count and expire keys at zero.
                                 let mut keys_to_remove = Vec::new();
                                 for (k, count) in state.count_map.iter_mut() {
                                     if *count <= 1 {
@@ -2665,7 +2697,7 @@ impl Processor for FrequentWindowProcessor {
                                 }
 
                                 if state.event_map.len() > self.most_frequent_count {
-                                    // Still over limit, remove the new event
+                                    // Still no room, so drop the new event unseen
                                     state.event_map.remove(&key);
                                 } else {
                                     state.count_map.insert(key, 1);
@@ -2760,25 +2792,30 @@ impl WindowProcessorFactory for FrequentWindowFactory {
 // Reference: LossyFrequentWindowProcessor.java
 // ============================================================================
 
-/// LossyCount tracks count and bucket ID for lossy counting algorithm
+/// Count for one key in lossy counting, with the bucket it was first counted in
 #[derive(Debug, Clone)]
 struct LossyCount {
     count: usize,
     bucket_id: usize,
 }
 
-/// LossyFrequentWindowProcessor identifies events whose frequency exceeds
-/// a support threshold using the Lossy Counting algorithm.
+/// Keeps the events whose key appears more often than a support threshold, using the
+/// Lossy Counting method.
+///
+/// Takes the support, then an optional error (default support / 10), then optional
+/// key attributes. A key enters the window once its count reaches
+/// (support - error) * total events, and is expired when it falls below that or is
+/// pruned at a bucket boundary.
 #[derive(Debug)]
 pub struct LossyFrequentWindowProcessor {
     meta: CommonProcessorMeta,
-    /// Support threshold (0.0 - 1.0)
+    /// Support threshold, from 0.0 to 1.0
     support: f64,
-    /// Error bound (0.0 - 1.0)
+    /// Allowed error, above 0.0 and at most 1.0
     error: f64,
-    /// Window width = ceil(1/error), stored as integer for precision
+    /// Bucket width, ceil(1 / error). Kept as an integer so bucket math is exact.
     window_width: usize,
-    /// Attribute indices for key generation (empty = use all attributes)
+    /// Positions of the key attributes. Empty means every attribute.
     key_attribute_indices: Vec<usize>,
     state: Arc<Mutex<LossyFrequentWindowState>>,
 }
@@ -2832,7 +2869,8 @@ impl LossyFrequentWindowProcessor {
             _ => return Err("LossyFrequent window requires support threshold".to_string()),
         };
 
-        // Find where key attributes start (after support and optional error params)
+        // A float second parameter is the error, and key attributes start after it.
+        // Otherwise the error defaults to support / 10 and keys start at index 1.
         let (error, key_params_start) = if params.len() > 1 {
             match &params[1] {
                 Expression::Constant(c) => match &c.value {
@@ -2851,7 +2889,7 @@ impl LossyFrequentWindowProcessor {
             return Err("Support must be between 0 and 1, error must be > 0 and <= 1".to_string());
         }
 
-        // Resolve optional key attribute indices from remaining parameters
+        // The remaining parameters name the key attributes
         let key_attribute_indices = resolve_key_indices(&params[key_params_start..], parse_ctx)?;
 
         Ok(Self::new(
@@ -2883,7 +2921,7 @@ impl Processor for LossyFrequentWindowProcessor {
                         let key = generate_composite_key(se, &self.key_attribute_indices);
                         let cloned = Arc::new(se.clone_without_next());
 
-                        // Update counts (always, independent of window membership)
+                        // Count every event, whether or not its key is in the window
                         if let Some(lc) = state.count_map.get_mut(&key) {
                             lc.count += 1;
                         } else {
@@ -2897,7 +2935,7 @@ impl Processor for LossyFrequentWindowProcessor {
                             );
                         }
 
-                        // Check threshold to decide window membership
+                        // The threshold decides whether the key belongs in the window
                         let threshold = (self.support - self.error) * (state.total_count as f64);
                         let meets_threshold = state
                             .count_map
@@ -2907,7 +2945,7 @@ impl Processor for LossyFrequentWindowProcessor {
 
                         if meets_threshold {
                             if was_in_window {
-                                // Replace: expire old, emit new
+                                // Already in the window. Expire the old event, emit the new.
                                 let old = state.event_map.insert(key, Arc::clone(&cloned)).unwrap();
                                 let mut ex = old.as_ref().clone_without_next();
                                 ex.set_event_type(ComplexEventType::Expired);
@@ -2915,13 +2953,13 @@ impl Processor for LossyFrequentWindowProcessor {
                                 *output_tail = Some(Box::new(ex));
                                 output_tail = output_tail.as_mut().unwrap().mut_next_ref_option();
                             } else {
-                                // New entry into window
+                                // Enters the window for the first time
                                 state.event_map.insert(key, Arc::clone(&cloned));
                             }
                             *output_tail = Some(Box::new(se.clone_without_next()));
                             output_tail = output_tail.as_mut().unwrap().mut_next_ref_option();
                         } else if was_in_window {
-                            // Fell below threshold — expire from window
+                            // Fell below the threshold, so expire it from the window
                             if let Some(old) = state.event_map.remove(&key) {
                                 let mut ex = old.as_ref().clone_without_next();
                                 ex.set_event_type(ComplexEventType::Expired);
@@ -2931,7 +2969,8 @@ impl Processor for LossyFrequentWindowProcessor {
                             }
                         }
 
-                        // Prune if at window boundary
+                        // At each bucket boundary, drop keys with count + bucket_id at or
+                        // below the current bucket, and expire their events
                         if state.total_count % self.window_width == 0 {
                             let bucket_id = state.current_bucket_id;
                             let keys_to_remove: Vec<String> = state
@@ -3030,24 +3069,22 @@ impl WindowProcessorFactory for LossyFrequentWindowFactory {
 
 // ============================================================================
 // EXPRESSION WINDOW PROCESSOR
-// Count-based sliding window parsed from an expression string
+// Sliding window sized by a count read from an expression string
 // Reference: ExpressionWindowProcessor.java (simplified version)
 // ============================================================================
 
-/// ExpressionWindowProcessor is a sliding window sized by a count expression
-/// parsed at construction time (e.g., `count() <= 20` keeps at most 20 events).
+/// Sliding window sized by a count expression that is read once when the window is
+/// built. For example `count() <= 20` keeps at most 20 events.
 ///
-/// **Supported expressions**: `count() <= N` and `count() < N` only.
-/// The expression is parsed once during initialization — it is NOT evaluated
-/// dynamically per event. Unsupported expressions are rejected at construction.
+/// **Supported expressions**: only `count() <= N` and `count() < N`.
+/// The expression is not run per event. `from_handler` rejects anything else.
 #[derive(Debug)]
 pub struct ExpressionWindowProcessor {
     meta: CommonProcessorMeta,
-    /// The expression string (e.g., "count() <= 20")
+    /// The expression text, for example "count() <= 20"
     expression: String,
-    /// Max count extracted from simple expressions
+    /// Most events to keep, read from the expression
     max_count: Option<usize>,
-    /// Buffer of events
     buffer: Arc<Mutex<VecDeque<Arc<StreamEvent>>>>,
 }
 
@@ -3067,8 +3104,9 @@ impl ExpressionWindowProcessor {
     }
 
     fn parse_count_expression(expr: &str) -> Option<usize> {
-        // Simple regex-free parsing for "count() <= N" or "count() < N"
-        // Remove all whitespace to tolerate "count( ) <= 5" or extra spacing
+        // Plain string parsing for "count() <= N" or "count() < N", no regex. Spaces are
+        // removed first, so "count( ) <= 5" also works. Tabs are not removed.
+        // "count() < N" gives N - 1.
         let expr = expr.replace(' ', "").to_lowercase();
         if expr.starts_with("count()") {
             let rest = expr.trim_start_matches("count()").trim();
@@ -3133,7 +3171,7 @@ impl Processor for ExpressionWindowProcessor {
                             let mut buf = self.buffer.lock().unwrap();
                             buf.push_back(Arc::new(se.clone_without_next()));
 
-                            // Expire events that violate the expression
+                            // Expire the oldest events until the count fits again
                             if let Some(max) = self.max_count {
                                 while buf.len() > max {
                                     if let Some(old) = buf.pop_front() {
@@ -3148,7 +3186,7 @@ impl Processor for ExpressionWindowProcessor {
                             }
                         }
 
-                        // Add current event
+                        // The new event goes after any expired ones
                         *output_tail = Some(Box::new(se.clone_without_next()));
                         output_tail = output_tail.as_mut().unwrap().mut_next_ref_option();
                     }

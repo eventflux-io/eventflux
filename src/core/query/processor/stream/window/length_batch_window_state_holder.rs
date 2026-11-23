@@ -17,10 +17,11 @@
 
 // src/core/query/processor/stream/window/length_batch_window_state_holder.rs
 
-//! Enhanced StateHolder implementation for LengthBatchWindowProcessor
+//! StateHolder for LengthBatchWindowProcessor, so its batches can be checkpointed and
+//! restored.
 //!
-//! This implementation provides enterprise-grade state management for length batch windows
-//! with versioning, incremental checkpointing, and comprehensive metadata.
+//! Adds a schema version, a change log for incremental checkpoints, and metadata about
+//! the window.
 
 use std::sync::{Arc, Mutex};
 
@@ -34,39 +35,42 @@ use crate::core::util::compression::{
 };
 use crate::core::util::event_serialization::{EventSerializationService, StorageStrategy};
 
-/// Enhanced state holder for LengthBatchWindowProcessor with StateHolder capabilities
+/// State holder for LengthBatchWindowProcessor. Saves and restores the current batch,
+/// the expired batch and the reset event, and records changes for incremental
+/// checkpoints.
 #[derive(Debug, Clone)]
 pub struct LengthBatchWindowStateHolder {
-    /// Current batch buffer
+    /// Batch being filled
     buffer: Arc<Mutex<Vec<StreamEvent>>>,
 
-    /// Expired batch buffer
+    /// Last flushed batch, sent out as expired events
     expired: Arc<Mutex<Vec<StreamEvent>>>,
 
-    /// Reset event template - emitted between expired and current to clear aggregator state
+    /// Reset event template. Sent between the expired and current events so
+    /// aggregators clear their state.
     reset_event: Arc<Mutex<Option<StreamEvent>>>,
 
-    /// Component identifier
     component_id: String,
 
-    /// Batch length configuration
+    /// Events per batch
     batch_length: usize,
 
-    /// Last checkpoint ID for incremental tracking
+    /// Checkpoint the change log was last cleared at
     last_checkpoint_id: Arc<Mutex<Option<CheckpointId>>>,
 
-    /// Change log for incremental checkpointing
+    /// Changes since the last checkpoint, for incremental checkpoints
     change_log: Arc<Mutex<Vec<StateOperation>>>,
 
-    /// Event counter for size estimation
+    /// Events added so far. Saved in snapshots.
     total_events_processed: Arc<Mutex<u64>>,
 
-    /// Event serialization service with proper AttributeValue handling
+    /// Encodes and decodes events, including every AttributeValue type
     serialization_service: EventSerializationService,
 }
 
 impl LengthBatchWindowStateHolder {
-    /// Create a new enhanced state holder
+    /// Create a holder for the given buffers with an empty change log. Events are
+    /// encoded with StorageStrategy::Essential.
     pub fn new(
         buffer: Arc<Mutex<Vec<StreamEvent>>>,
         expired: Arc<Mutex<Vec<StreamEvent>>>,
@@ -87,7 +91,7 @@ impl LengthBatchWindowStateHolder {
         }
     }
 
-    /// Record an event addition to current batch for incremental checkpointing
+    /// Log an Insert into the current batch and count the event
     pub fn record_event_added(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
         let event_data = self.serialize_event(event);
@@ -97,11 +101,14 @@ impl LengthBatchWindowStateHolder {
             value: event_data,
         });
 
-        // Update event counter
         *self.total_events_processed.lock().unwrap() += 1;
     }
 
-    /// Record a batch flush for incremental checkpointing
+    /// Log a batch flush.
+    ///
+    /// Written as a Delete with the key `batch_flush_marker`. Replaying it moves the
+    /// current batch into expired. The value holds only the two batch sizes and the
+    /// wall clock time, not the events.
     pub fn record_batch_flushed(
         &self,
         current_batch: &[StreamEvent],
@@ -109,15 +116,14 @@ impl LengthBatchWindowStateHolder {
     ) {
         let mut change_log = self.change_log.lock().unwrap();
 
-        // Record batch transition operations
         change_log.push(StateOperation::Delete {
             key: b"batch_flush_marker".to_vec(),
             old_value: self.serialize_batch_transition(current_batch, expired_batch),
         });
     }
 
-    /// Record reset event template change for incremental checkpointing
-    /// Called when the first event of a new batch is captured as the reset template
+    /// Log that the reset event template was set. Called when the first event of a new
+    /// batch becomes the template.
     pub fn record_reset_event_set(&self, event: &StreamEvent) {
         let mut change_log = self.change_log.lock().unwrap();
         let event_data = self.serialize_event(event);
@@ -128,45 +134,43 @@ impl LengthBatchWindowStateHolder {
         });
     }
 
-    /// Record reset event template cleared for incremental checkpointing
-    /// Called when the reset event is consumed during batch flush
+    /// Log that the reset event template was cleared. Called when a batch flush uses
+    /// the reset event up.
     pub fn record_reset_event_cleared(&self) {
         let mut change_log = self.change_log.lock().unwrap();
 
         change_log.push(StateOperation::Delete {
             key: b"reset_event".to_vec(),
-            old_value: Vec::new(), // We don't need the old value for delete
+            old_value: Vec::new(), // replay matches on the key, so no old value is needed
         });
     }
 
-    /// Generate a unique key for an event
+    /// Changelog key for an event, made of the buffer name, `_`, the timestamp, then a
+    /// hash of before_window_data, numbers little endian. apply_changelog reads the buffer name
+    /// back from the key.
     fn generate_event_key(&self, event: &StreamEvent, buffer_type: &str) -> Vec<u8> {
-        // Use timestamp, buffer type, and a hash of event data as key
         let mut key = Vec::new();
         key.extend_from_slice(buffer_type.as_bytes());
         key.push(b'_');
         key.extend_from_slice(&event.timestamp.to_le_bytes());
 
-        // Add a simple hash of the event data
         let data_hash = self.hash_event_data(&event.before_window_data);
         key.extend_from_slice(&data_hash.to_le_bytes());
 
         key
     }
 
-    /// Simple hash function for event data
+    /// Hash the value count, then each value through its Debug text. DefaultHasher
+    /// output can change between Rust versions, so the key is not stable across builds.
     fn hash_event_data(&self, data: &[crate::core::event::value::AttributeValue]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
 
-        // Hash the length first
         data.len().hash(&mut hasher);
 
-        // Hash each attribute value
         for attr in data {
-            // Create a string representation for hashing
             let attr_str = format!("{attr:?}");
             attr_str.hash(&mut hasher);
         }
@@ -174,14 +178,16 @@ impl LengthBatchWindowStateHolder {
         hasher.finish()
     }
 
-    /// Serialize an event to bytes using the enhanced serialization service
+    /// Encode an event with the serialization service. Returns empty bytes if encoding
+    /// fails.
     fn serialize_event(&self, event: &StreamEvent) -> Vec<u8> {
         self.serialization_service
             .serialize_event(event)
             .unwrap_or_default()
     }
 
-    /// Serialize batch transition for changelog
+    /// Encode the batch sizes and the current wall clock time in milliseconds for a
+    /// flush entry. Returns empty bytes if encoding fails.
     fn serialize_batch_transition(
         &self,
         current_batch: &[StreamEvent],
@@ -198,12 +204,13 @@ impl LengthBatchWindowStateHolder {
         to_bytes(&transition_data).unwrap_or_default()
     }
 
-    /// Deserialize an event from bytes using the enhanced serialization service
+    /// Decode an event with the serialization service
     fn deserialize_event(&self, data: &[u8]) -> Result<StreamEvent, StateError> {
         self.serialization_service.deserialize_event(data)
     }
 
-    /// Clear the change log (called after successful checkpoint)
+    /// Empty the change log and remember `checkpoint_id`. Call after a checkpoint
+    /// succeeds.
     #[allow(dead_code)]
     pub fn clear_change_log(&self, checkpoint_id: CheckpointId) {
         let mut change_log = self.change_log.lock().unwrap();
@@ -220,14 +227,13 @@ impl StateHolder for LengthBatchWindowStateHolder {
     fn serialize_state(&self, hints: &SerializationHints) -> Result<StateSnapshot, StateError> {
         use crate::core::util::to_bytes;
 
-        // Determine storage strategy based on hints
+        // Any compression preference switches events to the Compressed strategy
         let storage_strategy = hints
             .prefer_compression
             .as_ref()
             .map(|_| StorageStrategy::Compressed)
             .unwrap_or(StorageStrategy::Essential);
 
-        // Serialize current batch events
         let current_batch = {
             let buffer = self.buffer.lock().unwrap();
             let mut serialized_events = Vec::new();
@@ -239,14 +245,14 @@ impl StateHolder for LengthBatchWindowStateHolder {
                     Ok(data) => serialized_events.push(data),
                     Err(e) => {
                         eprintln!("Warning: Failed to serialize event: {e}");
-                        // Continue with other events rather than failing completely
+                        // Skip this event and keep the rest, so one bad event does not
+                        // fail the snapshot
                     }
                 }
             }
             serialized_events
         };
 
-        // Serialize expired batch events
         let expired_batch = {
             let expired = self.expired.lock().unwrap();
             let mut serialized_events = Vec::new();
@@ -258,14 +264,14 @@ impl StateHolder for LengthBatchWindowStateHolder {
                     Ok(data) => serialized_events.push(data),
                     Err(e) => {
                         eprintln!("Warning: Failed to serialize expired event: {e}");
-                        // Continue with other events rather than failing completely
+                        // Skip this event and keep the rest
                     }
                 }
             }
             serialized_events
         };
 
-        // Serialize reset event if present
+        // A reset event that fails to encode is saved as None
         let reset_event = {
             let reset_guard = self.reset_event.lock().unwrap();
             if let Some(ref event) = *reset_guard {
@@ -285,7 +291,6 @@ impl StateHolder for LengthBatchWindowStateHolder {
             reset_event,
         };
 
-        // Serialize to bytes
         let data = to_bytes(&state_data).map_err(|e| StateError::SerializationError {
             message: format!("Failed to serialize length batch window state: {e}"),
         })?;
@@ -300,7 +305,7 @@ impl StateHolder for LengthBatchWindowStateHolder {
 
         Ok(StateSnapshot {
             version: self.schema_version(),
-            checkpoint_id: 0, // Will be set by the checkpoint coordinator
+            checkpoint_id: 0, // the checkpoint coordinator sets the real id
             data,
             compression,
             checksum,
@@ -316,16 +321,13 @@ impl StateHolder for LengthBatchWindowStateHolder {
             self.component_id
         );
 
-        // Verify integrity
         if !snapshot.verify_integrity() {
             log::error!("LengthBatchWindow: Checksum mismatch");
             return Err(StateError::ChecksumMismatch);
         }
 
-        // Decompress data if needed using the shared compression utility
         let data = self.decompress_state_data(&snapshot.data, snapshot.compression.clone())?;
 
-        // Deserialize state data
         let state_data: LengthBatchWindowStateData =
             from_bytes(&data).map_err(|e| StateError::DeserializationError {
                 message: format!("Failed to deserialize length batch window state: {e}"),
@@ -337,7 +339,8 @@ impl StateHolder for LengthBatchWindowStateHolder {
             state_data.expired_batch.len()
         );
 
-        // Deserialize and restore current batch events
+        // Replace both batches with the saved events. An event that cannot be decoded
+        // is skipped with a warning, so the rest still restore.
         {
             let mut buffer = self.buffer.lock().unwrap();
             buffer.clear();
@@ -349,13 +352,11 @@ impl StateHolder for LengthBatchWindowStateHolder {
                     }
                     Err(e) => {
                         eprintln!("Warning: Failed to deserialize current batch event: {e}");
-                        // Continue with other events rather than failing completely
                     }
                 }
             }
         }
 
-        // Deserialize and restore expired batch events
         {
             let mut expired = self.expired.lock().unwrap();
             expired.clear();
@@ -365,13 +366,12 @@ impl StateHolder for LengthBatchWindowStateHolder {
                     Ok(event) => expired.push(event),
                     Err(e) => {
                         eprintln!("Warning: Failed to deserialize expired batch event: {e}");
-                        // Continue with other events rather than failing completely
                     }
                 }
             }
         }
 
-        // Restore reset event template if present
+        // A reset event that cannot be decoded is restored as None
         {
             let mut reset_guard = self.reset_event.lock().unwrap();
             *reset_guard = if let Some(serialized_event) = state_data.reset_event {
@@ -381,7 +381,7 @@ impl StateHolder for LengthBatchWindowStateHolder {
             };
         }
 
-        // Restore metadata (batch_length is configuration and doesn't need to be restored)
+        // batch_length comes from the query config, so it is not restored
         *self.total_events_processed.lock().unwrap() = state_data.total_events_processed;
 
         log::info!(
@@ -419,7 +419,6 @@ impl StateHolder for LengthBatchWindowStateHolder {
         for operation in &changes.operations {
             match operation {
                 StateOperation::Insert { key, value } => {
-                    // Handle reset_event insert
                     if key == b"reset_event" {
                         if let Ok(event) = self.deserialize_event(value) {
                             let mut reset_guard = self.reset_event.lock().unwrap();
@@ -428,16 +427,15 @@ impl StateHolder for LengthBatchWindowStateHolder {
                         continue;
                     }
 
-                    // Deserialize and insert event into appropriate buffer
                     match self.deserialize_event(value) {
                         Ok(event) => {
-                            // Check key to determine target buffer
+                            // The key prefix names the target buffer. Unknown prefixes go
+                            // to the current batch.
                             if key.starts_with(b"current_batch") {
                                 buffer.push(event);
                             } else if key.starts_with(b"expired_batch") {
                                 expired.push(event);
                             } else {
-                                // Default to current buffer
                                 buffer.push(event);
                             }
                         }
@@ -453,17 +451,15 @@ impl StateHolder for LengthBatchWindowStateHolder {
 
                 StateOperation::Delete { key, old_value } => {
                     if key == b"batch_flush_marker" {
-                        // Handle batch flush: move current to expired
+                        // A flush. The current batch replaces the expired batch.
                         expired.clear();
                         expired.extend(buffer.drain(..));
                     } else if key == b"reset_event" {
-                        // Clear reset event template
                         let mut reset_guard = self.reset_event.lock().unwrap();
                         *reset_guard = None;
                     } else {
-                        // Deserialize and remove the event
+                        // Remove every matching event from both buffers
                         if let Ok(event_to_remove) = self.deserialize_event(old_value) {
-                            // Remove from both buffers
                             buffer.retain(|e| {
                                 !(e.timestamp == event_to_remove.timestamp
                                     && e.before_window_data == event_to_remove.before_window_data)
@@ -481,7 +477,8 @@ impl StateHolder for LengthBatchWindowStateHolder {
                     old_value,
                     new_value,
                 } => {
-                    // Remove old event and insert new one
+                    // Remove the old event from both buffers, then add the new one to the
+                    // current batch
                     if let Ok(old_event) = self.deserialize_event(old_value) {
                         buffer.retain(|e| {
                             !(e.timestamp == old_event.timestamp
@@ -499,7 +496,6 @@ impl StateHolder for LengthBatchWindowStateHolder {
                 }
 
                 StateOperation::Clear => {
-                    // Clear both buffers and reset event template
                     buffer.clear();
                     expired.clear();
                     *self.reset_event.lock().unwrap() = None;
@@ -515,19 +511,17 @@ impl StateHolder for LengthBatchWindowStateHolder {
         let expired = self.expired.lock().unwrap();
         let entries = buffer.len() + expired.len();
 
-        // Estimate bytes per event (rough calculation)
-        let estimated_bytes_per_event = 200; // Conservative estimate
+        // Rough guess of bytes per event
+        let estimated_bytes_per_event = 200;
         let total_bytes = entries * estimated_bytes_per_event;
 
-        // Estimate growth rate based on batch length
+        // The batch fills up to batch_length and then flushes, so growth is the room
+        // left in the current batch
         let growth_rate = if self.batch_length > 0 {
-            // Growth is cyclic - builds up to batch_length, then resets
-            // Estimate based on current buffer fill level
             let current_fill = buffer.len();
             if current_fill >= self.batch_length {
-                0.0 // At capacity, about to flush
+                0.0 // full, about to flush
             } else {
-                // Estimate remaining space times event size
                 ((self.batch_length - current_fill) * estimated_bytes_per_event) as f64
             }
         } else {
@@ -542,8 +536,7 @@ impl StateHolder for LengthBatchWindowStateHolder {
     }
 
     fn access_pattern(&self) -> AccessPattern {
-        // Length batch windows have a sequential access pattern
-        // Events are added in order and flushed as batches
+        // Events are added in order and flushed as whole batches
         AccessPattern::Sequential
     }
 
@@ -555,7 +548,6 @@ impl StateHolder for LengthBatchWindowStateHolder {
         metadata.access_pattern = self.access_pattern();
         metadata.size_estimation = self.estimate_size();
 
-        // Add custom metadata
         metadata
             .custom_metadata
             .insert("batch_length".to_string(), self.batch_length.to_string());
@@ -588,25 +580,25 @@ impl StateHolder for LengthBatchWindowStateHolder {
 impl CompressibleStateHolder for LengthBatchWindowStateHolder {
     fn compression_hints(&self) -> CompressionHints {
         CompressionHints {
-            prefer_speed: true, // Batch windows process many events, need speed
+            prefer_speed: true, // batch windows handle many events, so favor speed
             prefer_ratio: false,
-            data_type: DataCharacteristics::ModeratelyRepetitive, // Batch event streams
-            target_latency_ms: Some(2), // Target < 2ms for batch processing
-            min_compression_ratio: Some(0.4), // At least 40% space savings for batches
-            expected_size_range: DataSizeRange::Large, // Batches can be large
+            data_type: DataCharacteristics::ModeratelyRepetitive, // events repeat somewhat
+            target_latency_ms: Some(2),                           // aim for under 2 ms
+            min_compression_ratio: Some(0.4), // worth it only if it saves at least 40%
+            expected_size_range: DataSizeRange::Large, // batches can be large
         }
     }
 }
 
-/// Serializable state data for LengthBatchWindowProcessor
+/// Snapshot contents for LengthBatchWindowProcessor
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct LengthBatchWindowStateData {
     current_batch: Vec<Vec<u8>>,
     expired_batch: Vec<Vec<u8>>,
     batch_length: usize,
     total_events_processed: u64,
-    /// Serialized reset event template (if present)
-    /// Uses serde(default) for backward compatibility with checkpoints created before this field existed
+    /// Encoded reset event template, if one is set.
+    /// serde(default) lets checkpoints saved before this field existed still load.
     #[serde(default)]
     reset_event: Option<Vec<u8>>,
 }

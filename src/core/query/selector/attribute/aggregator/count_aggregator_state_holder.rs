@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! StateHolder implementation for CountAttributeAggregatorExecutor
+//! StateHolder for CountAttributeAggregatorExecutor. Checkpoints and restores its count.
 
 use super::aggregator_state_holder_base::{
     compress_and_build_snapshot, default_compression_hints, verify_and_decompress, StateHolderBase,

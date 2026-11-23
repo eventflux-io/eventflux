@@ -15,12 +15,11 @@
  * limitations under the License.
  */
 
-//! Pattern Chain Builder - Factory for creating multi-processor pattern chains
+//! Pattern chain builder, which builds and wires the processors for a multi step pattern.
 //!
-//! Creates and wires CountPreStateProcessor chains for patterns like A{2} -> B{2} -> C{2}.
-//! Each step in the chain is a separate processor with unique state_id.
-//!
-//! Reference: feat/pattern_processing/STATE_MACHINE_DESIGN.md
+//! Handles patterns like A{2} -> B{2} -> C{2}, and AND/OR groups. Each simple step
+//! gets its own CountPreStateProcessor and CountPostStateProcessor with a unique
+//! `state_id`. Each logical group gets a pair of logical processors and two state ids.
 
 use super::count_post_state_processor::CountPostStateProcessor;
 use super::count_pre_state_processor::CountPreStateProcessor;
@@ -33,17 +32,13 @@ use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::config::eventflux_query_context::EventFluxQueryContext;
 use std::sync::{Arc, Mutex};
 
-// Re-export LogicalType for public use
 pub use super::logical_pre_state_processor::LogicalType;
 
-/// Configuration for a logical group (AND/OR between two pattern steps)
+/// Settings for a logical group, an AND or OR between two pattern steps
 #[derive(Debug, Clone)]
 pub struct LogicalGroupConfig {
-    /// Type of logical operation (AND or OR)
     pub logical_type: LogicalType,
-    /// Left side of the logical expression
     pub left: PatternStepConfig,
-    /// Right side of the logical expression
     pub right: PatternStepConfig,
 }
 
@@ -60,17 +55,15 @@ impl LogicalGroupConfig {
         }
     }
 
-    /// Create an AND group
     pub fn and(left: PatternStepConfig, right: PatternStepConfig) -> Self {
         Self::new(LogicalType::And, left, right)
     }
 
-    /// Create an OR group
     pub fn or(left: PatternStepConfig, right: PatternStepConfig) -> Self {
         Self::new(LogicalType::Or, left, right)
     }
 
-    /// Validate this logical group's constraints
+    /// Validate both sides. Returns the first side's error message.
     pub fn validate(&self) -> Result<(), String> {
         self.left.validate()?;
         self.right.validate()?;
@@ -81,22 +74,21 @@ impl LogicalGroupConfig {
 /// A pattern element is either a simple step or a logical group
 #[derive(Debug, Clone)]
 pub enum PatternElement {
-    /// A single pattern step (e.g., e1=TempStream{1,3})
+    /// A single step, for example e1=TempStream{1,3}
     Step(PatternStepConfig),
-    /// A logical group (e.g., (e1=A AND e2=B) or (e1=A OR e2=B))
+    /// A logical group, for example (e1=A AND e2=B) or (e1=A OR e2=B)
     LogicalGroup(LogicalGroupConfig),
 }
 
 impl PatternElement {
-    /// Get the number of state positions this element consumes
+    /// Number of StateEvent positions this element takes. A group takes one per side.
     pub fn state_count(&self) -> usize {
         match self {
             PatternElement::Step(_) => 1,
-            PatternElement::LogicalGroup(_) => 2, // Left and right each get a position
+            PatternElement::LogicalGroup(_) => 2,
         }
     }
 
-    /// Validate this element
     pub fn validate(&self) -> Result<(), String> {
         match self {
             PatternElement::Step(step) => step.validate(),
@@ -105,21 +97,21 @@ impl PatternElement {
     }
 }
 
-/// Configuration for a single pattern step
+/// Settings for a single pattern step
 #[derive(Debug, Clone)]
 pub struct PatternStepConfig {
-    /// Event alias (e1, e2, etc.)
+    /// Event alias such as e1 or e2
     pub alias: String,
-    /// Stream name to match
+    /// Stream this step matches
     pub stream_name: String,
-    /// Minimum count required
+    /// Fewest events this step needs
     pub min_count: usize,
-    /// Maximum count allowed
+    /// Most events this step accepts
     pub max_count: usize,
 }
 
-/// Sentinel value representing an unbounded/unspecified max_count.
-/// Used by parsers to indicate patterns like A+, A{1,}, A{n,} where max is not specified.
+/// Marker for a max_count with no upper bound.
+/// Parsers set it for patterns like A+, A{1,} and A{n,} that give no max.
 pub const UNBOUNDED_MAX_COUNT: usize = usize::MAX;
 
 impl PatternStepConfig {
@@ -132,16 +124,16 @@ impl PatternStepConfig {
         }
     }
 
-    /// Validate this step's constraints
+    /// Check the step's counts. Returns an error message naming the step on failure.
     ///
     /// Rules:
-    /// 1. min_count >= 1 (all steps must match at least one event)
-    /// 2. min_count <= max_count (logical consistency)
-    /// 3. max_count must be bounded (not UNBOUNDED_MAX_COUNT)
+    /// 1. min_count >= 1, so every step matches at least one event
+    /// 2. max_count is bounded, so it is not UNBOUNDED_MAX_COUNT
+    /// 3. min_count <= max_count
     ///
     /// Rejected patterns:
-    /// - A{0}, A{0,n}, A*, A? (zero-count: min_count must be >= 1)
-    /// - A+, A{1,}, A{n,} (unbounded: max_count must be explicitly specified)
+    /// - A{0}, A{0,n}, A*, A? (zero count, min_count must be >= 1)
+    /// - A+, A{1,}, A{n,} (no upper bound, max_count must be given)
     pub fn validate(&self) -> Result<(), String> {
         if self.min_count == 0 {
             return Err(format!(
@@ -166,7 +158,7 @@ impl PatternStepConfig {
     }
 }
 
-/// Pattern chain builder for creating multi-processor chains
+/// Collects pattern elements and builds the wired processor chain for them
 pub struct PatternChainBuilder {
     elements: Vec<PatternElement>,
     state_type: StateType,
@@ -184,14 +176,14 @@ impl PatternChainBuilder {
         }
     }
 
-    /// Add a simple pattern step (e.g., e1=TempStream{1,3})
+    /// Add a simple step, for example e1=TempStream{1,3}
     pub fn add_step(&mut self, step: PatternStepConfig) {
         self.elements.push(PatternElement::Step(step));
     }
 
-    /// Add a logical group (AND/OR between two steps)
+    /// Add a logical group, an AND or OR between two steps
     ///
-    /// Example: For pattern `(e1=A AND e2=B) -> e3=C`
+    /// Example for the pattern `(e1=A AND e2=B) -> e3=C`
     /// ```ignore
     /// builder.add_logical_group(LogicalGroupConfig::and(
     ///     PatternStepConfig::new("e1".into(), "A".into(), 1, 1),
@@ -203,16 +195,18 @@ impl PatternChainBuilder {
         self.elements.push(PatternElement::LogicalGroup(group));
     }
 
+    /// Set the WITHIN limit in milliseconds. It is applied to the first element's
+    /// processors.
     pub fn set_within(&mut self, duration_ms: i64) {
         self.within_duration_ms = Some(duration_ms);
     }
 
-    /// Get the total number of state positions (for calculating StateEvent size)
+    /// Total StateEvent positions across all elements, which sizes the StateEvent
     pub fn total_state_count(&self) -> usize {
         self.elements.iter().map(|e| e.state_count()).sum()
     }
 
-    /// Helper to get all steps (flattened) for backward compatibility
+    /// All steps in order, with each logical group split into its left and right step
     fn get_all_steps(&self) -> Vec<&PatternStepConfig> {
         let mut steps = Vec::new();
         for element in &self.elements {
@@ -227,39 +221,44 @@ impl PatternChainBuilder {
         steps
     }
 
-    /// Enable EVERY pattern (multi-instance matching with pattern restart)
+    /// Turn EVERY on or off, so the pattern starts again after each match.
     ///
-    /// When enabled, completed patterns restart from the beginning, allowing
-    /// new pattern instances after each match. For example:
+    /// With EVERY on, a finished match loops back to the first step so a new instance
+    /// can begin. For example:
     /// - Pattern: EVERY (A -> B)
     /// - Events: A(1) → B(2) → A(3) → B(4)
-    /// - Matches: A1-B2 (completes, restarts) AND A3-B4 (new instance)
+    /// - Matches: A1-B2 (finishes and restarts) and A3-B4 (new instance)
     ///
-    /// Note: This implements "pattern restart" semantics, not simultaneous
-    /// overlapping instances. Each match triggers a restart for the next sequence.
+    /// Each match restarts the pattern. Whole patterns do not run as overlapping
+    /// instances, though a count step at the start can still open overlapping windows
+    /// (see CountPreStateProcessor).
     ///
     /// # Restrictions
-    /// - Only valid in PATTERN mode (not SEQUENCE)
-    /// - Should only be applied to top-level patterns (no nested EVERY)
+    /// - Only valid in PATTERN mode, not SEQUENCE. `validate` rejects it otherwise.
+    /// - Meant only for top level patterns, with no nested EVERY
     pub fn set_every(&mut self, is_every: bool) {
         self.is_every = is_every;
     }
 
-    /// Validate pattern chain constraints
+    /// Check the whole chain. Returns an error message for the first rule broken.
+    ///
+    /// Rules:
+    /// - At least one element
+    /// - Every step passes PatternStepConfig::validate
+    /// - The last element has exact counts (min == max). For a group, both sides do.
+    /// - EVERY is only used in PATTERN mode
     pub fn validate(&self) -> Result<(), String> {
         if self.elements.is_empty() {
             return Err("Pattern chain must have at least one element".to_string());
         }
 
-        // Validate each element individually
         for element in &self.elements {
             element.validate()?;
         }
 
-        // Get all steps (flattened) for validation
         let all_steps = self.get_all_steps();
 
-        // All steps: min >= 1 (no zero-count steps allowed, including first step)
+        // Already covered by element.validate above, kept as a second guard
         for step in &all_steps {
             if step.min_count == 0 {
                 return Err(format!(
@@ -269,8 +268,7 @@ impl PatternChainBuilder {
             }
         }
 
-        // Last element validation: min == max (exact count)
-        // For logical groups, both sides must have exact counts
+        // The last element needs exact counts (min == max). For a group, both sides do.
         let last_element = &self.elements[self.elements.len() - 1];
         match last_element {
             PatternElement::Step(step) => {
@@ -297,9 +295,8 @@ impl PatternChainBuilder {
             }
         }
 
-        // All steps: min <= max (already enforced by PatternStepConfig.validate)
+        // min <= max for every step is already checked by PatternStepConfig::validate
 
-        // EVERY validation: Only allowed in PATTERN mode, not SEQUENCE
         if self.is_every && !matches!(self.state_type, StateType::Pattern) {
             return Err(
                 "EVERY patterns are only supported in PATTERN mode, not SEQUENCE mode".to_string(),
@@ -309,13 +306,17 @@ impl PatternChainBuilder {
         Ok(())
     }
 
-    /// Build the processor chain
+    /// Validate the chain, then build and wire its processors.
     ///
-    /// Creates processors for each element and wires them together:
-    /// - Simple steps: CountPreStateProcessor → CountPostStateProcessor
-    /// - Logical groups: LogicalPreStateProcessor pairs → LogicalPostStateProcessor pairs
+    /// - A simple step gets a CountPreStateProcessor and a CountPostStateProcessor
+    /// - A logical group gets a pair of LogicalPreStateProcessors and a pair of
+    ///   LogicalPostStateProcessors, linked as partners
     ///
-    /// Chain wiring: element[0] → element[1] → ... → element[n]
+    /// Elements are chained in order, element[0] → element[1] → ... → element[n]. With
+    /// EVERY on, the last element's post processors loop back to the first pre processor.
+    ///
+    /// # Errors
+    /// Returns the `validate` error message when the chain is not valid.
     pub fn build(
         self,
         app_context: Arc<EventFluxAppContext>,
@@ -323,23 +324,20 @@ impl PatternChainBuilder {
     ) -> Result<ProcessorChain, String> {
         self.validate()?;
 
-        // Collect all pre/post processors (as trait objects)
         let mut pre_processors: Vec<Arc<Mutex<dyn PreStateProcessor>>> = Vec::new();
         let mut post_processors: Vec<Arc<Mutex<dyn PostStateProcessor>>> = Vec::new();
 
-        // Keep concrete CountPreStateProcessor refs for backward compatibility
+        // Concrete handles to the count pre processors. setup_cloners and the EVERY flag
+        // need the concrete type.
         let mut pre_processors_concrete: Vec<Arc<Mutex<CountPreStateProcessor>>> = Vec::new();
 
-        // Track current state_id across all elements
         let mut current_state_id: usize = 0;
 
-        // Process each element
         for (elem_idx, element) in self.elements.iter().enumerate() {
             let is_first_element = elem_idx == 0;
 
             match element {
                 PatternElement::Step(step) => {
-                    // Create CountPreStateProcessor
                     let pre = Arc::new(Mutex::new(CountPreStateProcessor::new(
                         step.min_count,
                         step.max_count,
@@ -350,21 +348,19 @@ impl PatternChainBuilder {
                         query_context.clone(),
                     )));
 
-                    // Set WITHIN on first processor
+                    // WITHIN applies only to the first element
                     if is_first_element {
                         if let Some(within_ms) = self.within_duration_ms {
                             pre.lock().unwrap().set_within_time(within_ms);
                         }
                     }
 
-                    // Create CountPostStateProcessor
                     let post = Arc::new(Mutex::new(CountPostStateProcessor::new(
                         step.min_count,
                         step.max_count,
                         current_state_id,
                     )));
 
-                    // Wire Pre -> Post
                     pre.lock()
                         .unwrap()
                         .stream_processor
@@ -372,7 +368,6 @@ impl PatternChainBuilder {
                             post.clone() as Arc<Mutex<dyn PostStateProcessor>>
                         );
 
-                    // Store processors
                     pre_processors.push(pre.clone() as Arc<Mutex<dyn PreStateProcessor>>);
                     post_processors.push(post.clone() as Arc<Mutex<dyn PostStateProcessor>>);
                     pre_processors_concrete.push(pre);
@@ -380,13 +375,13 @@ impl PatternChainBuilder {
                     current_state_id += 1;
                 }
                 PatternElement::LogicalGroup(group) => {
-                    // Create LogicalPreStateProcessor pair (left and right)
                     let left_state_id = current_state_id;
                     let right_state_id = current_state_id + 1;
 
+                    // In a first element group, both sides are start states
                     let left_pre = Arc::new(Mutex::new(LogicalPreStateProcessor::new(
                         left_state_id,
-                        is_first_element, // is_start_state (left is the "entry" for the group)
+                        is_first_element, // is_start_state
                         group.logical_type,
                         self.state_type,
                         app_context.clone(),
@@ -395,14 +390,14 @@ impl PatternChainBuilder {
 
                     let right_pre = Arc::new(Mutex::new(LogicalPreStateProcessor::new(
                         right_state_id,
-                        is_first_element, // Both are start states for logical groups
+                        is_first_element, // is_start_state
                         group.logical_type,
                         self.state_type,
                         app_context.clone(),
                         query_context.clone(),
                     )));
 
-                    // Wire partners together (bidirectional)
+                    // Link the two sides both ways
                     left_pre
                         .lock()
                         .unwrap()
@@ -412,7 +407,7 @@ impl PatternChainBuilder {
                         .unwrap()
                         .set_partner_processor(left_pre.clone());
 
-                    // Set WITHIN on first processors
+                    // WITHIN applies only to the first element, so both sides here
                     if is_first_element {
                         if let Some(within_ms) = self.within_duration_ms {
                             left_pre.lock().unwrap().set_within_time(within_ms);
@@ -420,7 +415,6 @@ impl PatternChainBuilder {
                         }
                     }
 
-                    // Create LogicalPostStateProcessor pair
                     let left_post = Arc::new(Mutex::new(LogicalPostStateProcessor::new(
                         left_state_id,
                         group.logical_type,
@@ -431,7 +425,7 @@ impl PatternChainBuilder {
                         group.logical_type,
                     )));
 
-                    // Wire partner post processors (for OR coordination)
+                    // OR uses the partner post processor to set its returned flag
                     left_post
                         .lock()
                         .unwrap()
@@ -441,7 +435,7 @@ impl PatternChainBuilder {
                         .unwrap()
                         .set_partner_post_processor(left_post.clone());
 
-                    // Wire partner pre processors (for AND checking)
+                    // AND uses the partner pre processor to find the partner position
                     left_post
                         .lock()
                         .unwrap()
@@ -451,7 +445,6 @@ impl PatternChainBuilder {
                         .unwrap()
                         .set_partner_pre_processor(left_pre.clone());
 
-                    // Wire this_state_pre_processor for each post
                     left_post.lock().unwrap().set_this_state_pre_processor(
                         left_pre.clone() as Arc<Mutex<dyn PreStateProcessor>>
                     );
@@ -459,27 +452,26 @@ impl PatternChainBuilder {
                         right_pre.clone() as Arc<Mutex<dyn PreStateProcessor>>
                     );
 
-                    // Store processors - left side is the "main" entry point
+                    // Left goes first, so the left pre processor is the group's entry point
                     pre_processors.push(left_pre.clone() as Arc<Mutex<dyn PreStateProcessor>>);
                     pre_processors.push(right_pre.clone() as Arc<Mutex<dyn PreStateProcessor>>);
                     post_processors.push(left_post.clone() as Arc<Mutex<dyn PostStateProcessor>>);
                     post_processors.push(right_post.clone() as Arc<Mutex<dyn PostStateProcessor>>);
 
-                    // Note: We don't add logical processors to pre_processors_concrete
-                    // as they're a different type. Tests should use pre_processors directly.
+                    // Logical processors are a different type, so they are not added to
+                    // pre_processors_concrete. Tests should use pre_processors.
 
                     current_state_id += 2;
                 }
             }
         }
 
-        // Wire chain: Post[n] -> Pre[n+1] (for pattern chain forwarding)
-        // For logical groups, both posts should forward to the same next pre
+        // Chain each element's post processors to the next element's first pre processor.
+        // Both posts of a logical group lead to the same next pre.
         let mut post_idx = 0;
         for (elem_idx, element) in self.elements.iter().enumerate() {
             let posts_for_element = element.state_count();
 
-            // Find the next element's first pre processor
             if elem_idx + 1 < self.elements.len() {
                 let next_pre_idx = self.elements[..=elem_idx]
                     .iter()
@@ -487,7 +479,6 @@ impl PatternChainBuilder {
                     .sum::<usize>();
                 let next_pre = &pre_processors[next_pre_idx];
 
-                // Wire all posts from this element to the next pre
                 for i in 0..posts_for_element {
                     post_processors[post_idx + i]
                         .lock()
@@ -499,9 +490,9 @@ impl PatternChainBuilder {
             post_idx += posts_for_element;
         }
 
-        // Wire EVERY loopback if enabled
+        // With EVERY on, loop every post processor of the last element back to the first
+        // pre processor
         if self.is_every {
-            // Get all posts from the last element
             let last_element_start_idx: usize = self.elements[..self.elements.len() - 1]
                 .iter()
                 .map(|e| e.state_count())
@@ -510,7 +501,6 @@ impl PatternChainBuilder {
 
             let first_pre = &pre_processors[0];
 
-            // Set loopback on ALL posts from the last element
             for i in 0..last_element_count {
                 post_processors[last_element_start_idx + i]
                     .lock()
@@ -518,8 +508,8 @@ impl PatternChainBuilder {
                     .set_next_every_state_pre_processor(first_pre.clone());
             }
 
-            // Set EVERY flag on concrete CountPreStateProcessors
-            // (LogicalPreStateProcessors don't need this flag - they handle EVERY differently)
+            // Only count pre processors get the EVERY flag. Logical pre processors handle
+            // EVERY in their own add_every_state.
             for pre in &pre_processors_concrete {
                 pre.lock()
                     .unwrap()
@@ -528,7 +518,6 @@ impl PatternChainBuilder {
             }
         }
 
-        // Clone first processor before moving the vector
         let first_processor = pre_processors[0].clone();
 
         Ok(ProcessorChain {
@@ -540,26 +529,33 @@ impl PatternChainBuilder {
     }
 }
 
-/// Processor chain holding all wired processors
+/// All processors of a built and wired pattern chain
 pub struct ProcessorChain {
+    /// Pre processors in StateEvent position order
     pub pre_processors: Vec<Arc<Mutex<dyn PreStateProcessor>>>,
+    /// Post processors in StateEvent position order
     pub post_processors: Vec<Arc<Mutex<dyn PostStateProcessor>>>,
     pub first_processor: Arc<Mutex<dyn PreStateProcessor>>,
-    // Keep concrete types for setup and test access
+    // Concrete count pre processors, kept for setup and test access. Logical processors
+    // are not in this list.
     pub pre_processors_concrete: Vec<Arc<Mutex<CountPreStateProcessor>>>,
 }
 
 impl ProcessorChain {
-    /// Initialize all processors
+    /// Call init on every pre processor
     pub fn init(&mut self) {
         for pre in &self.pre_processors {
             pre.lock().unwrap().init();
         }
     }
 
-    /// Set up stream and state event cloners for all processors
+    /// Give each count pre processor its stream and state event cloners.
     ///
-    /// Must be called before using the chain to process events
+    /// Call it before the chain processes events. The count pre processor at index `i`
+    /// uses `stream_defs[i]`, or `stream_defs[0]` when there are fewer definitions.
+    /// Panics when `stream_defs` is empty and there is at least one count pre processor.
+    /// Logical pre processors are skipped, since they are not in
+    /// `pre_processors_concrete`.
     pub fn setup_cloners(
         &mut self,
         stream_defs: Vec<Arc<crate::query_api::definition::stream_definition::StreamDefinition>>,
@@ -573,25 +569,22 @@ impl ProcessorChain {
         let num_steps = self.pre_processors_concrete.len();
 
         for (i, pre) in self.pre_processors_concrete.iter().enumerate() {
-            // Set up stream event cloner
             let stream_def = if i < stream_defs.len() {
                 stream_defs[i].clone()
             } else {
-                stream_defs[0].clone() // Fallback to first def
+                stream_defs[0].clone()
             };
 
-            // Use attribute count from stream definition for before_window_data size
-            // (new_for_single_input puts attrs in output_data but we need before_window_data)
+            // Size before_window_data from the stream's attribute count.
+            // new_for_single_input would put the attributes in output_data instead.
             let attr_count = stream_def.abstract_definition.attribute_list.len();
             let stream_factory = StreamEventFactory::new(attr_count, 0, 0);
             let stream_cloner = StreamEventCloner::new_with_sizes(attr_count, 0, 0, stream_factory);
 
-            // Set up state event cloner
             let meta_state = MetaStateEvent::new(num_steps);
             let state_factory = StateEventFactory::new(num_steps, 0);
             let state_cloner = StateEventCloner::new(&meta_state, state_factory);
 
-            // Set cloners on the processor
             let mut pre_locked = pre.lock().unwrap();
             pre_locked
                 .stream_processor
@@ -602,17 +595,17 @@ impl ProcessorChain {
         }
     }
 
-    /// Expire events in all processors
+    /// Call expire_events with `timestamp` on every pre processor
     pub fn expire_events(&mut self, timestamp: i64) {
         for pre in &self.pre_processors {
             pre.lock().unwrap().expire_events(timestamp);
         }
     }
 
-    /// Update state in all processors (moves new_list to pending_list)
+    /// Call update_state on every pre processor, which moves its new list to pending.
     ///
-    /// Must be called after events are processed to ensure forwarded states
-    /// are moved from new_list to pending_list in all processors
+    /// Call it after events are processed, so states forwarded to later steps become
+    /// pending there and can match the next event.
     pub fn update_state(&mut self) {
         for pre in &self.pre_processors {
             pre.lock().unwrap().update_state();
@@ -745,7 +738,7 @@ mod tests {
         ));
         let result = builder.validate();
         assert!(result.is_err());
-        // Error is caught at PatternStepConfig.validate() level before chain-level validation
+        // PatternStepConfig::validate catches this before the chain checks run
         assert!(result.unwrap_err().contains("min_count must be >= 1"));
     }
 

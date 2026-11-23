@@ -25,25 +25,30 @@ use crate::core::table::Table;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Processor that handles UPSERT (UPDATE or INSERT) table operations triggered by stream events.
+/// Runs a table UPSERT (update, or insert when nothing matches) for each incoming
+/// stream event.
 ///
-/// Semantics:
-/// 1. Evaluate the ON condition against stream event + each table row
-/// 2. If any row matches: UPDATE that row with new values from stream event
-/// 3. If no row matches: INSERT the stream event as a new row
+/// Steps:
+/// 1. Run the ON condition on the stream event and each table row
+/// 2. If rows match, update them with new values from the stream event. Which matched
+///    rows change depends on the table.
+/// 3. If no row matches, insert the stream event as a new row
+///
+/// Only StreamEvent input is handled. Anything else is counted and skipped. Errors
+/// from the table are ignored. This is the last processor in the chain.
 pub struct UpsertTableProcessor {
     meta: CommonProcessorMeta,
     table: Arc<dyn Table>,
-    /// Expression executor for evaluating ON condition
+    /// Runs the ON condition
     condition_executor: Box<dyn ExpressionExecutor>,
-    /// Expression executors for evaluating SET clause values (optional, for partial updates)
-    /// If empty, uses output_data from stream event as new row values
+    /// One executor per SET value, for partial updates.
+    /// When empty, the stream event's output_data becomes the new row.
     set_value_executors: Vec<Box<dyn ExpressionExecutor>>,
-    /// Column indices in the table for each SET clause attribute (for partial updates)
-    /// If empty, full row replacement is used
+    /// Table column index for each SET entry, for partial updates.
+    /// When empty, the whole row is replaced.
     set_column_indices: Vec<usize>,
-    /// Counter for dropped events (e.g., non-StreamEvent inputs that can't be processed).
-    /// Wrapped in Arc so metric is shared across processor clones for accurate observability.
+    /// Number of events skipped, such as non StreamEvent input.
+    /// In an Arc so all clones of this processor share one count.
     dropped_events: Arc<AtomicU64>,
 }
 
@@ -60,13 +65,15 @@ impl std::fmt::Debug for UpsertTableProcessor {
 }
 
 impl UpsertTableProcessor {
-    /// Creates a new UpsertTableProcessor
+    /// Create an upsert processor.
     ///
     /// # Arguments
-    /// * `table` - The target table for upsert operations
-    /// * `condition_executor` - Executor for the ON condition expression
-    /// * `set_value_executors` - Executors for SET clause values (empty for INSERT-style upsert)
-    /// * `set_column_indices` - Column indices for each SET clause (empty for full row replacement)
+    /// * `table` - Table to upsert into
+    /// * `condition_executor` - Runs the ON condition
+    /// * `set_value_executors` - One executor per SET value. Empty means the event's
+    ///   values become the whole row.
+    /// * `set_column_indices` - Table column index for each SET entry. Empty means the
+    ///   whole row is replaced.
     pub fn new(
         table: Arc<dyn Table>,
         app_ctx: Arc<EventFluxAppContext>,
@@ -85,16 +92,16 @@ impl UpsertTableProcessor {
         }
     }
 
-    /// Returns the count of dropped events (events that couldn't be processed).
-    /// Useful for monitoring and alerting on data loss.
+    /// Number of events skipped because they could not be processed, summed across all
+    /// clones. Useful for alerts on lost data.
     pub fn dropped_events(&self) -> u64 {
         self.dropped_events.load(Ordering::Relaxed)
     }
 
-    /// Perform the upsert operation for a single stream event.
+    /// Upsert one stream event.
     ///
-    /// Delegates to the Table trait's `upsert_with_set_executors` method, allowing
-    /// JDBC/external tables to override with database-native UPSERT/MERGE operations.
+    /// Calls the Table trait's `upsert_with_set_executors`, so JDBC and other outside
+    /// tables can use their own UPSERT or MERGE. The result is ignored.
     fn process_upsert(&self, se: &StreamEvent) {
         let _ = self.table.upsert_with_set_executors(
             se,
@@ -110,16 +117,15 @@ impl Processor for UpsertTableProcessor {
         while let Some(mut event) = chunk {
             let next = event.set_next(None);
 
-            // UPSERT requires direct StreamEvent input. Join/window sources (StateEvent)
-            // are not supported because ON/SET expressions are built with stream positions
-            // that would be lost when collapsing multi-stream data into a synthetic event.
+            // UPSERT needs a StreamEvent. Join and window sources send a StateEvent, which
+            // is not supported. The ON and SET expressions refer to stream positions, and
+            // those would be lost if the streams were merged into one made up event.
             if let Some(se) = event.as_any().downcast_ref::<StreamEvent>() {
                 self.process_upsert(se);
             } else {
-                // Track dropped events for monitoring
                 let count = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
 
-                // Log initial warning, then periodic reminders every 1000 drops
+                // Warn on the first drop, then again every 1000 drops
                 if count == 1 {
                     log::warn!(
                         "UPSERT processor received non-StreamEvent input (likely from JOIN/WINDOW). \
@@ -163,7 +169,7 @@ impl Processor for UpsertTableProcessor {
             condition_executor,
             set_value_executors,
             set_column_indices: self.set_column_indices.clone(),
-            // Share metrics across clones for accurate aggregate observability
+            // Share one drop count across all clones
             dropped_events: Arc::clone(&self.dropped_events),
         })
     }
@@ -181,6 +187,6 @@ impl Processor for UpsertTableProcessor {
     }
 
     fn is_stateful(&self) -> bool {
-        true // UPSERT operations affect table state
+        true // UPSERT changes table state
     }
 }

@@ -17,9 +17,9 @@
 
 // src/core/query/output/mod.rs
 
-// This module is for components related to query output processing in the core engine,
-// like output callbacks, specific output processors (e.g., for INSERT INTO, DELETE, UPDATE),
-// and rate limiters that operate on core event chunks.
+// Processors at the end of a query, such as output callbacks and the processors for
+// INSERT INTO, DELETE, UPDATE and UPSERT. The output rate limiter lives in
+// selector/select_processor.rs, not here.
 
 pub mod delete_table_processor;
 pub mod insert_into_aggregation_processor;
@@ -28,10 +28,10 @@ pub mod insert_into_table_processor;
 pub mod update_table_processor;
 pub mod upsert_table_processor;
 // pub mod output_rate_limiter; // Core engine's rate limiter
-pub mod callback_processor; // Added
+pub mod callback_processor;
 
-// Note: core::stream::output::StreamCallback is for external callbacks on streams.
-// Query-specific output callbacks (QueryCallback in Java) might also go here or a sub-module.
+// core::stream::output::StreamCallback is for outside callbacks on streams. Query
+// callbacks (QueryCallback in Java) could go here or in a submodule later.
 
 pub use self::callback_processor::CallbackProcessor;
 pub use self::delete_table_processor::DeleteTableProcessor;
