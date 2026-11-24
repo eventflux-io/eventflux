@@ -149,12 +149,12 @@ impl YamlConfigLoader {
         self.parse_yaml_content(&content, path.to_string_lossy().as_ref())
     }
 
-    /// Expand environment variables in `content`, then parse it as YAML.
-    /// `source` names the input in error messages.
+    /// Expand environment variables in `content`, then parse it as YAML with merge
+    /// keys applied. `source` names the input in error messages.
     fn parse_yaml_content(&self, content: &str, source: &str) -> ConfigResult<EventFluxConfig> {
         let expanded_content = self.expand_environment_variables(content)?;
 
-        serde_yaml::from_str(&expanded_content)
+        EventFluxConfig::from_yaml(&expanded_content)
             .map_err(|e| ConfigError::yaml_parse_error(source, e.to_string()))
     }
 
@@ -838,6 +838,55 @@ eventflux:
         let config = result.unwrap().unwrap();
         assert_eq!(config.metadata.name, Some("test-config".to_string()));
         assert_eq!(config.eventflux.runtime.performance.thread_pool_size, 8);
+    }
+
+    #[tokio::test]
+    async fn test_yaml_loader_applies_merge_keys() {
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("eventflux-config.yaml");
+
+        let yaml_content = r#"
+apiVersion: eventflux.io/v1
+kind: EventFluxConfig
+metadata:
+  name: merge-test
+eventflux:
+  runtime:
+    mode: single-node
+    performance:
+      thread_pool_size: 8
+      event_buffer_size: 1024
+x-auth: &auth
+  http.headers.Authorization: Bearer abc
+applications:
+  App:
+    streams:
+      Out:
+        sink:
+          type: http
+          http.url: https://api.example
+          <<: *auth
+"#;
+
+        let mut file = File::create(&config_path).unwrap();
+        file.write_all(yaml_content.as_bytes()).unwrap();
+
+        let config = YamlConfigLoader::from_file(&config_path)
+            .load()
+            .await
+            .unwrap()
+            .unwrap();
+        let sink = config.applications["App"].streams["Out"]
+            .sink
+            .as_ref()
+            .unwrap();
+        let props = sink.to_properties().unwrap();
+
+        assert_eq!(
+            props.get("http.headers.Authorization"),
+            Some(&"Bearer abc".to_string())
+        );
+        assert!(props.keys().all(|k| !k.starts_with("<<")), "{props:?}");
     }
 
     #[tokio::test]

@@ -806,24 +806,21 @@ impl EventFluxAppRuntime {
 
         let mut all_errors = Vec::new();
 
-        // 2. Attach all elements.
-        // SQL WITH properties win over YAML. SQL attachment runs first so it can merge
-        // the YAML base with the SQL WITH overrides.
-        match self.auto_attach_from_sql_definitions() {
+        // 2. Attach all elements. Every source and sink comes from its resolved
+        // config, where SQL WITH properties already win over YAML.
+        let app_config = self.eventflux_app_context.app_config.as_ref();
+        match self.auto_attach_streams(app_config) {
             Ok((sources, sinks)) => {
                 if !sources.is_empty() || !sinks.is_empty() {
                     log::info!(
-                        "Auto-attached from SQL: {} source(s), {} sink(s)",
+                        "Auto-attached {} source(s), {} sink(s)",
                         sources.len(),
                         sinks.len()
                     );
                 }
             }
             Err(errors) => {
-                log::error!(
-                    "Failed to auto-attach from SQL ({} error(s)):",
-                    errors.len()
-                );
+                log::error!("Failed to auto-attach streams ({} error(s)):", errors.len());
                 for (i, e) in errors.iter().enumerate() {
                     log::error!("  {}. {}", i + 1, e);
                 }
@@ -831,48 +828,8 @@ impl EventFluxAppRuntime {
             }
         }
 
-        // YAML attachment runs second and only attaches streams SQL did not handle.
-        // It gives a config to streams that have no SQL WITH clause.
         // Each step below is safe to repeat and collects its errors.
-        if let Some(app_config) = &self.eventflux_app_context.app_config {
-            match self.auto_attach_sources_from_config(app_config) {
-                Ok(sources) => {
-                    if !sources.is_empty() {
-                        log::info!(
-                            "Successfully attached {} YAML-only source(s): {}",
-                            sources.len(),
-                            sources.join(", ")
-                        );
-                    }
-                }
-                Err(errors) => {
-                    log::error!("Failed to auto-attach sources ({} error(s)):", errors.len());
-                    for (i, e) in errors.iter().enumerate() {
-                        log::error!("  {}. {}", i + 1, e);
-                    }
-                    all_errors.extend(errors);
-                }
-            }
-
-            match self.auto_attach_sinks_from_config(app_config) {
-                Ok(sinks) => {
-                    if !sinks.is_empty() {
-                        log::info!(
-                            "Successfully attached {} YAML-only sink(s): {}",
-                            sinks.len(),
-                            sinks.join(", ")
-                        );
-                    }
-                }
-                Err(errors) => {
-                    log::error!("Failed to auto-attach sinks ({} error(s)):", errors.len());
-                    for (idx, err) in errors.iter().enumerate() {
-                        log::error!("  {}. {}", idx + 1, err);
-                    }
-                    all_errors.extend(errors);
-                }
-            }
-
+        if let Some(app_config) = app_config {
             match self.auto_attach_tables_from_config(app_config) {
                 Ok(tables) => {
                     if !tables.is_empty() {
@@ -1278,94 +1235,96 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Attaches sources and sinks for streams declared with a SQL WITH clause.
+    /// Attaches the sources and sinks of every stream from its resolved config.
     ///
-    /// For each stream whose WITH config has `type` set to source or sink, builds the
-    /// handler from the resolved config. Streams with no WITH clause, no `type`, or
-    /// type internal are skipped.
+    /// The resolved configs already hold the YAML base with SQL WITH laid on top
+    /// (see [`ElementConfigResolver`](crate::core::config::ElementConfigResolver)),
+    /// so this is the only place streams get a connector. A SQL WITH `type` of
+    /// source or sink attaches that one kind, internal attaches nothing, and any
+    /// other value is an error. A stream with no SQL type attaches whatever source
+    /// and sink its YAML config gave it.
     ///
-    /// Full flow:
-    /// SQL parsing -> StreamDefinition.with_config -> StreamTypeConfig -> factory setup
+    /// Streams that already have a handler are left alone, so calling it again is
+    /// safe. Keeps going when some streams fail.
     ///
-    /// # Priority
+    /// # Arguments
     ///
-    /// start() calls this BEFORE the YAML attachment, and the YAML path skips any
-    /// stream that already has a handler. So when a stream is in both YAML and SQL
-    /// WITH, the SQL handler wins. Its resolved config already merges the YAML base.
-    ///
-    /// # Safe to repeat
-    ///
-    /// Calling it again does not recreate existing handlers.
-    ///
-    /// # Error handling
-    ///
-    /// Keeps going through every stream when some fail, and returns all errors. An
-    /// unknown `type` value is an error.
+    /// * `app_config` - The YAML app config, if any. Used only to report YAML
+    ///   sources and sinks for streams the app does not define.
     ///
     /// # Returns
     ///
-    /// * `Ok((sources, sinks))` - Names of the source and sink streams now attached,
-    ///   including ones that already had a handler
+    /// * `Ok((sources, sinks))` - Names of the streams with a source or sink,
+    ///   including ones that were already attached
     /// * `Err(errors)` - Every error found. Streams that did attach stay attached.
-    fn auto_attach_from_sql_definitions(
+    fn auto_attach_streams(
         &self,
+        app_config: Option<&ApplicationConfig>,
     ) -> Result<(Vec<String>, Vec<String>), Vec<crate::core::exception::EventFluxError>> {
+        use crate::core::config::ElementType;
+        use crate::core::exception::EventFluxError;
+
         let mut errors = Vec::new();
         let mut attached_sources = Vec::new();
         let mut attached_sinks = Vec::new();
 
         for (stream_id, stream_def) in &self.eventflux_app.stream_definition_map {
-            let with_config = match &stream_def.with_config {
-                Some(config) => config,
-                None => continue, // no WITH clause
-            };
+            let sql_type = stream_def
+                .with_config
+                .as_ref()
+                .and_then(|with_config| with_config.get("type"))
+                .map(String::as_str);
 
-            let stream_type = match with_config.get("type") {
-                Some(t) => t.as_str(),
-                None => {
-                    // No type means an internal stream.
-                    continue;
-                }
-            };
-
-            // Uses the configs resolved at construction, YAML base merged with SQL WITH.
-            match stream_type {
-                "source" => match self.attach_source_from_resolved_config(stream_id) {
-                    Ok(()) => {
-                        attached_sources.push(stream_id.clone());
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "[EventFluxAppRuntime] Failed to attach source '{}': {}",
-                            stream_id,
-                            e
-                        );
-                        errors.push(e);
-                    }
-                },
-                "sink" => match self.attach_sink_from_resolved_config(stream_id) {
-                    Ok(()) => {
-                        attached_sinks.push(stream_id.clone());
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "[EventFluxAppRuntime] Failed to attach sink '{}': {}",
-                            stream_id,
-                            e
-                        );
-                        errors.push(e);
-                    }
-                },
-                "internal" => {
-                    continue;
-                }
-                other => {
-                    errors.push(crate::core::exception::EventFluxError::configuration(format!(
+            let kinds = match sql_type {
+                Some("source") => vec![ElementType::Source],
+                Some("sink") => vec![ElementType::Sink],
+                Some("internal") => Vec::new(),
+                Some(other) => {
+                    errors.push(EventFluxError::configuration(format!(
                         "Invalid stream type '{}' for stream '{}'. Expected: 'source', 'sink', or 'internal'",
                         other, stream_id
                     )));
+                    continue;
+                }
+                None => [ElementType::Source, ElementType::Sink]
+                    .into_iter()
+                    .filter(|kind| self.get_resolved_config(*kind, stream_id).is_some())
+                    .collect(),
+            };
+
+            for kind in kinds {
+                match self.attach_from_resolved_config(kind, stream_id) {
+                    Ok(()) if kind == ElementType::Source => {
+                        attached_sources.push(stream_id.clone())
+                    }
+                    Ok(()) => attached_sinks.push(stream_id.clone()),
+                    Err(e) => {
+                        log::error!(
+                            "[EventFluxAppRuntime] Failed to attach {} '{}': {}",
+                            kind,
+                            stream_id,
+                            e
+                        );
+                        errors.push(e);
+                    }
                 }
             }
+        }
+
+        // The resolver only sees streams the app defines, so a YAML source or sink
+        // for any other stream would otherwise be skipped without a word.
+        let undefined = app_config
+            .into_iter()
+            .flat_map(|config| &config.streams)
+            .filter(|(name, stream)| {
+                (stream.source.is_some() || stream.sink.is_some())
+                    && !self.eventflux_app.stream_definition_map.contains_key(*name)
+            });
+        for (name, _) in undefined {
+            errors.push(EventFluxError::configuration(format!(
+                "YAML config has a source or sink for stream '{}', but the app does not define that stream",
+                name
+            )));
         }
 
         if !errors.is_empty() {
@@ -1388,10 +1347,10 @@ impl EventFluxAppRuntime {
     /// Returns the `InputHandler` of the DLQ stream that the source of `stream_name`
     /// sends failed events to.
     ///
-    /// Checks the DLQ reference again, even though app creation already checked
-    /// every resolved source config. The YAML only attachment path builds its
-    /// properties outside the resolver, so this covers every path. Errors if the
-    /// reference is invalid or the input handler cannot be built.
+    /// Checks the DLQ reference again as a cheap guard. App creation already
+    /// checked every resolved source config, and every source is attached from
+    /// one. Errors if the reference is invalid or the input handler cannot be
+    /// built.
     fn dlq_input_handler(
         &self,
         stream_name: &str,
@@ -1419,18 +1378,16 @@ impl EventFluxAppRuntime {
             })
     }
 
-    /// Attaches a source to a stream. Shared helper for both attachment paths.
+    /// Attaches a source to a stream.
     ///
-    /// Used by both the resolved config path (SQL WITH plus YAML) and the YAML only
-    /// path. Creates the source and mapper, wires the DLQ stream if one is set,
-    /// builds the handler and registers it. Callers check for an existing handler
-    /// before building the config.
+    /// Creates the source and mapper, wires the DLQ stream if one is set, builds
+    /// the handler and registers it. The caller checks for an existing handler
+    /// first.
     ///
     /// # Arguments
     ///
     /// * `stream_name` - Name of the stream to attach
     /// * `stream_type_config` - The StreamTypeConfig, already built
-    /// * `context_label` - Label for error messages ("YAML", "resolved")
     ///
     /// # Returns
     ///
@@ -1438,11 +1395,10 @@ impl EventFluxAppRuntime {
     ///   when start() reaches the execution phase.
     /// * `Err(EventFluxError)` - Source setup, input handler or DLQ wiring failed.
     ///   The message names the stream and extension.
-    fn attach_source_common(
+    fn attach_source(
         &self,
         stream_name: &str,
         stream_type_config: &crate::core::config::stream_config::StreamTypeConfig,
-        context_label: &str,
     ) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::error::DLQ_STREAM_KEY;
         use crate::core::exception::EventFluxError;
@@ -1458,8 +1414,7 @@ impl EventFluxAppRuntime {
         )
         .map_err(|e| {
             EventFluxError::app_creation(format!(
-                "Failed to initialize {} source '{}' (extension={}, format={:?}): {}",
-                context_label,
+                "Failed to initialize source '{}' (extension={}, format={:?}): {}",
                 stream_name,
                 stream_type_config.extension().unwrap_or("<none>"),
                 stream_type_config.format(),
@@ -1472,8 +1427,8 @@ impl EventFluxAppRuntime {
             .construct_input_handler(stream_name)
             .map_err(|e| {
                 EventFluxError::app_creation(format!(
-                    "Failed to construct InputHandler for {} source stream '{}': {}",
-                    context_label, stream_name, e
+                    "Failed to construct InputHandler for source stream '{}': {}",
+                    stream_name, e
                 ))
             })?;
 
@@ -1486,8 +1441,7 @@ impl EventFluxAppRuntime {
                 .set_error_dlq_junction(stream_name, dlq_handler)
                 .map_err(|e| {
                     EventFluxError::app_creation(format!(
-                        "Cannot route {} source '{}' (extension={}) failures to DLQ stream '{}': {}",
-                        context_label,
+                        "Cannot route source '{}' (extension={}) failures to DLQ stream '{}': {}",
                         stream_name,
                         stream_type_config.extension().unwrap_or("<none>"),
                         dlq_stream,
@@ -1513,84 +1467,11 @@ impl EventFluxAppRuntime {
         Ok(())
     }
 
-    /// Attaches one source stream from its resolved config.
+    /// Attaches a sink to a stream.
     ///
-    /// The resolved config is the YAML base merged with SQL WITH at construction
-    /// time, so nothing is merged here. Does nothing if the stream already has a
-    /// source handler.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream_name` - Name of the stream to attach
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - The source is attached, or already was. `start_all_sources`
-    ///   starts it later.
-    /// * `Err(EventFluxError)` - No resolved config, no `extension`, an invalid
-    ///   StreamTypeConfig, or a failure in `attach_source_common`
-    fn attach_source_from_resolved_config(
-        &self,
-        stream_name: &str,
-    ) -> Result<(), crate::core::exception::EventFluxError> {
-        use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
-        use crate::core::config::ElementType;
-        use crate::core::exception::EventFluxError;
-
-        if self.get_source_handler(stream_name).is_some() {
-            return Ok(());
-        }
-
-        let resolved = self
-            .get_resolved_config(ElementType::Source, stream_name)
-            .ok_or_else(|| {
-                EventFluxError::configuration(format!(
-                    "No resolved configuration found for source stream '{}'. \
-                     Ensure the stream has WITH clause or YAML config.",
-                    stream_name
-                ))
-            })?;
-
-        let extension = resolved.extension.clone().ok_or_else(|| {
-            EventFluxError::configuration(format!(
-                "Missing 'extension' property for source stream '{}'. \
-                 Source streams require: type='source', extension='<name>', format='<type>'",
-                stream_name
-            ))
-        })?;
-
-        let stream_type_config = StreamTypeConfig::new(
-            StreamType::Source,
-            Some(extension.clone()),
-            resolved.format.clone(),
-            resolved.properties.clone(),
-        )
-        .map_err(|e| {
-            EventFluxError::configuration(format!(
-                "Invalid StreamTypeConfig for source '{}' (extension={}, format={:?}): {}",
-                stream_name, extension, resolved.format, e
-            ))
-        })?;
-
-        self.attach_source_common(stream_name, &stream_type_config, "resolved")?;
-
-        log::info!(
-            "[EventFluxAppRuntime] Attached source '{}' (extension={}, format={:?}) [{}]",
-            stream_name,
-            extension,
-            resolved.format,
-            resolved.get_source_summary()
-        );
-
-        Ok(())
-    }
-
-    /// Attaches a sink to a stream. Shared helper for both attachment paths.
-    ///
-    /// Sink version of [`Self::attach_source_common`], used by the resolved config
-    /// path and the YAML only path. Creates the sink and mapper, builds the
-    /// handler, registers it and subscribes it to the stream's junction. Callers
-    /// check for an existing handler before building the config.
+    /// Sink version of [`Self::attach_source`]. Creates the sink and mapper,
+    /// builds the handler, registers it and subscribes it to the stream's
+    /// junction. The caller checks for an existing handler first.
     ///
     /// The handler is registered before the junction subscribe. If the subscribe
     /// fails, the handler stays registered.
@@ -1599,12 +1480,10 @@ impl EventFluxAppRuntime {
     ///
     /// * `stream_name` - Name of the stream to attach
     /// * `stream_type_config` - The StreamTypeConfig, already built
-    /// * `context_label` - Label for error messages ("YAML", "resolved")
-    fn attach_sink_common(
+    fn attach_sink(
         &self,
         stream_name: &str,
         stream_type_config: &crate::core::config::stream_config::StreamTypeConfig,
-        context_label: &str,
     ) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::exception::EventFluxError;
         use crate::core::stream::handler::SinkStreamHandler;
@@ -1621,8 +1500,7 @@ impl EventFluxAppRuntime {
         )
         .map_err(|e| {
             EventFluxError::app_creation(format!(
-                "Failed to initialize {} sink '{}' (extension={}, format={:?}): {}",
-                context_label,
+                "Failed to initialize sink '{}' (extension={}, format={:?}): {}",
                 stream_name,
                 stream_type_config.extension().unwrap_or("<none>"),
                 stream_type_config.format(),
@@ -1641,74 +1519,96 @@ impl EventFluxAppRuntime {
         self.attach_sink_to_junction(stream_name, handler)
             .map_err(|e| {
                 EventFluxError::app_creation(format!(
-                    "Failed to attach {} sink '{}' to its stream junction: {}",
-                    context_label, stream_name, e
+                    "Failed to attach sink '{}' to its stream junction: {}",
+                    stream_name, e
                 ))
             })
     }
 
-    /// Attaches one sink stream from its resolved config.
+    /// Attaches the source or sink of one stream from its resolved config.
     ///
     /// The resolved config is the YAML base merged with SQL WITH at construction
     /// time, so nothing is merged here. Does nothing if the stream already has a
-    /// sink handler.
+    /// handler of that kind.
     ///
     /// # Arguments
     ///
+    /// * `kind` - `ElementType::Source` or `ElementType::Sink`
     /// * `stream_name` - Name of the stream to attach
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - The sink is attached, or already was
-    /// * `Err(EventFluxError)` - No resolved config, no `extension`, an invalid
-    ///   StreamTypeConfig, or a failure in `attach_sink_common`
-    fn attach_sink_from_resolved_config(
+    /// * `Ok(())` - Attached, or already was. `start_all_sources` starts a source
+    ///   later.
+    /// * `Err(EventFluxError)` - `kind` is not source or sink, there is no resolved
+    ///   config, no `extension`, an invalid StreamTypeConfig, or a failure in
+    ///   [`Self::attach_source`] or [`Self::attach_sink`]
+    fn attach_from_resolved_config(
         &self,
+        kind: crate::core::config::ElementType,
         stream_name: &str,
     ) -> Result<(), crate::core::exception::EventFluxError> {
         use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
         use crate::core::config::ElementType;
         use crate::core::exception::EventFluxError;
 
-        if self.get_sink_handler(stream_name).is_some() {
+        type Attach =
+            fn(&EventFluxAppRuntime, &str, &StreamTypeConfig) -> Result<(), EventFluxError>;
+        let (stream_type, attached, attach): (StreamType, bool, Attach) = match kind {
+            ElementType::Source => (
+                StreamType::Source,
+                self.get_source_handler(stream_name).is_some(),
+                Self::attach_source,
+            ),
+            ElementType::Sink => (
+                StreamType::Sink,
+                self.get_sink_handler(stream_name).is_some(),
+                Self::attach_sink,
+            ),
+            other => {
+                return Err(EventFluxError::configuration(format!(
+                    "Cannot attach a connector of kind '{}' to stream '{}'",
+                    other, stream_name
+                )))
+            }
+        };
+        if attached {
             return Ok(());
         }
 
-        let resolved = self
-            .get_resolved_config(ElementType::Sink, stream_name)
-            .ok_or_else(|| {
-                EventFluxError::configuration(format!(
-                    "No resolved configuration found for sink stream '{}'. \
-                     Ensure the stream has WITH clause or YAML config.",
-                    stream_name
-                ))
-            })?;
+        let resolved = self.get_resolved_config(kind, stream_name).ok_or_else(|| {
+            EventFluxError::configuration(format!(
+                "No resolved configuration found for {} stream '{}'. \
+                 Ensure the stream has WITH clause or YAML config.",
+                kind, stream_name
+            ))
+        })?;
 
         let extension = resolved.extension.clone().ok_or_else(|| {
             EventFluxError::configuration(format!(
-                "Missing 'extension' property for sink stream '{}'. \
-                 Sink streams require: type='sink', extension='<name>', format='<type>'",
-                stream_name
+                "Missing 'extension' property for {kind} stream '{stream_name}'. \
+                 A {kind} stream requires: type='{kind}', extension='<name>', format='<type>'"
             ))
         })?;
 
         let stream_type_config = StreamTypeConfig::new(
-            StreamType::Sink,
+            stream_type,
             Some(extension.clone()),
             resolved.format.clone(),
             resolved.properties.clone(),
         )
         .map_err(|e| {
             EventFluxError::configuration(format!(
-                "Invalid StreamTypeConfig for sink '{}' (extension={}, format={:?}): {}",
-                stream_name, extension, resolved.format, e
+                "Invalid StreamTypeConfig for {} '{}' (extension={}, format={:?}): {}",
+                kind, stream_name, extension, resolved.format, e
             ))
         })?;
 
-        self.attach_sink_common(stream_name, &stream_type_config, "resolved")?;
+        attach(self, stream_name, &stream_type_config)?;
 
         log::info!(
-            "[EventFluxAppRuntime] Attached sink '{}' (extension={}, format={:?}) [{}]",
+            "[EventFluxAppRuntime] Attached {} '{}' (extension={}, format={:?}) [{}]",
+            kind,
             stream_name,
             extension,
             resolved.format,
@@ -1716,297 +1616,6 @@ impl EventFluxAppRuntime {
         );
 
         Ok(())
-    }
-
-    /// Attaches a source for every stream with a source in the YAML or TOML config.
-    ///
-    /// Builds each source and its mapper through stream_initializer, so registered
-    /// factories and mappers are used. Streams that already have a source handler
-    /// are skipped, so calling it again is safe.
-    ///
-    /// Keeps going after a failure, logs each result, and collects every error with
-    /// the stream name and source type.
-    ///
-    /// # Flow
-    ///
-    /// 1. Go through every configured stream that has a source
-    /// 2. Skip it if a handler is already registered
-    /// 3. Convert the SourceConfig to a StreamTypeConfig
-    /// 4. Create the source and mapper through stream_initializer
-    /// 5. Build the SourceStreamHandler and register it. `start_all_sources` starts
-    ///    it later.
-    /// 6. Collect successes and failures
-    ///
-    /// # Arguments
-    ///
-    /// * `app_config` - Application config holding the stream definitions
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Vec<String>)` - Names of the source streams handled, including skipped ones
-    /// * `Err(Vec<EventFluxError>)` - Every error found. Sources that did attach stay
-    ///   attached.
-    fn auto_attach_sources_from_config(
-        &self,
-        app_config: &ApplicationConfig,
-    ) -> Result<Vec<String>, Vec<crate::core::exception::EventFluxError>> {
-        let mut errors = Vec::new();
-        let mut successes = Vec::new();
-
-        for (stream_name, stream_config) in &app_config.streams {
-            if let Some(ref source_config) = stream_config.source {
-                match self.attach_single_source(stream_name, source_config) {
-                    Ok(()) => {
-                        successes.push(stream_name.clone());
-                        log::info!(
-                            "[EventFluxAppRuntime] Successfully attached source '{}' to stream '{}'",
-                            source_config.source_type, stream_name
-                        );
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "[EventFluxAppRuntime] Failed to attach source '{}' to stream '{}': {}",
-                            source_config.source_type,
-                            stream_name,
-                            e
-                        );
-                        errors.push(e);
-                    }
-                }
-            }
-        }
-
-        if !errors.is_empty() {
-            Err(errors)
-        } else {
-            Ok(successes)
-        }
-    }
-
-    /// Attaches one source from its YAML SourceConfig.
-    ///
-    /// Converts the SourceConfig to a StreamTypeConfig and hands it to
-    /// `attach_source_common`. Does nothing if the stream already has a source
-    /// handler. Errors are EventFluxError values that name the stream.
-    fn attach_single_source(
-        &self,
-        stream_name: &str,
-        source_config: &crate::core::config::types::application_config::SourceConfig,
-    ) -> Result<(), crate::core::exception::EventFluxError> {
-        use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
-        use crate::core::exception::EventFluxError;
-
-        // Check before parsing the YAML, so a stream already attached from its
-        // resolved config is skipped, not checked again.
-        if self.get_source_handler(stream_name).is_some() {
-            return Ok(());
-        }
-
-        let mut properties = self
-            .extract_connection_config(&source_config.connection)
-            .map_err(|e| {
-                EventFluxError::configuration(format!(
-                    "Invalid connection config for source stream '{}': {}",
-                    stream_name, e
-                ))
-            })?;
-
-        // Merge the other SourceConfig fields (security, error_handling, rate_limit).
-        Self::merge_source_config_into_properties(source_config, &mut properties).map_err(|e| {
-            EventFluxError::configuration(format!(
-                "Failed to merge source config for stream '{}': {}",
-                stream_name, e
-            ))
-        })?;
-
-        let stream_type_config = StreamTypeConfig::new(
-            StreamType::Source,
-            Some(source_config.source_type.clone()),
-            source_config.format.clone(),
-            properties,
-        )
-        .map_err(|e| {
-            EventFluxError::configuration(format!(
-                "Invalid StreamTypeConfig for source '{}' (type={}): {}",
-                stream_name, source_config.source_type, e
-            ))
-        })?;
-
-        self.attach_source_common(stream_name, &stream_type_config, "YAML")
-    }
-
-    /// Turns a connection config from a SourceConfig or SinkConfig into a string map.
-    ///
-    /// The map can be passed to factory create_initialized() methods. Strings,
-    /// numbers and bools become their text form. Lists become a JSON string. Null
-    /// becomes an empty string.
-    ///
-    /// # Arguments
-    ///
-    /// * `connection` - Connection config from a SourceConfig or SinkConfig
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(HashMap)` - The config as key and value strings. Empty if `connection`
-    ///   is Null.
-    /// * `Err(String)` - If `connection` is not a mapping, a key is not a string, or
-    ///   a value is a nested mapping or another unsupported type
-    fn extract_connection_config(
-        &self,
-        connection: &serde_yaml::Value,
-    ) -> Result<std::collections::HashMap<String, String>, String> {
-        use std::collections::HashMap;
-
-        let map = match connection {
-            serde_yaml::Value::Mapping(m) => m,
-            serde_yaml::Value::Null => {
-                return Ok(HashMap::new());
-            }
-            _ => {
-                return Err(format!(
-                    "Connection configuration must be an object/mapping, got: {:?}",
-                    connection
-                ))
-            }
-        };
-
-        let mut config = HashMap::new();
-
-        for (key, value) in map {
-            let key_str = key
-                .as_str()
-                .ok_or_else(|| format!("Configuration key must be a string, got: {:?}", key))?;
-
-            let value_str = match value {
-                serde_yaml::Value::String(s) => s.clone(),
-                serde_yaml::Value::Number(n) => n.to_string(),
-                serde_yaml::Value::Bool(b) => b.to_string(),
-                serde_yaml::Value::Sequence(_) => {
-                    // Factories read lists as a JSON string.
-                    serde_json::to_string(value).map_err(|e| {
-                        format!(
-                            "Failed to serialize array value for key '{}': {}",
-                            key_str, e
-                        )
-                    })?
-                }
-                serde_yaml::Value::Null => String::new(),
-                _ => {
-                    return Err(format!(
-                        "Unsupported value type for configuration key '{}': {:?}",
-                        key_str, value
-                    ))
-                }
-            };
-
-            config.insert(key_str.to_string(), value_str);
-        }
-
-        Ok(config)
-    }
-
-    /// Attaches a sink for every stream with a sink in the YAML or TOML config.
-    ///
-    /// Uses stream_initializer with the factories registered on EventFluxContext,
-    /// not a fresh SinkFactoryRegistry that only knows the built in sinks. That is
-    /// what lets custom and extension sinks attach from config. Streams that
-    /// already have a sink handler are skipped. Keeps going after a failure.
-    ///
-    /// # Arguments
-    ///
-    /// * `app_config` - Application config holding the sink definitions
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Vec<String>)` - Names of the sink streams handled, including skipped ones
-    /// * `Err(Vec<EventFluxError>)` - Every error found. Sinks that did attach stay
-    ///   attached.
-    fn auto_attach_sinks_from_config(
-        &self,
-        app_config: &ApplicationConfig,
-    ) -> Result<Vec<String>, Vec<crate::core::exception::EventFluxError>> {
-        let mut errors = Vec::new();
-        let mut successes = Vec::new();
-
-        for (stream_name, stream_config) in &app_config.streams {
-            if let Some(ref sink_config) = stream_config.sink {
-                match self.attach_single_sink(stream_name, sink_config) {
-                    Ok(()) => {
-                        successes.push(stream_name.clone());
-                        log::info!(
-                            "[EventFluxAppRuntime] Successfully attached sink '{}' to stream '{}'",
-                            sink_config.sink_type,
-                            stream_name
-                        );
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "[EventFluxAppRuntime] Failed to attach sink '{}' to stream '{}': {}",
-                            sink_config.sink_type,
-                            stream_name,
-                            e
-                        );
-                        errors.push(e);
-                    }
-                }
-            }
-        }
-
-        if !errors.is_empty() {
-            Err(errors)
-        } else {
-            Ok(successes)
-        }
-    }
-
-    /// Attaches one sink from its YAML SinkConfig.
-    ///
-    /// Converts the SinkConfig to a StreamTypeConfig and hands it to
-    /// `attach_sink_common`. Does nothing if the stream already has a sink handler.
-    /// Errors are EventFluxError values that name the stream.
-    fn attach_single_sink(
-        &self,
-        stream_name: &str,
-        sink_config: &crate::core::config::types::application_config::SinkConfig,
-    ) -> Result<(), crate::core::exception::EventFluxError> {
-        use crate::core::config::stream_config::{StreamType, StreamTypeConfig};
-        use crate::core::exception::EventFluxError;
-
-        if self.get_sink_handler(stream_name).is_some() {
-            return Ok(());
-        }
-
-        let mut properties = self
-            .extract_connection_config(&sink_config.connection)
-            .map_err(|e| {
-                EventFluxError::configuration(format!(
-                    "Invalid connection config for sink stream '{}': {}",
-                    stream_name, e
-                ))
-            })?;
-
-        // Merge the other SinkConfig fields (security, delivery_guarantee, retry, batching).
-        Self::merge_sink_config_into_properties(sink_config, &mut properties).map_err(|e| {
-            EventFluxError::configuration(format!(
-                "Failed to merge sink config for stream '{}': {}",
-                stream_name, e
-            ))
-        })?;
-
-        let stream_type_config = StreamTypeConfig::new(
-            StreamType::Sink,
-            Some(sink_config.sink_type.clone()),
-            sink_config.format.clone(),
-            properties,
-        )
-        .map_err(|e| {
-            EventFluxError::configuration(format!(
-                "Invalid StreamTypeConfig for sink '{}' (type={}): {}",
-                stream_name, sink_config.sink_type, e
-            ))
-        })?;
-
-        self.attach_sink_common(stream_name, &stream_type_config, "YAML")
     }
 
     /// Builds and registers every table defined in the YAML or TOML config.
@@ -2114,6 +1723,7 @@ impl EventFluxAppRuntime {
         table_config: &crate::core::config::types::application_config::TableConfig,
     ) -> Result<crate::core::config::stream_config::TableTypeConfig, String> {
         use crate::core::config::stream_config::TableTypeConfig;
+        use crate::core::config::types::application_config::flatten_yaml_into;
 
         let extension = table_config.store.store_type.clone();
 
@@ -2121,7 +1731,7 @@ impl EventFluxAppRuntime {
 
         properties.insert("extension".to_string(), extension.clone());
 
-        Self::flatten_yaml_value(&table_config.store.connection, "", &mut properties)?;
+        flatten_yaml_into(&table_config.store.connection, "", &mut properties)?;
 
         if let Some(ref pool) = table_config.store.pool {
             properties.insert(
@@ -2146,200 +1756,12 @@ impl EventFluxAppRuntime {
     // methods are gone. ElementConfigResolver now does that work, resolving every
     // element config when the runtime is built.
     // See src/core/config/element_config_resolver.rs.
-
-    /// Flattens the rest of a SinkConfig into `properties`.
-    ///
-    /// Serializes the whole SinkConfig to YAML and flattens every field (security,
-    /// delivery_guarantee, retry, batching) into `properties`. So every field
-    /// reaches the factory without listing field names here. `type` and `format`
-    /// are dropped because they are read elsewhere. `connection` is flattened by
-    /// serde, so there is no `connection` key to drop and its keys are written
-    /// again. Errors if the config does not serialize to a mapping or cannot be
-    /// flattened.
-    fn merge_sink_config_into_properties(
-        sink_config: &crate::core::config::types::application_config::SinkConfig,
-        properties: &mut HashMap<String, String>,
-    ) -> Result<(), String> {
-        let config_value = serde_yaml::to_value(sink_config)
-            .map_err(|e| format!("Failed to serialize SinkConfig: {}", e))?;
-
-        let mut mapping = match config_value {
-            serde_yaml::Value::Mapping(m) => m,
-            _ => return Err("SinkConfig must serialize to mapping".to_string()),
-        };
-
-        // Already read elsewhere, so drop them to avoid duplicates.
-        mapping.remove(serde_yaml::Value::String("type".to_string()));
-        mapping.remove(serde_yaml::Value::String("format".to_string()));
-        mapping.remove(serde_yaml::Value::String("connection".to_string()));
-
-        Self::flatten_yaml_value(&serde_yaml::Value::Mapping(mapping), "", properties)?;
-
-        Ok(())
-    }
-
-    /// Flattens the rest of a SourceConfig into `properties`.
-    ///
-    /// Serializes the whole SourceConfig to YAML and flattens every field (security,
-    /// error_handling, rate_limit) into `properties`. So every field reaches the
-    /// factory without listing field names here. `type` and `format` are dropped
-    /// because they are read elsewhere. `connection` is flattened by serde, so
-    /// there is no `connection` key to drop and its keys are written again. Errors
-    /// if the config does not serialize to a mapping or cannot be flattened.
-    fn merge_source_config_into_properties(
-        source_config: &crate::core::config::types::application_config::SourceConfig,
-        properties: &mut HashMap<String, String>,
-    ) -> Result<(), String> {
-        let config_value = serde_yaml::to_value(source_config)
-            .map_err(|e| format!("Failed to serialize SourceConfig: {}", e))?;
-
-        let mut mapping = match config_value {
-            serde_yaml::Value::Mapping(m) => m,
-            _ => return Err("SourceConfig must serialize to mapping".to_string()),
-        };
-
-        // Already read elsewhere, so drop them to avoid duplicates.
-        mapping.remove(serde_yaml::Value::String("type".to_string()));
-        mapping.remove(serde_yaml::Value::String("format".to_string()));
-        mapping.remove(serde_yaml::Value::String("connection".to_string()));
-
-        Self::flatten_yaml_value(&serde_yaml::Value::Mapping(mapping), "", properties)?;
-
-        Ok(())
-    }
-
-    /// Flattens a YAML value into `result`, joining nested keys with dots.
-    ///
-    /// For example {mysql: {host: "localhost"}} becomes {"mysql.host": "localhost"}.
-    /// Null becomes the string "null". A list becomes its scalar items joined by
-    /// commas, and nested lists or mappings inside it are dropped. Errors on a
-    /// non string key or a tagged value.
-    fn flatten_yaml_value(
-        value: &serde_yaml::Value,
-        prefix: &str,
-        result: &mut HashMap<String, String>,
-    ) -> Result<(), String> {
-        match value {
-            serde_yaml::Value::Mapping(map) => {
-                for (key, val) in map {
-                    let key_str = key
-                        .as_str()
-                        .ok_or_else(|| format!("Non-string key in YAML: {:?}", key))?;
-
-                    let new_prefix = if prefix.is_empty() {
-                        key_str.to_string()
-                    } else {
-                        format!("{}.{}", prefix, key_str)
-                    };
-
-                    Self::flatten_yaml_value(val, &new_prefix, result)?;
-                }
-            }
-            serde_yaml::Value::String(s) => {
-                result.insert(prefix.to_string(), s.clone());
-            }
-            serde_yaml::Value::Number(n) => {
-                result.insert(prefix.to_string(), n.to_string());
-            }
-            serde_yaml::Value::Bool(b) => {
-                result.insert(prefix.to_string(), b.to_string());
-            }
-            serde_yaml::Value::Null => {
-                result.insert(prefix.to_string(), "null".to_string());
-            }
-            serde_yaml::Value::Sequence(seq) => {
-                // Join scalar items with commas. Other items are skipped.
-                let values: Vec<String> = seq
-                    .iter()
-                    .filter_map(|v| match v {
-                        serde_yaml::Value::String(s) => Some(s.clone()),
-                        serde_yaml::Value::Number(n) => Some(n.to_string()),
-                        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-                        _ => None,
-                    })
-                    .collect();
-                result.insert(prefix.to_string(), values.join(","));
-            }
-            serde_yaml::Value::Tagged(_) => {
-                return Err(format!("Tagged YAML values not supported: {:?}", value));
-            }
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::config::types::application_config::{StoreConfig, TableConfig};
-
-    #[test]
-    fn test_flatten_yaml_simple_mapping() {
-        let mut connection = serde_yaml::Mapping::new();
-        connection.insert(
-            serde_yaml::Value::String("host".to_string()),
-            serde_yaml::Value::String("localhost".to_string()),
-        );
-        connection.insert(
-            serde_yaml::Value::String("port".to_string()),
-            serde_yaml::Value::Number(3306.into()),
-        );
-
-        let mut result = HashMap::new();
-        EventFluxAppRuntime::flatten_yaml_value(
-            &serde_yaml::Value::Mapping(connection),
-            "",
-            &mut result,
-        )
-        .unwrap();
-
-        assert_eq!(result.get("host"), Some(&"localhost".to_string()));
-        assert_eq!(result.get("port"), Some(&"3306".to_string()));
-    }
-
-    #[test]
-    fn test_flatten_yaml_nested_mapping() {
-        let mut inner = serde_yaml::Mapping::new();
-        inner.insert(
-            serde_yaml::Value::String("host".to_string()),
-            serde_yaml::Value::String("localhost".to_string()),
-        );
-
-        let mut outer = serde_yaml::Mapping::new();
-        outer.insert(
-            serde_yaml::Value::String("mysql".to_string()),
-            serde_yaml::Value::Mapping(inner),
-        );
-
-        let mut result = HashMap::new();
-        EventFluxAppRuntime::flatten_yaml_value(
-            &serde_yaml::Value::Mapping(outer),
-            "",
-            &mut result,
-        )
-        .unwrap();
-
-        assert_eq!(result.get("mysql.host"), Some(&"localhost".to_string()));
-    }
-
-    #[test]
-    fn test_flatten_yaml_sequence() {
-        let seq = vec![
-            serde_yaml::Value::String("val1".to_string()),
-            serde_yaml::Value::String("val2".to_string()),
-            serde_yaml::Value::String("val3".to_string()),
-        ];
-
-        let mut result = HashMap::new();
-        EventFluxAppRuntime::flatten_yaml_value(
-            &serde_yaml::Value::Sequence(seq),
-            "list",
-            &mut result,
-        )
-        .unwrap();
-
-        assert_eq!(result.get("list"), Some(&"val1,val2,val3".to_string()));
-    }
 
     #[test]
     fn test_convert_table_config_inmemory() {
@@ -2408,6 +1830,31 @@ mod tests {
             table_type_config.properties.get("database"),
             Some(&"testdb".to_string())
         );
+    }
+
+    #[test]
+    fn test_convert_table_config_skips_null_connection_value() {
+        let connection: serde_yaml::Value =
+            serde_yaml::from_str("host: localhost\ndatabase:\n").unwrap();
+
+        let table_config = TableConfig {
+            store: StoreConfig {
+                store_type: "mysql".to_string(),
+                connection,
+                pool: None,
+                security: None,
+            },
+            schema: None,
+            caching: None,
+            indexing: None,
+        };
+
+        let table_type_config = EventFluxAppRuntime::convert_table_config(&table_config).unwrap();
+        assert_eq!(
+            table_type_config.properties.get("host"),
+            Some(&"localhost".to_string())
+        );
+        assert!(!table_type_config.properties.contains_key("database"));
     }
 
     #[test]

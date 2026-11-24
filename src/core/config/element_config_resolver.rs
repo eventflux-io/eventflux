@@ -41,7 +41,8 @@
 //! │              │                                                       │
 //! │              ├── For each StreamDefinition:                         │
 //! │              │      merge(YAML.streams[name], SQL.with_config)      │
-//! │              │      → resolved_configs["stream:name"]               │
+//! │              │      → resolved_configs["source:name"],              │
+//! │              │        ["sink:name"] or ["internal:name"]            │
 //! │              │                                                       │
 //! │              ├── For each TableDefinition:                          │
 //! │              │      merge(YAML.definitions[name], SQL.with_config)  │
@@ -65,10 +66,10 @@
 //! let resolved = resolver.resolve_all(
 //!     &app.stream_definition_map,
 //!     &app.table_definition_map,
-//! );
+//! )?;
 //!
 //! // Later, in attachment code:
-//! if let Some(config) = resolved.get("stream:EventInput") {
+//! if let Some(config) = resolved.get("source:EventInput") {
 //!     // Use pre-merged config directly
 //! }
 //! ```
@@ -257,26 +258,37 @@ impl<'a> ElementConfigResolver<'a> {
     /// # Returns
     ///
     /// A map keyed by "type:name", for example "source:EventInput", holding the final
-    /// config of each element.
+    /// config of each element. Errors with every problem found, joined by "; ", if
+    /// a stream's config is invalid. See [`Self::resolve_stream`].
     pub fn resolve_all(
         &self,
         stream_definitions: &HashMap<String, Arc<StreamDefinition>>,
         table_definitions: &HashMap<String, Arc<TableDefinition>>,
-    ) -> HashMap<String, ResolvedElementConfig> {
+    ) -> Result<HashMap<String, ResolvedElementConfig>, String> {
         let mut resolved = HashMap::new();
+        let mut errors = Vec::new();
 
-        // Resolve all stream definitions
         for (name, stream_def) in stream_definitions {
-            if let Some(config) = self.resolve_stream(name, stream_def) {
-                let key = config.element_type.config_key(name);
+            let configs = match self.resolve_stream(name, stream_def) {
+                Ok(configs) => configs,
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            };
+            for config in configs {
                 log::debug!(
                     "[ElementConfigResolver] Resolved {} '{}': {}",
                     config.element_type,
                     name,
                     config.get_source_summary()
                 );
-                resolved.insert(key, config);
+                resolved.insert(config.element_type.config_key(name), config);
             }
+        }
+
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
         }
 
         // Resolve all table definitions
@@ -297,39 +309,137 @@ impl<'a> ElementConfigResolver<'a> {
             resolved.len()
         );
 
-        resolved
+        Ok(resolved)
     }
 
-    /// Resolve one stream definition.
+    /// Resolve the configs of one stream.
     ///
-    /// Works out whether the stream is a source, sink or internal stream, then merges
-    /// its configs. A stream with a WITH clause but no known type becomes an internal
-    /// stream. Returns `None` when the stream has no config at all.
+    /// When SQL WITH sets `type`, it decides the kind. `source` and `sink` take the
+    /// matching YAML block as the base, and any other value gives an internal stream
+    /// with no YAML base. Attaching reports an unknown type later. Without a SQL
+    /// type, each YAML `source` and `sink` block gives its own config, so one stream
+    /// can have both. A stream with only a WITH clause becomes an internal stream.
+    /// The SQL WITH values are laid over the YAML base in every case, so SQL wins.
+    ///
+    /// Returns no configs when the stream has no config at all. Errors if a YAML
+    /// block cannot be flattened, or if YAML gives the stream a source or sink that
+    /// its SQL type rules out, since one of the two would otherwise be ignored.
     fn resolve_stream(
         &self,
         name: &str,
         stream_def: &StreamDefinition,
-    ) -> Option<ResolvedElementConfig> {
+    ) -> Result<Vec<ResolvedElementConfig>, String> {
         let sql_with = stream_def.with_config.as_ref();
+        let yaml = self.yaml_config.and_then(|c| c.streams.get(name));
+        let yaml_source = yaml.and_then(|s| s.source.as_ref());
+        let yaml_sink = yaml.and_then(|s| s.sink.as_ref());
 
-        let element_type = self.determine_stream_type(name, sql_with);
+        let source_base = || {
+            yaml_source
+                .map(|source| Self::source_base(name, source))
+                .transpose()
+        };
+        let sink_base = || {
+            yaml_sink
+                .map(|sink| Self::sink_base(name, sink))
+                .transpose()
+        };
 
-        if element_type.is_none() && sql_with.is_none() && !self.has_yaml_stream_config(name) {
-            return None;
+        let mut configs = Vec::new();
+        match sql_with.and_then(|w| w.get("type")).map(String::as_str) {
+            Some(sql_type) => {
+                let element_type = match sql_type {
+                    "source" => ElementType::Source,
+                    "sink" => ElementType::Sink,
+                    _ => ElementType::InternalStream,
+                };
+                let yaml_blocks = [
+                    (ElementType::Source, yaml_source.is_some()),
+                    (ElementType::Sink, yaml_sink.is_some()),
+                ];
+                for (kind, present) in yaml_blocks {
+                    if present && kind != element_type {
+                        return Err(format!(
+                            "Stream '{}' is declared type = '{}' in SQL WITH, but the YAML \
+                             config gives it a {}",
+                            name, sql_type, kind
+                        ));
+                    }
+                }
+                let base = match element_type {
+                    ElementType::Source => source_base()?,
+                    ElementType::Sink => sink_base()?,
+                    _ => None,
+                };
+                configs.push(base.unwrap_or_else(|| ResolvedElementConfig::new(element_type)));
+            }
+            None => {
+                configs.extend(source_base()?);
+                configs.extend(sink_base()?);
+                if configs.is_empty() && sql_with.is_some() {
+                    configs.push(ResolvedElementConfig::new(ElementType::InternalStream));
+                }
+            }
         }
-
-        let element_type = element_type.unwrap_or(ElementType::InternalStream);
-
-        let mut config = ResolvedElementConfig::new(element_type);
-
-        // YAML first, then SQL WITH on top so SQL wins on conflicts
-        self.apply_yaml_stream_config(name, element_type, &mut config);
 
         if let Some(with_config) = sql_with {
-            self.apply_sql_with_config(with_config, &mut config);
+            for config in &mut configs {
+                Self::apply_sql_with_config(with_config, config);
+            }
         }
 
-        Some(config)
+        Ok(configs)
+    }
+
+    /// Build a source config from its YAML block. Errors, naming the stream, if the
+    /// block cannot be flattened.
+    fn source_base(name: &str, source: &SourceConfig) -> Result<ResolvedElementConfig, String> {
+        let properties = source
+            .to_properties()
+            .map_err(|e| format!("Invalid YAML source config for stream '{}': {}", name, e))?;
+        Ok(Self::yaml_base(
+            ElementType::Source,
+            &source.source_type,
+            source.format.as_ref(),
+            properties,
+        ))
+    }
+
+    /// Build a sink config from its YAML block. Errors, naming the stream, if the
+    /// block cannot be flattened.
+    fn sink_base(name: &str, sink: &SinkConfig) -> Result<ResolvedElementConfig, String> {
+        let properties = sink
+            .to_properties()
+            .map_err(|e| format!("Invalid YAML sink config for stream '{}': {}", name, e))?;
+        Ok(Self::yaml_base(
+            ElementType::Sink,
+            &sink.sink_type,
+            sink.format.as_ref(),
+            properties,
+        ))
+    }
+
+    /// Build a config whose extension, format and properties all come from YAML.
+    fn yaml_base(
+        element_type: ElementType,
+        extension: &str,
+        format: Option<&String>,
+        properties: HashMap<String, String>,
+    ) -> ResolvedElementConfig {
+        let mut config = ResolvedElementConfig::new(element_type);
+        config.extension = Some(extension.to_string());
+        config.extension_source = ConfigSource::Yaml;
+        if let Some(format) = format {
+            config.format = Some(format.clone());
+            config.format_source = ConfigSource::Yaml;
+        }
+        for (key, value) in properties {
+            config
+                .property_sources
+                .insert(key.clone(), ConfigSource::Yaml);
+            config.properties.insert(key, value);
+        }
+        config
     }
 
     /// Resolve one table definition. Returns `None` for an in memory table.
@@ -350,52 +460,10 @@ impl<'a> ElementConfigResolver<'a> {
         self.apply_yaml_table_config(name, &mut config);
 
         if let Some(with_config) = sql_with {
-            self.apply_sql_with_config(with_config, &mut config);
+            Self::apply_sql_with_config(with_config, &mut config);
         }
 
         Some(config)
-    }
-
-    /// Work out the stream kind from the SQL WITH `type` key, else from the YAML config.
-    ///
-    /// An unknown `type` value in SQL returns `None` without looking at YAML. In YAML a
-    /// `source` block wins over a `sink` block.
-    fn determine_stream_type(
-        &self,
-        name: &str,
-        sql_with: Option<&FlatConfig>,
-    ) -> Option<ElementType> {
-        if let Some(with_config) = sql_with {
-            if let Some(type_str) = with_config.get("type") {
-                return match type_str.as_str() {
-                    "source" => Some(ElementType::Source),
-                    "sink" => Some(ElementType::Sink),
-                    "internal" => Some(ElementType::InternalStream),
-                    _ => None,
-                };
-            }
-        }
-
-        if let Some(app_config) = self.yaml_config {
-            if let Some(stream_config) = app_config.streams.get(name) {
-                if stream_config.source.is_some() {
-                    return Some(ElementType::Source);
-                }
-                if stream_config.sink.is_some() {
-                    return Some(ElementType::Sink);
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Check if the YAML config has a source or sink block for this stream.
-    fn has_yaml_stream_config(&self, name: &str) -> bool {
-        self.yaml_config
-            .and_then(|c| c.streams.get(name))
-            .map(|s| s.source.is_some() || s.sink.is_some())
-            .unwrap_or(false)
     }
 
     /// Check if the YAML `definitions` section has an entry for this table.
@@ -403,108 +471,6 @@ impl<'a> ElementConfigResolver<'a> {
         self.yaml_config
             .and_then(|c| c.definitions.get(name))
             .is_some()
-    }
-
-    /// Copy the YAML source or sink config of the stream into `config` as the base.
-    ///
-    /// Does nothing for other element kinds.
-    fn apply_yaml_stream_config(
-        &self,
-        name: &str,
-        element_type: ElementType,
-        config: &mut ResolvedElementConfig,
-    ) {
-        let Some(app_config) = self.yaml_config else {
-            return;
-        };
-        let Some(stream_config) = app_config.streams.get(name) else {
-            return;
-        };
-
-        match element_type {
-            ElementType::Source => {
-                if let Some(ref source_config) = stream_config.source {
-                    self.apply_source_config(source_config, config);
-                }
-            }
-            ElementType::Sink => {
-                if let Some(ref sink_config) = stream_config.sink {
-                    self.apply_sink_config(sink_config, config);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Copy a YAML source config into `config`.
-    ///
-    /// Takes every field of [`SourceConfig`], including connection, security,
-    /// error_handling and rate_limit. This matches
-    /// `merge_source_config_into_properties()` in the YAML only attachment path.
-    fn apply_source_config(
-        &self,
-        source_config: &SourceConfig,
-        config: &mut ResolvedElementConfig,
-    ) {
-        config.extension = Some(source_config.source_type.clone());
-        config.extension_source = ConfigSource::Yaml;
-
-        if let Some(ref fmt) = source_config.format {
-            config.format = Some(fmt.clone());
-            config.format_source = ConfigSource::Yaml;
-        }
-
-        if let Some(props) = self.extract_yaml_connection(&source_config.connection) {
-            for (key, value) in props {
-                config.properties.insert(key.clone(), value);
-                config.property_sources.insert(key, ConfigSource::Yaml);
-            }
-        }
-
-        // Serialize the struct to pick up every other field (security, error_handling,
-        // rate_limit), the same way merge_source_config_into_properties() does
-        if let Ok(serde_yaml::Value::Mapping(mut mapping)) = serde_yaml::to_value(source_config) {
-            // Already handled above
-            mapping.remove(serde_yaml::Value::String("type".to_string()));
-            mapping.remove(serde_yaml::Value::String("format".to_string()));
-            mapping.remove(serde_yaml::Value::String("connection".to_string()));
-
-            self.flatten_yaml_into_properties(&serde_yaml::Value::Mapping(mapping), "", config);
-        }
-    }
-
-    /// Copy a YAML sink config into `config`.
-    ///
-    /// Takes every field of [`SinkConfig`], including connection, security,
-    /// delivery_guarantee, retry and batching. This matches
-    /// `merge_sink_config_into_properties()` in the YAML only attachment path.
-    fn apply_sink_config(&self, sink_config: &SinkConfig, config: &mut ResolvedElementConfig) {
-        config.extension = Some(sink_config.sink_type.clone());
-        config.extension_source = ConfigSource::Yaml;
-
-        if let Some(ref fmt) = sink_config.format {
-            config.format = Some(fmt.clone());
-            config.format_source = ConfigSource::Yaml;
-        }
-
-        if let Some(props) = self.extract_yaml_connection(&sink_config.connection) {
-            for (key, value) in props {
-                config.properties.insert(key.clone(), value);
-                config.property_sources.insert(key, ConfigSource::Yaml);
-            }
-        }
-
-        // Serialize the struct to pick up every other field (security,
-        // delivery_guarantee, retry, batching), the same way
-        // merge_sink_config_into_properties() does
-        if let Ok(serde_yaml::Value::Mapping(mut mapping)) = serde_yaml::to_value(sink_config) {
-            // Already handled above
-            mapping.remove(serde_yaml::Value::String("type".to_string()));
-            mapping.remove(serde_yaml::Value::String("format".to_string()));
-            mapping.remove(serde_yaml::Value::String("connection".to_string()));
-
-            self.flatten_yaml_into_properties(&serde_yaml::Value::Mapping(mapping), "", config);
-        }
     }
 
     /// Copy the YAML table config into `config`. Does nothing yet.
@@ -524,7 +490,7 @@ impl<'a> ElementConfigResolver<'a> {
     ///
     /// `extension` and `format` set the matching fields and are not copied into
     /// `properties`. `type` is skipped because it only picks the element kind.
-    fn apply_sql_with_config(&self, with_config: &FlatConfig, config: &mut ResolvedElementConfig) {
+    fn apply_sql_with_config(with_config: &FlatConfig, config: &mut ResolvedElementConfig) {
         if let Some(ext) = with_config.get("extension") {
             config.extension = Some(ext.clone());
             config.extension_source = ConfigSource::SqlWith;
@@ -543,152 +509,6 @@ impl<'a> ElementConfigResolver<'a> {
             config
                 .property_sources
                 .insert(key.clone(), ConfigSource::SqlWith);
-        }
-    }
-
-    /// Turn a YAML `connection` block into string properties.
-    ///
-    /// Sequences and nested mappings become JSON strings, matching
-    /// `extract_connection_config()` in EventFluxAppRuntime. Null values become empty
-    /// strings. A tagged value keeps its inner scalar and is skipped otherwise.
-    ///
-    /// Returns an empty map for a null block. Returns `None` if the block is not a
-    /// mapping or has a key that is not a string.
-    fn extract_yaml_connection(
-        &self,
-        connection: &serde_yaml::Value,
-    ) -> Option<HashMap<String, String>> {
-        let map = match connection {
-            serde_yaml::Value::Mapping(m) => m,
-            serde_yaml::Value::Null => return Some(HashMap::new()),
-            _ => return None,
-        };
-
-        let mut props = HashMap::new();
-
-        for (key, value) in map {
-            let key_str = key.as_str()?;
-            let value_str = match value {
-                serde_yaml::Value::String(s) => s.clone(),
-                serde_yaml::Value::Number(n) => n.to_string(),
-                serde_yaml::Value::Bool(b) => b.to_string(),
-                serde_yaml::Value::Null => String::new(),
-                serde_yaml::Value::Sequence(_) => {
-                    // Factories expect arrays as JSON text, same as
-                    // extract_connection_config()
-                    match serde_json::to_string(value) {
-                        Ok(json) => json,
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to serialize array value for key '{}': {}",
-                                key_str,
-                                e
-                            );
-                            continue;
-                        }
-                    }
-                }
-                serde_yaml::Value::Mapping(_) => match serde_json::to_string(value) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to serialize mapping value for key '{}': {}",
-                            key_str,
-                            e
-                        );
-                        continue;
-                    }
-                },
-                serde_yaml::Value::Tagged(tagged) => match &tagged.value {
-                    serde_yaml::Value::String(s) => s.clone(),
-                    serde_yaml::Value::Number(n) => n.to_string(),
-                    serde_yaml::Value::Bool(b) => b.to_string(),
-                    _ => continue,
-                },
-            };
-            props.insert(key_str.to_string(), value_str);
-        }
-
-        Some(props)
-    }
-
-    /// Flatten a YAML value into `config.properties`, marking each key as YAML sourced.
-    ///
-    /// Nested mappings become dotted keys such as `security.username`. This matches
-    /// `flatten_yaml_value()` in EventFluxAppRuntime. Sequences of scalars are joined
-    /// with commas. Nulls, tagged values and scalars with no key are skipped.
-    #[allow(clippy::only_used_in_recursion)]
-    fn flatten_yaml_into_properties(
-        &self,
-        value: &serde_yaml::Value,
-        prefix: &str,
-        config: &mut ResolvedElementConfig,
-    ) {
-        match value {
-            serde_yaml::Value::Mapping(map) => {
-                for (key, val) in map {
-                    if let Some(key_str) = key.as_str() {
-                        let new_prefix = if prefix.is_empty() {
-                            key_str.to_string()
-                        } else {
-                            format!("{}.{}", prefix, key_str)
-                        };
-                        self.flatten_yaml_into_properties(val, &new_prefix, config);
-                    }
-                }
-            }
-            serde_yaml::Value::String(s) => {
-                if !prefix.is_empty() {
-                    config.properties.insert(prefix.to_string(), s.clone());
-                    config
-                        .property_sources
-                        .insert(prefix.to_string(), ConfigSource::Yaml);
-                }
-            }
-            serde_yaml::Value::Number(n) => {
-                if !prefix.is_empty() {
-                    config.properties.insert(prefix.to_string(), n.to_string());
-                    config
-                        .property_sources
-                        .insert(prefix.to_string(), ConfigSource::Yaml);
-                }
-            }
-            serde_yaml::Value::Bool(b) => {
-                if !prefix.is_empty() {
-                    config.properties.insert(prefix.to_string(), b.to_string());
-                    config
-                        .property_sources
-                        .insert(prefix.to_string(), ConfigSource::Yaml);
-                }
-            }
-            serde_yaml::Value::Sequence(seq) => {
-                // Nested items inside the sequence are dropped
-                if !prefix.is_empty() {
-                    let values: Vec<String> = seq
-                        .iter()
-                        .filter_map(|v| match v {
-                            serde_yaml::Value::String(s) => Some(s.clone()),
-                            serde_yaml::Value::Number(n) => Some(n.to_string()),
-                            serde_yaml::Value::Bool(b) => Some(b.to_string()),
-                            _ => None,
-                        })
-                        .collect();
-                    if !values.is_empty() {
-                        config
-                            .properties
-                            .insert(prefix.to_string(), values.join(","));
-                        config
-                            .property_sources
-                            .insert(prefix.to_string(), ConfigSource::Yaml);
-                    }
-                }
-            }
-            serde_yaml::Value::Null => {
-                // Skip null values
-            }
-            serde_yaml::Value::Tagged(_) => {
-                // Skip tagged values
-            }
         }
     }
 }
@@ -783,7 +603,7 @@ mod tests {
         let streams: HashMap<String, Arc<StreamDefinition>> = HashMap::new();
         let tables: HashMap<String, Arc<TableDefinition>> = HashMap::new();
 
-        let resolved = resolver.resolve_all(&streams, &tables);
+        let resolved = resolver.resolve_all(&streams, &tables).unwrap();
         assert!(resolved.is_empty());
     }
 
@@ -807,7 +627,7 @@ mod tests {
         streams.insert("EventInput".to_string(), Arc::new(stream_def));
         let tables = HashMap::new();
 
-        let resolved = resolver.resolve_all(&streams, &tables);
+        let resolved = resolver.resolve_all(&streams, &tables).unwrap();
 
         assert_eq!(resolved.len(), 1);
         let config = resolved.get("source:EventInput").unwrap();
@@ -869,52 +689,76 @@ mod tests {
     }
 
     #[test]
-    fn test_flatten_yaml_into_properties() {
-        let resolver = ElementConfigResolver::new(None);
-        let mut config = ResolvedElementConfig::new(ElementType::Source);
-
-        // Nested YAML shaped like the security and retry config
-        let yaml_value = serde_yaml::from_str::<serde_yaml::Value>(
+    fn test_sink_base_flattens_structured_fields() {
+        let sink: SinkConfig = serde_yaml::from_str(
             r#"
+            type: kafka
+            format: json
             security:
-              tls:
-                enabled: true
-                cert_path: /path/to/cert
+              authentication:
+                tls:
+                  enabled: true
+                  cert_path: /path/to/cert
             retry:
-              max_retries: 3
-              delay_ms: 1000
+              max_attempts: 3
+              initial_delay: 1s
+              max_delay: 30s
+              backoff_multiplier: 2.0
+              jitter: false
             "#,
         )
         .unwrap();
 
-        resolver.flatten_yaml_into_properties(&yaml_value, "", &mut config);
+        let config = ElementConfigResolver::sink_base("Out", &sink).unwrap();
 
-        // Verify nested properties are flattened with dot notation
+        assert_eq!(config.element_type, ElementType::Sink);
+        assert_eq!(config.extension.as_deref(), Some("kafka"));
+        assert_eq!(config.extension_source, ConfigSource::Yaml);
+        assert_eq!(config.format.as_deref(), Some("json"));
         assert_eq!(
-            config.get("security.tls.enabled"),
+            config.get("security.authentication.tls.enabled"),
             Some(&"true".to_string())
         );
         assert_eq!(
-            config.get("security.tls.cert_path"),
+            config.get("security.authentication.tls.cert_path"),
             Some(&"/path/to/cert".to_string())
         );
-        assert_eq!(config.get("retry.max_retries"), Some(&"3".to_string()));
-        assert_eq!(config.get("retry.delay_ms"), Some(&"1000".to_string()));
-
-        // Verify source tracking
+        assert_eq!(config.get("retry.max_attempts"), Some(&"3".to_string()));
+        assert_eq!(config.get("retry.jitter"), Some(&"false".to_string()));
         assert_eq!(
-            config.property_sources.get("security.tls.enabled"),
+            config
+                .property_sources
+                .get("security.authentication.tls.enabled"),
             Some(&ConfigSource::Yaml)
+        );
+        // type and format have their own fields and are not properties
+        assert!(config.get("type").is_none());
+        assert!(config.get("format").is_none());
+    }
+
+    #[test]
+    fn test_yaml_null_value_is_absent() {
+        let sink: SinkConfig =
+            serde_yaml::from_str("type: file\nformat: json\nfile.path:\n").unwrap();
+        let sink_config = ElementConfigResolver::sink_base("Out", &sink).unwrap();
+        assert!(sink_config.get("file.path").is_none());
+        assert!(!sink_config.property_sources.contains_key("file.path"));
+
+        let source: SourceConfig =
+            serde_yaml::from_str("type: kafka\nkafka.topic:\nkafka.brokers: b1:9092\n").unwrap();
+        let source_config = ElementConfigResolver::source_base("In", &source).unwrap();
+        assert!(source_config.get("kafka.topic").is_none());
+        assert_eq!(
+            source_config.get("kafka.brokers"),
+            Some(&"b1:9092".to_string())
         );
     }
 
     #[test]
-    fn test_extract_yaml_connection_with_arrays() {
-        let resolver = ElementConfigResolver::new(None);
-
-        // Create a connection config with array values (like bootstrap servers)
-        let connection = serde_yaml::from_str::<serde_yaml::Value>(
+    fn test_source_base_joins_arrays_with_commas() {
+        let source: SourceConfig = serde_yaml::from_str(
             r#"
+            type: kafka
             host: localhost
             port: 9092
             bootstrap_servers:
@@ -928,20 +772,104 @@ mod tests {
         )
         .unwrap();
 
-        let props = resolver.extract_yaml_connection(&connection).unwrap();
+        let config = ElementConfigResolver::source_base("In", &source).unwrap();
 
-        // Verify scalar values
-        assert_eq!(props.get("host"), Some(&"localhost".to_string()));
-        assert_eq!(props.get("port"), Some(&"9092".to_string()));
+        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("port"), Some(&"9092".to_string()));
 
-        // Verify arrays are serialized as JSON strings
-        let bootstrap_servers = props.get("bootstrap_servers").unwrap();
-        assert!(bootstrap_servers.contains("kafka1:9092"));
-        assert!(bootstrap_servers.contains("kafka2:9092"));
-        assert!(bootstrap_servers.contains("kafka3:9092"));
+        // Kafka splits these on commas
+        assert_eq!(
+            config.get("bootstrap_servers"),
+            Some(&"kafka1:9092,kafka2:9092,kafka3:9092".to_string())
+        );
+        assert_eq!(config.get("topics"), Some(&"events,logs".to_string()));
+        assert_eq!(
+            config.property_sources.get("topics"),
+            Some(&ConfigSource::Yaml)
+        );
+    }
 
-        let topics = props.get("topics").unwrap();
-        assert!(topics.contains("events"));
-        assert!(topics.contains("logs"));
+    /// Resolves one stream named `Out` against the given YAML app config and SQL
+    /// WITH options.
+    fn resolve_out(
+        app_config_yaml: &str,
+        with_options: &[(&str, &str)],
+    ) -> Result<HashMap<String, ResolvedElementConfig>, String> {
+        use crate::core::config::PropertySource;
+
+        let app_config: ApplicationConfig = serde_yaml::from_str(app_config_yaml).unwrap();
+        let mut stream_def = StreamDefinition::new("Out".to_string());
+        if !with_options.is_empty() {
+            let mut with_config = FlatConfig::new();
+            for (key, value) in with_options {
+                with_config.set(*key, *value, PropertySource::SqlWith);
+            }
+            stream_def.with_config = Some(with_config);
+        }
+        let streams = HashMap::from([("Out".to_string(), Arc::new(stream_def))]);
+
+        ElementConfigResolver::new(Some(&app_config)).resolve_all(&streams, &HashMap::new())
+    }
+
+    const YAML_FILE_SINK: &str =
+        "streams:\n  Out:\n    sink:\n      type: file\n      file.path: /yaml/out.json\n";
+
+    #[test]
+    fn test_sql_with_without_type_overrides_yaml() {
+        let resolved = resolve_out(YAML_FILE_SINK, &[("file.path", "/sql/out.json")]).unwrap();
+
+        let sink = resolved.get("sink:Out").unwrap();
+        assert_eq!(sink.extension.as_deref(), Some("file"));
+        assert_eq!(sink.get("file.path"), Some(&"/sql/out.json".to_string()));
+        assert_eq!(
+            sink.property_sources.get("file.path"),
+            Some(&ConfigSource::SqlWith)
+        );
+    }
+
+    #[test]
+    fn test_yaml_source_and_sink_both_resolve() {
+        let yaml = "streams:\n  Out:\n    source:\n      type: timer\n    sink:\n      type: log\n";
+        let resolved = resolve_out(yaml, &[]).unwrap();
+
+        assert_eq!(
+            resolved.get("source:Out").unwrap().extension.as_deref(),
+            Some("timer")
+        );
+        assert_eq!(
+            resolved.get("sink:Out").unwrap().extension.as_deref(),
+            Some("log")
+        );
+    }
+
+    #[test]
+    fn test_yaml_block_that_sql_type_rules_out_is_an_error() {
+        let err = resolve_out(YAML_FILE_SINK, &[("type", "internal")]).unwrap_err();
+        assert!(
+            err.contains("Stream 'Out' is declared type = 'internal'") && err.contains("a sink"),
+            "{err}"
+        );
+
+        let err = resolve_out(
+            YAML_FILE_SINK,
+            &[("type", "source"), ("extension", "timer")],
+        )
+        .unwrap_err();
+        assert!(err.contains("type = 'source'"), "{err}");
+    }
+
+    #[test]
+    fn test_invalid_yaml_block_is_an_error_naming_the_stream() {
+        let yaml = "streams:\n  Out:\n    sink:\n      type: file\n      labels:\n        1: one\n";
+        let err = resolve_out(
+            yaml,
+            &[("type", "sink"), ("extension", "file"), ("file.path", "/x")],
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("Invalid YAML sink config for stream 'Out'")
+                && err.contains("Non-string key"),
+            "{err}"
+        );
     }
 }
