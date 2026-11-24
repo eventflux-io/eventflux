@@ -550,42 +550,33 @@ async fn test_sql_with_properties_reach_factory() {
     runner.shutdown();
 }
 
-/// A source attached from its resolved config, where SQL WITH is merged over
-/// YAML, must be skipped by the pass that handles YAML only, before its YAML is
-/// parsed again.
-///
-/// The YAML only converter (`extract_connection_config`) rejects nested
-/// mappings that the resolver accepts. So parsing an already attached stream
-/// again used to make `start()` fail with "Invalid connection config" every time.
-#[tokio::test]
-async fn test_yaml_source_pass_skips_stream_attached_from_sql() {
-    use eventflux::core::config::types::global_config::ApplicationGlobalConfig;
-    use eventflux::core::config::{ApplicationConfig, EventFluxConfig};
-
-    let app_config: ApplicationConfig = serde_yaml::from_str(
-        r#"
+/// YAML that ticks every 60 s, so a timer source built from it alone produces
+/// nothing within a test's few hundred milliseconds. The key is flat because the
+/// old YAML only path rejected nested mappings, which would hide its fallback bug.
+const SLOW_YAML_TIMER: &str = r#"
 streams:
   TimerInput:
     source:
       type: timer
-      timer:
-        interval: 100
-"#,
-    )
-    .expect("valid application config");
+      timer.interval: 60000
+"#;
 
-    let mut config = EventFluxConfig::default();
-    config.eventflux.application = Some(ApplicationGlobalConfig {
-        name: Some("YamlGuardApp".to_string()),
-        ..Default::default()
-    });
-    config
-        .applications
-        .insert("YamlGuardApp".to_string(), app_config);
-
-    let manager = EventFluxManager::new_with_config(config);
+/// Runs `sql` with [`SLOW_YAML_TIMER`] as the YAML config for 350 ms and returns
+/// what reached `TimerOutput`. Panics if start() fails.
+async fn run_with_slow_yaml_timer(app_name: &str, sql: &str) -> Vec<Vec<AttributeValue>> {
+    let manager = common::manager_with_app_config(app_name, SLOW_YAML_TIMER);
     manager.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
+    let runner = AppRunner::new_with_manager(manager, sql, "TimerOutput").await;
+    sleep(Duration::from_millis(350)).await;
+    runner.shutdown()
+}
 
+/// A stream in both YAML and a typed SQL WITH gets one source, built from the
+/// merged config where SQL wins. The YAML ticks every 60 s and SQL every 100 ms,
+/// so events only arrive if the SQL value was used and no YAML only source
+/// replaced it.
+#[tokio::test]
+async fn test_typed_sql_with_overrides_yaml_source() {
     let sql = r#"
         CREATE STREAM TimerInput (tick STRING) WITH (
             type = 'source',
@@ -599,14 +590,111 @@ streams:
         SELECT tick FROM TimerInput;
     "#;
 
-    // Panics if start() fails
-    let runner = AppRunner::new_with_manager(manager, sql, "TimerOutput").await;
-    sleep(Duration::from_millis(350)).await;
-    let out = runner.shutdown();
-
+    let out = run_with_slow_yaml_timer("TypedOverrideApp", sql).await;
     assert!(
         !out.is_empty(),
-        "timer source attached from SQL should produce events"
+        "the SQL timer.interval should win over the YAML one"
+    );
+}
+
+/// A SQL WITH clause with no `type` still overrides the YAML connector config.
+/// It used to be ignored, because only a typed WITH clause read the merged config.
+#[tokio::test]
+async fn test_untyped_sql_with_overrides_yaml_source() {
+    let sql = r#"
+        CREATE STREAM TimerInput (tick STRING) WITH ("timer.interval" = '100');
+
+        CREATE STREAM TimerOutput (tick STRING);
+
+        INSERT INTO TimerOutput
+        SELECT tick FROM TimerInput;
+    "#;
+
+    let out = run_with_slow_yaml_timer("UntypedOverrideApp", sql).await;
+    assert!(
+        !out.is_empty(),
+        "the SQL timer.interval should win over the YAML one"
+    );
+}
+
+/// A stream declared internal in SQL must not quietly get the YAML source, and
+/// must not quietly lose it either. Creation fails and names the conflict.
+#[tokio::test]
+async fn test_internal_stream_with_yaml_source_fails_creation() {
+    let manager = common::manager_with_app_config("InternalYamlApp", SLOW_YAML_TIMER);
+    let sql = r#"
+        CREATE STREAM TimerInput (tick STRING) WITH (type = 'internal');
+        CREATE STREAM TimerOutput (tick STRING);
+        INSERT INTO TimerOutput SELECT tick FROM TimerInput;
+    "#;
+
+    let err = match manager.create_eventflux_app_runtime_from_string(sql).await {
+        Ok(_) => panic!("conflicting stream config must fail creation"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("Stream 'TimerInput' is declared type = 'internal'")
+            && err.contains("a source"),
+        "got: {err}"
+    );
+}
+
+/// When the typed SQL attach fails, the YAML config must not be used as a
+/// fallback. It used to be, and a second start() then ran the YAML only source
+/// with the SQL error hidden.
+#[tokio::test]
+async fn test_failed_sql_attach_does_not_fall_back_to_yaml() {
+    let manager = common::manager_with_app_config("NoFallbackApp", SLOW_YAML_TIMER);
+    manager.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
+    let sql = r#"
+        CREATE STREAM TimerInput (tick STRING) WITH (
+            type = 'source',
+            extension = 'timer',
+            "timer.interval" = 'not-a-number'
+        );
+        CREATE STREAM TimerOutput (tick STRING);
+        INSERT INTO TimerOutput SELECT tick FROM TimerInput;
+    "#;
+
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(sql)
+        .await
+        .expect("runtime");
+    for attempt in 1..=2 {
+        let err = runtime
+            .start()
+            .expect_err("a bad SQL timer.interval must fail every start");
+        assert!(
+            err.to_string().contains("timer.interval"),
+            "attempt {attempt}: {err}"
+        );
+    }
+    runtime.shutdown();
+}
+
+/// A YAML source or sink for a stream the app does not define is reported, not
+/// skipped without a word
+#[tokio::test]
+async fn test_yaml_connector_for_undefined_stream_fails_start() {
+    let manager = common::manager_with_app_config("UndefinedYamlApp", SLOW_YAML_TIMER);
+    let sql = r#"
+        CREATE STREAM Other (tick STRING);
+        CREATE STREAM TimerOutput (tick STRING);
+        INSERT INTO TimerOutput SELECT tick FROM Other;
+    "#;
+
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(sql)
+        .await
+        .expect("runtime");
+    let err = runtime
+        .start()
+        .expect_err("YAML for an undefined stream must fail start");
+    runtime.shutdown();
+    assert!(
+        err.to_string()
+            .contains("source or sink for stream 'TimerInput', but the app does not define"),
+        "got: {err}"
     );
 }
 
@@ -642,4 +730,29 @@ async fn test_sql_with_dlq_on_source_without_dlq_support_fails_start() {
 
     assert!(err.contains("does not support DLQ routing"), "got: {err}");
     assert!(err.contains("'TimerInput'"), "got: {err}");
+}
+
+/// `type = NULL` must not be dropped like other NULL options. A stream with an
+/// extension but no type is read as a table, so the source would never attach.
+#[tokio::test]
+async fn test_sql_with_null_type_fails_creation() {
+    let manager = EventFluxManager::new();
+    let sql = r#"
+        CREATE STREAM TimerInput (tick STRING) WITH (
+            type = NULL,
+            extension = 'timer',
+            "timer.interval" = '100'
+        );
+        CREATE STREAM TimerOutput (tick STRING);
+        INSERT INTO TimerOutput SELECT tick FROM TimerInput;
+    "#;
+
+    let err = match manager.create_eventflux_app_runtime_from_string(sql).await {
+        Ok(_) => panic!("type = NULL must fail creation"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("WITH option 'type' cannot be NULL"),
+        "got: {err}"
+    );
 }

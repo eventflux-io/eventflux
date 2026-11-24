@@ -383,15 +383,15 @@ Sinks can be configured from two sources:
 streams:
   HttpOutputStream:
     sink:
-      sink_type: http
+      type: http
       format: json
-      connection:
-        http.url: https://api.example.com/events
-        http.method: POST
+      http.url: https://api.example.com/events
+      http.method: POST
 ```
 
-Processed by: `EventFluxAppRuntime::auto_attach_sinks_from_config()`
-Location: `src/core/eventflux_app_runtime.rs:1323`
+Connection keys sit next to `type` and `format`. Merged with any SQL WITH clause by
+`ElementConfigResolver` (`src/core/config/element_config_resolver.rs`), then attached
+by `EventFluxAppRuntime::auto_attach_streams()`.
 
 ### SQL WITH Clause
 

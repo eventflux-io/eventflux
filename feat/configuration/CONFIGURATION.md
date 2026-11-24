@@ -4167,8 +4167,7 @@ impl EventFluxAppRuntime {
 
 Auto-attach is implemented in `src/core/eventflux_app_runtime.rs`:
 
-- `auto_attach_sources_from_config()` - Creates source handlers from configuration with error accumulation
-- `auto_attach_sinks_from_config()` - Creates sink handlers from configuration with error accumulation
+- `auto_attach_streams()` - Creates source and sink handlers from the resolved configs (YAML merged with SQL WITH) with error accumulation
 - `auto_attach_tables_from_config()` - Creates table handlers from configuration with error accumulation
 
 Key features:

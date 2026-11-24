@@ -157,6 +157,224 @@ pub struct SinkConfig {
     pub batching: Option<BatchingConfig>,
 }
 
+impl SourceConfig {
+    /// Flattens this source config into the string map that source factories take.
+    ///
+    /// Connection keys go in at the top level, written as described in
+    /// [`connection_properties`]. `security`, `error_handling` and `rate_limit` go in
+    /// under their own name, such as `rate_limit.max_rate`. `type` and `format` are
+    /// left out because callers pass them separately.
+    ///
+    /// Errors in the cases listed on [`connection_properties`] and
+    /// [`flatten_yaml_into`], or if a field cannot be serialized.
+    pub fn to_properties(&self) -> Result<HashMap<String, String>, String> {
+        // Destructured so a new field is a compile error here until it is passed on.
+        let Self {
+            source_type: _,
+            format: _,
+            connection,
+            security,
+            error_handling,
+            rate_limit,
+        } = self;
+
+        let mut properties = connection_properties(connection)?;
+        flatten_field(security, "security", &mut properties)?;
+        flatten_field(error_handling, "error_handling", &mut properties)?;
+        flatten_field(rate_limit, "rate_limit", &mut properties)?;
+        Ok(properties)
+    }
+}
+
+impl SinkConfig {
+    /// Flattens this sink config into the string map that sink factories take.
+    ///
+    /// Connection keys go in at the top level, written as described in
+    /// [`connection_properties`]. `security`, `delivery_guarantee`, `retry` and
+    /// `batching` go in under their own name, such as `retry.max_attempts`.
+    /// `delivery_guarantee` is always set because it has a default. `type` and
+    /// `format` are left out because callers pass them separately.
+    ///
+    /// Errors in the cases listed on [`connection_properties`] and
+    /// [`flatten_yaml_into`], or if a field cannot be serialized.
+    pub fn to_properties(&self) -> Result<HashMap<String, String>, String> {
+        // Destructured so a new field is a compile error here until it is passed on.
+        let Self {
+            sink_type: _,
+            format: _,
+            connection,
+            security,
+            delivery_guarantee,
+            retry,
+            batching,
+        } = self;
+
+        let mut properties = connection_properties(connection)?;
+        flatten_field(security, "security", &mut properties)?;
+        flatten_field(delivery_guarantee, "delivery_guarantee", &mut properties)?;
+        flatten_field(retry, "retry", &mut properties)?;
+        flatten_field(batching, "batching", &mut properties)?;
+        Ok(properties)
+    }
+}
+
+/// Flattens the connection keys of a source or sink.
+///
+/// Each key is written as described in [`flatten_yaml_into`]. A key whose value
+/// is a mapping is also written whole as JSON text, so `json.template: {a: 1}`
+/// gives `json.template = {"a":1}` as well as `json.template.a = 1`. Connectors
+/// read some properties, such as `json.template`, as one JSON value. Only these
+/// top level keys get the JSON copy, because connectors also read nested keys by
+/// prefix, such as `json.mapping.<field>`, and a JSON copy there would look like
+/// one more field.
+///
+/// A null connection means no keys were given. Errors if the connection is any
+/// other non mapping value, or for the cases listed on [`flatten_yaml_into`].
+fn connection_properties(
+    connection: &serde_yaml::Value,
+) -> Result<HashMap<String, String>, String> {
+    let mut properties = HashMap::new();
+    match connection {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, value) in map {
+                let key = yaml_key(key, "")?;
+                if value.is_mapping() {
+                    insert_unique(&mut properties, &key, json_text(value, &key)?)?;
+                }
+                flatten_yaml_into(value, &key, &mut properties)?;
+            }
+        }
+        serde_yaml::Value::Null => {}
+        _ => {
+            return Err(format!(
+                "Connection configuration must be a mapping, got: {:?}",
+                connection
+            ))
+        }
+    }
+    Ok(properties)
+}
+
+/// Serializes one config field and flattens it under `name`. A `None` field adds nothing.
+fn flatten_field<T: Serialize>(
+    field: &T,
+    name: &str,
+    properties: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    let value = serde_yaml::to_value(field)
+        .map_err(|e| format!("Failed to serialize '{}': {}", name, e))?;
+    flatten_yaml_into(&value, name, properties)
+}
+
+/// Flattens a YAML value into `out` under `prefix`, joining nested keys with dots.
+///
+/// For example `{mysql: {host: localhost}}` becomes `mysql.host = localhost`.
+/// Strings, numbers and bools become their text form. A non empty list of only
+/// strings, numbers and bools becomes its items joined by commas, because
+/// connectors such as Kafka split these values on commas. Any other list, such
+/// as an empty one or one holding mappings, becomes JSON text so no item is lost.
+///
+/// Null is left out, not written as text. YAML `key:` with no value means "not
+/// set", so a connector sees the key as missing instead of reading the string
+/// "null" as a real value, such as a file path or topic name.
+///
+/// Errors if a mapping key is not a string, two keys flatten to the same name
+/// (such as `kafka.topic` next to `kafka: {topic: ...}`), or the value holds a
+/// custom YAML tag such as `!env`. Nothing here resolves tags, so passing the
+/// tagged text on as if it were the real value would be wrong.
+pub(crate) fn flatten_yaml_into(
+    value: &serde_yaml::Value,
+    prefix: &str,
+    out: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    use serde_yaml::Value;
+
+    match value {
+        Value::Mapping(map) => {
+            for (key, val) in map {
+                flatten_yaml_into(val, &yaml_key(key, prefix)?, out)?;
+            }
+            Ok(())
+        }
+        Value::Null => Ok(()),
+        Value::Sequence(seq) => {
+            let items: Option<Vec<String>> = seq.iter().map(scalar_text).collect();
+            let text = match items {
+                Some(items) if !items.is_empty() => items.join(","),
+                _ => json_text(value, prefix)?,
+            };
+            insert_unique(out, prefix, text)
+        }
+        Value::Tagged(tagged) => Err(tag_error(&tagged.tag, prefix)),
+        Value::String(_) | Value::Number(_) | Value::Bool(_) => {
+            let text = scalar_text(value).unwrap_or_default();
+            insert_unique(out, prefix, text)
+        }
+    }
+}
+
+/// Returns the text of a string, number or bool, or `None` for any other value.
+fn scalar_text(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Joins a mapping key onto `prefix` with a dot. Errors if the key is not a string.
+fn yaml_key(key: &serde_yaml::Value, prefix: &str) -> Result<String, String> {
+    let key = key.as_str().ok_or_else(|| {
+        let location = if prefix.is_empty() {
+            "the top level"
+        } else {
+            prefix
+        };
+        format!("Non-string key {:?} in YAML under {}", key, location)
+    })?;
+    Ok(if prefix.is_empty() {
+        key.to_string()
+    } else {
+        format!("{}.{}", prefix, key)
+    })
+}
+
+/// Writes `value` as JSON text. Errors if it holds a custom YAML tag.
+fn json_text(value: &serde_yaml::Value, key: &str) -> Result<String, String> {
+    if let Some(tag) = find_tag(value) {
+        return Err(tag_error(tag, key));
+    }
+    serde_json::to_string(value).map_err(|e| format!("Failed to write '{}' as JSON: {}", key, e))
+}
+
+/// Returns the first custom YAML tag found anywhere in `value`.
+fn find_tag(value: &serde_yaml::Value) -> Option<&serde_yaml::value::Tag> {
+    match value {
+        serde_yaml::Value::Tagged(tagged) => Some(&tagged.tag),
+        serde_yaml::Value::Sequence(seq) => seq.iter().find_map(find_tag),
+        serde_yaml::Value::Mapping(map) => map.values().find_map(find_tag),
+        _ => None,
+    }
+}
+
+fn tag_error(tag: &serde_yaml::value::Tag, key: &str) -> String {
+    format!("YAML tag {} on '{}' is not supported", tag, key)
+}
+
+/// Inserts `key`, failing if it is already set so one value never silently replaces another.
+fn insert_unique(
+    out: &mut HashMap<String, String>,
+    key: &str,
+    value: String,
+) -> Result<(), String> {
+    if out.contains_key(key) {
+        return Err(format!("Property '{}' is set more than once", key));
+    }
+    out.insert(key.to_string(), value);
+    Ok(())
+}
+
 /// Source security configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceSecurityConfig {
@@ -1357,5 +1575,256 @@ mod tests {
 
         assert_eq!(config.parallelism, 1);
         assert!(!config.async_mode);
+    }
+
+    fn sink_from_yaml(yaml: &str) -> SinkConfig {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    fn source_from_yaml(yaml: &str) -> SourceConfig {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_simple_mapping() {
+        let value: serde_yaml::Value = serde_yaml::from_str("host: localhost\nport: 3306").unwrap();
+        let mut result = HashMap::new();
+        flatten_yaml_into(&value, "", &mut result).unwrap();
+
+        assert_eq!(result.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(result.get("port"), Some(&"3306".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_nested_mapping() {
+        let value: serde_yaml::Value = serde_yaml::from_str("mysql:\n  host: localhost").unwrap();
+        let mut result = HashMap::new();
+        flatten_yaml_into(&value, "", &mut result).unwrap();
+
+        assert_eq!(result.get("mysql.host"), Some(&"localhost".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_sequence() {
+        let value: serde_yaml::Value = serde_yaml::from_str("[val1, val2, val3]").unwrap();
+        let mut result = HashMap::new();
+        flatten_yaml_into(&value, "list", &mut result).unwrap();
+
+        assert_eq!(result.get("list"), Some(&"val1,val2,val3".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_skips_null() {
+        let value: serde_yaml::Value =
+            serde_yaml::from_str("a:\nb: ~\nc: null\nnested:\n  d:\n  e: x").unwrap();
+        let mut result = HashMap::new();
+        flatten_yaml_into(&value, "", &mut result).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("nested.e"), Some(&"x".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_rejects_tags() {
+        for yaml in [
+            "k: !env SECRET",
+            "k: [!env SECRET, b]",
+            "k: [{a: !env SECRET}]",
+        ] {
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            let mut result = HashMap::new();
+            let err = flatten_yaml_into(&value, "", &mut result).unwrap_err();
+            assert!(err.contains("!env") && err.contains("'k'"), "{yaml}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_accepts_core_tags() {
+        let value: serde_yaml::Value = serde_yaml::from_str("port: !!str 9092").unwrap();
+        let mut result = HashMap::new();
+        flatten_yaml_into(&value, "", &mut result).unwrap();
+        assert_eq!(result.get("port"), Some(&"9092".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_non_scalar_lists_become_json() {
+        let value: serde_yaml::Value =
+            serde_yaml::from_str("empty: []\nobjects: [{id: 1}]\nwith_null: [a, ~]").unwrap();
+        let mut result = HashMap::new();
+        flatten_yaml_into(&value, "", &mut result).unwrap();
+
+        assert_eq!(result.get("empty"), Some(&"[]".to_string()));
+        assert_eq!(result.get("objects"), Some(&r#"[{"id":1}]"#.to_string()));
+        assert_eq!(result.get("with_null"), Some(&r#"["a",null]"#.to_string()));
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_rejects_duplicate_names() {
+        let value: serde_yaml::Value =
+            serde_yaml::from_str("kafka:\n  topic: a\nkafka.topic: b").unwrap();
+        let mut result = HashMap::new();
+        let err = flatten_yaml_into(&value, "", &mut result).unwrap_err();
+        assert!(err.contains("'kafka.topic' is set more than once"), "{err}");
+    }
+
+    #[test]
+    fn test_connection_mapping_value_is_also_json_text() {
+        let sink = sink_from_yaml(
+            "type: file\njson.template:\n  kind: ALERT\n  text: \"{{msg}}\"\n  extra:\n",
+        );
+        let props = sink.to_properties().unwrap();
+
+        let template: serde_json::Value =
+            serde_json::from_str(props.get("json.template").unwrap()).unwrap();
+        assert_eq!(
+            template,
+            serde_json::json!({"kind": "ALERT", "text": "{{msg}}", "extra": null})
+        );
+        assert_eq!(props.get("json.template.kind"), Some(&"ALERT".to_string()));
+        assert!(!props.contains_key("json.template.extra"));
+    }
+
+    #[test]
+    fn test_only_top_level_connection_mappings_get_json_text() {
+        let source = source_from_yaml("type: http\njson:\n  mapping:\n    name: $.n\n");
+        let props = source.to_properties().unwrap();
+
+        assert!(props.contains_key("json"));
+        // A JSON copy here would be read as one more `json.mapping.<field>`
+        assert!(!props.contains_key("json.mapping"));
+        assert_eq!(props.get("json.mapping.name"), Some(&"$.n".to_string()));
+    }
+
+    #[test]
+    fn test_to_properties_rejects_connection_key_that_clashes_with_field() {
+        let sink = sink_from_yaml("type: kafka\nretry.max_attempts: 9\nretry:\n  max_attempts: 5\n  initial_delay: 1s\n  max_delay: 30s\n  backoff_multiplier: 2.0\n  jitter: true\n");
+        let err = sink.to_properties().unwrap_err();
+        assert!(
+            err.contains("'retry.max_attempts' is set more than once"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_flatten_yaml_into_rejects_non_string_key() {
+        let value: serde_yaml::Value = serde_yaml::from_str("1: one").unwrap();
+        let mut result = HashMap::new();
+        let err = flatten_yaml_into(&value, "", &mut result).unwrap_err();
+        assert!(err.contains("Non-string key"), "{err}");
+    }
+
+    #[test]
+    fn test_sink_to_properties_null_value_is_absent() {
+        let sink = sink_from_yaml("type: file\nformat: json\nfile.path:\n");
+        let props = sink.to_properties().unwrap();
+
+        assert!(!props.contains_key("file.path"), "{props:?}");
+        assert!(props.values().all(|v| v != "null"), "{props:?}");
+    }
+
+    #[test]
+    fn test_sink_to_properties_empty_string_is_kept() {
+        let sink = sink_from_yaml("type: file\nformat: json\nfile.path: \"\"\n");
+        let props = sink.to_properties().unwrap();
+
+        assert_eq!(props.get("file.path"), Some(&String::new()));
+    }
+
+    #[test]
+    fn test_source_to_properties_null_value_is_absent() {
+        let source = source_from_yaml("type: kafka\nkafka.topic:\nkafka.brokers: b1:9092\n");
+        let props = source.to_properties().unwrap();
+
+        assert!(!props.contains_key("kafka.topic"), "{props:?}");
+        assert_eq!(props.get("kafka.brokers"), Some(&"b1:9092".to_string()));
+        assert!(props.values().all(|v| v != "null"), "{props:?}");
+    }
+
+    #[test]
+    fn test_to_properties_leaves_out_type_and_format() {
+        let sink = sink_from_yaml("type: file\nformat: json\nfile.path: out.json\n");
+        let props = sink.to_properties().unwrap();
+
+        assert!(!props.contains_key("type"));
+        assert!(!props.contains_key("format"));
+        assert_eq!(props.get("file.path"), Some(&"out.json".to_string()));
+    }
+
+    #[test]
+    fn test_sink_to_properties_connection_values_and_structured_fields() {
+        let sink = sink_from_yaml(
+            r#"
+type: kafka
+format: json
+kafka:
+  topics: [events, logs]
+  port: 9092
+  ack:
+security:
+  authentication:
+    user: admin
+    password:
+delivery_guarantee: exactly-once
+retry:
+  max_attempts: 5
+  initial_delay: 1s
+  max_delay: 30s
+  backoff_multiplier: 2.0
+  jitter: true
+"#,
+        );
+        let props = sink.to_properties().unwrap();
+
+        assert_eq!(props.get("kafka.topics"), Some(&"events,logs".to_string()));
+        assert_eq!(props.get("kafka.port"), Some(&"9092".to_string()));
+        assert!(!props.contains_key("kafka.ack"));
+        assert_eq!(
+            props.get("security.authentication.user"),
+            Some(&"admin".to_string())
+        );
+        assert!(!props.contains_key("security.authentication.password"));
+        assert_eq!(
+            props.get("delivery_guarantee"),
+            Some(&"exactly-once".to_string())
+        );
+        assert_eq!(props.get("retry.max_attempts"), Some(&"5".to_string()));
+        assert_eq!(props.get("retry.jitter"), Some(&"true".to_string()));
+        assert!(props.values().all(|v| v != "null"), "{props:?}");
+    }
+
+    #[test]
+    fn test_sink_to_properties_sets_default_delivery_guarantee() {
+        let sink = sink_from_yaml("type: log\n");
+        let props = sink.to_properties().unwrap();
+
+        assert_eq!(
+            props.get("delivery_guarantee"),
+            Some(&"at-least-once".to_string())
+        );
+    }
+
+    #[test]
+    fn test_to_properties_rejects_non_mapping_connection() {
+        let sink = SinkConfig {
+            sink_type: "log".to_string(),
+            format: None,
+            connection: serde_yaml::Value::String("bad".to_string()),
+            security: None,
+            delivery_guarantee: DeliveryGuarantee::default(),
+            retry: None,
+            batching: None,
+        };
+        let err = sink.to_properties().unwrap_err();
+        assert!(err.contains("must be a mapping"), "{err}");
+
+        let source = SourceConfig {
+            source_type: "timer".to_string(),
+            format: None,
+            connection: serde_yaml::Value::Null,
+            security: None,
+            error_handling: None,
+            rate_limit: None,
+        };
+        assert!(source.to_properties().unwrap().is_empty());
     }
 }

@@ -800,6 +800,28 @@ pub fn free_port() -> u16 {
         .port()
 }
 
+/// Build a manager whose config holds one app named `app_name`.
+///
+/// `app_config_yaml` is a whole application config document, such as
+/// `"streams:\n  Out:\n    sink: ..."`, not just its `streams` section.
+/// The app name is also set as `eventflux.application.name`, so a runtime created
+/// from any SQL gets this config. Panics if the YAML is not a valid app config.
+#[allow(dead_code)]
+pub fn manager_with_app_config(app_name: &str, app_config_yaml: &str) -> EventFluxManager {
+    use eventflux::core::config::types::global_config::ApplicationGlobalConfig;
+    use eventflux::core::config::ApplicationConfig;
+
+    let app_config: ApplicationConfig =
+        serde_yaml::from_str(app_config_yaml).expect("valid application config");
+    let mut config = EventFluxConfig::default();
+    config.eventflux.application = Some(ApplicationGlobalConfig {
+        name: Some(app_name.to_string()),
+        ..Default::default()
+    });
+    config.applications.insert(app_name.to_string(), app_config);
+    EventFluxManager::new_with_config(config)
+}
+
 /// Block until something accepts connections on `port` at 127.0.0.1. Panics after
 /// 10 seconds. Use this instead of a fixed warm up sleep.
 #[allow(dead_code)]

@@ -268,9 +268,21 @@ impl EventFluxConfig {
         serde_yaml::to_string(self)
     }
 
-    /// Parse from YAML string
+    /// Parse from YAML string, applying YAML merge keys (`<<: *anchor`).
+    ///
+    /// serde_yaml does not apply merge keys by itself, so without this step a `<<`
+    /// key would reach connectors as a literal property name. Text with no merge
+    /// keys is parsed straight from the string, which keeps line numbers in type
+    /// errors. Errors if the YAML is invalid or a merge key is malformed.
     pub fn from_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
-        serde_yaml::from_str(yaml)
+        let mut value: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+        let original = value.clone();
+        value.apply_merge()?;
+        if value == original {
+            serde_yaml::from_str(yaml)
+        } else {
+            serde_yaml::from_value(value)
+        }
     }
 
     /// Convert to a pretty printed JSON string

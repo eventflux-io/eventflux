@@ -1102,3 +1102,167 @@ async fn test_e2e_sql_dlq_stream_with_own_dlq_fails_at_creation() {
         "got: {err}"
     );
 }
+
+// ============================================================================
+// YAML only file connectors. Null and empty paths (#210)
+// ============================================================================
+
+/// Builds a runtime for [`YAML_ONLY_SQL`] with `app_config_yaml` as its whole YAML
+/// app config, starts it, and returns the start error.
+///
+/// The old bug wrote to a file named `null` in the working directory, which is
+/// the crate root under cargo test. If that file appears, it is removed and the
+/// test fails, so a regression never leaves it behind to be committed.
+///
+/// Panics if creation fails, the runtime starts, or `./null` was created.
+async fn yaml_only_start_error(app_config_yaml: &str) -> String {
+    let stray = Path::new("null");
+    let stray_existed = stray.exists();
+
+    let manager = common::manager_with_app_config("YamlNullPathApp", app_config_yaml);
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(YAML_ONLY_SQL)
+        .await
+        .expect("runtime");
+    let result = runtime.start();
+    runtime.shutdown();
+
+    if !stray_existed && stray.exists() {
+        let _ = fs::remove_file(stray);
+        panic!("a null file.path was used as the file name `null`");
+    }
+    match result {
+        Ok(()) => panic!("runtime must not start with a missing or empty file.path"),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// App with a YAML only source on `In` and a YAML only sink on `Out`. Neither
+/// stream has a SQL WITH clause.
+const YAML_ONLY_SQL: &str = r#"
+    CREATE STREAM In (msg STRING);
+    CREATE STREAM Out (msg STRING);
+    INSERT INTO Out SELECT msg FROM In;
+"#;
+
+/// Regression test for https://github.com/eventflux-io/eventflux/issues/210.
+/// A null `file.path` on a YAML only sink used to reach the sink as the text
+/// "null", so every event was written to `./null`. It must fail start instead.
+#[tokio::test]
+async fn test_yaml_only_file_sink_null_path_fails_start() {
+    let err = yaml_only_start_error(
+        r#"
+streams:
+  Out:
+    sink:
+      type: file
+      format: json
+      file.path:
+"#,
+    )
+    .await;
+    assert!(
+        err.contains("Missing required property: file.path"),
+        "got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_yaml_only_file_sink_empty_path_fails_start() {
+    let err = yaml_only_start_error(
+        r#"
+streams:
+  Out:
+    sink:
+      type: file
+      format: json
+      file.path: ""
+"#,
+    )
+    .await;
+    assert!(err.contains("file.path cannot be empty"), "got: {err}");
+}
+
+#[tokio::test]
+async fn test_yaml_only_file_source_null_path_fails_start() {
+    let err = yaml_only_start_error(
+        r#"
+streams:
+  In:
+    source:
+      type: file
+      format: json
+      file.path:
+"#,
+    )
+    .await;
+    assert!(
+        err.contains("Missing required property: file.path"),
+        "got: {err}"
+    );
+}
+
+/// SQL NULL is the same bug on the SQL side: `"file.path" = NULL` used to reach
+/// the sink as the text "null". It now counts as not set.
+#[tokio::test]
+async fn test_sql_with_null_path_fails_start() {
+    use eventflux::core::eventflux_manager::EventFluxManager;
+
+    let sql = r#"
+        CREATE STREAM In (msg STRING);
+        CREATE STREAM Out (msg STRING) WITH (
+            type = 'sink', extension = 'file', format = 'json', "file.path" = NULL
+        );
+        INSERT INTO Out SELECT msg FROM In;
+    "#;
+    let runtime = EventFluxManager::new()
+        .create_eventflux_app_runtime_from_string(sql)
+        .await
+        .expect("runtime");
+    let err = runtime.start().expect_err("NULL file.path must not start");
+    runtime.shutdown();
+
+    assert!(
+        err.to_string()
+            .contains("Missing required property: file.path"),
+        "got: {err}"
+    );
+}
+
+/// A SQL NULL leaves the option unset, so the YAML value underneath still applies
+#[tokio::test]
+async fn test_sql_with_null_keeps_yaml_value() {
+    use eventflux::core::event::value::AttributeValue;
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out.jsonl");
+    let app_config = format!(
+        "streams:\n  Out:\n    sink:\n      type: file\n      file.path: '{}'\n",
+        output.display()
+    );
+    let sql = r#"
+        CREATE STREAM In (msg STRING);
+        CREATE STREAM Out (msg STRING) WITH (
+            type = 'sink', extension = 'file', format = 'json', "file.path" = NULL
+        );
+        INSERT INTO Out SELECT msg FROM In;
+    "#;
+
+    let manager = common::manager_with_app_config("SqlNullYamlApp", &app_config);
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(sql)
+        .await
+        .expect("runtime");
+    runtime.start().expect("start");
+    runtime
+        .get_input_handler("In")
+        .expect("input handler")
+        .lock()
+        .unwrap()
+        .send_data(vec![AttributeValue::String("a".to_string())])
+        .expect("send");
+
+    await_jsonl_lines(&output, 1);
+    runtime.shutdown();
+    assert_eq!(read_jsonl(&output)[0]["msg"], "a");
+}

@@ -489,16 +489,16 @@ Sources can be configured from two sources:
 streams:
   KafkaInputStream:
     source:
-      source_type: kafka
+      type: kafka
       format: json
-      connection:
-        kafka.bootstrap.servers: localhost:9092
-        kafka.topic: input-events
-        kafka.consumer.group: my-app
+      kafka.bootstrap.servers: localhost:9092
+      kafka.topic: input-events
+      kafka.consumer.group: my-app
 ```
 
-Processed by: `EventFluxAppRuntime::auto_attach_sources_from_config()`
-Location: `src/core/eventflux_app_runtime.rs:1174`
+Connection keys sit next to `type` and `format`. Merged with any SQL WITH clause by
+`ElementConfigResolver` (`src/core/config/element_config_resolver.rs`), then attached
+by `EventFluxAppRuntime::auto_attach_streams()`.
 
 ### SQL WITH Clause
 

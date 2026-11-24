@@ -25,10 +25,16 @@ use sqlparser::ast::{CreateTableOptions, Expr, SqlOption};
 use super::error::ConverterError;
 use crate::core::config::stream_config::{FlatConfig, PropertySource};
 
+/// WITH options that decide what a CREATE statement makes. `parse_sql_application`
+/// treats a statement with an `extension` but no `type` as a table.
+const STRUCTURAL_KEYS: [&str; 3] = ["type", "extension", "format"];
+
 /// Read the WITH (...) options into a FlatConfig.
 ///
 /// Each option is stored with `PropertySource::SqlWith`. A bare identifier option is
-/// stored as a key with an empty value. No WITH clause gives an empty config.
+/// stored as a key with an empty value. An option set to NULL is left out, so it
+/// counts as not set, except `type`, `extension` and `format`, where NULL is an
+/// error. No WITH clause gives an empty config.
 ///
 /// # Example
 ///
@@ -52,7 +58,7 @@ use crate::core::config::stream_config::{FlatConfig, PropertySource};
 /// * `Err(ConverterError)` - `UnsupportedFeature` for options other than key and value
 ///   pairs or bare identifiers, or for an options form other than WITH (...).
 ///   `InvalidExpression` for a value that is not a number, string, boolean, NULL or
-///   identifier.
+///   identifier, or for NULL on `type`, `extension` or `format`.
 pub fn extract_with_options(
     table_options: &CreateTableOptions,
 ) -> Result<FlatConfig, ConverterError> {
@@ -63,9 +69,22 @@ pub fn extract_with_options(
             for option in options {
                 match option {
                     SqlOption::KeyValue { key, value } => {
-                        let key_str = key.value.clone();
-                        let value_str = extract_value_as_string(value)?;
-                        config.set(key_str, value_str, PropertySource::SqlWith);
+                        match extract_value_as_string(value)? {
+                            Some(value_str) => {
+                                config.set(key.value.clone(), value_str, PropertySource::SqlWith)
+                            }
+                            // These keys decide whether the statement is a stream or a
+                            // table and which connector it uses. Leaving one out would
+                            // quietly change that, for example turn a stream into a table.
+                            None if STRUCTURAL_KEYS.contains(&key.value.as_str()) => {
+                                return Err(ConverterError::InvalidExpression(format!(
+                                    "WITH option '{}' cannot be NULL. Give it a value or remove it",
+                                    key.value
+                                )));
+                            }
+                            // NULL means not set, the same as a YAML key with no value
+                            None => {}
+                        }
                     }
                     SqlOption::Ident(ident) => {
                         // A bare flag such as HEAP. Stored as a key with an empty value.
@@ -95,22 +114,23 @@ pub fn extract_with_options(
 /// Turn a WITH option value into a string.
 ///
 /// Numbers keep their text, quoted strings lose their quotes, booleans become "true" or
-/// "false", NULL becomes "null" and an identifier gives its name. Anything else is an
+/// "false" and an identifier gives its name. NULL gives `None`, so the option is left
+/// out instead of reaching a connector as the text "null". Anything else is an
 /// `InvalidExpression` error.
-fn extract_value_as_string(expr: &Expr) -> Result<String, ConverterError> {
+fn extract_value_as_string(expr: &Expr) -> Result<Option<String>, ConverterError> {
     match expr {
         Expr::Value(value_with_span) => match &value_with_span.value {
-            sqlparser::ast::Value::Number(n, _) => Ok(n.clone()),
+            sqlparser::ast::Value::Number(n, _) => Ok(Some(n.clone())),
             sqlparser::ast::Value::SingleQuotedString(s)
-            | sqlparser::ast::Value::DoubleQuotedString(s) => Ok(s.clone()),
-            sqlparser::ast::Value::Boolean(b) => Ok(b.to_string()),
-            sqlparser::ast::Value::Null => Ok("null".to_string()),
+            | sqlparser::ast::Value::DoubleQuotedString(s) => Ok(Some(s.clone())),
+            sqlparser::ast::Value::Boolean(b) => Ok(Some(b.to_string())),
+            sqlparser::ast::Value::Null => Ok(None),
             _ => Err(ConverterError::InvalidExpression(format!(
                 "Unsupported value type in WITH clause: {:?}",
                 value_with_span.value
             ))),
         },
-        Expr::Identifier(ident) => Ok(ident.value.clone()),
+        Expr::Identifier(ident) => Ok(Some(ident.value.clone())),
         _ => Err(ConverterError::InvalidExpression(format!(
             "Complex expressions not supported in WITH clause: {}",
             expr
@@ -268,6 +288,37 @@ mod tests {
 
         let config = extract_with_options(&options).unwrap();
         assert_eq!(config.get("buffer_size"), Some(&"1024".to_string()));
+    }
+
+    #[test]
+    fn test_extract_with_options_null_is_left_out() {
+        let options = CreateTableOptions::With(vec![
+            create_key_value_option("type", "sink"),
+            SqlOption::KeyValue {
+                key: Ident::new("file.path"),
+                value: Expr::Value(Value::Null.into()),
+            },
+        ]);
+
+        let config = extract_with_options(&options).unwrap();
+        assert_eq!(config.len(), 1);
+        assert!(config.get("file.path").is_none());
+    }
+
+    #[test]
+    fn test_extract_with_options_null_structural_key_is_an_error() {
+        for key in ["type", "extension", "format"] {
+            let options = CreateTableOptions::With(vec![SqlOption::KeyValue {
+                key: Ident::new(key),
+                value: Expr::Value(Value::Null.into()),
+            }]);
+
+            let err = extract_with_options(&options).unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("WITH option '{key}' cannot be NULL")),
+                "{key}: {err}"
+            );
+        }
     }
 
     #[test]

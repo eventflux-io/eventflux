@@ -177,7 +177,7 @@ impl EventFluxAppRuntimeBuilder {
             resolver.resolve_all(
                 &api_eventflux_app.stream_definition_map,
                 &api_eventflux_app.table_definition_map,
-            )
+            )?
         };
 
         // Fail early on a broken DLQ reference. Otherwise a missing or misnamed DLQ

@@ -18,7 +18,7 @@
 //! # Startup ordering regression test (#136)
 //!
 //! Sources must not start reading until every sink is attached and started.
-//! The bug was that `attach_source_common` started sources while still
+//! The bug was that the source attach step (now `attach_source`) started sources while still
 //! attaching, so a source's first events could pass through a sink stream's
 //! junction before the sink subscribed. With 0 subscribers, each such event
 //! was dropped without any error. A source that emits synchronously inside
