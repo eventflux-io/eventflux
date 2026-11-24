@@ -731,3 +731,28 @@ async fn test_sql_with_dlq_on_source_without_dlq_support_fails_start() {
     assert!(err.contains("does not support DLQ routing"), "got: {err}");
     assert!(err.contains("'TimerInput'"), "got: {err}");
 }
+
+/// `type = NULL` must not be dropped like other NULL options. A stream with an
+/// extension but no type is read as a table, so the source would never attach.
+#[tokio::test]
+async fn test_sql_with_null_type_fails_creation() {
+    let manager = EventFluxManager::new();
+    let sql = r#"
+        CREATE STREAM TimerInput (tick STRING) WITH (
+            type = NULL,
+            extension = 'timer',
+            "timer.interval" = '100'
+        );
+        CREATE STREAM TimerOutput (tick STRING);
+        INSERT INTO TimerOutput SELECT tick FROM TimerInput;
+    "#;
+
+    let err = match manager.create_eventflux_app_runtime_from_string(sql).await {
+        Ok(_) => panic!("type = NULL must fail creation"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("WITH option 'type' cannot be NULL"),
+        "got: {err}"
+    );
+}
