@@ -405,10 +405,7 @@ async fn pattern_test7_cross_stream_reference() {
 
 /// Pattern that the WHERE filter must reject
 /// Reference: based on WithinPatternTestCase.java
-/// Ignored because EventFlux filters pattern WHERE clauses differently from the
-/// reference
 #[tokio::test]
-#[ignore = "Pattern cross-reference WHERE clause filtering differs from reference"]
 async fn pattern_test8_cross_stream_no_match() {
     let app = "\
         CREATE STREAM Stream1 (symbol STRING, price FLOAT, volume INT);\n\
@@ -981,10 +978,11 @@ async fn pattern_test_with_null_value() {
 }
 
 /// Pattern WHERE clause with IS NOT NULL
-/// Ignored because IS NOT NULL in a pattern WHERE clause behaves differently than
-/// expected
+/// Ignored because the expectation assumes an element filter. WHERE filters the
+/// finished match, so without EVERY the first match (the NULL event) is dropped and no
+/// new match starts.
 #[tokio::test]
-#[ignore = "IS NOT NULL in pattern WHERE clause behavior differs - needs investigation"]
+#[ignore = "Expects element filter semantics; pattern WHERE filters the finished match"]
 async fn pattern_test_null_comparison_in_filter() {
     let app = "\
         CREATE STREAM Event (id INT, value FLOAT);\n\

@@ -408,7 +408,7 @@ FROM PATTERN (e1=Stream1 -> e2=Stream2)
 WHERE e1.price > 100
 ```
 
-**Note:** EventFlux currently applies filters in WHERE clause rather than inline with pattern element.
+**Note:** EventFlux does not apply inline element filters in sequence patterns yet, so use WHERE. WHERE filters the finished match. It does not choose which event the pattern takes, so add `EVERY` to keep matching after a match fails the WHERE.
 
 ### 6.3 Logical AND Pattern
 
@@ -778,7 +778,7 @@ Source/Sink configuration is handled through WITH clause or runtime configuratio
     - Tests: `every_pattern_*` in patterns.rs
 3. **stdDev Aggregator**: Only available for pattern collections, not window aggregation
     - Tests: `stddev_aggregator_not_supported` in aggregations.rs
-4. **Inline Pattern Filters**: `e1=Stream[filter]` syntax - use WHERE clause instead
+4. **Inline Pattern Filters**: `e1=Stream[filter]` syntax - use WHERE clause instead, which filters the finished match
     - Tests: `pattern_filter_*` in patterns.rs
 5. **PARTITION BY**: Syntax not yet fully supported
     - Tests: `partition_by_syntax_*` in tables.rs
@@ -890,10 +890,8 @@ Source/Sink configuration is handled through WITH clause or runtime configuratio
 | Range Partition            | `PARTITION BY RANGE(col)`       | Not supported | `range_partition_basic`     |
 | ORDER BY with Table Join   | `ORDER BY col` in table join    | Not supported | `order_by_table_join`       |
 | LIMIT with Table Join      | `LIMIT n` in table join         | Not supported | `limit_table_join`          |
-| WHERE Filter in Table JOIN | `WHERE filter` after table join | Not supported | `where_filter_table_join_*` |
-| Table Alias Resolution     | `t.column` in SELECT            | Not supported | `table_alias_resolution`    |
-| RIGHT OUTER JOIN on Table  | `RIGHT OUTER JOIN table`        | Not supported | `right_outer_join_table`    |
-| FULL OUTER JOIN on Table   | `FULL OUTER JOIN table`         | Not supported | `full_outer_join_table`     |
+| RIGHT OUTER JOIN on Table  | `stream RIGHT OUTER JOIN table` | Rejected      | `right_outer_join_table`    |
+| FULL OUTER JOIN on Table   | `FULL OUTER JOIN table`         | Rejected      | `full_outer_join_table`     |
 
 ### 14.8 Type System Limitations
 

@@ -312,12 +312,12 @@ registration over `inventory`/`linkme` crates for WASM compatibility.
 
 ---
 
-## Ignored Tests Breakdown (189 total, including 51 doc tests)
+## Ignored Tests Breakdown (183 total, including 51 doc tests)
 
 | Category                            | Count | Notes                                                                  |
 |-------------------------------------|-------|------------------------------------------------------------------------|
-| Compatibility: patterns             | 24    | NOT patterns, count syntax, chained logical, filter issues             |
-| Compatibility: tables               | 20    | PARTITION BY, triggers with tables, complex JOINs, WHERE in table JOIN |
+| Compatibility: patterns             | 23    | NOT patterns, count syntax, chained logical, filter issues             |
+| Compatibility: tables               | 15    | PARTITION BY, triggers with tables, complex JOINs                      |
 | Compatibility: partitions           | 12    | Per-partition aggregation isolation, multiple keys                     |
 | Compatibility: windows              | 9     | Timing-sensitive, cron syntax, sort criteria, batch semantics          |
 | Compatibility: aggregations         | 6     | String min/max, complex GROUP BY, stddev, ORDER BY alias               |
@@ -396,13 +396,11 @@ partition-scoped state holders.
 
 ### Priority 6: Table JOIN Enhancements
 
-20 ignored table compatibility tests cover:
+15 ignored table compatibility tests cover:
 
-- WHERE clause filtering during table JOIN
-- RIGHT/FULL OUTER JOIN on tables
+- RIGHT/FULL OUTER JOIN that keeps unmatched table rows (rejected with an error today)
 - ORDER BY / LIMIT with table JOINs
 - Complex arithmetic with type coercion
-- Table alias resolution in SELECT
 - Primary key syntax
 - CONTAINS IN syntax
 
