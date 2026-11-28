@@ -466,15 +466,17 @@ applications:
 - Strategy `dlq` needs a DLQ stream, set by `dlq.stream` or by the
   `error.dlq.stream` option in `WITH`. With strategy `retry` the `dlq` block is
   optional, and records whose retries run out go to it instead of being
-  dropped. It is not allowed with `drop` or `fail`.
-- `retry` is only allowed with strategy `retry`. `fallback_retry` is only
-  allowed with `fallback_strategy: retry`.
+  dropped. With `drop` or `fail` it is not read.
+- `retry` is only read with strategy `retry`. `fallback_retry` is only read
+  with `fallback_strategy: retry`.
 - An `error.*` option in the stream's `WITH` clause fills in or overrides the
-  matching YAML field.
+  matching YAML field. The merged settings are what count.
 - An unknown field, or a value of the wrong kind, fails loading the config
-  file. A block the strategy does not use, or settings that do not work
-  together once `WITH` is applied, fail app creation with an error that names
-  the stream.
+  file. Merged settings that are invalid or do not work together, such as
+  strategy `dlq` with no stream, fail app creation with an error that names the
+  stream.
+- Settings the strategy does not read, and unknown `error.*` options in `WITH`,
+  are logged as a warning that names the stream and each key.
 
 ---
 

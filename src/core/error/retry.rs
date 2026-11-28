@@ -89,6 +89,10 @@ impl Default for BackoffStrategy {
 /// Prefix of the source retry keys, such as `error.retry.max-attempts`.
 pub const RETRY_KEY_PREFIX: &str = "error.retry";
 
+/// Key names that come after a retry prefix, such as `max-attempts` in
+/// `error.retry.max-attempts`.
+pub const RETRY_KEY_SUFFIXES: [&str; 4] = ["max-attempts", "backoff", "initial-delay", "max-delay"];
+
 /// How failed operations are retried.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {

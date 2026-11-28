@@ -488,7 +488,8 @@ impl Default for DeliveryGuarantee {
 /// milliseconds, as in the `error.*` properties. Unknown keys are rejected. A field left out is not written, so
 /// the runtime default applies. `error.*` keys in a SQL `WITH` clause fill in or
 /// override these values. The merged keys are then checked when the app is
-/// created (see `ElementConfigResolver`).
+/// created (see `ElementConfigResolver`). Invalid settings fail creation, and
+/// keys the strategy never reads are logged as a warning.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SourceErrorHandling {
@@ -499,14 +500,14 @@ pub struct SourceErrorHandling {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_level: Option<crate::core::error::LogLevel>,
 
-    /// Retry settings. Only allowed with strategy `retry`.
+    /// Retry settings. Only read with strategy `retry`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<SourceRetryConfig>,
 
     /// Dead letter queue settings. Strategy `dlq` needs a stream, from here or
     /// from `error.dlq.stream` in SQL `WITH`. With strategy `retry`, events whose
-    /// retries run out go to the stream instead of being dropped. Not allowed
-    /// with any other strategy.
+    /// retries run out go to the stream instead of being dropped. Not read with
+    /// any other strategy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dlq: Option<SourceDlqConfig>,
 }
@@ -546,16 +547,20 @@ pub struct SourceRetryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SourceDlqConfig {
-    /// Stream that receives failed events.
-    #[serde(deserialize_with = "deserialize_dlq_stream")]
-    pub stream: String,
+    /// Stream that receives failed events. May be left out when SQL `WITH` sets
+    /// `error.dlq.stream`. YAML null also means not set.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_dlq_stream",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stream: Option<String>,
 
     /// What to do when sending to the DLQ stream fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_strategy: Option<crate::core::error::DlqFallbackStrategy>,
 
-    /// Retry settings for the DLQ send. Only allowed with fallback strategy
-    /// `retry`.
+    /// Retry settings for the DLQ send. Only read with fallback strategy `retry`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_retry: Option<SourceRetryConfig>,
 }
@@ -564,17 +569,14 @@ impl SourceErrorHandling {
     /// Writes these settings into `properties` as the `error.*` keys that sources
     /// read.
     ///
-    /// Values are not parsed here. The resolver checks them with the runtime
-    /// parser after SQL `WITH` keys are merged on top, so a `WITH` key can fill in
-    /// or override a YAML field.
+    /// Nothing is checked here beyond the YAML types. SQL `WITH` keys can still
+    /// fill in or override any field, so the resolver checks the merged keys with
+    /// the runtime parser and warns about keys the strategy never reads.
     ///
-    /// Errors if a block is set that the strategy never uses, which the runtime
-    /// would otherwise ignore without a word, or if a key is already in
-    /// `properties`, such as a connection key `error.strategy`.
+    /// Errors if a key is already in `properties`, such as a connection key
+    /// `error.strategy`.
     fn write_properties(&self, properties: &mut HashMap<String, String>) -> Result<(), String> {
-        use crate::core::error::{
-            DlqFallbackStrategy, DLQ_FALLBACK_RETRY_KEY_PREFIX, DLQ_STREAM_KEY, RETRY_KEY_PREFIX,
-        };
+        use crate::core::error::{DLQ_FALLBACK_RETRY_KEY_PREFIX, DLQ_STREAM_KEY, RETRY_KEY_PREFIX};
 
         // Destructured so a new field is a compile error here until it is written.
         let Self {
@@ -583,29 +585,6 @@ impl SourceErrorHandling {
             retry,
             dlq,
         } = self;
-
-        if retry.is_some() && !strategy.requires_retry_config() {
-            return Err(format!(
-                "error_handling.retry is only used with strategy 'retry', not '{}'",
-                strategy.as_str()
-            ));
-        }
-        if dlq.is_some() && !strategy.requires_dlq_config() && !strategy.requires_retry_config() {
-            return Err(format!(
-                "error_handling.dlq is only used with strategy 'dlq' or 'retry', not '{}'",
-                strategy.as_str()
-            ));
-        }
-        if let Some(dlq) = dlq {
-            if dlq.fallback_retry.is_some()
-                && dlq.fallback_strategy != Some(DlqFallbackStrategy::Retry)
-            {
-                return Err(
-                    "error_handling.dlq.fallback_retry is only used with fallback_strategy 'retry'"
-                        .into(),
-                );
-            }
-        }
 
         insert_unique(properties, "error.strategy", strategy.as_str().to_string())?;
         if let Some(level) = log_level {
@@ -620,7 +599,9 @@ impl SourceErrorHandling {
             fallback_retry,
         }) = dlq
         {
-            insert_unique(properties, DLQ_STREAM_KEY, stream.clone())?;
+            if let Some(stream) = stream {
+                insert_unique(properties, DLQ_STREAM_KEY, stream.clone())?;
+            }
             if let Some(fallback) = fallback_strategy {
                 insert_unique(
                     properties,
@@ -712,14 +693,15 @@ mod error_duration_serde {
     }
 }
 
-/// Reads the required DLQ stream name. A plain `String` would take YAML null as
-/// the text "null" and drop a tag such as `!env`, so the source would look for a
-/// stream with the wrong name.
+/// Reads the optional DLQ stream name. YAML null means not set. A tag such as
+/// `!env` is an error, since nothing resolves it. A plain `Option<String>` would
+/// drop the tag and look for a stream named after the tagged text.
 fn deserialize_dlq_stream<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<String, D::Error> {
+) -> Result<Option<String>, D::Error> {
     match serde_yaml::Value::deserialize(deserializer)? {
-        serde_yaml::Value::String(stream) => Ok(stream),
+        serde_yaml::Value::Null => Ok(None),
+        serde_yaml::Value::String(stream) => Ok(Some(stream)),
         serde_yaml::Value::Tagged(tagged) => Err(serde::de::Error::custom(tag_error(
             &tagged.tag,
             "error_handling.dlq.stream",
@@ -2104,26 +2086,51 @@ retry:
     fn test_source_error_handling_rejects_invalid_blocks() {
         let cases = [
             // Strategy and field names from the old schema, which never worked
-            ("error_handling:\n  strategy: dead-letter-queue\n", "Invalid error strategy"),
-            ("error_handling:\n  strategy: dlq\n  dead_letter_queue: E\n", "unknown field"),
-            ("error_handling:\n  strategy: retry\n  max_retry_attempts: 3\n", "unknown field"),
-            ("error_handling:\n  log_level: warn\n", "missing field `strategy`"),
-            ("error_handling:\n  strategy: drop\n  log_level: loud\n", "Invalid log level"),
-            ("error_handling:\n  strategy: retry\n  retry:\n    backoff: random\n", "backoff"),
-            ("error_handling:\n  strategy: retry\n  retry:\n    max_delay: soon\n", "Invalid duration 'soon'"),
-            ("error_handling:\n  strategy: retry\n  retry:\n    max_delay: 1.5\n", "expected a delay"),
-            ("error_handling:\n  strategy: dlq\n  dlq:\n    stream: null\n", "must be a stream name"),
-            ("error_handling:\n  strategy: dlq\n  dlq:\n    stream: ~\n", "must be a stream name"),
-            ("error_handling:\n  strategy: dlq\n  dlq:\n    stream: !env DLQ\n", "YAML tag !env"),
-            ("error_handling:\n  strategy: dlq\n  dlq: {}\n", "missing field `stream`"),
-            // Blocks the chosen strategy would never use
-            ("error_handling:\n  strategy: drop\n  retry:\n    max_attempts: 2\n", "only used with strategy 'retry'"),
-            ("error_handling:\n  strategy: dlq\n  retry:\n    max_attempts: 2\n", "only used with strategy 'retry'"),
-            ("error_handling:\n  strategy: fail\n  dlq:\n    stream: E\n", "only used with strategy 'dlq' or 'retry'"),
-            ("error_handling:\n  strategy: drop\n  dlq:\n    stream: E\n", "only used with strategy 'dlq' or 'retry'"),
-            ("error_handling:\n  strategy: dlq\n  dlq:\n    stream: E\n    fallback_retry:\n      max_attempts: 2\n", "fallback_strategy 'retry'"),
+            (
+                "error_handling:\n  strategy: dead-letter-queue\n",
+                "Invalid error strategy",
+            ),
+            (
+                "error_handling:\n  strategy: dlq\n  dead_letter_queue: E\n",
+                "unknown field",
+            ),
+            (
+                "error_handling:\n  strategy: retry\n  max_retry_attempts: 3\n",
+                "unknown field",
+            ),
+            (
+                "error_handling:\n  log_level: warn\n",
+                "missing field `strategy`",
+            ),
+            (
+                "error_handling:\n  strategy: drop\n  log_level: loud\n",
+                "Invalid log level",
+            ),
+            (
+                "error_handling:\n  strategy: retry\n  retry:\n    backoff: random\n",
+                "backoff",
+            ),
+            (
+                "error_handling:\n  strategy: retry\n  retry:\n    max_delay: soon\n",
+                "Invalid duration 'soon'",
+            ),
+            (
+                "error_handling:\n  strategy: retry\n  retry:\n    max_delay: 1.5\n",
+                "expected a delay",
+            ),
+            (
+                "error_handling:\n  strategy: dlq\n  dlq:\n    stream: !env DLQ\n",
+                "YAML tag !env",
+            ),
+            (
+                "error_handling:\n  strategy: dlq\n  dlq:\n    stream: 7\n",
+                "must be a stream name",
+            ),
             // A connection key that clashes with a key the block writes
-            ("error.strategy: fail\nerror_handling:\n  strategy: drop\n", "set more than once"),
+            (
+                "error.strategy: fail\nerror_handling:\n  strategy: drop\n",
+                "set more than once",
+            ),
         ];
         for (yaml, expected) in cases {
             let err = source_error_properties(yaml).expect_err(yaml);
@@ -2131,6 +2138,41 @@ retry:
                 err.contains(expected),
                 "{yaml}: expected '{expected}', got: {err}"
             );
+        }
+    }
+
+    /// The block is not judged on its own, because SQL `WITH` can still fill in
+    /// or override any field. Blocks the YAML strategy does not read, and a `dlq`
+    /// block with no stream, are written as given. The resolver checks the
+    /// merged keys.
+    #[test]
+    fn test_source_error_handling_leaves_cross_field_checks_to_the_resolver() {
+        let cases = [
+            (
+                "error_handling:\n  strategy: drop\n  retry:\n    max_attempts: 2\n",
+                vec![("error.strategy", "drop"), ("error.retry.max-attempts", "2")],
+            ),
+            (
+                "error_handling:\n  strategy: fail\n  dlq:\n    stream: E\n",
+                vec![("error.strategy", "fail"), ("error.dlq.stream", "E")],
+            ),
+            (
+                "error_handling:\n  strategy: dlq\n  dlq:\n    fallback_retry:\n      max_attempts: 2\n",
+                vec![
+                    ("error.strategy", "dlq"),
+                    ("error.dlq.fallback-retry.max-attempts", "2"),
+                ],
+            ),
+            // YAML null means not set, so WITH can supply the stream
+            (
+                "error_handling:\n  strategy: dlq\n  dlq:\n    stream: null\n",
+                vec![("error.strategy", "dlq")],
+            ),
+        ];
+        for (yaml, expected) in cases {
+            let mut expected = props(&expected);
+            expected.insert("file.path".to_string(), "/in.jsonl".to_string());
+            assert_eq!(source_error_properties(yaml).unwrap(), expected, "{yaml}");
         }
     }
 
