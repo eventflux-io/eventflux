@@ -18,6 +18,7 @@
 use crate::query_api::eventflux_element::EventFluxElement;
 use crate::query_api::execution::query::input::state::{StateElement, StreamStateElement};
 use crate::query_api::expression::constant::Constant as ExpressionConstant;
+use crate::query_api::expression::Expression;
 // Not used here. Handlers live on the streams inside the state elements.
 // use crate::query_api::execution::query::input::handler::StreamHandler;
 use super::input_stream::InputStreamTrait;
@@ -40,6 +41,9 @@ pub struct StateInputStream {
     pub state_element: Box<StateElement>,
     /// WITHIN time limit for the whole pattern, or `None` for no limit.
     pub within_time: Option<ExpressionConstant>,
+    /// The SQL WHERE condition, or `None` for no WHERE. Runs on each finished match,
+    /// so it drops matches but does not change which events a pattern picks.
+    pub filter: Option<Expression>,
 }
 
 impl StateInputStream {
@@ -53,7 +57,14 @@ impl StateInputStream {
             state_type,
             state_element: Box::new(state_element),
             within_time,
+            filter: None,
         }
+    }
+
+    /// Set the WHERE condition that runs on each finished match.
+    pub fn with_filter(mut self, filter: Expression) -> Self {
+        self.filter = Some(filter);
+        self
     }
 
     // Walk the tree and append every stream id, left to right, repeats kept.
@@ -112,6 +123,7 @@ impl Default for StateInputStream {
             state_type: Type::default(),
             state_element: Box::new(StateElement::Stream(StreamStateElement::default())),
             within_time: None,
+            filter: None,
         }
     }
 }

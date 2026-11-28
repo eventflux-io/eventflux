@@ -467,9 +467,7 @@ impl SqlConverter {
 
         // The selector stream name is empty for JOIN and pattern queries.
         let (input_stream, stream_name_for_selector) = if has_join {
-            // The WHERE clause is passed in but not used for a JOIN.
-            let join_input =
-                Self::convert_join_from_clause(&select.from, &select.selection, catalog)?;
+            let join_input = Self::convert_join_from_clause(&select.from, catalog)?;
             (join_input, String::new())
         } else {
             // One relation in FROM. Only the first FROM item is used.
@@ -506,16 +504,11 @@ impl SqlConverter {
                         Vec::new(), // stream handlers
                     );
 
-                    // The window handler goes first, so it sits before the WHERE filter.
+                    // The window handler goes first, so it sits before the WHERE filter
+                    // added below.
                     if let Some(window_ast) = window.as_ref() {
                         single_stream =
                             Self::add_window_from_ast(single_stream, window_ast, catalog)?;
-                    }
-
-                    // WHERE runs before aggregation, as a filter on the input stream.
-                    if let Some(where_expr) = &select.selection {
-                        let filter_expr = Self::convert_expression(where_expr, catalog)?;
-                        single_stream = single_stream.filter(filter_expr);
                     }
 
                     (InputStream::Single(single_stream), stream_name)
@@ -528,7 +521,6 @@ impl SqlConverter {
                 } => {
                     pattern_aliases = Self::extract_pattern_aliases(pattern);
 
-                    // A WHERE clause is not applied to a pattern query.
                     let state_input_stream =
                         Self::convert_pattern_input(mode, pattern, within, catalog)?;
                     (state_input_stream, String::new())
@@ -537,6 +529,34 @@ impl SqlConverter {
                     return Err(ConverterError::UnsupportedFeature(
                         "Complex FROM clauses not supported".to_string(),
                     ))
+                }
+            }
+        };
+
+        // WHERE runs before aggregation. On a single stream it is a Filter handler. On a
+        // JOIN or a pattern it is the input's filter, which runs on each joined row or
+        // finished match.
+        let input_stream = match select.selection.as_ref() {
+            None => input_stream,
+            Some(where_expr) => {
+                let filter = Self::convert_expression(where_expr, catalog)?;
+                match input_stream {
+                    InputStream::Single(single) => InputStream::Single(single.filter(filter)),
+                    InputStream::Join(join) => {
+                        InputStream::Join(Box::new(join.with_filter(filter)))
+                    }
+                    InputStream::State(state) => {
+                        // A match reaches the filter as one flat row with one event per
+                        // alias, so indexed access such as e1[0].v has nothing to read.
+                        if filter.any_node(&|e| matches!(e, Expression::IndexedVariable(_))) {
+                            return Err(ConverterError::UnsupportedFeature(
+                                "Indexed access such as e1[0].v is not supported in the \
+                                 WHERE of a pattern. Use the alias directly, as in e1.v."
+                                    .to_string(),
+                            ));
+                        }
+                        InputStream::State(Box::new(state.with_filter(filter)))
+                    }
                 }
             }
         };
@@ -663,7 +683,8 @@ impl SqlConverter {
             query = query.output(rate);
         }
 
-        // Check WHERE and HAVING types. parse_sql_application runs this check again.
+        // Check WHERE and HAVING types. This is the only check for SELECT and INSERT
+        // queries. parse_sql_application relies on it.
         let type_engine = TypeInferenceEngine::new(catalog);
         type_engine.validate_query(&query).map_err(|e| {
             ConverterError::ConversionFailed(format!("Type validation failed: {}", e))
@@ -672,59 +693,11 @@ impl SqlConverter {
         Ok(query)
     }
 
-    /// The stream name of the first FROM item. Unused.
-    ///
-    /// A pattern gives a made up name such as "Pattern_pattern", built from the mode.
-    #[allow(dead_code)]
-    fn extract_from_stream(
-        from: &[sqlparser::ast::TableWithJoins],
-    ) -> Result<String, ConverterError> {
-        if from.is_empty() {
-            return Err(ConverterError::ConversionFailed(
-                "No FROM clause found".to_string(),
-            ));
-        }
-
-        match &from[0].relation {
-            TableFactor::Table { name, .. } => name
-                .0
-                .last()
-                .and_then(|part| part.as_ident())
-                .map(|ident| ident.value.clone())
-                .ok_or_else(|| {
-                    ConverterError::ConversionFailed("No table name in FROM".to_string())
-                }),
-            TableFactor::Pattern { mode, .. } => {
-                // A made up name for callers that need some string. The real pattern
-                // conversion happens in convert_select.
-                let name = format!("{:?}_pattern", mode);
-                Ok(name)
-            }
-            _ => Err(ConverterError::UnsupportedFeature(
-                "Complex FROM clauses not supported".to_string(),
-            )),
-        }
-    }
-
-    /// Extract window specification from TableFactor (native AST field)
-    #[allow(dead_code)]
-    fn extract_window_from_table_factor(
-        from: &[sqlparser::ast::TableWithJoins],
-    ) -> Option<&sqlparser::ast::StreamingWindowSpec> {
-        if from.is_empty() {
-            return None;
-        }
-
-        match &from[0].relation {
-            TableFactor::Table { window, .. } => window.as_ref(),
-            _ => None,
-        }
-    }
-
     /// Convert a FROM clause with a JOIN into a JoinInputStream.
     ///
     /// Only the first JOIN is read. Any further JOINs are silently ignored. Plain JOIN
-    /// becomes an inner join. The trigger is always `All`, with no WITHIN or PER.
+    /// becomes an inner join. The trigger is always `All`, with no WITHIN or PER. The
+    /// caller adds the WHERE clause as the join's filter.
     ///
     /// # Errors
     ///
@@ -732,7 +705,6 @@ impl SqlConverter {
     /// kind other than inner or outer, or USING and NATURAL joins.
     fn convert_join_from_clause(
         from: &[sqlparser::ast::TableWithJoins],
-        _where_clause: &Option<SqlExpr>, // not used yet, kept for a later filter change
         catalog: &SqlCatalog,
     ) -> Result<InputStream, ConverterError> {
         use crate::query_api::execution::query::input::stream::join_input_stream::{
@@ -2188,6 +2160,72 @@ mod tests {
             result.is_ok(),
             "Valid WHERE clause should succeed: {:?}",
             result.unwrap_err()
+        );
+    }
+
+    /// StockStream plus a TradeStream, for JOIN and PATTERN WHERE tests.
+    fn setup_two_stream_catalog() -> SqlCatalog {
+        let mut catalog = setup_catalog();
+        let trades = StreamDefinition::new("TradeStream".to_string())
+            .attribute("symbol".to_string(), AttributeType::STRING)
+            .attribute("volume".to_string(), AttributeType::INT);
+        catalog
+            .register_stream("TradeStream".to_string(), trades)
+            .unwrap();
+        catalog
+    }
+
+    #[test]
+    fn test_join_where_becomes_join_filter() {
+        let catalog = setup_two_stream_catalog();
+        let sql = "SELECT s.symbol FROM StockStream AS s JOIN TradeStream AS t \
+                   ON s.symbol = t.symbol WHERE s.price > 10 AND t.volume > 0";
+        let query = SqlConverter::convert(sql, &catalog).unwrap();
+
+        match query.get_input_stream() {
+            Some(InputStream::Join(join)) => assert!(join.filter.is_some()),
+            other => panic!("expected a join input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_join_where_non_boolean_is_rejected() {
+        let catalog = setup_two_stream_catalog();
+        let sql = "SELECT s.symbol FROM StockStream AS s JOIN TradeStream AS t \
+                   ON s.symbol = t.symbol WHERE t.volume";
+        let err_msg = SqlConverter::convert(sql, &catalog)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err_msg.contains("Type validation failed") && err_msg.contains("WHERE"),
+            "got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_pattern_where_becomes_state_filter() {
+        let catalog = setup_two_stream_catalog();
+        let sql = "SELECT e1.symbol FROM PATTERN (e1=StockStream -> e2=TradeStream) \
+                   WHERE e1.price > 10";
+        let query = SqlConverter::convert(sql, &catalog).unwrap();
+
+        match query.get_input_stream() {
+            Some(InputStream::State(state)) => assert!(state.filter.is_some()),
+            other => panic!("expected a pattern input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_where_non_boolean_is_rejected() {
+        let catalog = setup_two_stream_catalog();
+        let sql = "SELECT e1.symbol FROM PATTERN (e1=StockStream -> e2=TradeStream) \
+                   WHERE e2.volume";
+        let err_msg = SqlConverter::convert(sql, &catalog)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err_msg.contains("Type validation failed") && err_msg.contains("WHERE"),
+            "got: {err_msg}"
         );
     }
 

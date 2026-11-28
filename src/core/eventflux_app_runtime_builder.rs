@@ -145,26 +145,24 @@ impl EventFluxAppRuntimeBuilder {
     }
 
     // Consumes the builder and returns the runtime in the Created state.
-    // Uses the context's scheduler, or a new default one if the context has none. The
-    // new one is not set back on the context. Errors if a source DLQ reference is
-    // invalid, with all errors joined by "; ".
+    // The runtime shares the context's scheduler. Errors if the context has none, since
+    // its windows were already built without one and would never do time work (#223).
+    // Also errors if a source DLQ reference is invalid, with all errors joined by "; ".
     pub fn build(
         self,
         api_eventflux_app: Arc<ApiEventFluxApp>,
     ) -> Result<EventFluxAppRuntime, String> {
+        let scheduler = self.eventflux_app_context.get_scheduler().ok_or_else(|| {
+            format!(
+                "EventFluxAppContext for '{}' has no scheduler",
+                self.eventflux_app_context.name
+            )
+        })?;
+
         let input_manager = crate::core::stream::input::input_manager::InputManager::new(
             Arc::clone(&self.eventflux_app_context),
             self.stream_junction_map.clone(),
         );
-
-        let scheduler = self
-            .eventflux_app_context
-            .get_scheduler()
-            .unwrap_or_else(|| {
-                Arc::new(crate::core::util::Scheduler::new(Arc::new(
-                    crate::core::util::ExecutorService::default(),
-                )))
-            });
 
         // Resolve every element config (YAML base plus SQL WITH overrides). This runs
         // ONCE, here at construction, before anything is attached.

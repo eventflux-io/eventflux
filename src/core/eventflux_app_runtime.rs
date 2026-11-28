@@ -126,6 +126,17 @@ pub struct EventFluxAppRuntime {
     pub(crate) lifecycle: Mutex<()>,
 }
 
+impl Drop for EventFluxAppRuntime {
+    /// Shuts the scheduler down for good. `shutdown()` only pauses it so a restart can
+    /// resume the window timers. A pending timer can hold the scheduler, its thread pool
+    /// and the query chain alive, so they would leak without this.
+    fn drop(&mut self) {
+        if let Some(scheduler) = &self.scheduler {
+            scheduler.shutdown();
+        }
+    }
+}
+
 impl EventFluxAppRuntime {
     // Builds the runtime from a parsed app. Plays the role of the Java
     // EventFluxManager.createEventFluxAppRuntime(api_eventflux_app).
@@ -193,30 +204,7 @@ impl EventFluxAppRuntime {
         }
         ctx.set_transport_channel_creation_enabled(transport_creation);
 
-        // Always set a ThreadBarrier. Input handlers pass through it, so incoming
-        // events can be held back while state is restored.
-        let thread_barrier = Arc::new(crate::core::util::thread_barrier::ThreadBarrier::new());
-        ctx.set_thread_barrier(thread_barrier);
-
-        // The scheduler gets its own thread pool, so its sleeps never block event
-        // processing threads. It reuses the context's scheduled executor if one exists.
-        let scheduler = if let Some(exec) = ctx.get_scheduled_executor_service() {
-            Arc::new(crate::core::util::Scheduler::new(Arc::clone(
-                &exec.executor,
-            )))
-        } else {
-            // Default pool size is EVENTFLUX_EXECUTOR_THREADS, or the CPU count.
-            Arc::new(crate::core::util::Scheduler::new(Arc::new(
-                crate::core::util::ExecutorService::default(),
-            )))
-        };
-        ctx.set_scheduler(Arc::clone(&scheduler));
-        let mut ss = SnapshotService::new(name.clone());
-        if let Some(store) = ctx.eventflux_context.get_persistence_store() {
-            ss.persistence_store = Some(store);
-        }
-        let snapshot_service = Arc::new(ss);
-        ctx.set_snapshot_service(Arc::clone(&snapshot_service));
+        Self::install_runtime_services(&mut ctx, &name);
         let eventflux_app_context = Arc::new(ctx);
 
         // 2. Parse the app into a builder.
@@ -233,8 +221,8 @@ impl EventFluxAppRuntime {
     /// Builds a runtime with an application config, or falls back to `new` when
     /// `app_config` is None.
     ///
-    /// With a config, @app annotations are not read and `eventflux_app_string` is
-    /// ignored. Returns an error if parsing or building fails.
+    /// With a config, @app annotations are not read. Returns an error if parsing or
+    /// building fails.
     pub fn new_with_config(
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_context: Arc<crate::core::config::eventflux_context::EventFluxContext>,
@@ -253,82 +241,75 @@ impl EventFluxAppRuntime {
         }
     }
 
+    /// Sets up the context services every runtime needs, before the app is parsed.
+    ///
+    /// Both constructors must call this. Windows and triggers read the scheduler from
+    /// the context while their queries are parsed. Without one, time, timeBatch and
+    /// cron windows silently stop doing time work, and delay windows fail to build
+    /// (#223).
+    ///
+    /// - ThreadBarrier: input handlers pass through it, so incoming events can be held
+    ///   back while state is restored.
+    /// - Scheduler: runs timer callbacks on its own pool, apart from event processing.
+    ///   Uses the context's scheduled executor if one is set, otherwise makes a pool of
+    ///   EVENTFLUX_EXECUTOR_THREADS threads, or the CPU count.
+    /// - SnapshotService: uses the persistence store of the EventFluxContext, if set.
+    fn install_runtime_services(ctx: &mut EventFluxAppContext, name: &str) {
+        ctx.set_thread_barrier(Arc::new(crate::core::util::ThreadBarrier::new()));
+
+        let executor = match ctx.get_scheduled_executor_service() {
+            Some(exec) => Arc::clone(&exec.executor),
+            None => Arc::new(crate::core::util::ExecutorService::default()),
+        };
+        ctx.set_scheduler(Arc::new(crate::core::util::Scheduler::new(executor)));
+
+        let mut ss = SnapshotService::new(name.to_string());
+        if let Some(store) = ctx.eventflux_context.get_persistence_store() {
+            ss.persistence_store = Some(store);
+        }
+        ctx.set_snapshot_service(Arc::new(ss));
+    }
+
     /// Builds a runtime whose context comes from an ApplicationConfig.
     ///
-    /// Unlike `new`, this sets no scheduler on the context, so the builder creates a
-    /// default one.
+    /// `monitoring.metrics_enabled` turns on BASIC metrics. The app level
+    /// `error_handling` block is not applied. Sources and sinks are not attached here.
+    /// `start()` attaches them, reading the config from `eventflux_app_context`.
     fn new_with_applied_config(
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_context: Arc<crate::core::config::eventflux_context::EventFluxContext>,
-        _eventflux_app_string: Option<String>,
+        eventflux_app_string: Option<String>,
         app_config: &ApplicationConfig,
     ) -> Result<Self, String> {
-        // 1. Build the EventFluxAppContext from the YAML or TOML ApplicationConfig.
         let name = api_eventflux_app.name.clone();
-        let mut root_metrics =
-            crate::core::config::eventflux_app_context::MetricsLevelPlaceholder::OFF;
-        let buffer_size = 0i32;
-
-        // monitoring.metrics_enabled turns on BASIC metrics.
-        if let Some(ref monitoring) = app_config.monitoring {
-            if monitoring.metrics_enabled {
-                root_metrics =
-                    crate::core::config::eventflux_app_context::MetricsLevelPlaceholder::BASIC;
-            }
-        }
-
         let mut ctx = EventFluxAppContext::new_with_config(
             eventflux_context,
             name.clone(),
             Arc::clone(&api_eventflux_app),
-            String::new(),                        // eventflux_app_string
+            eventflux_app_string.unwrap_or_default(),
             Arc::new(EventFluxConfig::default()), // global_config
             Some(app_config.clone()),             // app_config
             None,                                 // config_manager
         );
 
-        ctx.set_root_metrics_level(root_metrics);
-        if buffer_size > 0 {
-            ctx.set_buffer_size(buffer_size);
+        if app_config
+            .monitoring
+            .as_ref()
+            .is_some_and(|m| m.metrics_enabled)
+        {
+            ctx.set_root_metrics_level(
+                crate::core::config::eventflux_app_context::MetricsLevelPlaceholder::BASIC,
+            );
         }
 
-        if let Some(ref _error_handling) = app_config.error_handling {
-            // Not applied yet. Error handling settings from the config are ignored here.
-        }
+        Self::install_runtime_services(&mut ctx, &name);
 
-        // Always set a ThreadBarrier. Input handlers pass through it, so incoming
-        // events can be held back while state is restored.
-        let thread_barrier = Arc::new(crate::core::util::ThreadBarrier::new());
-        ctx.set_thread_barrier(Arc::clone(&thread_barrier));
-
-        // 2. Create the SnapshotService, using the context's persistence store if set.
-        let mut ss = SnapshotService::new(name.clone());
-        if let Some(store) = ctx.eventflux_context.get_persistence_store() {
-            ss.persistence_store = Some(store);
-        }
-        let snapshot_service = Arc::new(ss);
-        ctx.set_snapshot_service(Arc::clone(&snapshot_service));
-        let eventflux_app_context = Arc::new(ctx);
-
-        // 3. Parse the app into a builder, passing the config along.
         let builder = EventFluxAppParser::parse_eventflux_app_runtime_builder(
             &api_eventflux_app,
-            eventflux_app_context,
+            Arc::new(ctx),
             Some(app_config.clone()),
         )?;
-
-        // 4. Build the runtime from the builder.
-        let runtime = builder.build(api_eventflux_app)?;
-
-        // Sources and sinks are not attached here. start() attaches them, so the
-        // lifecycle stays clean:
-        //  - Construction: build the runtime and register parts
-        //  - Start: attach and start I/O sources and sinks
-        //  - Shutdown: stop I/O and clean up
-        //
-        // start() reads the config from eventflux_app_context.app_config.
-
-        Ok(runtime)
+        builder.build(api_eventflux_app)
     }
 
     pub fn get_input_handler(&self, stream_id: &str) -> Option<Arc<Mutex<InputHandler>>> {
@@ -910,11 +891,10 @@ impl EventFluxAppRuntime {
             )));
         }
 
-        if self.scheduler.is_some() {
-            log::info!(
-                "Scheduler initialized for EventFluxAppRuntime '{}'",
-                self.name
-            );
+        // A no op on the first start. On a restart it fires the window timers that
+        // shutdown paused, including any that came due while stopped.
+        if let Some(scheduler) = &self.scheduler {
+            scheduler.resume();
         }
 
         for tr in &self.trigger_runtimes {
@@ -973,12 +953,13 @@ impl EventFluxAppRuntime {
         // Stop every producer before the drain. First triggers, then the scheduler,
         // then sources. Scheduler ticks (timer windows, rate limiters) publish into
         // junctions without being tracked. A tick during or after the drain would be
-        // missed by the quiescence check and left uncounted.
+        // missed by the quiescence check and left uncounted. Pausing waits for running
+        // ticks and keeps pending timers, so a restart resumes them.
         for tr in &self.trigger_runtimes {
             tr.shutdown();
         }
         if let Some(scheduler) = &self.scheduler {
-            scheduler.shutdown();
+            scheduler.pause();
         }
         self.stop_all_sources();
 
@@ -1078,7 +1059,7 @@ impl EventFluxAppRuntime {
 
         self.stop_all_sinks();
 
-        // The scheduler was already shut down before the drain, with the triggers.
+        // The scheduler was already paused before the drain, with the triggers.
         for pr in &self.partition_runtimes {
             pr.shutdown();
         }

@@ -198,10 +198,9 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                 }
             }
             sqlparser::ast::Statement::Query(query) => {
-                // Convert the parsed AST as is, without parsing the text again.
+                // Convert the parsed AST as is, without parsing the text again. The
+                // converter already checks the WHERE and HAVING types.
                 let q = SqlConverter::convert_query_ast(&query, &catalog, None)?;
-
-                validate_query_types(&q, &catalog)?;
 
                 execution_elements.push(crate::query_api::execution::ExecutionElement::Query(q));
             }
@@ -224,9 +223,8 @@ pub fn parse_sql_application(sql: &str) -> Result<SqlApplication, ApplicationErr
                     ))
                 })?;
 
+                // The converter already checks the WHERE and HAVING types.
                 let q = SqlConverter::convert_query_ast(source, &catalog, Some(target_stream))?;
-
-                validate_query_types(&q, &catalog)?;
 
                 execution_elements.push(crate::query_api::execution::ExecutionElement::Query(q));
             }

@@ -48,6 +48,17 @@ pub enum InputStream {
 }
 
 impl InputStream {
+    /// The WHERE condition of a join or pattern, which runs on each joined row or
+    /// finished match. `None` for a single stream, which keeps its WHERE as a Filter
+    /// handler instead.
+    pub fn join_or_pattern_filter(&self) -> Option<&Expression> {
+        match self {
+            InputStream::Single(_) => None,
+            InputStream::Join(j) => j.filter.as_ref(),
+            InputStream::State(st) => st.filter.as_ref(),
+        }
+    }
+
     // The EventFluxElement of whichever variant this is. Unused for now.
     #[allow(dead_code)]
     fn eventflux_element_ref(&self) -> &EventFluxElement {

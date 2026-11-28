@@ -4954,3 +4954,49 @@ async fn filter_test_upper_function() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][1], AttributeValue::String("HELLO".to_string()));
 }
+
+// ============================================================================
+// SQL THREE VALUED LOGIC (#241)
+// A comparison with NULL is UNKNOWN, AND, OR and NOT follow SQL, and WHERE keeps only
+// rows that are true.
+// ============================================================================
+
+const CAST_APP: &str = "\
+    CREATE STREAM In (t STRING, n INT);\n\
+    CREATE STREAM Out (t STRING, n INT);\n";
+
+/// Run `where_clause` over [`CAST_APP`] with one ('abc', 1) event and return the output.
+/// CAST('abc' AS INT) gives no value, so it is UNKNOWN.
+async fn run_cast_filter(where_clause: &str) -> Vec<Vec<AttributeValue>> {
+    let app = format!("{CAST_APP}INSERT INTO Out SELECT t, n FROM In WHERE {where_clause};\n");
+    let runner = AppRunner::new(&app, "Out").await;
+    runner.send(
+        "In",
+        vec![
+            AttributeValue::String("abc".to_string()),
+            AttributeValue::Int(1),
+        ],
+    );
+    runner.shutdown()
+}
+
+/// OR gives the same answer in both orders, even when one side is UNKNOWN.
+#[tokio::test]
+async fn or_with_unknown_side_is_order_independent() {
+    let row = vec![vec![
+        AttributeValue::String("abc".to_string()),
+        AttributeValue::Int(1),
+    ]];
+    assert_eq!(run_cast_filter("CAST(t AS INT) > 5 OR n = 1").await, row);
+    assert_eq!(run_cast_filter("n = 1 OR CAST(t AS INT) > 5").await, row);
+}
+
+/// NOT over AND with an UNKNOWN side stays UNKNOWN, so the row is dropped, the same as
+/// NOT over the UNKNOWN side alone.
+#[tokio::test]
+async fn not_over_unknown_drops_the_row() {
+    assert!(run_cast_filter("NOT (CAST(t AS INT) > 5 AND n = 1)")
+        .await
+        .is_empty());
+    assert!(run_cast_filter("NOT (CAST(t AS INT) > 5)").await.is_empty());
+}

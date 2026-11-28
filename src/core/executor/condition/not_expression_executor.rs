@@ -18,13 +18,14 @@
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
+use crate::core::executor::condition::{truth_result, truth_value};
 use crate::core::executor::expression_executor::ExpressionExecutor;
 use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use std::sync::Arc;
 
-/// Logical NOT of a BOOL condition.
+/// Logical NOT of a BOOL condition, with SQL three valued logic.
 ///
-/// NOT NULL is NULL and no value stays no value. A non BOOL result gives false.
+/// NULL, no value and a non BOOL result all count as UNKNOWN, and NOT UNKNOWN is NULL.
 #[derive(Debug)]
 pub struct NotExpressionExecutor {
     executor: Box<dyn ExpressionExecutor>,
@@ -44,15 +45,7 @@ impl NotExpressionExecutor {
 
 impl ExpressionExecutor for NotExpressionExecutor {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
-        match self.executor.execute(event) {
-            Some(AttributeValue::Bool(b)) => Some(AttributeValue::Bool(!b)),
-            Some(AttributeValue::Null) => Some(AttributeValue::Null), // NOT NULL is NULL
-            None => None, // No value from the inner expression
-            _ => {
-                // Inner expression returned something other than BOOL or NULL
-                Some(AttributeValue::Bool(false))
-            }
-        }
+        truth_result(truth_value(self.executor.execute(event)).map(|b| !b))
     }
 
     fn get_return_type(&self) -> ApiAttributeType {

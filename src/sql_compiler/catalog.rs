@@ -26,6 +26,7 @@ use crate::query_api::eventflux_app::EventFluxApp;
 use crate::query_api::execution::ExecutionElement;
 use crate::query_api::expression::Expression;
 use sqlparser::ast::ColumnDef;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -122,10 +123,9 @@ impl SqlCatalog {
 
     /// Register a trigger, replacing any trigger with the same name.
     ///
-    /// Also registers a stream of the same name so queries can read it in FROM. That
-    /// stream has no attributes in the catalog, even though the runtime gives trigger
-    /// events a `triggered_time` LONG. Queries can still join it or build values with
-    /// functions like now(). It also silently replaces any stream with that name, with no
+    /// Also registers a stream of the same name so queries can read it in FROM. Like the
+    /// runtime trigger stream, it has one `triggered_time` LONG column, so queries can
+    /// use `Tick.triggered_time`. It silently replaces any stream with that name, with no
     /// duplicate check.
     pub fn register_trigger(&mut self, trigger: TriggerDefinition) {
         let trigger_name = trigger.id.clone();
@@ -133,7 +133,10 @@ impl SqlCatalog {
         self.triggers
             .insert(trigger_name.clone(), Arc::new(trigger));
 
-        let stream_def = StreamDefinition::new(trigger_name.clone());
+        let stream_def = StreamDefinition::new(trigger_name.clone()).attribute(
+            crate::query_api::constants::TRIGGERED_TIME.to_string(),
+            AttributeType::LONG,
+        );
         self.streams.insert(trigger_name, Arc::new(stream_def));
     }
 
@@ -173,6 +176,24 @@ impl SqlCatalog {
         self.aliases.insert(alias, stream_name);
     }
 
+    /// This catalog plus the join and pattern aliases of `query`, so its columns resolve
+    /// as `a.price` or `e1.price`. Borrows this catalog when the query has no aliases,
+    /// and copies it only when it does.
+    pub(crate) fn with_query_aliases(
+        &self,
+        query: &crate::query_api::execution::query::Query,
+    ) -> Cow<'_, SqlCatalog> {
+        let aliases = query_aliases(query);
+        if aliases.is_empty() {
+            return Cow::Borrowed(self);
+        }
+        let mut catalog = self.clone();
+        for (alias, stream_id) in aliases {
+            catalog.register_alias(alias, stream_id);
+        }
+        Cow::Owned(catalog)
+    }
+
     /// Look up a stream by its name, or else by an alias.
     ///
     /// # Errors
@@ -197,11 +218,11 @@ impl SqlCatalog {
         self.tables.get(name).map(Arc::clone)
     }
 
-    /// Look up a stream or table by name, for FROM and JOIN clauses.
+    /// Look up a stream or table by name or alias, for FROM and JOIN clauses.
     ///
     /// Use this instead of `get_stream()` or `get_table()` when either kind is fine.
     /// Streams are checked first, including aliases, so a stream wins over a table with
-    /// the same name.
+    /// the same name. A table alias, as in `JOIN stockTable AS t`, is checked last.
     ///
     /// # Arguments
     ///
@@ -233,6 +254,10 @@ impl SqlCatalog {
         }
 
         if let Some(table) = self.get_table(name) {
+            return Ok(Relation::Table(table));
+        }
+
+        if let Some(table) = self.aliases.get(name).and_then(|t| self.get_table(t)) {
             return Ok(Relation::Table(table));
         }
 
@@ -347,228 +372,76 @@ impl SqlApplication {
         self.execution_elements.is_empty()
     }
 
-    /// The (alias, stream_id) pairs of a pattern query, such as ("e1", "Stream1") for
-    /// `e1=Stream1`. Empty for any other kind of query.
-    fn extract_pattern_aliases_from_query(
-        query: &crate::query_api::execution::query::Query,
-    ) -> Vec<(String, String)> {
-        use crate::query_api::execution::query::input::stream::input_stream::InputStream;
-
-        let mut aliases = Vec::new();
-
-        if let Some(InputStream::State(state)) = query.get_input_stream() {
-            Self::collect_pattern_aliases_from_state_element(&state.state_element, &mut aliases);
-        }
-
-        aliases
-    }
-
-    /// Walk a pattern tree and append the (alias, stream_id) pair of every stream that has
-    /// an alias.
-    fn collect_pattern_aliases_from_state_element(
-        element: &crate::query_api::execution::query::input::state::StateElement,
-        aliases: &mut Vec<(String, String)>,
-    ) {
-        use crate::query_api::execution::query::input::state::StateElement;
-
-        match element {
-            StateElement::Stream(stream_state) => {
-                let single = stream_state.get_single_input_stream();
-                if let Some(ref_id) = single.get_stream_reference_id_str() {
-                    let stream_id = single.get_stream_id_str().to_string();
-                    aliases.push((ref_id.to_string(), stream_id));
-                }
-            }
-            StateElement::Next(next) => {
-                Self::collect_pattern_aliases_from_state_element(&next.state_element, aliases);
-                Self::collect_pattern_aliases_from_state_element(&next.next_state_element, aliases);
-            }
-            StateElement::Logical(logical) => {
-                Self::collect_pattern_aliases_from_state_element(
-                    &logical.stream_state_element_1,
-                    aliases,
-                );
-                Self::collect_pattern_aliases_from_state_element(
-                    &logical.stream_state_element_2,
-                    aliases,
-                );
-            }
-            StateElement::Every(every) => {
-                Self::collect_pattern_aliases_from_state_element(&every.state_element, aliases);
-            }
-            StateElement::Count(count) => {
-                let single = count.stream_state_element.get_single_input_stream();
-                if let Some(ref_id) = single.get_stream_reference_id_str() {
-                    let stream_id = single.get_stream_id_str().to_string();
-                    aliases.push((ref_id.to_string(), stream_id));
-                }
-            }
-            StateElement::AbsentStream(absent) => {
-                let single = absent.stream_state_element.get_single_input_stream();
-                if let Some(ref_id) = single.get_stream_reference_id_str() {
-                    let stream_id = single.get_stream_id_str().to_string();
-                    aliases.push((ref_id.to_string(), stream_id));
-                }
-            }
-        }
-    }
-
-    /// The (alias, stream_id) pairs of a JOIN query. Empty for any other kind of query.
+    /// Add a stream definition to `app` for each query output that has none yet, for top
+    /// level queries and queries inside partitions.
     ///
-    /// For example `FROM Stream1 AS a JOIN Stream2 AS b` gives
-    /// [("a", "Stream1"), ("b", "Stream2")].
-    fn extract_join_aliases_from_query(
-        query: &crate::query_api::execution::query::Query,
-    ) -> Vec<(String, String)> {
-        use crate::query_api::execution::query::input::stream::input_stream::InputStream;
-
-        let mut aliases = Vec::new();
-
-        if let Some(InputStream::Join(join)) = query.get_input_stream() {
-            if let Some(ref_id) = join.left_input_stream.get_stream_reference_id_str() {
-                let stream_id = join.left_input_stream.get_stream_id_str().to_string();
-                aliases.push((ref_id.to_string(), stream_id));
-            }
-            if let Some(ref_id) = join.right_input_stream.get_stream_reference_id_str() {
-                let stream_id = join.right_input_stream.get_stream_id_str().to_string();
-                aliases.push((ref_id.to_string(), stream_id));
-            }
-        }
-
-        aliases
-    }
-
-    /// Add a stream definition to `app` for each query output that has none yet.
+    /// Attribute types come from type inference on the SELECT list, with each query's own
+    /// join and pattern aliases. An attribute with no AS name takes the variable name, or
+    /// "output" for any other expression. A query with no target writes to
+    /// "OutputStream". Must run before the catalog is moved into `app`.
     ///
-    /// Attribute types come from type inference on the SELECT list. An attribute with no
-    /// AS name takes the variable name, or "output" for any other expression. A query with
-    /// no target writes to "OutputStream". Must run before the catalog is moved into `app`.
+    /// # Errors
     ///
-    /// # Panics
-    ///
-    /// Panics if type inference fails for an output attribute.
-    fn process_output_streams(&mut self, app: &mut EventFluxApp) -> Result<(), ApplicationError> {
-        // Register every pattern and JOIN alias first, so type inference can resolve
-        // references like e1.price. Aliases go into one shared map, so the same alias in
-        // two queries ends up pointing at the stream from the later query.
-        for elem in &self.execution_elements {
-            if let ExecutionElement::Query(query) = elem {
-                // Pattern aliases, as in PATTERN (e1=Stream1 -> e2=Stream2)
-                let aliases = Self::extract_pattern_aliases_from_query(query);
-                for (alias, stream_id) in aliases {
-                    self.catalog.register_alias(alias, stream_id);
-                }
-                // JOIN aliases, as in FROM Stream1 AS a JOIN Stream2 AS b
-                let join_aliases = Self::extract_join_aliases_from_query(query);
-                for (alias, stream_id) in join_aliases {
-                    self.catalog.register_alias(alias, stream_id);
-                }
-            } else if let ExecutionElement::Partition(partition) = elem {
-                for query in &partition.query_list {
-                    let aliases = Self::extract_pattern_aliases_from_query(query);
-                    for (alias, stream_id) in aliases {
-                        self.catalog.register_alias(alias, stream_id);
-                    }
-                    let join_aliases = Self::extract_join_aliases_from_query(query);
-                    for (alias, stream_id) in join_aliases {
-                        self.catalog.register_alias(alias, stream_id);
-                    }
-                }
-            }
-        }
-
-        let type_engine = TypeInferenceEngine::new(&self.catalog);
-
+    /// Returns `ApplicationError::Type` if the type of an output attribute cannot be
+    /// inferred.
+    fn process_output_streams(&self, app: &mut EventFluxApp) -> Result<(), ApplicationError> {
         for elem in &self.execution_elements {
             match elem {
-                ExecutionElement::Query(query) => {
-                    let output_stream = query.get_output_stream();
-                    let target_stream_name = output_stream
-                        .get_target_id()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "OutputStream".to_string());
-
-                    // Meant to skip table targets. The tables are only copied into `app`
-                    // after this runs, so the map is still empty here.
-                    if !app.table_definition_map.contains_key(&target_stream_name) {
-                        app.stream_definition_map
-                            .entry(target_stream_name.clone())
-                            .or_insert_with(|| {
-                                let selector = query.get_selector();
-                                let mut output_stream =
-                                    StreamDefinition::new(target_stream_name.clone());
-
-                                let context = type_engine.build_context_from_query(query);
-                                for output_attr in selector.get_selection_list() {
-                                    let attr_name =
-                                        output_attr.get_rename().clone().unwrap_or_else(|| {
-                                            if let Expression::Variable(var) =
-                                                output_attr.get_expression()
-                                            {
-                                                var.get_attribute_name().to_string()
-                                            } else {
-                                                "output".to_string()
-                                            }
-                                        });
-
-                                    let attr_type = type_engine
-                                        .infer_type(output_attr.get_expression(), &context)
-                                        .expect("Type inference failed - query cannot be compiled");
-
-                                    output_stream = output_stream.attribute(attr_name, attr_type);
-                                }
-
-                                Arc::new(output_stream)
-                            });
-                    }
-                }
+                ExecutionElement::Query(query) => self.add_inferred_output_stream(query, app)?,
                 ExecutionElement::Partition(partition) => {
                     for query in &partition.query_list {
-                        let output_stream = query.get_output_stream();
-                        let target_stream_name = output_stream
-                            .get_target_id()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "OutputStream".to_string());
-
-                        if !app.table_definition_map.contains_key(&target_stream_name) {
-                            app.stream_definition_map
-                                .entry(target_stream_name.clone())
-                                .or_insert_with(|| {
-                                    let selector = query.get_selector();
-                                    let mut output_stream =
-                                        StreamDefinition::new(target_stream_name.clone());
-
-                                    let context = type_engine.build_context_from_query(query);
-                                    for output_attr in selector.get_selection_list() {
-                                        let attr_name =
-                                            output_attr.get_rename().clone().unwrap_or_else(|| {
-                                                if let Expression::Variable(var) =
-                                                    output_attr.get_expression()
-                                                {
-                                                    var.get_attribute_name().to_string()
-                                                } else {
-                                                    "output".to_string()
-                                                }
-                                            });
-
-                                        let attr_type = type_engine
-                                            .infer_type(output_attr.get_expression(), &context)
-                                            .expect(
-                                                "Type inference failed - query cannot be compiled",
-                                            );
-
-                                        output_stream =
-                                            output_stream.attribute(attr_name, attr_type);
-                                    }
-
-                                    Arc::new(output_stream)
-                                });
-                        }
+                        self.add_inferred_output_stream(query, app)?;
                     }
                 }
             }
         }
+        Ok(())
+    }
 
+    /// Add the inferred output stream of one query to `app`, unless its target already
+    /// has a definition. See `process_output_streams`.
+    fn add_inferred_output_stream(
+        &self,
+        query: &crate::query_api::execution::query::Query,
+        app: &mut EventFluxApp,
+    ) -> Result<(), ApplicationError> {
+        let target_stream_name = query
+            .get_output_stream()
+            .get_target_id()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "OutputStream".to_string());
+
+        // Meant to skip table targets. The tables are only copied into `app` after this
+        // runs, so the map is still empty here.
+        if app.table_definition_map.contains_key(&target_stream_name)
+            || app.stream_definition_map.contains_key(&target_stream_name)
+        {
+            return Ok(());
+        }
+
+        // Each query gets its own aliases, so two queries can both use alias `a` for
+        // different streams.
+        let catalog = self.catalog.with_query_aliases(query);
+        let type_engine = TypeInferenceEngine::new(&catalog);
+        let context = type_engine.build_context_from_query(query);
+
+        let mut output_stream = StreamDefinition::new(target_stream_name.clone());
+        for output_attr in query.get_selector().get_selection_list() {
+            let attr_name = output_attr.get_rename().clone().unwrap_or_else(|| {
+                if let Expression::Variable(var) = output_attr.get_expression() {
+                    var.get_attribute_name().to_string()
+                } else {
+                    "output".to_string()
+                }
+            });
+            let attr_type = type_engine
+                .infer_type(output_attr.get_expression(), &context)
+                .map_err(ApplicationError::Type)?;
+            output_stream = output_stream.attribute(attr_name, attr_type);
+        }
+
+        app.stream_definition_map
+            .insert(target_stream_name, Arc::new(output_stream));
         Ok(())
     }
 
@@ -577,11 +450,11 @@ impl SqlApplication {
     /// Inferred output streams are added first. Declared streams are copied in after, so a
     /// declared stream replaces an inferred one with the same name.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if type inference fails for an output attribute. See
-    /// `process_output_streams`.
-    pub fn to_eventflux_app(mut self, app_name: String) -> Result<EventFluxApp, ApplicationError> {
+    /// Returns `ApplicationError::Type` if the type of an output attribute cannot be
+    /// inferred. See `process_output_streams`.
+    pub fn to_eventflux_app(self, app_name: String) -> Result<EventFluxApp, ApplicationError> {
         let mut app = EventFluxApp::new(app_name);
 
         // Must run while the catalog is still here, because type inference reads it.
@@ -604,6 +477,68 @@ impl SqlApplication {
         }
 
         Ok(app)
+    }
+}
+
+/// The (alias, stream_id) pairs of a join or pattern query, such as ("a", "Stream1") for
+/// `FROM Stream1 AS a JOIN ...` or ("e1", "Stream1") for `PATTERN (e1=Stream1 -> ...)`.
+/// Empty for a single stream query.
+fn query_aliases(query: &crate::query_api::execution::query::Query) -> Vec<(String, String)> {
+    use crate::query_api::execution::query::input::stream::input_stream::InputStream;
+
+    let mut aliases = Vec::new();
+    match query.get_input_stream() {
+        Some(InputStream::Join(join)) => {
+            push_alias(&join.left_input_stream, &mut aliases);
+            push_alias(&join.right_input_stream, &mut aliases);
+        }
+        Some(InputStream::State(state)) => {
+            collect_state_aliases(&state.state_element, &mut aliases)
+        }
+        Some(InputStream::Single(_)) | None => {}
+    }
+    aliases
+}
+
+/// Walk a pattern tree and append the (alias, stream_id) pair of every stream that has
+/// an alias.
+fn collect_state_aliases(
+    element: &crate::query_api::execution::query::input::state::StateElement,
+    aliases: &mut Vec<(String, String)>,
+) {
+    use crate::query_api::execution::query::input::state::StateElement;
+
+    match element {
+        StateElement::Stream(stream_state) => {
+            push_alias(stream_state.get_single_input_stream(), aliases)
+        }
+        StateElement::Count(count) => push_alias(
+            count.stream_state_element.get_single_input_stream(),
+            aliases,
+        ),
+        StateElement::AbsentStream(absent) => push_alias(
+            absent.stream_state_element.get_single_input_stream(),
+            aliases,
+        ),
+        StateElement::Next(next) => {
+            collect_state_aliases(&next.state_element, aliases);
+            collect_state_aliases(&next.next_state_element, aliases);
+        }
+        StateElement::Logical(logical) => {
+            collect_state_aliases(&logical.stream_state_element_1, aliases);
+            collect_state_aliases(&logical.stream_state_element_2, aliases);
+        }
+        StateElement::Every(every) => collect_state_aliases(&every.state_element, aliases),
+    }
+}
+
+/// Append the (alias, stream_id) pair of `stream`, if it has an alias.
+fn push_alias(
+    stream: &crate::query_api::execution::query::input::stream::single_input_stream::SingleInputStream,
+    aliases: &mut Vec<(String, String)>,
+) {
+    if let Some(alias) = stream.get_stream_reference_id_str() {
+        aliases.push((alias.to_string(), stream.get_stream_id_str().to_string()));
     }
 }
 

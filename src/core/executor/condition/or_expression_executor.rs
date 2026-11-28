@@ -19,14 +19,16 @@
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
+use crate::core::executor::condition::{truth_result, truth_value};
 use crate::core::executor::expression_executor::ExpressionExecutor;
 use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use std::sync::Arc;
 
-/// Logical OR of two BOOL conditions. Short circuits when the left side is true.
+/// Logical OR of two BOOL conditions, with SQL three valued logic.
 ///
-/// NULL or a non BOOL result counts as false, so the result is always a BOOL. No value
-/// from the left side gives false without running the right side.
+/// True if either side is true, false if both are false, and NULL otherwise. NULL, no
+/// value and a non BOOL result all count as UNKNOWN. Short circuits when the left side
+/// is true.
 #[derive(Debug)]
 pub struct OrExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
@@ -59,33 +61,16 @@ impl OrExpressionExecutor {
 
 impl ExpressionExecutor for OrExpressionExecutor {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
-        let left_val = self.left_executor.execute(event);
-
-        match left_val {
-            Some(AttributeValue::Bool(true)) => Some(AttributeValue::Bool(true)),
-            Some(AttributeValue::Bool(false)) | Some(AttributeValue::Null) => {
-                // Left is false or NULL, so the right side decides
-                let right_val = self.right_executor.execute(event);
-                match right_val {
-                    Some(AttributeValue::Bool(b)) => Some(AttributeValue::Bool(b)),
-                    Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // NULL counts as false
-                    None => Some(AttributeValue::Bool(false)), // No value counts as false
-                    _ => {
-                        // Right side returned something other than BOOL or NULL
-                        Some(AttributeValue::Bool(false))
-                    }
-                }
-            }
-            None => Some(AttributeValue::Bool(false)), // No value from the left gives false
-            // The right side is not run here, so a true right side is ignored. A fuller
-            // version would evaluate it:
-            // let right_val = self.right_executor.execute(event);
-            // return right_val.map_or(None, |v| if let AttributeValue::Bool(b_val) = v { Some(AttributeValue::Bool(b_val)) } else { None } );
-            _ => {
-                // Left side returned something other than BOOL or NULL
-                Some(AttributeValue::Bool(false))
-            }
+        let left = truth_value(self.left_executor.execute(event));
+        if left == Some(true) {
+            return truth_result(Some(true));
         }
+        let right = truth_value(self.right_executor.execute(event));
+        truth_result(match (left, right) {
+            (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        })
     }
 
     fn get_return_type(&self) -> ApiAttributeType {

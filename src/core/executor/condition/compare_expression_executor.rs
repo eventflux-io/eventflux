@@ -22,6 +22,10 @@ use crate::core::executor::expression_executor::ExpressionExecutor;
 use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use crate::query_api::expression::condition::CompareOperator as ConditionCompareOperator;
 
+/// Compares two values with `=`, `!=`, `<`, `<=`, `>` or `>=`.
+///
+/// Gives NULL when either side is NULL, for every operator, as in SQL. Gives no value
+/// when either side gives no value or holds the wrong type for the comparison.
 #[derive(Debug)]
 pub struct CompareExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
@@ -183,10 +187,7 @@ impl ExpressionExecutor for CompareExpressionExecutor {
         let right_val = self.right_executor.execute(event)?;
 
         if matches!(left_val, AttributeValue::Null) || matches!(right_val, AttributeValue::Null) {
-            return match self.operator {
-                ConditionCompareOperator::NotEqual => Some(AttributeValue::Bool(true)),
-                _ => Some(AttributeValue::Bool(false)),
-            };
+            return Some(AttributeValue::Null);
         }
 
         let res = match self.cmp_type {
@@ -342,21 +343,26 @@ mod tests {
 
     #[test]
     fn test_compare_with_null_operand() {
-        let left_exec = Box::new(ConstantExpressionExecutor::new(
-            AttributeValue::Int(20),
-            ApiAttributeType::INT,
-        ));
-        let right_exec = Box::new(ConstantExpressionExecutor::new(
-            AttributeValue::Null,
-            ApiAttributeType::INT,
-        ));
-        let cmp_exec =
-            CompareExpressionExecutor::new(left_exec, right_exec, ApiCompareOperator::GreaterThan)
-                .unwrap();
-
-        // A NULL on either side gives Bool(false) for every operator except !=, which gives true
-        let result = cmp_exec.execute(None);
-        assert_eq!(result, Some(AttributeValue::Bool(false)));
+        // A NULL on either side gives NULL for every operator, != included (#241)
+        for op in [
+            ApiCompareOperator::Equal,
+            ApiCompareOperator::NotEqual,
+            ApiCompareOperator::GreaterThan,
+            ApiCompareOperator::GreaterThanEqual,
+            ApiCompareOperator::LessThan,
+            ApiCompareOperator::LessThanEqual,
+        ] {
+            let left_exec = Box::new(ConstantExpressionExecutor::new(
+                AttributeValue::Int(20),
+                ApiAttributeType::INT,
+            ));
+            let right_exec = Box::new(ConstantExpressionExecutor::new(
+                AttributeValue::Null,
+                ApiAttributeType::INT,
+            ));
+            let cmp_exec = CompareExpressionExecutor::new(left_exec, right_exec, op).unwrap();
+            assert_eq!(cmp_exec.execute(None), Some(AttributeValue::Null), "{op:?}");
+        }
     }
 
     #[test]

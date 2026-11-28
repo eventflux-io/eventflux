@@ -308,3 +308,44 @@ impl Expression {
         }
     }
 }
+
+impl Expression {
+    /// Whether this node or any node below it matches `pred`. Visits parents before
+    /// their children and stops at the first match.
+    pub fn any_node(&self, pred: &dyn Fn(&Expression) -> bool) -> bool {
+        if pred(self) {
+            return true;
+        }
+        match self {
+            Expression::Constant(_) | Expression::Variable(_) | Expression::IndexedVariable(_) => {
+                false
+            }
+            Expression::AttributeFunction(f) => f.parameters.iter().any(|p| p.any_node(pred)),
+            Expression::Add(a) => a.left_value.any_node(pred) || a.right_value.any_node(pred),
+            Expression::Subtract(s) => s.left_value.any_node(pred) || s.right_value.any_node(pred),
+            Expression::Multiply(m) => m.left_value.any_node(pred) || m.right_value.any_node(pred),
+            Expression::Divide(d) => d.left_value.any_node(pred) || d.right_value.any_node(pred),
+            Expression::Mod(m) => m.left_value.any_node(pred) || m.right_value.any_node(pred),
+            Expression::And(a) => {
+                a.left_expression.any_node(pred) || a.right_expression.any_node(pred)
+            }
+            Expression::Or(o) => {
+                o.left_expression.any_node(pred) || o.right_expression.any_node(pred)
+            }
+            Expression::Compare(c) => {
+                c.left_expression.any_node(pred) || c.right_expression.any_node(pred)
+            }
+            Expression::Not(n) => n.expression.any_node(pred),
+            Expression::In(i) => i.expression.any_node(pred),
+            Expression::IsNull(i) => i.expression.as_ref().is_some_and(|e| e.any_node(pred)),
+            Expression::Cast(c) => c.expression.any_node(pred),
+            Expression::Case(c) => {
+                c.operand.as_ref().is_some_and(|e| e.any_node(pred))
+                    || c.when_clauses
+                        .iter()
+                        .any(|w| w.condition.any_node(pred) || w.result.any_node(pred))
+                    || c.else_result.any_node(pred)
+            }
+        }
+    }
+}

@@ -3248,7 +3248,6 @@ async fn table_test_length_function() {
 
 /// Table with filtering using stream value
 #[tokio::test]
-#[ignore = "WHERE clause filtering during table join not yet fully supported"]
 async fn table_test_filter_with_stream_value() {
     let app = "\
         CREATE TABLE priceTable (productId INT, price FLOAT);\n\
@@ -3723,7 +3722,6 @@ async fn table_test_current_time() {
 
 /// Table with NOT in WHERE
 #[tokio::test]
-#[ignore = "WHERE filter with table JOIN not yet supported"]
 async fn table_test_not_filter() {
     let app = "\
         CREATE TABLE statusTable (id INT, active INT);\n\
@@ -3758,7 +3756,6 @@ async fn table_test_not_filter() {
 
 /// Table with complex WHERE
 #[tokio::test]
-#[ignore = "WHERE filter with table JOIN not yet supported"]
 async fn table_test_complex_where() {
     let app = "\
         CREATE TABLE productTable (id INT, price INT, stock INT);\n\
@@ -3801,7 +3798,6 @@ async fn table_test_complex_where() {
 
 /// Table with OR in WHERE
 #[tokio::test]
-#[ignore = "WHERE filter with table JOIN not yet supported"]
 async fn table_test_or_where() {
     let app = "\
         CREATE TABLE itemTable (id INT, category STRING, featured INT);\n\
@@ -4058,7 +4054,6 @@ async fn table_test_double_column() {
 
 /// Table lookup with greater than in stream filter
 #[tokio::test]
-#[ignore = "Table alias resolution in SELECT not yet supported"]
 async fn table_test_stream_filter_gt() {
     let app = "\
         CREATE STREAM queryStream (category STRING, minPrice INT);\n\
