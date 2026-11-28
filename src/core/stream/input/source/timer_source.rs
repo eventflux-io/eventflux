@@ -284,6 +284,19 @@ impl Source for TimerSource {
     fn clone_box(&self) -> Box<dyn Source> {
         Box::new(self.clone())
     }
+
+    fn set_error_dlq_junction(
+        &mut self,
+        stream_name: &str,
+        junction: Arc<Mutex<InputHandler>>,
+    ) -> Result<(), EventFluxError> {
+        // With no error.strategy the source drops failures, so there is no DLQ
+        // to connect
+        if let Some(ref mut ctx) = self.error_ctx {
+            ctx.set_dlq_junction(stream_name, junction);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -291,8 +304,8 @@ mod tests {
     use super::*;
     use std::thread;
 
-    // These tests cover the error handling config. Tests that deliver real
-    // events through a timer source are in tests/source_sink.rs.
+    // These tests cover error handling. Tests that deliver real events through a
+    // timer source are in tests/source_sink.rs.
 
     #[test]
     fn test_timer_source_from_properties_no_error_handling() {
@@ -338,6 +351,94 @@ mod tests {
         properties.insert("error.strategy".to_string(), "fail".to_string());
         properties.insert(INTERVAL_KEY.to_string(), "250".to_string());
         TimerSourceFactory.create_initialized(&properties).unwrap();
+    }
+
+    /// Callback that rejects every tick, like a pipeline that is down.
+    #[derive(Debug)]
+    struct RejectingCallback;
+
+    impl SourceCallback for RejectingCallback {
+        fn on_data(&self, _data: &[u8]) -> Result<(), EventFluxError> {
+            Err(EventFluxError::Other("pipeline down".to_string()))
+        }
+    }
+
+    /// InputProcessor that keeps every event it is sent.
+    #[derive(Debug, Default)]
+    struct RecordingProcessor {
+        events: Arc<Mutex<Vec<Event>>>,
+    }
+
+    impl crate::core::stream::input::input_handler::InputProcessor for RecordingProcessor {
+        fn send_event_with_data(
+            &mut self,
+            timestamp: i64,
+            data: Vec<AttributeValue>,
+            _stream_index: usize,
+        ) -> Result<(), String> {
+            let event = Event::new_with_data(timestamp, data);
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+
+        fn send_single_event(&mut self, event: Event, _stream_index: usize) -> Result<(), String> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+
+        fn send_multiple_events(
+            &mut self,
+            events: Vec<Event>,
+            _stream_index: usize,
+        ) -> Result<(), String> {
+            self.events.lock().unwrap().extend(events);
+            Ok(())
+        }
+    }
+
+    /// Regression test for https://github.com/eventflux-io/eventflux/issues/214.
+    /// A timer used to reject the DLQ junction, so `error.strategy = 'dlq'` failed
+    /// start. A failed tick must now reach the DLQ stream, naming the source stream.
+    #[test]
+    fn test_timer_source_sends_failed_ticks_to_dlq() {
+        let mut properties = HashMap::new();
+        properties.insert(INTERVAL_KEY.to_string(), "10".to_string());
+        properties.insert("error.strategy".to_string(), "dlq".to_string());
+        properties.insert("error.dlq.stream".to_string(), "TickErrors".to_string());
+        let mut source = TimerSource::from_properties(&properties, None, "timer").unwrap();
+
+        let dlq_events = Arc::new(Mutex::new(Vec::new()));
+        let processor = RecordingProcessor {
+            events: Arc::clone(&dlq_events),
+        };
+        let dlq = crate::core::stream::input::input_handler::test_input_handler(
+            "TickErrors",
+            Arc::new(Mutex::new(processor)),
+        );
+        source.set_error_dlq_junction("Ticks", dlq).unwrap();
+
+        source.start(Arc::new(RejectingCallback));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while dlq_events.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        source.stop();
+
+        let events = dlq_events.lock().unwrap();
+        let first = events.first().expect("a failed tick reaches the DLQ");
+        // DLQ fields: originalEvent, errorMessage, errorType, timestamp,
+        // attemptCount, streamName
+        let text = |i: usize| match &first.data[i] {
+            AttributeValue::String(s) => s.clone(),
+            other => panic!("field {i} is not a string: {other:?}"),
+        };
+        assert!(text(0).contains("tick"), "originalEvent: {}", text(0));
+        assert!(
+            text(1).contains("pipeline down"),
+            "errorMessage: {}",
+            text(1)
+        );
+        assert_eq!(text(5), "Ticks");
     }
 
     #[test]

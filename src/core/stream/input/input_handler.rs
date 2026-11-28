@@ -157,3 +157,27 @@ impl InputHandler {
         self.input_processor = Some(self.paused_input_publisher.clone());
     }
 }
+
+/// Builds an `InputHandler` for tests that hands every event to `processor`. It
+/// uses a default app context named "TestApp" and stream index 0.
+#[cfg(test)]
+pub(crate) fn test_input_handler(
+    stream_id: &str,
+    processor: Arc<Mutex<dyn InputProcessor>>,
+) -> Arc<Mutex<InputHandler>> {
+    use crate::core::config::eventflux_context::EventFluxContext;
+    use crate::query_api::eventflux_app::EventFluxApp;
+
+    let app_context = Arc::new(EventFluxAppContext::new(
+        Arc::new(EventFluxContext::default()),
+        "TestApp".to_string(),
+        Arc::new(EventFluxApp::default()),
+        String::new(),
+    ));
+    Arc::new(Mutex::new(InputHandler::new(
+        stream_id.to_string(),
+        0,
+        processor,
+        app_context,
+    )))
+}

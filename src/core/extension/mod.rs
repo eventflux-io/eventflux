@@ -573,8 +573,10 @@ impl SourceFactory for TimerSourceFactory {
         crate::core::exception::EventFluxError,
     > {
         use crate::core::stream::input::source::timer_source::TimerSource;
-        // Error log lines name the source "timer". Only set_error_dlq_junction()
-        // sets the real stream name, and a timer takes no DLQ.
+        // The DLQ junction starts as None. The runtime calls
+        // set_error_dlq_junction() when it attaches a source that has a DLQ, which
+        // also sets the stream name. Until then error log lines name the source
+        // "timer".
         TimerSource::from_properties(config, None, "timer")
             .map(|source| Box::new(source) as Box<dyn crate::core::stream::input::source::Source>)
             .map_err(crate::core::exception::EventFluxError::configuration)

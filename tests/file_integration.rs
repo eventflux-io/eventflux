@@ -27,7 +27,7 @@
 
 #[path = "common/mod.rs"]
 mod common;
-use common::CollectingCallback;
+use common::{CollectingCallback, DLQ_COLUMNS};
 
 use eventflux::core::stream::input::source::file_source::FileSource;
 use eventflux::core::stream::input::source::Source;
@@ -783,10 +783,6 @@ async fn test_e2e_sql_json_source_duplicate_field_names_fail_at_creation() {
 // ============================================================================
 // End to end SQL app. DLQ error strategy (#207)
 // ============================================================================
-
-/// Columns every DLQ stream must declare, exactly
-const DLQ_COLUMNS: &str = "originalEvent STRING, errorMessage STRING, errorType STRING, \
-                           timestamp LONG, attemptCount INT, streamName STRING";
 
 /// An `Orders` JSON file source with `error.strategy = strategy` that names
 /// `dlq_stream` as its DLQ
