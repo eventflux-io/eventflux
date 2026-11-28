@@ -25,7 +25,7 @@ use std::str::FromStr;
 use crate::core::config::FlatConfig;
 
 use super::dlq::{DlqConfig, DLQ_STREAM_KEY};
-use super::retry::RetryConfig;
+use super::retry::{RetryConfig, RETRY_KEY_PREFIX};
 use super::strategy::ErrorStrategy;
 
 /// Lowest level of error handling messages to log.
@@ -213,7 +213,7 @@ impl ErrorConfig {
             .unwrap_or(LogLevel::Warn);
 
         let retry = if matches!(strategy, ErrorStrategy::Retry) {
-            Some(RetryConfig::from_flat_config(config)?)
+            Some(RetryConfig::from_flat_config(config, RETRY_KEY_PREFIX)?)
         } else {
             None
         };

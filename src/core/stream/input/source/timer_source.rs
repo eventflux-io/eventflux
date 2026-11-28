@@ -34,7 +34,7 @@
 //!
 //! // Create with error handling
 //! let mut properties = HashMap::new();
-//! properties.insert("interval".to_string(), "1000".to_string());
+//! properties.insert("timer.interval".to_string(), "1000".to_string());
 //! properties.insert("error.strategy".to_string(), "retry".to_string());
 //! properties.insert("error.retry.max-attempts".to_string(), "3".to_string());
 //!
@@ -42,7 +42,7 @@
 //! ```
 
 use super::{sleep_while_running, Source, SourceCallback, SourceWorker};
-use crate::core::error::source_support::{ErrorConfigBuilder, SourceErrorContext};
+use crate::core::error::source_support::SourceErrorContext;
 use crate::core::event::event::Event;
 use crate::core::event::value::AttributeValue;
 use crate::core::exception::EventFluxError;
@@ -52,6 +52,12 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::{atomic::Ordering, Arc, Mutex};
 use std::time::Duration;
+
+/// Property that sets the time between ticks, in ms.
+pub const INTERVAL_KEY: &str = "timer.interval";
+
+/// Time between ticks when `timer.interval` is not set, in ms.
+const DEFAULT_INTERVAL_MS: u64 = 1000;
 
 /// Timer source that sends a tick event on a fixed interval.
 ///
@@ -88,54 +94,38 @@ impl TimerSource {
         }
     }
 
-    /// Creates a timer source with error handling from properties.
+    /// Creates a timer source from its stream properties. `TimerSourceFactory`
+    /// builds sources this way.
     ///
     /// # Properties
-    /// - `interval` (required): time between ticks in ms
-    /// - `error.strategy`: error handling strategy (drop, retry, dlq, or fail)
-    /// - `error.retry.*`: retry settings when the strategy is "retry"
-    /// - `error.dlq.*`: DLQ settings when the strategy is "dlq"
+    /// - `timer.interval`: time between ticks in ms. Defaults to 1000.
+    /// - `error.*`: error handling, read by [`SourceErrorContext::from_properties`].
+    ///   There is none unless `error.strategy` is set.
     ///
     /// # Arguments
-    /// * `properties` - Config properties
+    /// * `properties` - Stream properties
     /// * `dlq_junction` - Optional DLQ stream junction, for the DLQ strategy
     /// * `stream_name` - Name of the source stream
     ///
-    /// # Returns
-    /// * `Ok(TimerSource)` - The new source
-    /// * `Err(String)` - `interval` is missing or not a number, or the error
-    ///   config is invalid
+    /// # Errors
+    ///
+    /// Returns an error message if `timer.interval` is not a whole number, or the
+    /// error handling settings are invalid.
     pub fn from_properties(
         properties: &HashMap<String, String>,
         dlq_junction: Option<Arc<Mutex<InputHandler>>>,
         stream_name: &str,
     ) -> Result<Self, String> {
-        let interval_ms = properties
-            .get("interval")
-            .ok_or_else(|| "Missing required property: interval".to_string())?
-            .parse::<u64>()
-            .map_err(|e| format!("Invalid interval value: {}", e))?;
-
-        // Error handling is optional. Only `error.*` keys go into the FlatConfig
-        // for SourceErrorContext.
-        let error_config_builder = ErrorConfigBuilder::from_properties(properties);
-        let error_ctx = if error_config_builder.is_configured() {
-            use crate::core::config::{FlatConfig, PropertySource};
-            let mut config = FlatConfig::new();
-            for (key, value) in properties {
-                if key.starts_with("error.") {
-                    config.set(key.clone(), value.clone(), PropertySource::SqlWith);
-                }
-            }
-
-            Some(SourceErrorContext::from_config(
-                &config,
-                dlq_junction,
-                stream_name.to_string(),
-            )?)
-        } else {
-            None
+        let interval_ms = match properties.get(INTERVAL_KEY) {
+            Some(text) => text.parse::<u64>().map_err(|_| {
+                format!(
+                    "{} must be a whole number of milliseconds, got '{}'",
+                    INTERVAL_KEY, text
+                )
+            })?,
+            None => DEFAULT_INTERVAL_MS,
         };
+        let error_ctx = SourceErrorContext::from_properties(properties, dlq_junction, stream_name)?;
 
         Ok(Self {
             interval_ms,
@@ -307,7 +297,7 @@ mod tests {
     #[test]
     fn test_timer_source_from_properties_no_error_handling() {
         let mut properties = HashMap::new();
-        properties.insert("interval".to_string(), "100".to_string());
+        properties.insert(INTERVAL_KEY.to_string(), "100".to_string());
 
         let source = TimerSource::from_properties(&properties, None, "TestStream");
         assert!(source.is_ok());
@@ -320,7 +310,7 @@ mod tests {
     #[test]
     fn test_timer_source_from_properties_with_error_handling() {
         let mut properties = HashMap::new();
-        properties.insert("interval".to_string(), "100".to_string());
+        properties.insert(INTERVAL_KEY.to_string(), "100".to_string());
         properties.insert("error.strategy".to_string(), "drop".to_string());
         properties.insert("error.log-level".to_string(), "warn".to_string());
 
@@ -332,30 +322,48 @@ mod tests {
         assert!(source.error_ctx.is_some());
     }
 
+    /// The factory used to build a bare `TimerSource::new` and drop every
+    /// `error.*` key, so YAML or SQL error handling on a timer did nothing.
     #[test]
-    fn test_timer_source_missing_interval() {
-        let properties = HashMap::new();
-        let result = TimerSource::from_properties(&properties, None, "TestStream");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Missing required property: interval"));
+    fn test_timer_factory_reads_error_properties() {
+        use crate::core::extension::{SourceFactory, TimerSourceFactory};
+
+        let mut properties = HashMap::new();
+        properties.insert("error.strategy".to_string(), "bogus".to_string());
+        let err = TimerSourceFactory
+            .create_initialized(&properties)
+            .expect_err("an invalid error.strategy must be rejected");
+        assert!(err.to_string().contains("Invalid error strategy"), "{err}");
+
+        properties.insert("error.strategy".to_string(), "fail".to_string());
+        properties.insert(INTERVAL_KEY.to_string(), "250".to_string());
+        TimerSourceFactory.create_initialized(&properties).unwrap();
+    }
+
+    #[test]
+    fn test_timer_source_missing_interval_uses_default() {
+        let source = TimerSource::from_properties(&HashMap::new(), None, "TestStream").unwrap();
+        assert_eq!(source.interval_ms, DEFAULT_INTERVAL_MS);
+        assert!(source.error_ctx.is_none());
     }
 
     #[test]
     fn test_timer_source_invalid_interval() {
         let mut properties = HashMap::new();
-        properties.insert("interval".to_string(), "not_a_number".to_string());
+        properties.insert(INTERVAL_KEY.to_string(), "not_a_number".to_string());
 
         let result = TimerSource::from_properties(&properties, None, "TestStream");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid interval value"));
+        assert_eq!(
+            result.unwrap_err(),
+            "timer.interval must be a whole number of milliseconds, got 'not_a_number'"
+        );
     }
 
     #[test]
     fn test_timer_source_with_simulated_errors() {
         let mut properties = HashMap::new();
-        properties.insert("interval".to_string(), "50".to_string());
+        properties.insert(INTERVAL_KEY.to_string(), "50".to_string());
         properties.insert("error.strategy".to_string(), "drop".to_string());
 
         let source = TimerSource::from_properties(&properties, None, "TestStream")

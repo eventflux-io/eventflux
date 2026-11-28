@@ -142,7 +142,9 @@ See [`examples/kafka.eventflux`](https://github.com/eventflux-io/eventflux/blob/
 ## Error Handling
 
 The source integrates with EventFlux's error handling strategies (`WITH`
-clause options on the source stream):
+clause options on the source stream). In a YAML config, set the same options
+with the source's `error_handling` block (see
+[Source Error Handling](/docs/configuration/overview#source-error-handling)):
 
 | Option | Default | Description |
 |--------|---------|-------------|

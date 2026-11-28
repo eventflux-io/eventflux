@@ -389,7 +389,7 @@ CREATE STREAM EventInput (
 
     -- Optional: error handling
     "error.strategy" = 'retry',
-    "error.max_retries" = '3'
+    "error.retry.max-attempts" = '3'
 );
 ```
 
@@ -429,6 +429,52 @@ CREATE STREAM IntermediateResults (
     type = 'internal'
 );
 ```
+
+### Source Error Handling
+
+A source's `error_handling` block in the YAML config decides what happens to a
+record that fails, such as one the mapper cannot parse. Each field maps to one
+`error.*` option of the `WITH` clause and takes the same values:
+
+```yaml
+applications:
+  my-streaming-app:
+    streams:
+      Orders:
+        source:
+          type: kafka
+          format: json
+          # ... connection settings
+          error_handling:
+            strategy: retry           # error.strategy: drop, retry, dlq or fail
+            log_level: warn           # error.log-level
+            retry:                    # error.retry.*
+              max_attempts: 5         # error.retry.max-attempts
+              backoff: exponential    # error.retry.backoff: exponential, linear or fixed
+              initial_delay: 200ms    # error.retry.initial-delay
+              max_delay: 5s           # error.retry.max-delay
+            dlq:                      # error.dlq.*
+              stream: OrderErrors     # error.dlq.stream
+              fallback_strategy: retry # error.dlq.fallback-strategy: log, fail or retry
+              fallback_retry:         # error.dlq.fallback-retry.*, same fields as retry
+                max_attempts: 3
+```
+
+- `strategy` is required. Leave out any other field to use its default.
+- Delays take `ms`, `s` or `m`, such as `200ms` or `5s`. A bare whole number is
+  milliseconds.
+- Strategy `dlq` needs a DLQ stream, set by `dlq.stream` or by the
+  `error.dlq.stream` option in `WITH`. With strategy `retry` the `dlq` block is
+  optional, and records whose retries run out go to it instead of being
+  dropped. It is not allowed with `drop` or `fail`.
+- `retry` is only allowed with strategy `retry`. `fallback_retry` is only
+  allowed with `fallback_strategy: retry`.
+- An `error.*` option in the stream's `WITH` clause fills in or overrides the
+  matching YAML field.
+- An unknown field, or a value of the wrong kind, fails loading the config
+  file. A block the strategy does not use, or settings that do not work
+  together once `WITH` is applied, fail app creation with an error that names
+  the stream.
 
 ---
 

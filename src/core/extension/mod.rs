@@ -558,7 +558,11 @@ impl SourceFactory for TimerSourceFactory {
     }
 
     fn optional_parameters(&self) -> &[&str] {
-        &["timer.interval"] // Interval in milliseconds
+        use crate::core::error::source_support::SOURCE_ERROR_PARAMETERS;
+        use crate::core::stream::input::source::timer_source::INTERVAL_KEY;
+        static PARAMS: std::sync::LazyLock<Vec<&'static str>> =
+            std::sync::LazyLock::new(|| [&[INTERVAL_KEY][..], SOURCE_ERROR_PARAMETERS].concat());
+        &PARAMS
     }
 
     fn create_initialized(
@@ -568,21 +572,12 @@ impl SourceFactory for TimerSourceFactory {
         Box<dyn crate::core::stream::input::source::Source>,
         crate::core::exception::EventFluxError,
     > {
-        let interval_ms = if let Some(interval_str) = config.get("timer.interval") {
-            interval_str.parse::<u64>().map_err(|_| {
-                crate::core::exception::EventFluxError::invalid_parameter_with_details(
-                    "timer.interval must be a valid integer",
-                    "timer.interval",
-                    "positive integer (milliseconds)",
-                )
-            })?
-        } else {
-            1000 // Default 1 second
-        };
-
-        Ok(Box::new(
-            crate::core::stream::input::source::timer_source::TimerSource::new(interval_ms),
-        ))
+        use crate::core::stream::input::source::timer_source::TimerSource;
+        // Error log lines name the source "timer". Only set_error_dlq_junction()
+        // sets the real stream name, and a timer takes no DLQ.
+        TimerSource::from_properties(config, None, "timer")
+            .map(|source| Box::new(source) as Box<dyn crate::core::stream::input::source::Source>)
+            .map_err(crate::core::exception::EventFluxError::configuration)
     }
 
     fn clone_box(&self) -> Box<dyn SourceFactory> {
