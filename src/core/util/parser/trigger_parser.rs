@@ -52,11 +52,14 @@ impl TriggerParser {
 
         builder.add_stream_junction(definition.id.clone(), Arc::clone(&junction));
 
-        let scheduler = eventflux_app_context.get_scheduler().unwrap_or_else(|| {
-            Arc::new(crate::core::util::Scheduler::new(Arc::new(
-                crate::core::util::ExecutorService::default(),
-            )))
-        });
+        // Triggers share the app's scheduler. Its thread pool is the one the runtime
+        // shuts down, so a private scheduler here would leak a pool per trigger.
+        let scheduler = eventflux_app_context.get_scheduler().ok_or_else(|| {
+            format!(
+                "Trigger '{}' needs a scheduler, but the app context has none",
+                definition.id
+            )
+        })?;
         Ok(TriggerRuntime::new(
             Arc::new(definition.clone()),
             junction,

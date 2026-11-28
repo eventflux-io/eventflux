@@ -193,30 +193,7 @@ impl EventFluxAppRuntime {
         }
         ctx.set_transport_channel_creation_enabled(transport_creation);
 
-        // Always set a ThreadBarrier. Input handlers pass through it, so incoming
-        // events can be held back while state is restored.
-        let thread_barrier = Arc::new(crate::core::util::thread_barrier::ThreadBarrier::new());
-        ctx.set_thread_barrier(thread_barrier);
-
-        // The scheduler gets its own thread pool, so its sleeps never block event
-        // processing threads. It reuses the context's scheduled executor if one exists.
-        let scheduler = if let Some(exec) = ctx.get_scheduled_executor_service() {
-            Arc::new(crate::core::util::Scheduler::new(Arc::clone(
-                &exec.executor,
-            )))
-        } else {
-            // Default pool size is EVENTFLUX_EXECUTOR_THREADS, or the CPU count.
-            Arc::new(crate::core::util::Scheduler::new(Arc::new(
-                crate::core::util::ExecutorService::default(),
-            )))
-        };
-        ctx.set_scheduler(Arc::clone(&scheduler));
-        let mut ss = SnapshotService::new(name.clone());
-        if let Some(store) = ctx.eventflux_context.get_persistence_store() {
-            ss.persistence_store = Some(store);
-        }
-        let snapshot_service = Arc::new(ss);
-        ctx.set_snapshot_service(Arc::clone(&snapshot_service));
+        Self::install_runtime_services(&mut ctx, &name);
         let eventflux_app_context = Arc::new(ctx);
 
         // 2. Parse the app into a builder.
@@ -253,10 +230,35 @@ impl EventFluxAppRuntime {
         }
     }
 
-    /// Builds a runtime whose context comes from an ApplicationConfig.
+    /// Sets up the context services every runtime needs, before the app is parsed.
     ///
-    /// Unlike `new`, this sets no scheduler on the context, so the builder creates a
-    /// default one.
+    /// Both constructors must call this. Windows and triggers read the scheduler from
+    /// the context while their queries are parsed, so a context without one makes
+    /// time, timeBatch, cron and delay windows silently stop doing time work (#223).
+    ///
+    /// - ThreadBarrier: input handlers pass through it, so incoming events can be held
+    ///   back while state is restored.
+    /// - Scheduler: has its own thread pool, so its sleeps never block event processing
+    ///   threads. Reuses the context's scheduled executor if one is set, otherwise
+    ///   makes a pool of EVENTFLUX_EXECUTOR_THREADS threads, or the CPU count.
+    /// - SnapshotService: uses the persistence store of the EventFluxContext, if set.
+    fn install_runtime_services(ctx: &mut EventFluxAppContext, name: &str) {
+        ctx.set_thread_barrier(Arc::new(crate::core::util::ThreadBarrier::new()));
+
+        let executor = match ctx.get_scheduled_executor_service() {
+            Some(exec) => Arc::clone(&exec.executor),
+            None => Arc::new(crate::core::util::ExecutorService::default()),
+        };
+        ctx.set_scheduler(Arc::new(crate::core::util::Scheduler::new(executor)));
+
+        let mut ss = SnapshotService::new(name.to_string());
+        if let Some(store) = ctx.eventflux_context.get_persistence_store() {
+            ss.persistence_store = Some(store);
+        }
+        ctx.set_snapshot_service(Arc::new(ss));
+    }
+
+    /// Builds a runtime whose context comes from an ApplicationConfig.
     fn new_with_applied_config(
         api_eventflux_app: Arc<ApiEventFluxApp>,
         eventflux_context: Arc<crate::core::config::eventflux_context::EventFluxContext>,
@@ -296,18 +298,8 @@ impl EventFluxAppRuntime {
             // Not applied yet. Error handling settings from the config are ignored here.
         }
 
-        // Always set a ThreadBarrier. Input handlers pass through it, so incoming
-        // events can be held back while state is restored.
-        let thread_barrier = Arc::new(crate::core::util::ThreadBarrier::new());
-        ctx.set_thread_barrier(Arc::clone(&thread_barrier));
-
-        // 2. Create the SnapshotService, using the context's persistence store if set.
-        let mut ss = SnapshotService::new(name.clone());
-        if let Some(store) = ctx.eventflux_context.get_persistence_store() {
-            ss.persistence_store = Some(store);
-        }
-        let snapshot_service = Arc::new(ss);
-        ctx.set_snapshot_service(Arc::clone(&snapshot_service));
+        // 2. Thread barrier, scheduler and snapshot service, the same as `new`.
+        Self::install_runtime_services(&mut ctx, &name);
         let eventflux_app_context = Arc::new(ctx);
 
         // 3. Parse the app into a builder, passing the config along.
