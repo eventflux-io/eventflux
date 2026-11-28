@@ -42,7 +42,9 @@
 //! ```
 
 use super::{sleep_while_running, Source, SourceCallback, SourceWorker};
-use crate::core::error::source_support::SourceErrorContext;
+use crate::core::error::source_support::{
+    deliver_with_error_handling, DeliveryVerdict, SourceErrorContext,
+};
 use crate::core::event::event::Event;
 use crate::core::event::value::AttributeValue;
 use crate::core::exception::EventFluxError;
@@ -136,36 +138,13 @@ impl TimerSource {
         })
     }
 
-    /// Sets the fake failure rate for tests, clamped to 0.0 to 1.0. Test builds only.
+    /// Sets the fake failure rate for tests, clamped to 0.0 to 1.0. Test builds
+    /// only. `start` then wraps the callback in a `FlakyCallback`, so a failed tick
+    /// goes through the real error handling.
     #[cfg(test)]
     pub fn with_failure_rate(mut self, rate: f64) -> Self {
         self.simulate_failure_rate = rate.clamp(0.0, 1.0);
         self
-    }
-
-    /// Returns a fake error at the set failure rate, for tests. Not called by
-    /// `start`, which has its own copy of this check.
-    #[cfg(test)]
-    #[allow(dead_code)]
-    fn simulate_error(&self) -> Result<(), EventFluxError> {
-        use rand::Rng;
-        if self.simulate_failure_rate > 0.0 {
-            let mut rng = rand::thread_rng();
-            if rng.gen::<f64>() < self.simulate_failure_rate {
-                return Err(EventFluxError::ConnectionUnavailable {
-                    message: "Simulated timer error for testing".to_string(),
-                    source: None,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Always returns Ok outside test builds
-    #[cfg(not(test))]
-    #[allow(dead_code)]
-    fn simulate_error(&self) -> Result<(), EventFluxError> {
-        Ok(())
     }
 }
 
@@ -183,92 +162,72 @@ impl Clone for TimerSource {
     }
 }
 
+/// Test only callback that fails each delivery at `failure_rate`, from 0.0 to
+/// 1.0, with a retriable error. Otherwise it passes the data on to `inner`.
+/// `start` uses it when `with_failure_rate` set a rate above 0.
+#[cfg(test)]
+#[derive(Debug)]
+struct FlakyCallback {
+    inner: Arc<dyn SourceCallback>,
+    failure_rate: f64,
+}
+
+#[cfg(test)]
+impl SourceCallback for FlakyCallback {
+    fn on_data(&self, data: &[u8]) -> Result<(), EventFluxError> {
+        use rand::Rng;
+        if rand::thread_rng().gen::<f64>() < self.failure_rate {
+            return Err(EventFluxError::ConnectionUnavailable {
+                message: "Simulated timer error for testing".to_string(),
+                source: None,
+            });
+        }
+        self.inner.on_data(data)
+    }
+}
+
 impl Source for TimerSource {
     fn start(&mut self, callback: Arc<dyn SourceCallback>) {
         let interval = self.interval_ms;
+
+        // Every tick is the same event, so it is encoded once
+        let tick = Event::new_with_data(0, vec![AttributeValue::String("tick".to_string())]);
+        let payload = match PassthroughMapper::serialize(std::slice::from_ref(&tick)) {
+            Ok(payload) => payload,
+            Err(e) => {
+                log::error!("[TimerSource] Failed to encode the tick event, not starting: {e}");
+                return;
+            }
+        };
 
         // The thread gets a new copy, so self keeps its config for a later restart
         let mut error_ctx = self.error_ctx.as_ref().map(SourceErrorContext::fresh);
 
         #[cfg(test)]
-        let failure_rate = self.simulate_failure_rate;
+        let callback: Arc<dyn SourceCallback> = if self.simulate_failure_rate > 0.0 {
+            Arc::new(FlakyCallback {
+                inner: callback,
+                failure_rate: self.simulate_failure_rate,
+            })
+        } else {
+            callback
+        };
 
         self.worker.start(move |running| {
             if let Some(ctx) = &mut error_ctx {
                 ctx.bind_cancellation(Arc::clone(&running));
             }
             while running.load(Ordering::SeqCst) {
-                let event =
-                    Event::new_with_data(0, vec![AttributeValue::String("tick".to_string())]);
-
-                // Fake error for tests. Always Ok in normal builds.
-                #[cfg(test)]
-                let error_result = if failure_rate > 0.0 {
-                    use rand::Rng;
-                    if rand::thread_rng().gen::<f64>() < failure_rate {
-                        Err(EventFluxError::ConnectionUnavailable {
-                            message: "Simulated timer error for testing".to_string(),
-                            source: None,
-                        })
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    Ok(())
-                };
-
-                #[cfg(not(test))]
-                let error_result: Result<(), EventFluxError> = Ok(());
-
-                match error_result {
-                    Ok(_) => {
-                        // Encode the event to bytes and pass it to the callback
-                        match PassthroughMapper::serialize(std::slice::from_ref(&event)) {
-                            Ok(bytes) => {
-                                if let Err(e) = callback.on_data(&bytes) {
-                                    if let Some(ctx) = &mut error_ctx {
-                                        if !ctx.handle_error(Some(&event), &e) {
-                                            // The strategy says stop
-                                            break;
-                                        }
-                                    } else {
-                                        // No error handling set, so print and go on
-                                        eprintln!("Timer source callback error: {}", e);
-                                    }
-                                } else {
-                                    // Sent, so reset the error counter
-                                    if let Some(ctx) = &mut error_ctx {
-                                        ctx.reset_errors();
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let serialize_error = EventFluxError::app_runtime(format!(
-                                    "Failed to serialize timer event: {}",
-                                    e
-                                ));
-                                if let Some(ctx) = &mut error_ctx {
-                                    if !ctx.handle_error(Some(&event), &serialize_error) {
-                                        break;
-                                    }
-                                } else {
-                                    eprintln!("Timer source serialization error: {}", e);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(ctx) = &mut error_ctx {
-                            if !ctx.handle_error(Some(&event), &e) {
-                                // The strategy says stop, for example the fail strategy
-                                break;
-                            }
-                            // Handled by drop, retry, or DLQ, so go on
-                        } else {
-                            // No error handling set, so print and go on
-                            eprintln!("Timer source error: {}", e);
-                        }
-                    }
+                // Retries the same tick until it is delivered or the strategy
+                // gives it up, before the next tick is due
+                let verdict = deliver_with_error_handling(
+                    callback.as_ref(),
+                    &payload,
+                    &mut error_ctx,
+                    "TimerSource",
+                );
+                if verdict == DeliveryVerdict::Fail {
+                    break;
                 }
 
                 // Wakes early on stop, so a long interval never delays stop()
@@ -396,6 +355,62 @@ mod tests {
         }
     }
 
+    /// Callback that fails the first `failures` calls with a retriable error,
+    /// then accepts. Counts every call and every accepted payload.
+    #[derive(Debug)]
+    struct FailFirstCallback {
+        failures: u64,
+        calls: AtomicU64,
+        delivered: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl SourceCallback for FailFirstCallback {
+        fn on_data(&self, data: &[u8]) -> Result<(), EventFluxError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.failures {
+                return Err(EventFluxError::ConnectionUnavailable {
+                    message: "pipeline busy".to_string(),
+                    source: None,
+                });
+            }
+            self.delivered.lock().unwrap().push(data.to_vec());
+            Ok(())
+        }
+    }
+
+    /// With strategy retry, a tick that fails must be sent again after the retry
+    /// delay, not dropped in favour of the next tick an interval later. The long
+    /// interval makes the old behaviour miss the deadline.
+    #[test]
+    fn test_timer_source_retries_the_failed_tick() {
+        let mut properties = HashMap::new();
+        properties.insert(INTERVAL_KEY.to_string(), "60000".to_string());
+        properties.insert("error.strategy".to_string(), "retry".to_string());
+        properties.insert("error.retry.max-attempts".to_string(), "3".to_string());
+        properties.insert("error.retry.backoff".to_string(), "fixed".to_string());
+        properties.insert("error.retry.initial-delay".to_string(), "1ms".to_string());
+        let mut source = TimerSource::from_properties(&properties, None, "Ticks").unwrap();
+
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let callback = Arc::new(FailFirstCallback {
+            failures: 2,
+            calls: AtomicU64::new(0),
+            delivered: Arc::clone(&delivered),
+        });
+        source.start(Arc::clone(&callback) as Arc<dyn SourceCallback>);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while delivered.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        source.stop();
+
+        assert_eq!(
+            delivered.lock().unwrap().len(),
+            1,
+            "the first tick is delivered on its third attempt"
+        );
+        assert_eq!(callback.calls.load(Ordering::SeqCst), 3);
+    }
+
     /// Regression test for https://github.com/eventflux-io/eventflux/issues/214.
     /// A timer used to reject the DLQ junction, so `error.strategy = 'dlq'` failed
     /// start. A failed tick must now reach the DLQ stream, naming the source stream.
@@ -432,7 +447,20 @@ mod tests {
             AttributeValue::String(s) => s.clone(),
             other => panic!("field {i} is not a string: {other:?}"),
         };
-        assert!(text(0).contains("tick"), "originalEvent: {}", text(0));
+        // originalEvent wraps the encoded tick, as for every other source
+        use crate::core::stream::input::mapper::SourceMapper;
+        let original: Event = serde_json::from_str(&text(0)).expect("originalEvent is an Event");
+        let [AttributeValue::Bytes(payload)] = original.data.as_slice() else {
+            panic!("originalEvent must hold the raw payload: {original:?}");
+        };
+        let ticks = PassthroughMapper
+            .map(payload)
+            .expect("payload is an encoded tick");
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(
+            ticks[0].data,
+            vec![AttributeValue::String("tick".to_string())]
+        );
         assert!(
             text(1).contains("pipeline down"),
             "errorMessage: {}",
