@@ -30,7 +30,7 @@ use tokio::time::sleep;
 
 #[path = "common/mod.rs"]
 mod common;
-use common::AppRunner;
+use common::{AppRunner, DLQ_COLUMNS};
 
 /// Test 1: Timer Source with SQL WITH Configuration
 ///
@@ -698,14 +698,55 @@ async fn test_yaml_connector_for_undefined_stream_fails_start() {
     );
 }
 
-/// A DLQ on a source that cannot send to a DLQ, here the timer source, must make
-/// start() fail instead of being quietly ignored (#207)
+/// A DLQ on a source that cannot send to a DLQ, here the placeholder example
+/// source, must make start() fail instead of being quietly ignored (#207)
 #[tokio::test]
 async fn test_sql_with_dlq_on_source_without_dlq_support_fails_start() {
+    use eventflux::core::extension::example_factories::ExampleSourceFactory;
+
+    let manager = EventFluxManager::new();
+    manager.add_source_factory("example".to_string(), Box::new(ExampleSourceFactory));
+
+    let sql = format!(
+        r#"
+        CREATE STREAM ExampleInput (tick STRING) WITH (
+            type = 'source',
+            extension = 'example',
+            format = 'json',
+            "example.servers" = 'localhost:9092',
+            "example.topic" = 'ticks',
+            "error.strategy" = 'dlq',
+            "error.dlq.stream" = 'ExampleErrors'
+        );
+
+        CREATE STREAM ExampleErrors ({DLQ_COLUMNS});
+    "#
+    );
+
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(&sql)
+        .await
+        .expect("a valid DLQ reference passes app creation");
+    let err = runtime
+        .start()
+        .expect_err("the example source cannot dead-letter")
+        .to_string();
+    runtime.shutdown();
+
+    assert!(err.contains("does not support DLQ routing"), "got: {err}");
+    assert!(err.contains("'ExampleInput'"), "got: {err}");
+}
+
+/// Regression test for https://github.com/eventflux-io/eventflux/issues/214.
+/// The timer source used to reject a DLQ, so this app failed start. It must now
+/// start with its failures routed to the DLQ stream.
+#[tokio::test]
+async fn test_sql_with_dlq_on_timer_source_starts() {
     let manager = EventFluxManager::new();
     manager.add_source_factory("timer".to_string(), Box::new(TimerSourceFactory));
 
-    let sql = r#"
+    let sql = format!(
+        r#"
         CREATE STREAM TimerInput (tick STRING) WITH (
             type = 'source',
             extension = 'timer',
@@ -714,22 +755,16 @@ async fn test_sql_with_dlq_on_source_without_dlq_support_fails_start() {
             "error.dlq.stream" = 'TimerErrors'
         );
 
-        CREATE STREAM TimerErrors (originalEvent STRING, errorMessage STRING,
-            errorType STRING, timestamp LONG, attemptCount INT, streamName STRING);
-    "#;
+        CREATE STREAM TimerErrors ({DLQ_COLUMNS});
+    "#
+    );
 
     let runtime = manager
-        .create_eventflux_app_runtime_from_string(sql)
+        .create_eventflux_app_runtime_from_string(&sql)
         .await
-        .expect("a valid DLQ reference passes app creation");
-    let err = runtime
-        .start()
-        .expect_err("timer source cannot dead-letter")
-        .to_string();
+        .expect("runtime");
+    runtime.start().expect("a timer source with a DLQ starts");
     runtime.shutdown();
-
-    assert!(err.contains("does not support DLQ routing"), "got: {err}");
-    assert!(err.contains("'TimerInput'"), "got: {err}");
 }
 
 /// `type = NULL` must not be dropped like other NULL options. A stream with an

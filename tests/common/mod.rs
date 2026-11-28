@@ -822,6 +822,12 @@ pub fn manager_with_app_config(app_name: &str, app_config_yaml: &str) -> EventFl
     EventFluxManager::new_with_config(config)
 }
 
+/// Columns every DLQ stream must declare, in this exact order (see
+/// `eventflux::core::error::DLQ_FIELDS`).
+#[allow(dead_code)]
+pub const DLQ_COLUMNS: &str = "originalEvent STRING, errorMessage STRING, errorType STRING, \
+                               timestamp LONG, attemptCount INT, streamName STRING";
+
 /// Block until something accepts connections on `port` at 127.0.0.1. Panics after
 /// 10 seconds. Use this instead of a fixed warm up sleep.
 #[allow(dead_code)]

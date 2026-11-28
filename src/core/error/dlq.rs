@@ -24,7 +24,7 @@
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::core::config::{FlatConfig, PropertySource};
+use crate::core::config::FlatConfig;
 use crate::core::event::{AttributeValue, Event};
 use crate::core::exception::EventFluxError;
 use crate::query_api::definition::attribute::Type as AttributeType;
@@ -33,6 +33,11 @@ use super::retry::RetryConfig;
 
 /// Stream property that names the DLQ stream for a source's failed events.
 pub const DLQ_STREAM_KEY: &str = "error.dlq.stream";
+
+/// Prefix of the keys that set how a failed DLQ send is retried, such as
+/// `error.dlq.fallback-retry.max-attempts`. They take the same names as the
+/// `error.retry.*` keys.
+pub const DLQ_FALLBACK_RETRY_KEY_PREFIX: &str = "error.dlq.fallback-retry";
 
 /// The DLQ event schema, in order.
 ///
@@ -177,29 +182,13 @@ impl DlqConfig {
             .transpose()?
             .unwrap_or(DlqFallbackStrategy::Log);
 
-        let fallback_retry = if matches!(fallback_strategy, DlqFallbackStrategy::Retry) {
-            // Rename keys such as "error.dlq.fallback-retry.max-attempts" to
-            // "error.retry.max-attempts" so RetryConfig::from_flat_config can read
-            // them.
-            let mut fallback_retry_config = FlatConfig::new();
-
-            for (key, value) in config.properties() {
-                if let Some(suffix) = key.strip_prefix("error.dlq.fallback-retry.") {
-                    fallback_retry_config.set(
-                        format!("error.retry.{}", suffix),
-                        value.clone(),
-                        PropertySource::SqlWith,
-                    );
-                }
-            }
-
-            if fallback_retry_config.is_empty() {
-                Some(RetryConfig::default())
-            } else {
-                Some(RetryConfig::from_flat_config(&fallback_retry_config)?)
-            }
-        } else {
-            None
+        // With no fallback retry keys set, this gives the retry defaults.
+        let fallback_retry = match fallback_strategy {
+            DlqFallbackStrategy::Retry => Some(RetryConfig::from_flat_config(
+                config,
+                DLQ_FALLBACK_RETRY_KEY_PREFIX,
+            )?),
+            DlqFallbackStrategy::Log | DlqFallbackStrategy::Fail => None,
         };
 
         Self::new(stream, fallback_strategy, fallback_retry)

@@ -244,7 +244,6 @@ impl SinkStreamHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::eventflux_app_context::EventFluxAppContext;
     use crate::core::event::event::Event;
     use crate::core::stream::input::input_handler::InputProcessor;
     use crate::core::stream::input::source::timer_source::TimerSource;
@@ -277,35 +276,18 @@ mod tests {
         }
     }
 
-    /// Builds an InputHandler backed by `MockInputProcessor` and a default app context.
-    fn create_test_input_handler(stream_id: String) -> Arc<Mutex<InputHandler>> {
-        use crate::core::config::eventflux_context::EventFluxContext;
-        use crate::query_api::eventflux_app::EventFluxApp;
-
-        let eventflux_context = Arc::new(EventFluxContext::default());
-
-        let eventflux_app = Arc::new(EventFluxApp::default());
-
-        let app_context = Arc::new(EventFluxAppContext::new(
-            eventflux_context,
-            "TestApp".to_string(),
-            eventflux_app,
-            String::new(), // empty app string for tests
-        ));
-
-        let processor: Arc<Mutex<dyn InputProcessor>> = Arc::new(Mutex::new(MockInputProcessor));
-        Arc::new(Mutex::new(InputHandler::new(
+    /// Builds an InputHandler backed by `MockInputProcessor`.
+    fn create_test_input_handler(stream_id: &str) -> Arc<Mutex<InputHandler>> {
+        crate::core::stream::input::input_handler::test_input_handler(
             stream_id,
-            0,
-            processor,
-            app_context,
-        )))
+            Arc::new(Mutex::new(MockInputProcessor)),
+        )
     }
 
     #[test]
     fn test_source_handler_creation() {
         let source = Box::new(TimerSource::new(100));
-        let input_handler = create_test_input_handler("TestStream".to_string());
+        let input_handler = create_test_input_handler("TestStream");
 
         let handler =
             SourceStreamHandler::new(source, None, input_handler, "TestStream".to_string());
@@ -317,7 +299,7 @@ mod tests {
     #[test]
     fn test_source_handler_start_stop() {
         let source = Box::new(TimerSource::new(100));
-        let input_handler = create_test_input_handler("TestStream".to_string());
+        let input_handler = create_test_input_handler("TestStream");
 
         let handler =
             SourceStreamHandler::new(source, None, input_handler, "TestStream".to_string());

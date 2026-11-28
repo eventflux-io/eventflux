@@ -24,8 +24,8 @@ use std::str::FromStr;
 
 use crate::core::config::FlatConfig;
 
-use super::dlq::{DlqConfig, DLQ_STREAM_KEY};
-use super::retry::RetryConfig;
+use super::dlq::{DlqConfig, DLQ_FALLBACK_RETRY_KEY_PREFIX, DLQ_STREAM_KEY};
+use super::retry::{RetryConfig, RETRY_KEY_PREFIX, RETRY_KEY_SUFFIXES};
 use super::strategy::ErrorStrategy;
 
 /// Lowest level of error handling messages to log.
@@ -213,7 +213,7 @@ impl ErrorConfig {
             .unwrap_or(LogLevel::Warn);
 
         let retry = if matches!(strategy, ErrorStrategy::Retry) {
-            Some(RetryConfig::from_flat_config(config)?)
+            Some(RetryConfig::from_flat_config(config, RETRY_KEY_PREFIX)?)
         } else {
             None
         };
@@ -255,6 +255,48 @@ impl ErrorConfig {
     #[inline]
     pub fn fail_config(&self) -> Option<&FailConfig> {
         self.fail.as_ref()
+    }
+
+    /// Returns the `error.*` keys in `keys` that these settings never read, sorted.
+    ///
+    /// A key is unused when it is unknown (a typo such as
+    /// `error.retry.max_attempts`), or when it belongs to a part the strategy does
+    /// not use. For example `error.retry.*` without strategy `retry`, `error.dlq.*`
+    /// when there is no DLQ, or `error.dlq.fallback-retry.*` without fallback
+    /// strategy `retry`. Keys that do not start with `error.` are skipped.
+    ///
+    /// `keys` should be the keys these settings were parsed from.
+    pub fn unused_keys<'a>(&self, keys: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+        let fallback_retry = self
+            .dlq
+            .as_ref()
+            .and_then(|dlq| dlq.fallback_retry.as_ref());
+        let is_used = |key: &str| -> bool {
+            let retry_key = |prefix: &str| {
+                key.strip_prefix(prefix)
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .map(|suffix| RETRY_KEY_SUFFIXES.contains(&suffix))
+            };
+            if let Some(known) = retry_key(DLQ_FALLBACK_RETRY_KEY_PREFIX) {
+                return known && fallback_retry.is_some();
+            }
+            if let Some(known) = retry_key(RETRY_KEY_PREFIX) {
+                return known && self.retry.is_some();
+            }
+            match key {
+                "error.strategy" | "error.log-level" => true,
+                DLQ_STREAM_KEY | "error.dlq.fallback-strategy" => self.dlq.is_some(),
+                _ => false,
+            }
+        };
+
+        let mut unused: Vec<String> = keys
+            .into_iter()
+            .filter(|key| key.starts_with("error.") && !is_used(key))
+            .cloned()
+            .collect();
+        unused.sort();
+        unused
     }
 
     /// Returns true if a message at `level` is at or above the configured level.
@@ -491,6 +533,84 @@ mod tests {
         let error_config = ErrorConfig::from_flat_config(&config).unwrap();
         assert_eq!(error_config.strategy, ErrorStrategy::Fail);
         assert!(error_config.fail.is_some());
+    }
+
+    /// Parses `pairs` and returns the keys the settings never read.
+    fn unused(pairs: &[(&str, &str)]) -> Vec<String> {
+        let mut config = FlatConfig::new();
+        for (key, value) in pairs {
+            config.set(*key, *value, PropertySource::SqlWith);
+        }
+        let keys: Vec<String> = pairs.iter().map(|(key, _)| key.to_string()).collect();
+        ErrorConfig::from_flat_config(&config)
+            .unwrap()
+            .unused_keys(&keys)
+    }
+
+    #[test]
+    fn test_unused_keys() {
+        // Every key is read
+        let all_read: &[(&str, &str)] = &[
+            ("error.strategy", "retry"),
+            ("error.log-level", "info"),
+            ("error.retry.max-attempts", "2"),
+            ("error.retry.backoff", "fixed"),
+            ("error.retry.initial-delay", "10ms"),
+            ("error.retry.max-delay", "1s"),
+            ("error.dlq.stream", "E"),
+            ("error.dlq.fallback-strategy", "retry"),
+            ("error.dlq.fallback-retry.max-attempts", "2"),
+            ("kafka.topic", "orders"),
+        ];
+        assert!(unused(all_read).is_empty());
+
+        // Parts the strategy does not read, and unknown keys
+        assert_eq!(
+            unused(&[
+                ("error.strategy", "drop"),
+                ("error.retry.max-attempts", "2"),
+                ("error.dlq.stream", "E"),
+                ("error.dlq.fallback-strategy", "log"),
+            ]),
+            vec![
+                "error.dlq.fallback-strategy",
+                "error.dlq.stream",
+                "error.retry.max-attempts"
+            ]
+        );
+        assert_eq!(
+            unused(&[
+                ("error.strategy", "dlq"),
+                ("error.dlq.stream", "E"),
+                ("error.dlq.fallback-retry.max-attempts", "2"),
+                ("error.retry.max_attempts", "2"),
+                ("error.unknown", "x"),
+            ]),
+            vec![
+                "error.dlq.fallback-retry.max-attempts",
+                "error.retry.max_attempts",
+                "error.unknown"
+            ]
+        );
+        // Retry without a DLQ stream reads no DLQ keys
+        assert_eq!(
+            unused(&[
+                ("error.strategy", "retry"),
+                ("error.dlq.fallback-strategy", "log"),
+            ]),
+            vec!["error.dlq.fallback-strategy"]
+        );
+    }
+
+    /// The retry keys `unused_keys` knows must match the keys sources list.
+    #[test]
+    fn test_retry_key_suffixes_match_source_error_parameters() {
+        use crate::core::error::source_support::SOURCE_ERROR_PARAMETERS;
+
+        for suffix in RETRY_KEY_SUFFIXES {
+            let key = format!("{RETRY_KEY_PREFIX}.{suffix}");
+            assert!(SOURCE_ERROR_PARAMETERS.contains(&key.as_str()), "{key}");
+        }
     }
 
     #[test]

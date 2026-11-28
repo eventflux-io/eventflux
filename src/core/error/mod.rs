@@ -114,11 +114,41 @@ pub mod strategy;
 
 // The main types, exported from here.
 pub use config::{ErrorConfig, FailConfig, LogLevel};
-pub use dlq::{create_dlq_event, DlqConfig, DlqFallbackStrategy, DLQ_FIELDS, DLQ_STREAM_KEY};
+pub use dlq::{
+    create_dlq_event, DlqConfig, DlqFallbackStrategy, DLQ_FALLBACK_RETRY_KEY_PREFIX, DLQ_FIELDS,
+    DLQ_STREAM_KEY,
+};
 pub use handler::{ErrorAction, ErrorHandler};
 pub use retry::{
     calculate_backoff, exponential_backoff, linear_backoff, parse_duration, BackoffStrategy,
-    RetryConfig,
+    RetryConfig, RETRY_KEY_PREFIX,
 };
 pub use source_support::{ErrorConfigBuilder, SourceErrorContext};
 pub use strategy::ErrorStrategy;
+
+/// Implements serde `Serialize` and `Deserialize` for an enum through its
+/// `as_str()` and `FromStr`. YAML then takes the same values as the matching
+/// `error.*` property, with the same error message for a bad value.
+macro_rules! serde_via_str {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+                text.parse().map_err(serde::de::Error::custom)
+            }
+        }
+    )+};
+}
+
+serde_via_str!(
+    ErrorStrategy,
+    LogLevel,
+    BackoffStrategy,
+    DlqFallbackStrategy
+);

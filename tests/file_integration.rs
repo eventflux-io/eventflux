@@ -27,7 +27,7 @@
 
 #[path = "common/mod.rs"]
 mod common;
-use common::CollectingCallback;
+use common::{CollectingCallback, DLQ_COLUMNS};
 
 use eventflux::core::stream::input::source::file_source::FileSource;
 use eventflux::core::stream::input::source::Source;
@@ -784,10 +784,6 @@ async fn test_e2e_sql_json_source_duplicate_field_names_fail_at_creation() {
 // End to end SQL app. DLQ error strategy (#207)
 // ============================================================================
 
-/// Columns every DLQ stream must declare, exactly
-const DLQ_COLUMNS: &str = "originalEvent STRING, errorMessage STRING, errorType STRING, \
-                           timestamp LONG, attemptCount INT, streamName STRING";
-
 /// An `Orders` JSON file source with `error.strategy = strategy` that names
 /// `dlq_stream` as its DLQ
 fn orders_source(input: &Path, strategy: &str, dlq_stream: &str) -> String {
@@ -854,6 +850,33 @@ fn assert_single_dlq_row_for_malformed_record(dlq_rows: &[serde_json::Value]) {
     );
 }
 
+/// Runs `sql` on `manager` against [`write_orders_with_malformed_record`] input.
+/// Asserts that both valid records reach `output` and only the malformed one
+/// reaches the DLQ file `dlq`.
+async fn assert_malformed_record_dead_lettered(
+    manager: eventflux::core::eventflux_manager::EventFluxManager,
+    sql: &str,
+    output: &Path,
+    dlq: &Path,
+) {
+    let runtime = manager
+        .create_eventflux_app_runtime_from_string(sql)
+        .await
+        .expect("runtime");
+    runtime.start().expect("start");
+
+    await_jsonl_lines(output, 2);
+    await_jsonl_lines(dlq, 1);
+    runtime.shutdown();
+
+    let out_rows = read_jsonl(output);
+    assert_eq!(out_rows.len(), 2, "valid records still flow");
+    assert_eq!(out_rows[0]["id"], "o1");
+    assert_eq!(out_rows[1]["id"], "o2");
+
+    assert_single_dlq_row_for_malformed_record(&read_jsonl(dlq));
+}
+
 /// Regression test for https://github.com/eventflux-io/eventflux/issues/207.
 /// A record the mapper rejects must land in the DLQ stream, here a file sink,
 /// instead of being logged and dropped, while valid records carry on.
@@ -885,23 +908,7 @@ async fn test_e2e_sql_dlq_receives_malformed_record() {
         output = output.display(),
     );
 
-    let manager = EventFluxManager::new();
-    let runtime = manager
-        .create_eventflux_app_runtime_from_string(&sql)
-        .await
-        .expect("runtime");
-    runtime.start().expect("start");
-
-    await_jsonl_lines(&output, 2);
-    await_jsonl_lines(&dlq, 1);
-    runtime.shutdown();
-
-    let out_rows = read_jsonl(&output);
-    assert_eq!(out_rows.len(), 2, "valid records still flow");
-    assert_eq!(out_rows[0]["id"], "o1");
-    assert_eq!(out_rows[1]["id"], "o2");
-
-    assert_single_dlq_row_for_malformed_record(&read_jsonl(&dlq));
+    assert_malformed_record_dead_lettered(EventFluxManager::new(), &sql, &output, &dlq).await;
 }
 
 /// The DLQ stream may be a plain internal stream that queries read from. This is
@@ -1265,4 +1272,78 @@ async fn test_sql_with_null_keeps_yaml_value() {
     await_jsonl_lines(&output, 1);
     runtime.shutdown();
     assert_eq!(read_jsonl(&output)[0]["msg"], "a");
+}
+
+// ============================================================================
+// YAML source error_handling (#211)
+// ============================================================================
+
+/// YAML app config with a JSON file source on `Orders` reading `input`, and the
+/// given `error_handling` block, indented to sit under `source:`.
+fn yaml_orders_source(input: &Path, error_handling: &str) -> String {
+    format!(
+        "streams:\n  Orders:\n    source:\n      type: file\n      format: json\n      file.path: '{}'\n      file.poll.interval.ms: 20\n{}",
+        input.display(),
+        error_handling
+    )
+}
+
+/// Regression test for https://github.com/eventflux-io/eventflux/issues/211.
+/// A YAML `error_handling` block used to be ignored, so the malformed record was
+/// logged and dropped. With strategy `dlq` it must land in the DLQ stream, while
+/// valid records carry on.
+#[tokio::test]
+async fn test_e2e_yaml_error_handling_dlq_receives_malformed_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("orders.jsonl");
+    let output = dir.path().join("out.jsonl");
+    let dlq = dir.path().join("errors.jsonl");
+    write_orders_with_malformed_record(&input);
+
+    let app_config = yaml_orders_source(
+        &input,
+        "      error_handling:\n        strategy: dlq\n        dlq:\n          stream: OrderErrors\n",
+    );
+    let sql = format!(
+        r#"
+        CREATE STREAM Orders (id STRING, amount DOUBLE);
+        CREATE STREAM OrderErrors ({DLQ_COLUMNS}) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{dlq}'
+        );
+        CREATE STREAM Out (id STRING, amount DOUBLE) WITH (
+            type = 'sink', extension = 'file', format = 'json',
+            "file.path" = '{output}'
+        );
+        INSERT INTO Out SELECT * FROM Orders;
+    "#,
+        dlq = dlq.display(),
+        output = output.display(),
+    );
+
+    let manager = common::manager_with_app_config("YamlErrorHandlingApp", &app_config);
+    assert_malformed_record_dead_lettered(manager, &sql, &output, &dlq).await;
+}
+
+/// An invalid YAML `error_handling` block must stop the app from being created,
+/// naming the stream, instead of being ignored. The file is never read, so it
+/// need not exist.
+#[tokio::test]
+async fn test_e2e_yaml_invalid_error_handling_fails_at_creation() {
+    let input = Path::new("/nonexistent/orders.jsonl");
+    let app_config = yaml_orders_source(input, "      error_handling:\n        strategy: dlq\n");
+    let manager = common::manager_with_app_config("YamlBadErrorHandlingApp", &app_config);
+    let err = match manager
+        .create_eventflux_app_runtime_from_string(
+            "CREATE STREAM Orders (id STRING, amount DOUBLE);",
+        )
+        .await
+    {
+        Ok(_) => panic!("an invalid error_handling block must fail creation"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("source stream 'Orders'") && err.contains("requires 'error.dlq.stream'"),
+        "got: {err}"
+    );
 }

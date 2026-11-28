@@ -86,6 +86,13 @@ impl Default for BackoffStrategy {
     }
 }
 
+/// Prefix of the source retry keys, such as `error.retry.max-attempts`.
+pub const RETRY_KEY_PREFIX: &str = "error.retry";
+
+/// Key names that come after a retry prefix, such as `max-attempts` in
+/// `error.retry.max-attempts`.
+pub const RETRY_KEY_SUFFIXES: [&str; 4] = ["max-attempts", "backoff", "initial-delay", "max-delay"];
+
 /// How failed operations are retried.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -131,13 +138,17 @@ impl RetryConfig {
         })
     }
 
-    /// Parse retry settings from `error.retry.*` properties.
+    /// Parse retry settings from the `<prefix>.*` properties.
+    ///
+    /// `prefix` is [`RETRY_KEY_PREFIX`] for source retries and
+    /// [`DLQ_FALLBACK_RETRY_KEY_PREFIX`](super::dlq::DLQ_FALLBACK_RETRY_KEY_PREFIX)
+    /// for DLQ send retries. Error messages name the full keys.
     ///
     /// Defaults when a key is missing:
-    /// - `error.retry.max-attempts`: 3
-    /// - `error.retry.backoff`: exponential
-    /// - `error.retry.initial-delay`: 100ms
-    /// - `error.retry.max-delay`: 30s
+    /// - `<prefix>.max-attempts`: 3
+    /// - `<prefix>.backoff`: exponential
+    /// - `<prefix>.initial-delay`: 100ms
+    /// - `<prefix>.max-delay`: 30s
     ///
     /// Delays use the [`parse_duration`] format.
     ///
@@ -145,43 +156,46 @@ impl RetryConfig {
     ///
     /// Returns an error message if a value fails to parse, `max-attempts` is 0, or
     /// `initial-delay` is longer than `max-delay`.
-    pub fn from_flat_config(config: &FlatConfig) -> Result<Self, String> {
+    pub fn from_flat_config(config: &FlatConfig, prefix: &str) -> Result<Self, String> {
+        let key = |name: &str| format!("{prefix}.{name}");
+
         let max_attempts = config
-            .get("error.retry.max-attempts")
+            .get(&key("max-attempts"))
             .map(|s| {
                 s.parse::<usize>()
-                    .map_err(|_| "error.retry.max-attempts must be a positive integer".to_string())
+                    .map_err(|_| format!("{} must be a positive integer", key("max-attempts")))
             })
             .transpose()?
             .unwrap_or(3);
 
         if max_attempts == 0 {
-            return Err("error.retry.max-attempts must be greater than 0".to_string());
+            return Err(format!("{} must be greater than 0", key("max-attempts")));
         }
 
         let backoff = config
-            .get("error.retry.backoff")
+            .get(&key("backoff"))
             .map(|s| BackoffStrategy::from_str(s))
             .transpose()?
             .unwrap_or(BackoffStrategy::Exponential);
 
         let initial_delay = config
-            .get("error.retry.initial-delay")
+            .get(&key("initial-delay"))
             .map(|s| parse_duration(s))
             .transpose()?
             .unwrap_or(Duration::from_millis(100));
 
         let max_delay = config
-            .get("error.retry.max-delay")
+            .get(&key("max-delay"))
             .map(|s| parse_duration(s))
             .transpose()?
             .unwrap_or(Duration::from_secs(30));
 
         if initial_delay > max_delay {
-            return Err(
-                "error.retry.initial-delay cannot be greater than error.retry.max-delay"
-                    .to_string(),
-            );
+            return Err(format!(
+                "{} cannot be greater than {}",
+                key("initial-delay"),
+                key("max-delay")
+            ));
         }
 
         Ok(RetryConfig {
@@ -300,43 +314,36 @@ pub fn calculate_backoff(attempt: usize, config: &RetryConfig) -> Duration {
 ///
 /// # Errors
 ///
-/// Returns an error message if the number is missing or not a whole number, or
-/// the unit is unknown.
+/// Returns an error message if the number is missing or not a whole number, the
+/// unit is unknown, or the duration is more than `u64::MAX` milliseconds. That
+/// limit means every result can be written back as `"<n>ms"`.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
 
     // Check "ms" before "s", since "ms" also ends in "s".
-    if let Some(stripped) = s.strip_suffix("ms") {
-        let millis = stripped
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| format!("Invalid duration '{}': expected number before 'ms'", s))?;
-        return Ok(Duration::from_millis(millis));
-    }
+    let (number, millis_per_unit, unit) = if let Some(number) = s.strip_suffix("ms") {
+        (number, 1, Some("ms"))
+    } else if let Some(number) = s.strip_suffix('s') {
+        (number, 1_000, Some("s"))
+    } else if let Some(number) = s.strip_suffix('m') {
+        (number, 60_000, Some("m"))
+    } else {
+        (s, 1, None)
+    };
 
-    if let Some(stripped) = s.strip_suffix('s') {
-        let secs = stripped
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| format!("Invalid duration '{}': expected number before 's'", s))?;
-        return Ok(Duration::from_secs(secs));
-    }
-
-    if let Some(stripped) = s.strip_suffix('m') {
-        let mins = stripped
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| format!("Invalid duration '{}': expected number before 'm'", s))?;
-        return Ok(Duration::from_secs(mins * 60));
-    }
-
-    // No unit means milliseconds.
-    let millis = s.parse::<u64>().map_err(|_| {
-        format!(
+    let count = number.trim().parse::<u64>().map_err(|_| match unit {
+        Some(unit) => format!(
+            "Invalid duration '{}': expected number before '{}'",
+            s, unit
+        ),
+        None => format!(
             "Invalid duration '{}': expected number or duration with suffix (ms, s, m)",
             s
-        )
+        ),
     })?;
+    let millis = count
+        .checked_mul(millis_per_unit)
+        .ok_or_else(|| format!("Invalid duration '{}': too large", s))?;
     Ok(Duration::from_millis(millis))
 }
 
@@ -505,7 +512,7 @@ mod tests {
     #[test]
     fn test_retry_config_from_flat_config_defaults() {
         let config = FlatConfig::new();
-        let retry_config = RetryConfig::from_flat_config(&config).unwrap();
+        let retry_config = RetryConfig::from_flat_config(&config, RETRY_KEY_PREFIX).unwrap();
 
         assert_eq!(retry_config.max_attempts, 3);
         assert_eq!(retry_config.backoff, BackoffStrategy::Exponential);
@@ -527,7 +534,7 @@ mod tests {
         );
         config.set("error.retry.max-delay", "60s", PropertySource::SqlWith);
 
-        let retry_config = RetryConfig::from_flat_config(&config).unwrap();
+        let retry_config = RetryConfig::from_flat_config(&config, RETRY_KEY_PREFIX).unwrap();
 
         assert_eq!(retry_config.max_attempts, 5);
         assert_eq!(retry_config.backoff, BackoffStrategy::Linear);
@@ -588,6 +595,53 @@ mod tests {
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("100x").is_err());
         assert!(parse_duration("").is_err());
+    }
+
+    /// Durations past `u64::MAX` milliseconds used to overflow (a panic in debug
+    /// builds, a wrong value in release) or come back as text that no longer parses.
+    #[test]
+    fn test_parse_duration_too_large() {
+        let max_millis = format!("{}ms", u64::MAX);
+        assert_eq!(
+            parse_duration(&max_millis).unwrap(),
+            Duration::from_millis(u64::MAX)
+        );
+        for text in ["307445734561825861m", "18446744073709552s"] {
+            let err = parse_duration(text).unwrap_err();
+            assert!(err.contains("too large"), "{text}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_retry_config_errors_name_the_prefixed_keys() {
+        use crate::core::config::PropertySource;
+
+        let prefix = crate::core::error::DLQ_FALLBACK_RETRY_KEY_PREFIX;
+        let mut config = FlatConfig::new();
+        config.set(
+            format!("{prefix}.max-attempts"),
+            "0",
+            PropertySource::SqlWith,
+        );
+        let err = RetryConfig::from_flat_config(&config, prefix).unwrap_err();
+        assert_eq!(
+            err,
+            "error.dlq.fallback-retry.max-attempts must be greater than 0"
+        );
+
+        let mut config = FlatConfig::new();
+        config.set(
+            format!("{prefix}.initial-delay"),
+            "5s",
+            PropertySource::SqlWith,
+        );
+        config.set(format!("{prefix}.max-delay"), "1s", PropertySource::SqlWith);
+        let err = RetryConfig::from_flat_config(&config, prefix).unwrap_err();
+        assert_eq!(
+            err,
+            "error.dlq.fallback-retry.initial-delay cannot be greater than \
+             error.dlq.fallback-retry.max-delay"
+        );
     }
 
     // ========================================================================

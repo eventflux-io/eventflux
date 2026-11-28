@@ -19,6 +19,8 @@
 //!
 //! Configuration for one application, down to each stream, definition and query.
 //! Durations use `duration_serde`, so they read and write as text such as "30s".
+//! Source error handling delays are the exception. They use the `error.*` duration
+//! parser, which also takes milliseconds such as "100ms".
 
 use super::{duration_serde, optional_duration_serde};
 use serde::{Deserialize, Serialize};
@@ -161,12 +163,14 @@ impl SourceConfig {
     /// Flattens this source config into the string map that source factories take.
     ///
     /// Connection keys go in at the top level, written as described in
-    /// [`connection_properties`]. `security`, `error_handling` and `rate_limit` go in
-    /// under their own name, such as `rate_limit.max_rate`. `type` and `format` are
-    /// left out because callers pass them separately.
+    /// [`connection_properties`]. `error_handling` goes in as the `error.*` keys
+    /// that sources read (see [`SourceErrorHandling`]). `security` and `rate_limit`
+    /// go in under their own name, such as `rate_limit.max_rate`. `type` and
+    /// `format` are left out because callers pass them separately.
     ///
     /// Errors in the cases listed on [`connection_properties`] and
-    /// [`flatten_yaml_into`], or if a field cannot be serialized.
+    /// [`flatten_yaml_into`], if `error_handling` sets a block its strategy never
+    /// uses, or if a field cannot be serialized.
     pub fn to_properties(&self) -> Result<HashMap<String, String>, String> {
         // Destructured so a new field is a compile error here until it is passed on.
         let Self {
@@ -180,7 +184,9 @@ impl SourceConfig {
 
         let mut properties = connection_properties(connection)?;
         flatten_field(security, "security", &mut properties)?;
-        flatten_field(error_handling, "error_handling", &mut properties)?;
+        if let Some(error_handling) = error_handling {
+            error_handling.write_properties(&mut properties)?;
+        }
         flatten_field(rate_limit, "rate_limit", &mut properties)?;
         Ok(properties)
     }
@@ -456,24 +462,255 @@ impl Default for DeliveryGuarantee {
     }
 }
 
-/// Source error handling configuration
+/// What a source does with an event that fails, such as a record the mapper
+/// cannot parse.
+///
+/// The fields map to the `error.*` properties that a SQL `WITH` clause takes, and
+/// take the same values.
+///
+/// ```yaml
+/// error_handling:
+///   strategy: retry          # error.strategy: drop, retry, dlq or fail
+///   log_level: warn          # error.log-level
+///   retry:                   # error.retry.*
+///     max_attempts: 5
+///     backoff: exponential   # exponential, linear or fixed
+///     initial_delay: 100ms
+///     max_delay: 30s
+///   dlq:                     # error.dlq.*
+///     stream: OrderErrors
+///     fallback_strategy: retry # log, fail or retry
+///     fallback_retry:        # error.dlq.fallback-retry.*, same keys as retry
+///       max_attempts: 3
+/// ```
+///
+/// A delay is a whole number with `ms`, `s` or `m`, or a bare whole number of
+/// milliseconds, as in the `error.*` properties. Unknown keys are rejected. A field left out is not written, so
+/// the runtime default applies. `error.*` keys in a SQL `WITH` clause fill in or
+/// override these values. The merged keys are then checked when the app is
+/// created (see `ElementConfigResolver`). Invalid settings fail creation, and
+/// keys the strategy never reads are logged as a warning.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SourceErrorHandling {
-    /// What to do when the source fails. Defaults to `LogAndContinue`.
-    #[serde(default)]
-    pub strategy: ErrorStrategy,
+    /// What to do with a failed event.
+    pub strategy: crate::core::error::ErrorStrategy,
 
-    /// Dead letter queue to send failed events to
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dead_letter_queue: Option<String>,
+    /// Lowest level of error handling messages to log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<crate::core::error::LogLevel>,
 
-    /// Maximum retry attempts. Defaults to 3.
-    #[serde(default = "default_max_retries")]
-    pub max_retry_attempts: usize,
+    /// Retry settings. Only read with strategy `retry`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<SourceRetryConfig>,
 
-    /// Retry backoff configuration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub backoff: Option<BackoffConfig>,
+    /// Dead letter queue settings. Strategy `dlq` needs a stream, from here or
+    /// from `error.dlq.stream` in SQL `WITH`. With strategy `retry`, events whose
+    /// retries run out go to the stream instead of being dropped. Not read with
+    /// any other strategy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dlq: Option<SourceDlqConfig>,
+}
+
+/// Retry settings of a source, written as `error.retry.*` or
+/// `error.dlq.fallback-retry.*`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceRetryConfig {
+    /// Attempts in total, counting the first one. Must be at least 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<usize>,
+
+    /// How the delay grows between attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff: Option<crate::core::error::BackoffStrategy>,
+
+    /// Delay before the first retry, such as `100ms`. Must not be longer than
+    /// `max_delay`.
+    #[serde(
+        default,
+        with = "error_duration_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub initial_delay: Option<Duration>,
+
+    /// Longest delay between retries, such as `30s`.
+    #[serde(
+        default,
+        with = "error_duration_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_delay: Option<Duration>,
+}
+
+/// Dead letter queue settings of a source, written as `error.dlq.*`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceDlqConfig {
+    /// Stream that receives failed events. May be left out when SQL `WITH` sets
+    /// `error.dlq.stream`. YAML null also means not set.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_dlq_stream",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stream: Option<String>,
+
+    /// What to do when sending to the DLQ stream fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_strategy: Option<crate::core::error::DlqFallbackStrategy>,
+
+    /// Retry settings for the DLQ send. Only read with fallback strategy `retry`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_retry: Option<SourceRetryConfig>,
+}
+
+impl SourceErrorHandling {
+    /// Writes these settings into `properties` as the `error.*` keys that sources
+    /// read.
+    ///
+    /// Nothing is checked here beyond the YAML types. SQL `WITH` keys can still
+    /// fill in or override any field, so the resolver checks the merged keys with
+    /// the runtime parser and warns about keys the strategy never reads.
+    ///
+    /// Errors if a key is already in `properties`, such as a connection key
+    /// `error.strategy`.
+    fn write_properties(&self, properties: &mut HashMap<String, String>) -> Result<(), String> {
+        use crate::core::error::{DLQ_FALLBACK_RETRY_KEY_PREFIX, DLQ_STREAM_KEY, RETRY_KEY_PREFIX};
+
+        // Destructured so a new field is a compile error here until it is written.
+        let Self {
+            strategy,
+            log_level,
+            retry,
+            dlq,
+        } = self;
+
+        insert_unique(properties, "error.strategy", strategy.as_str().to_string())?;
+        if let Some(level) = log_level {
+            insert_unique(properties, "error.log-level", level.as_str().to_string())?;
+        }
+        if let Some(retry) = retry {
+            retry.write_properties(RETRY_KEY_PREFIX, properties)?;
+        }
+        if let Some(SourceDlqConfig {
+            stream,
+            fallback_strategy,
+            fallback_retry,
+        }) = dlq
+        {
+            if let Some(stream) = stream {
+                insert_unique(properties, DLQ_STREAM_KEY, stream.clone())?;
+            }
+            if let Some(fallback) = fallback_strategy {
+                insert_unique(
+                    properties,
+                    "error.dlq.fallback-strategy",
+                    fallback.as_str().to_string(),
+                )?;
+            }
+            if let Some(retry) = fallback_retry {
+                retry.write_properties(DLQ_FALLBACK_RETRY_KEY_PREFIX, properties)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SourceRetryConfig {
+    /// Writes the fields that are set as `<prefix>.<key>` properties. Delays are
+    /// written in milliseconds, so `100ms` is kept exactly.
+    ///
+    /// Errors if a key is already in `properties`.
+    fn write_properties(
+        &self,
+        prefix: &str,
+        properties: &mut HashMap<String, String>,
+    ) -> Result<(), String> {
+        let Self {
+            max_attempts,
+            backoff,
+            initial_delay,
+            max_delay,
+        } = self;
+        let mut write =
+            |key: &str, value: String| insert_unique(properties, &format!("{prefix}.{key}"), value);
+        if let Some(n) = max_attempts {
+            write("max-attempts", n.to_string())?;
+        }
+        if let Some(backoff) = backoff {
+            write("backoff", backoff.as_str().to_string())?;
+        }
+        if let Some(delay) = initial_delay {
+            write("initial-delay", format!("{}ms", delay.as_millis()))?;
+        }
+        if let Some(delay) = max_delay {
+            write("max-delay", format!("{}ms", delay.as_millis()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Reads and writes an optional delay for [`SourceRetryConfig`] with the same
+/// parser as the `error.retry.*` properties, so `100ms` works. (`duration_serde`
+/// has no unit below a second.) A bare whole number is milliseconds, as in the
+/// properties. Writes the delay as `"<n>ms"`.
+mod error_duration_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use serde_yaml::Value;
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(
+        delay: &Option<Duration>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match delay {
+            Some(delay) => serializer.serialize_str(&format!("{}ms", delay.as_millis())),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    /// Reads the value as a YAML value first, so a bare number works on every load
+    /// path. Text parsed straight from a file and a `serde_yaml::Value` (used for
+    /// merge keys and `--set` overrides) hand numbers over in different ways.
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Duration>, D::Error> {
+        let text = match Value::deserialize(deserializer)? {
+            Value::Null => return Ok(None),
+            Value::String(text) => text,
+            Value::Number(n) if n.is_u64() => n.to_string(),
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "expected a delay such as '100ms', '30s' or a whole number of milliseconds, got {:?}",
+                    other
+                )))
+            }
+        };
+        crate::core::error::parse_duration(&text)
+            .map(Some)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Reads the optional DLQ stream name. YAML null means not set. A tag such as
+/// `!env` is an error, since nothing resolves it. A plain `Option<String>` would
+/// drop the tag and look for a stream named after the tagged text.
+fn deserialize_dlq_stream<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    match serde_yaml::Value::deserialize(deserializer)? {
+        serde_yaml::Value::Null => Ok(None),
+        serde_yaml::Value::String(stream) => Ok(Some(stream)),
+        serde_yaml::Value::Tagged(tagged) => Err(serde::de::Error::custom(tag_error(
+            &tagged.tag,
+            "error_handling.dlq.stream",
+        ))),
+        other => Err(serde::de::Error::custom(format!(
+            "error_handling.dlq.stream must be a stream name, got {:?}",
+            other
+        ))),
+    }
 }
 
 /// Error handling strategies. Written in kebab case, such as `log-and-continue`.
@@ -540,57 +777,6 @@ impl Default for RetryConfig {
             backoff_multiplier: default_backoff_multiplier(),
             jitter: true,
         }
-    }
-}
-
-/// Backoff configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BackoffConfig {
-    /// How the delay grows. Defaults to `Exponential`.
-    #[serde(default)]
-    pub backoff_type: BackoffType,
-
-    /// Starting delay. Defaults to 100 ms.
-    #[serde(with = "duration_serde", default = "default_base_delay")]
-    pub base_delay: Duration,
-
-    /// Longest delay. Defaults to 30 seconds.
-    #[serde(with = "duration_serde", default = "default_max_delay")]
-    pub max_delay: Duration,
-
-    /// Multiplier for exponential backoff. Defaults to 2.0.
-    #[serde(default = "default_backoff_multiplier")]
-    pub multiplier: f64,
-}
-
-impl Default for BackoffConfig {
-    fn default() -> Self {
-        Self {
-            backoff_type: BackoffType::Exponential,
-            base_delay: default_base_delay(),
-            max_delay: default_max_delay(),
-            multiplier: default_backoff_multiplier(),
-        }
-    }
-}
-
-/// Backoff strategies
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BackoffType {
-    /// Fixed delay between retries
-    Fixed,
-
-    /// Linear increase in delay
-    Linear,
-
-    /// Exponential increase in delay
-    Exponential,
-}
-
-impl Default for BackoffType {
-    fn default() -> Self {
-        Self::Exponential
     }
 }
 
@@ -1419,10 +1605,6 @@ fn default_max_delay() -> Duration {
     Duration::from_secs(30)
 }
 
-fn default_base_delay() -> Duration {
-    Duration::from_millis(100)
-}
-
 fn default_backoff_multiplier() -> f64 {
     2.0
 }
@@ -1826,5 +2008,255 @@ retry:
             rate_limit: None,
         };
         assert!(source.to_properties().unwrap().is_empty());
+    }
+
+    /// Flattens a source whose YAML is `type: file` plus `error_yaml`.
+    fn source_error_properties(error_yaml: &str) -> Result<HashMap<String, String>, String> {
+        let yaml = format!("type: file\nfile.path: /in.jsonl\n{error_yaml}");
+        serde_yaml::from_str::<SourceConfig>(&yaml)
+            .map_err(|e| e.to_string())?
+            .to_properties()
+    }
+
+    fn props(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// Regression test for https://github.com/eventflux-io/eventflux/issues/211.
+    /// The block used to be written as `error_handling.*` keys, which no source
+    /// reads, so failed events were dropped whatever the YAML said.
+    #[test]
+    fn test_source_error_handling_writes_error_keys() {
+        let props_out = source_error_properties(
+            "error_handling:\n  strategy: dlq\n  log_level: error\n  dlq:\n    stream: OrderErrors\n    fallback_strategy: retry\n    fallback_retry:\n      max_attempts: 4\n      backoff: fixed\n      initial_delay: 250ms\n      max_delay: 2s\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            props_out,
+            props(&[
+                ("file.path", "/in.jsonl"),
+                ("error.strategy", "dlq"),
+                ("error.log-level", "error"),
+                ("error.dlq.stream", "OrderErrors"),
+                ("error.dlq.fallback-strategy", "retry"),
+                ("error.dlq.fallback-retry.max-attempts", "4"),
+                ("error.dlq.fallback-retry.backoff", "fixed"),
+                ("error.dlq.fallback-retry.initial-delay", "250ms"),
+                ("error.dlq.fallback-retry.max-delay", "2000ms"),
+            ])
+        );
+        assert!(!props_out.keys().any(|k| k.starts_with("error_handling")));
+    }
+
+    #[test]
+    fn test_source_error_handling_retry_with_dlq() {
+        let props_out = source_error_properties(
+            "error_handling:\n  strategy: retry\n  retry:\n    max_attempts: 5\n    backoff: linear\n    initial_delay: 100ms\n    max_delay: 30s\n  dlq:\n    stream: OrderErrors\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            props_out,
+            props(&[
+                ("file.path", "/in.jsonl"),
+                ("error.strategy", "retry"),
+                ("error.retry.max-attempts", "5"),
+                ("error.retry.backoff", "linear"),
+                ("error.retry.initial-delay", "100ms"),
+                ("error.retry.max-delay", "30000ms"),
+                ("error.dlq.stream", "OrderErrors"),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_source_error_handling_writes_only_set_fields() {
+        let props_out = source_error_properties("error_handling:\n  strategy: drop\n").unwrap();
+        assert_eq!(
+            props_out,
+            props(&[("file.path", "/in.jsonl"), ("error.strategy", "drop")])
+        );
+    }
+
+    #[test]
+    fn test_source_error_handling_rejects_invalid_blocks() {
+        let cases = [
+            // Strategy and field names from the old schema, which never worked
+            (
+                "error_handling:\n  strategy: dead-letter-queue\n",
+                "Invalid error strategy",
+            ),
+            (
+                "error_handling:\n  strategy: dlq\n  dead_letter_queue: E\n",
+                "unknown field",
+            ),
+            (
+                "error_handling:\n  strategy: retry\n  max_retry_attempts: 3\n",
+                "unknown field",
+            ),
+            (
+                "error_handling:\n  log_level: warn\n",
+                "missing field `strategy`",
+            ),
+            (
+                "error_handling:\n  strategy: drop\n  log_level: loud\n",
+                "Invalid log level",
+            ),
+            (
+                "error_handling:\n  strategy: retry\n  retry:\n    backoff: random\n",
+                "backoff",
+            ),
+            (
+                "error_handling:\n  strategy: retry\n  retry:\n    max_delay: soon\n",
+                "Invalid duration 'soon'",
+            ),
+            (
+                "error_handling:\n  strategy: retry\n  retry:\n    max_delay: 1.5\n",
+                "expected a delay",
+            ),
+            (
+                "error_handling:\n  strategy: dlq\n  dlq:\n    stream: !env DLQ\n",
+                "YAML tag !env",
+            ),
+            (
+                "error_handling:\n  strategy: dlq\n  dlq:\n    stream: 7\n",
+                "must be a stream name",
+            ),
+            // A connection key that clashes with a key the block writes
+            (
+                "error.strategy: fail\nerror_handling:\n  strategy: drop\n",
+                "set more than once",
+            ),
+        ];
+        for (yaml, expected) in cases {
+            let err = source_error_properties(yaml).expect_err(yaml);
+            assert!(
+                err.contains(expected),
+                "{yaml}: expected '{expected}', got: {err}"
+            );
+        }
+    }
+
+    /// The block is not judged on its own, because SQL `WITH` can still fill in
+    /// or override any field. Blocks the YAML strategy does not read, and a `dlq`
+    /// block with no stream, are written as given. The resolver checks the
+    /// merged keys.
+    #[test]
+    fn test_source_error_handling_leaves_cross_field_checks_to_the_resolver() {
+        let cases = [
+            (
+                "error_handling:\n  strategy: drop\n  retry:\n    max_attempts: 2\n",
+                vec![("error.strategy", "drop"), ("error.retry.max-attempts", "2")],
+            ),
+            (
+                "error_handling:\n  strategy: fail\n  dlq:\n    stream: E\n",
+                vec![("error.strategy", "fail"), ("error.dlq.stream", "E")],
+            ),
+            (
+                "error_handling:\n  strategy: dlq\n  dlq:\n    fallback_retry:\n      max_attempts: 2\n",
+                vec![
+                    ("error.strategy", "dlq"),
+                    ("error.dlq.fallback-retry.max-attempts", "2"),
+                ],
+            ),
+            // YAML null means not set, so WITH can supply the stream
+            (
+                "error_handling:\n  strategy: dlq\n  dlq:\n    stream: null\n",
+                vec![("error.strategy", "dlq")],
+            ),
+        ];
+        for (yaml, expected) in cases {
+            let mut expected = props(&expected);
+            expected.insert("file.path".to_string(), "/in.jsonl".to_string());
+            assert_eq!(source_error_properties(yaml).unwrap(), expected, "{yaml}");
+        }
+    }
+
+    #[test]
+    fn test_source_error_handling_serde_round_trip() {
+        let yaml = "strategy: retry\nlog_level: debug\nretry:\n  max_attempts: 2\n  backoff: exponential\n  initial_delay: 100ms\n  max_delay: 1s\ndlq:\n  stream: E\n  fallback_strategy: fail\n";
+        let parsed: SourceErrorHandling = serde_yaml::from_str(yaml).unwrap();
+        let reparsed: SourceErrorHandling =
+            serde_yaml::from_str(&serde_yaml::to_string(&parsed).unwrap()).unwrap();
+        assert_eq!(parsed, reparsed);
+        assert_eq!(
+            reparsed.retry.unwrap().initial_delay,
+            Some(Duration::from_millis(100))
+        );
+    }
+
+    /// A bare whole number delay is milliseconds, as in the `error.*` properties.
+    /// Reading from a `serde_yaml::Value` (merge keys, `--set`) must accept it too.
+    #[test]
+    fn test_source_error_handling_bare_number_delay_is_milliseconds() {
+        let yaml = "strategy: retry\nretry:\n  initial_delay: 500\n  max_delay: 750ms\n";
+        let from_text: SourceErrorHandling = serde_yaml::from_str(yaml).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let from_value: SourceErrorHandling = serde_yaml::from_value(value).unwrap();
+        assert_eq!(from_text, from_value);
+
+        let retry = from_text.retry.unwrap();
+        assert_eq!(retry.initial_delay, Some(Duration::from_millis(500)));
+        assert_eq!(retry.max_delay, Some(Duration::from_millis(750)));
+    }
+
+    /// Ties the keys written here to the runtime readers. Every written key is one
+    /// sources accept, and parsing them gives back each YAML value. A renamed key
+    /// on either side would otherwise leave the YAML setting quietly unused.
+    #[test]
+    fn test_source_error_handling_keys_round_trip_through_runtime_parser() {
+        use crate::core::error::source_support::SOURCE_ERROR_PARAMETERS;
+        use crate::core::error::{
+            BackoffStrategy, DlqFallbackStrategy, ErrorConfigBuilder, ErrorStrategy, LogLevel,
+            DLQ_FALLBACK_RETRY_KEY_PREFIX,
+        };
+
+        let retry_props = source_error_properties(
+            "error_handling:\n  strategy: retry\n  log_level: debug\n  retry:\n    max_attempts: 7\n    backoff: linear\n    initial_delay: 150ms\n    max_delay: 9s\n",
+        )
+        .unwrap();
+        let dlq_props = source_error_properties(
+            "error_handling:\n  strategy: dlq\n  dlq:\n    stream: OrderErrors\n    fallback_strategy: retry\n    fallback_retry:\n      max_attempts: 4\n      backoff: fixed\n      initial_delay: 250ms\n      max_delay: 2s\n",
+        )
+        .unwrap();
+
+        for key in retry_props.keys().chain(dlq_props.keys()) {
+            assert!(
+                key == "file.path"
+                    || SOURCE_ERROR_PARAMETERS.contains(&key.as_str())
+                    || key.starts_with(&format!("{DLQ_FALLBACK_RETRY_KEY_PREFIX}.")),
+                "sources do not accept the written key '{key}'"
+            );
+        }
+
+        let config = ErrorConfigBuilder::from_properties(&retry_props)
+            .build()
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.strategy, ErrorStrategy::Retry);
+        assert_eq!(config.log_level, LogLevel::Debug);
+        let retry = config.retry.unwrap();
+        assert_eq!(retry.max_attempts, 7);
+        assert_eq!(retry.backoff, BackoffStrategy::Linear);
+        assert_eq!(retry.initial_delay, Duration::from_millis(150));
+        assert_eq!(retry.max_delay, Duration::from_secs(9));
+
+        let config = ErrorConfigBuilder::from_properties(&dlq_props)
+            .build()
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.strategy, ErrorStrategy::Dlq);
+        let dlq = config.dlq.unwrap();
+        assert_eq!(dlq.stream, "OrderErrors");
+        assert_eq!(dlq.fallback_strategy, DlqFallbackStrategy::Retry);
+        let fallback = dlq.fallback_retry.unwrap();
+        assert_eq!(fallback.max_attempts, 4);
+        assert_eq!(fallback.backoff, BackoffStrategy::Fixed);
+        assert_eq!(fallback.initial_delay, Duration::from_millis(250));
+        assert_eq!(fallback.max_delay, Duration::from_secs(2));
     }
 }

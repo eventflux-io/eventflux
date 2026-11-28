@@ -388,7 +388,75 @@ impl<'a> ElementConfigResolver<'a> {
             }
         }
 
+        for config in &configs {
+            if config.element_type == ElementType::Source {
+                Self::check_source_error_config(name, config)?;
+            }
+        }
+
         Ok(configs)
+    }
+
+    /// Parse a source's `error.*` keys with the runtime parser, once YAML and SQL
+    /// `WITH` are merged. A bad value then fails app creation instead of failing
+    /// later, when the source is built at start. Keys the settings never read are
+    /// logged as a warning (see [`Self::unused_error_keys_warning`]).
+    ///
+    /// Errors, naming the stream, if the keys fail to parse or do not work
+    /// together. Nothing is parsed when `error.strategy` is not set, because the
+    /// source then has no error handling either.
+    fn check_source_error_config(name: &str, config: &ResolvedElementConfig) -> Result<(), String> {
+        let error_config =
+            crate::core::error::ErrorConfigBuilder::from_properties(&config.properties)
+                .build()
+                .map_err(|e| {
+                    format!("Invalid error handling for source stream '{}': {}", name, e)
+                })?;
+        if let Some(warning) =
+            Self::unused_error_keys_warning(name, error_config.as_ref(), &config.properties)
+        {
+            log::warn!("{}", warning);
+        }
+        Ok(())
+    }
+
+    /// Returns a warning naming the `error.*` keys of source stream `name` that
+    /// the parsed `error_config` never reads, or `None` when every key is read.
+    ///
+    /// These keys are not an error. A SQL `WITH` override can turn off a part
+    /// that the YAML sets, such as `error.strategy = 'drop'` over a YAML `dlq`
+    /// block. With no `error_config` (no `error.strategy`), every `error.*` key
+    /// is unused, since the source then has no error handling.
+    fn unused_error_keys_warning(
+        name: &str,
+        error_config: Option<&crate::core::error::ErrorConfig>,
+        properties: &HashMap<String, String>,
+    ) -> Option<String> {
+        let (unused, strategy) = match error_config {
+            Some(error_config) => (
+                error_config.unused_keys(properties.keys()),
+                format!("is '{}'", error_config.strategy.as_str()),
+            ),
+            None => {
+                let mut keys: Vec<String> = properties
+                    .keys()
+                    .filter(|key| key.starts_with("error."))
+                    .cloned()
+                    .collect();
+                keys.sort();
+                (keys, "is not set".to_string())
+            }
+        };
+        if unused.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "Source stream '{}' sets error handling keys that are not used, because they \
+             are unknown or error.strategy {}: {}",
+            name,
+            strategy,
+            unused.join(", ")
+        ))
     }
 
     /// Build a source config from its YAML block. Errors, naming the stream, if the
@@ -870,6 +938,183 @@ mod tests {
             err.contains("Invalid YAML sink config for stream 'Out'")
                 && err.contains("Non-string key"),
             "{err}"
+        );
+    }
+
+    const YAML_SOURCE_WITH_DLQ: &str = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: dlq\n        dlq:\n          stream: OutErrors\n";
+
+    /// Regression test for https://github.com/eventflux-io/eventflux/issues/211.
+    /// YAML `error_handling` must resolve to the `error.*` keys sources read.
+    #[test]
+    fn test_yaml_source_error_handling_resolves_to_error_keys() {
+        let resolved = resolve_out(YAML_SOURCE_WITH_DLQ, &[]).unwrap();
+
+        let source = resolved.get("source:Out").unwrap();
+        assert_eq!(source.get("error.strategy"), Some(&"dlq".to_string()));
+        assert_eq!(
+            source.get("error.dlq.stream"),
+            Some(&"OutErrors".to_string())
+        );
+        assert_eq!(
+            source.property_sources.get("error.strategy"),
+            Some(&ConfigSource::Yaml)
+        );
+        assert!(!source
+            .properties
+            .keys()
+            .any(|k| k.starts_with("error_handling")));
+    }
+
+    #[test]
+    fn test_sql_with_error_key_overrides_yaml_error_handling() {
+        let resolved = resolve_out(YAML_SOURCE_WITH_DLQ, &[("error.strategy", "retry")]).unwrap();
+
+        let source = resolved.get("source:Out").unwrap();
+        assert_eq!(source.get("error.strategy"), Some(&"retry".to_string()));
+        assert_eq!(
+            source.property_sources.get("error.strategy"),
+            Some(&ConfigSource::SqlWith)
+        );
+        assert_eq!(
+            source.get("error.dlq.stream"),
+            Some(&"OutErrors".to_string())
+        );
+    }
+
+    /// The merged keys are checked, not the YAML block alone. A SQL `WITH` key can
+    /// fill in what the YAML leaves out, or change a value the YAML check would
+    /// have judged against a default.
+    #[test]
+    fn test_source_error_config_is_checked_after_sql_with_merge() {
+        let yaml_dlq_without_stream = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: dlq\n";
+        let resolved = resolve_out(
+            yaml_dlq_without_stream,
+            &[("error.dlq.stream", "OutErrors")],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.get("source:Out").unwrap().get("error.dlq.stream"),
+            Some(&"OutErrors".to_string())
+        );
+
+        // Checked alone, the YAML max of 50ms is below the 100ms default initial
+        // delay and fails. The 10ms initial delay from WITH makes it valid.
+        let yaml_short_max = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: retry\n        retry:\n          max_delay: 50ms\n";
+        resolve_out(yaml_short_max, &[("error.retry.initial-delay", "10ms")]).unwrap();
+
+        // YAML sets the fallback retry, WITH sets the stream and turns it on
+        let yaml_fallback_only = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: dlq\n        dlq:\n          fallback_retry:\n            max_attempts: 4\n";
+        let resolved = resolve_out(
+            yaml_fallback_only,
+            &[
+                ("error.dlq.stream", "OutErrors"),
+                ("error.dlq.fallback-strategy", "retry"),
+            ],
+        )
+        .unwrap();
+        let source = resolved.get("source:Out").unwrap();
+        let error_config =
+            crate::core::error::ErrorConfigBuilder::from_properties(&source.properties)
+                .build()
+                .unwrap()
+                .unwrap();
+        let dlq = error_config.dlq.as_ref().unwrap();
+        assert_eq!(dlq.stream, "OutErrors");
+        assert_eq!(dlq.fallback_retry.as_ref().unwrap().max_attempts, 4);
+        assert!(error_config
+            .unused_keys(source.properties.keys())
+            .is_empty());
+
+        // WITH turns on the DLQ block that the YAML strategy does not read
+        let yaml_drop_with_dlq = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: drop\n        dlq:\n          stream: OutErrors\n";
+        resolve_out(yaml_drop_with_dlq, &[("error.strategy", "dlq")]).unwrap();
+    }
+
+    #[test]
+    fn test_invalid_merged_source_error_config_is_an_error_naming_the_stream() {
+        let yaml_dlq_without_stream = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: dlq\n";
+        let yaml_long_initial = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: retry\n        retry:\n          initial_delay: 5s\n";
+        let yaml_dlq_with_fallback = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: dlq\n        dlq:\n          stream: E\n          fallback_strategy: retry\n          fallback_retry:\n            max_attempts: 0\n";
+        /// YAML app config, SQL WITH options, and the text the error must hold
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+        let cases: [Case; 4] = [
+            (yaml_dlq_without_stream, &[], "requires 'error.dlq.stream'"),
+            (
+                yaml_long_initial,
+                &[("error.retry.max-delay", "1s")],
+                "error.retry.initial-delay cannot be greater than error.retry.max-delay",
+            ),
+            (
+                yaml_dlq_with_fallback,
+                &[],
+                "error.dlq.fallback-retry.max-attempts must be greater than 0",
+            ),
+            // A source defined only in SQL WITH is checked the same way
+            (
+                "streams: {}\n",
+                &[
+                    ("type", "source"),
+                    ("extension", "timer"),
+                    ("error.strategy", "retry"),
+                    ("error.retry.max-attempts", "0"),
+                ],
+                "error.retry.max-attempts must be greater than 0",
+            ),
+        ];
+        for (yaml, with_options, expected) in cases {
+            let err = resolve_out(yaml, with_options).unwrap_err();
+            assert!(
+                err.contains("Invalid error handling for source stream 'Out'")
+                    && err.contains(expected),
+                "expected '{expected}', got: {err}"
+            );
+        }
+    }
+
+    /// A part the effective strategy does not read is not an error, since a WITH
+    /// override may turn it off on purpose. It is named in a warning instead,
+    /// along with unknown keys and keys set without any strategy.
+    #[test]
+    fn test_unused_source_error_keys_are_named_in_a_warning() {
+        let yaml_dlq = "streams:\n  Out:\n    source:\n      type: timer\n      error_handling:\n        strategy: dlq\n        dlq:\n          stream: OutErrors\n";
+        let warning = |yaml: &str, with_options: &[(&str, &str)]| {
+            let resolved = resolve_out(yaml, with_options).unwrap();
+            let properties = &resolved.get("source:Out").unwrap().properties;
+            let error_config = crate::core::error::ErrorConfigBuilder::from_properties(properties)
+                .build()
+                .unwrap();
+            ElementConfigResolver::unused_error_keys_warning(
+                "Out",
+                error_config.as_ref(),
+                properties,
+            )
+        };
+
+        assert_eq!(warning(yaml_dlq, &[]), None);
+        assert_eq!(
+            warning(
+                yaml_dlq,
+                &[
+                    ("error.strategy", "drop"),
+                    ("error.retry.max_attempts", "5")
+                ]
+            )
+            .unwrap(),
+            "Source stream 'Out' sets error handling keys that are not used, because they \
+             are unknown or error.strategy is 'drop': error.dlq.stream, error.retry.max_attempts"
+        );
+        assert_eq!(
+            warning(
+                "streams: {}\n",
+                &[
+                    ("type", "source"),
+                    ("extension", "timer"),
+                    ("error.retry.max-attempts", "5"),
+                ]
+            )
+            .unwrap(),
+            "Source stream 'Out' sets error handling keys that are not used, because they \
+             are unknown or error.strategy is not set: error.retry.max-attempts"
         );
     }
 }
