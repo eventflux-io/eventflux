@@ -32,6 +32,7 @@ use crate::core::stream::stream_junction::StreamJunction;
 use crate::query_api::{
     definition::Attribute as ApiAttribute, // For building output attributes
     definition::StreamDefinition as ApiStreamDefinition,
+    execution::query::input::stream::join_input_stream::Type as ApiJoinType,
     execution::query::input::InputStream as ApiInputStream,
     execution::query::Query as ApiQuery,
     expression::Expression as ApiExpression,
@@ -164,6 +165,24 @@ impl PostStateProcessor for TerminalPostStateProcessor {
     fn this_state_pre_processor(&self) -> Option<Arc<Mutex<dyn PreStateProcessor>>> {
         None
     }
+}
+
+/// Builds a FilterProcessor that passes on only the events for which `condition` is
+/// true, resolving its columns against `ctx`.
+///
+/// # Errors
+///
+/// Returns an error when the condition cannot be parsed or does not return BOOL.
+fn build_filter_processor(
+    condition: &ApiExpression,
+    ctx: &ExpressionParserContext<'_>,
+) -> Result<Arc<Mutex<dyn Processor>>, String> {
+    let condition_executor = parse_expression(condition, ctx).map_err(|e| e.to_string())?;
+    Ok(Arc::new(Mutex::new(FilterProcessor::new(
+        condition_executor,
+        Arc::clone(&ctx.eventflux_app_context),
+        Arc::clone(&ctx.eventflux_query_context),
+    )?)))
 }
 
 /// Builds a QueryRuntime from a parsed query.
@@ -326,14 +345,7 @@ impl QueryParser {
                             link_processor(win_proc);
                         }
                         crate::query_api::execution::query::input::handler::StreamHandler::Filter(f) => {
-                            let condition_executor =
-                                parse_expression(&f.filter_expression, &ctx).map_err(|e| e.to_string())?;
-                            let filter_processor = Arc::new(Mutex::new(FilterProcessor::new(
-                                condition_executor,
-                                Arc::clone(eventflux_app_context),
-                                Arc::clone(&eventflux_query_context),
-                            )?));
-                            link_processor(filter_processor);
+                            link_processor(build_filter_processor(&f.filter_expression, &ctx)?);
                         }
                         _ => {}
                     }
@@ -363,12 +375,42 @@ impl QueryParser {
                 let right_is_table = table_def_map.contains_key(&right_id);
 
                 if left_is_table ^ right_is_table {
-                    // Stream to table join. The table attributes are offset after the stream
-                    // attributes, or the other way round when the table is on the left.
-                    let (stream_id, table_id, stream_on_left) = if left_is_table {
-                        (right_id.clone(), left_id.clone(), false)
-                    } else {
-                        (left_id.clone(), right_id.clone(), true)
+                    // Stream to table join. TableJoinProcessor and every Table build the
+                    // joined row with the stream attributes first and the table attributes
+                    // after, whichever side the table is written on. So the metadata always
+                    // puts the stream first too (#240).
+                    let (stream_id, table_id, stream_alias, table_alias, stream_on_left) =
+                        if left_is_table {
+                            (
+                                right_id.clone(),
+                                left_id.clone(),
+                                right_alias,
+                                left_alias,
+                                false,
+                            )
+                        } else {
+                            (
+                                left_id.clone(),
+                                right_id.clone(),
+                                left_alias,
+                                right_alias,
+                                true,
+                            )
+                        };
+
+                    // The processor is driven by stream events, so it can only keep an
+                    // unmatched stream event, never an unmatched table row.
+                    let keeps_stream = match (join_stream.join_type, stream_on_left) {
+                        (ApiJoinType::InnerJoin | ApiJoinType::Join, _) => false,
+                        (ApiJoinType::LeftOuterJoin, true)
+                        | (ApiJoinType::RightOuterJoin, false) => true,
+                        (join_type, _) => {
+                            return Err(format!(
+                                "Query '{query_name}': {join_type:?} between stream '{stream_id}' \
+                                 and table '{table_id}' would keep unmatched table rows, which is \
+                                 not supported. Use an outer join that keeps the stream side."
+                            ))
+                        }
                     };
                     let stream_junction = stream_junction_map
                         .get(&stream_id)
@@ -387,7 +429,8 @@ impl QueryParser {
                     let stream_len = stream_def.abstract_definition.attribute_list.len();
                     let table_len = table_def.abstract_definition.attribute_list.len();
 
-                    let mut stream_meta = MetaStreamEvent::new_for_single_input(stream_def.clone());
+                    let stream_meta =
+                        Arc::new(MetaStreamEvent::new_for_single_input(stream_def.clone()));
                     let table_stream_def = Arc::new(
                         crate::query_api::definition::stream_definition::StreamDefinition {
                             abstract_definition: table_def.abstract_definition.clone(),
@@ -395,50 +438,43 @@ impl QueryParser {
                         },
                     );
                     let mut table_meta = MetaStreamEvent::new_for_single_input(table_stream_def);
-                    if stream_on_left {
-                        table_meta.apply_attribute_offset(stream_len);
-                    } else {
-                        stream_meta.apply_attribute_offset(table_len);
-                    }
+                    table_meta.apply_attribute_offset(stream_len);
+                    let table_meta = Arc::new(table_meta);
 
+                    // Register each side under its id and its alias, as in
+                    // "JOIN stockTable AS t", at the same position.
                     let mut stream_meta_map = HashMap::new();
                     let mut table_meta_map = HashMap::new();
-                    stream_meta_map.insert(stream_id.clone(), Arc::new(stream_meta));
-                    table_meta_map.insert(table_id.clone(), Arc::new(table_meta));
+                    let mut stream_positions = HashMap::new();
+                    for key in std::iter::once(&stream_id).chain(&stream_alias) {
+                        stream_meta_map.insert(key.clone(), Arc::clone(&stream_meta));
+                        stream_positions.insert(key.clone(), 0);
+                    }
+                    for key in std::iter::once(&table_id).chain(&table_alias) {
+                        table_meta_map.insert(key.clone(), Arc::clone(&table_meta));
+                        stream_positions.insert(key.clone(), 1);
+                    }
 
-                    let cond_exec = if let Some(expr) = &join_stream.on_compare {
-                        Some(
-                            parse_expression(
-                                expr,
-                                &ExpressionParserContext {
-                                    eventflux_app_context: Arc::clone(eventflux_app_context),
-                                    eventflux_query_context: Arc::clone(&eventflux_query_context),
-                                    stream_meta_map: stream_meta_map.clone(),
-                                    table_meta_map: table_meta_map.clone(),
-                                    window_meta_map: HashMap::new(),
-                                    aggregation_meta_map: HashMap::new(),
-                                    state_meta_map: HashMap::new(),
-                                    stream_positions: {
-                                        let mut m = HashMap::new();
-                                        if stream_on_left {
-                                            m.insert(stream_id.clone(), 0);
-                                            m.insert(table_id.clone(), 1);
-                                        } else {
-                                            m.insert(table_id.clone(), 0);
-                                            m.insert(stream_id.clone(), 1);
-                                        }
-                                        m
-                                    },
-                                    default_source: stream_id.clone(),
-                                    query_name: &query_name,
-                                    is_mutation_context: false,
-                                },
-                            )
-                            .map_err(|e| e.to_string())?,
-                        )
-                    } else {
-                        None
+                    let ctx = ExpressionParserContext {
+                        eventflux_app_context: Arc::clone(eventflux_app_context),
+                        eventflux_query_context: Arc::clone(&eventflux_query_context),
+                        stream_meta_map,
+                        table_meta_map,
+                        window_meta_map: HashMap::new(),
+                        aggregation_meta_map: HashMap::new(),
+                        state_meta_map: HashMap::new(),
+                        stream_positions,
+                        default_source: stream_id.clone(),
+                        query_name: &query_name,
+                        is_mutation_context: false,
                     };
+
+                    let cond_exec = join_stream
+                        .on_compare
+                        .as_ref()
+                        .map(|expr| parse_expression(expr, &ctx))
+                        .transpose()
+                        .map_err(|e| e.to_string())?;
 
                     let comp_cond = if let Some(expr) = &join_stream.on_compare {
                         table.compile_join_condition(expr.clone(), &stream_id, &stream_def)
@@ -446,7 +482,7 @@ impl QueryParser {
                         None
                     };
                     let join_proc = Arc::new(Mutex::new(TableJoinProcessor::new(
-                        join_stream.join_type,
+                        keeps_stream,
                         comp_cond.map(Arc::from),
                         cond_exec,
                         stream_len,
@@ -458,29 +494,7 @@ impl QueryParser {
                     stream_junction.lock().unwrap().subscribe(join_proc.clone());
                     link_processor(join_proc.clone());
 
-                    ExpressionParserContext {
-                        eventflux_app_context: Arc::clone(eventflux_app_context),
-                        eventflux_query_context: Arc::clone(&eventflux_query_context),
-                        stream_meta_map,
-                        table_meta_map,
-                        window_meta_map: HashMap::new(),
-                        aggregation_meta_map: HashMap::new(),
-                        state_meta_map: HashMap::new(),
-                        stream_positions: {
-                            let mut m = HashMap::new();
-                            if stream_on_left {
-                                m.insert(stream_id.clone(), 0);
-                                m.insert(table_id.clone(), 1);
-                            } else {
-                                m.insert(table_id.clone(), 0);
-                                m.insert(stream_id.clone(), 1);
-                            }
-                            m
-                        },
-                        default_source: stream_id.clone(),
-                        query_name: &query_name,
-                        is_mutation_context: false,
-                    }
+                    ctx
                 } else {
                     let left_junction = stream_junction_map
                         .get(&left_id)
@@ -1479,20 +1493,8 @@ impl QueryParser {
         // input shape this filter lands in the right spot: after the join processor, after
         // the first side of a logical pattern, or as the chain head that the N element
         // pattern terminal feeds.
-        let post_input_filter = match input_stream_api {
-            ApiInputStream::Join(join_stream) => join_stream.filter.as_ref(),
-            ApiInputStream::State(state_stream) => state_stream.filter.as_ref(),
-            ApiInputStream::Single(_) => None,
-        };
-        if let Some(filter_expr) = post_input_filter {
-            let condition_executor =
-                parse_expression(filter_expr, &expr_parser_context).map_err(|e| e.to_string())?;
-            let filter_processor = Arc::new(Mutex::new(FilterProcessor::new(
-                condition_executor,
-                Arc::clone(eventflux_app_context),
-                Arc::clone(&eventflux_query_context),
-            )?));
-            link_processor(filter_processor);
+        if let Some(filter_expr) = input_stream_api.join_or_pattern_filter() {
+            link_processor(build_filter_processor(filter_expr, &expr_parser_context)?);
         }
 
         link_processor(select_processor.clone());

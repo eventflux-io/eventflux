@@ -1076,8 +1076,8 @@ impl<'a> TypeInferenceEngine<'a> {
 
         // WHERE is stored as Filter handlers on a single input stream, and as the filter
         // of a join or pattern input.
-        match query.get_input_stream() {
-            Some(InputStream::Single(single_stream)) => {
+        if let Some(input) = query.get_input_stream() {
+            if let InputStream::Single(single_stream) = input {
                 for handler in single_stream.get_stream_handlers() {
                     if let StreamHandler::Filter(filter) = handler {
                         engine.validate_boolean_expression(
@@ -1088,17 +1088,9 @@ impl<'a> TypeInferenceEngine<'a> {
                     }
                 }
             }
-            Some(InputStream::Join(join)) => {
-                if let Some(filter) = &join.filter {
-                    engine.validate_boolean_expression(filter, &context, "WHERE")?;
-                }
+            if let Some(filter) = input.join_or_pattern_filter() {
+                engine.validate_boolean_expression(filter, &context, "WHERE")?;
             }
-            Some(InputStream::State(state)) => {
-                if let Some(filter) = &state.filter {
-                    engine.validate_boolean_expression(filter, &context, "WHERE")?;
-                }
-            }
-            None => {}
         }
 
         if let Some(having) = query.get_selector().get_having_expression() {

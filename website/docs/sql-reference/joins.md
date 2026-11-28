@@ -151,6 +151,8 @@ JOIN Products AS p
 INSERT INTO EnrichedOrders;
 ```
 
+The table can be written on either side of `JOIN`. Each stream event is looked up in the table, so an outer join can keep the stream side only. That is `LEFT OUTER JOIN` with the stream first, or `RIGHT OUTER JOIN` with the table first. An outer join that would keep unmatched table rows is rejected.
+
 ## Stream and Table Aliases
 
 Aliases provide shorthand names for streams and tables in joins, making queries more readable and enabling self-joins.

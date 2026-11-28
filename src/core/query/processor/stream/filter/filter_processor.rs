@@ -34,13 +34,10 @@ use std::sync::{Arc, Mutex};
 pub struct FilterProcessor {
     meta: CommonProcessorMeta,
     condition_executor: Box<dyn ExpressionExecutor>,
-    // is_per_event_trace_enabled: bool, // Can get from eventflux_app_context.get_eventflux_context().get_statistics_configuration()
 }
 
 impl FilterProcessor {
     /// Create a filter for `condition_executor`.
-    ///
-    /// Prints the runtime settings to stdout when built.
     ///
     /// # Errors
     /// Returns an error message when the condition does not return BOOL.
@@ -57,68 +54,50 @@ impl FilterProcessor {
             ));
         }
 
-        let filter_processor = Self {
+        Ok(Self {
             meta: CommonProcessorMeta::new(eventflux_app_context, eventflux_query_context),
             condition_executor,
-        };
-
-        filter_processor.log_configuration_info();
-
-        Ok(filter_processor)
+        })
     }
 
-    /// Print the main runtime settings to stdout with println!, not the logger
-    fn log_configuration_info(&self) {
-        let config = self.meta.eventflux_app_context.get_global_config();
-
-        println!("FilterProcessor initialized with configuration:");
-        println!(
-            "  - Thread pool size: {}",
-            config.eventflux.runtime.performance.thread_pool_size
-        );
-        println!(
-            "  - Event buffer size: {}",
-            config.eventflux.runtime.performance.event_buffer_size
-        );
-        println!(
-            "  - Batch processing: {}",
-            config.eventflux.runtime.performance.batch_processing
-        );
-        println!(
-            "  - Async processing: {}",
-            config.eventflux.runtime.performance.async_processing
-        );
-        println!("  - Runtime mode: {:?}", config.eventflux.runtime.mode);
-    }
-
-    /// True when batch processing is turned on in the app config
-    fn should_use_batch_processing(&self) -> bool {
-        self.meta
-            .eventflux_app_context
-            .is_batch_processing_enabled()
-    }
-
-    /// Configured event buffer size, doubled in distributed mode
-    fn get_optimal_buffer_size(&self) -> usize {
-        let base_size = self
-            .meta
-            .eventflux_app_context
-            .get_configured_event_buffer_size();
-        if self.meta.eventflux_app_context.is_distributed_mode() {
-            base_size * 2
-        } else {
-            base_size
-        }
+    fn passes(&self, event: &dyn ComplexEvent) -> bool {
+        matches!(
+            self.condition_executor.execute(Some(event)),
+            Some(AttributeValue::Bool(true))
+        )
     }
 }
 
 impl Processor for FilterProcessor {
+    /// Send the events that pass on to the next processor, as one chunk in their
+    /// original order.
+    ///
+    /// A `None` chunk is passed on as is, because upstream processors send it to ask
+    /// for a flush, as an output rate limiter needs at shutdown. A chunk where no event
+    /// passes sends nothing.
     fn process(&self, complex_event_chunk: Option<Box<dyn ComplexEvent>>) {
-        // The app config picks batch or one by one processing
-        if self.should_use_batch_processing() {
-            self.process_batch_mode(complex_event_chunk);
-        } else {
-            self.process_single_mode(complex_event_chunk);
+        let Some(ref next) = self.meta.next_processor else {
+            return;
+        };
+        if complex_event_chunk.is_none() {
+            next.lock().unwrap().process(None);
+            return;
+        }
+
+        // Link the passing events into a new chunk as they are checked, with no copy.
+        let mut head: Option<Box<dyn ComplexEvent>> = None;
+        let mut tail = &mut head;
+        let mut current = complex_event_chunk;
+        while let Some(mut event) = current {
+            // Unlink the event so it can be checked and moved on its own
+            current = event.set_next(None);
+            if self.passes(event.as_ref()) {
+                tail = tail.insert(event).mut_next_ref_option();
+            }
+        }
+
+        if head.is_some() {
+            next.lock().unwrap().process(head);
         }
     }
 
@@ -160,122 +139,5 @@ impl Processor for FilterProcessor {
 
     fn is_stateful(&self) -> bool {
         false
-    }
-}
-
-impl FilterProcessor {
-    /// Filter the chunk and send all passing events to the next processor as one chunk.
-    ///
-    /// Sends even when nothing passed, in which case the next processor gets None.
-    fn process_single_mode(&self, complex_event_chunk: Option<Box<dyn ComplexEvent>>) {
-        // Builds a new chunk from the passing events. Editing the chunk in place or using
-        // an event pool could be faster.
-
-        let mut filtered_events: Vec<Box<dyn ComplexEvent>> = Vec::new();
-
-        let mut current_event_opt = complex_event_chunk;
-        while let Some(mut current_event_box) = current_event_opt {
-            // Unlink the event so it can be checked on its own
-            let next_event_in_original_chunk = current_event_box.set_next(None);
-
-            let passes_filter = match self
-                .condition_executor
-                .execute(Some(current_event_box.as_ref()))
-            {
-                Some(AttributeValue::Bool(true)) => true,
-                Some(AttributeValue::Bool(false)) | Some(AttributeValue::Null) => false,
-                None => false, // the condition gave no value, so drop the event
-                _ => {
-                    // log_error!("Filter condition did not return a boolean for event: {:?}", current_event_box);
-                    false
-                }
-            };
-
-            if passes_filter {
-                filtered_events.push(current_event_box);
-            } // otherwise the event is dropped
-
-            current_event_opt = next_event_in_original_chunk;
-        }
-
-        // Link the passing events back into a chunk
-        let mut filtered_chunk_head: Option<Box<dyn ComplexEvent>> = None;
-        let mut tail_next_ref: &mut Option<Box<dyn ComplexEvent>> = &mut filtered_chunk_head;
-        for event_box in filtered_events {
-            *tail_next_ref = Some(event_box);
-            if let Some(ref mut current_tail) = *tail_next_ref {
-                tail_next_ref = current_tail.mut_next_ref_option();
-            }
-        }
-
-        if let Some(ref next_proc_arc) = self.meta.next_processor {
-            next_proc_arc.lock().unwrap().process(filtered_chunk_head);
-        }
-    }
-
-    /// Filter the chunk and send passing events on in batches.
-    ///
-    /// The batch size is the buffer size from get_optimal_buffer_size, capped at 1000.
-    /// Nothing is sent when no event passes.
-    fn process_batch_mode(&self, complex_event_chunk: Option<Box<dyn ComplexEvent>>) {
-        let batch_size = self.get_optimal_buffer_size().min(1000);
-        let mut filtered_events: Vec<Box<dyn ComplexEvent>> = Vec::with_capacity(batch_size);
-
-        let mut current_event_opt = complex_event_chunk;
-        let mut batch_count = 0;
-
-        while let Some(mut current_event_box) = current_event_opt {
-            // Unlink the event so it can be checked on its own
-            let next_event_in_original_chunk = current_event_box.set_next(None);
-
-            let passes_filter = match self
-                .condition_executor
-                .execute(Some(current_event_box.as_ref()))
-            {
-                Some(AttributeValue::Bool(true)) => true,
-                Some(AttributeValue::Bool(false)) | Some(AttributeValue::Null) => false,
-                None => false, // the condition gave no value, so drop the event
-                _ => false,
-            };
-
-            if passes_filter {
-                filtered_events.push(current_event_box);
-                batch_count += 1;
-
-                if batch_count >= batch_size {
-                    self.send_batch_to_next_processor(&mut filtered_events);
-                    batch_count = 0;
-                }
-            }
-
-            current_event_opt = next_event_in_original_chunk;
-        }
-
-        // Send whatever is left as a final, smaller batch
-        if !filtered_events.is_empty() {
-            self.send_batch_to_next_processor(&mut filtered_events);
-        }
-    }
-
-    /// Link the events into a chunk and send it to the next processor. Empties
-    /// `filtered_events`. Does nothing when it is empty.
-    fn send_batch_to_next_processor(&self, filtered_events: &mut Vec<Box<dyn ComplexEvent>>) {
-        if filtered_events.is_empty() {
-            return;
-        }
-
-        let mut filtered_chunk_head: Option<Box<dyn ComplexEvent>> = None;
-        let mut tail_next_ref: &mut Option<Box<dyn ComplexEvent>> = &mut filtered_chunk_head;
-
-        for event_box in filtered_events.drain(..) {
-            *tail_next_ref = Some(event_box);
-            if let Some(ref mut current_tail) = *tail_next_ref {
-                tail_next_ref = current_tail.mut_next_ref_option();
-            }
-        }
-
-        if let Some(ref next_proc_arc) = self.meta.next_processor {
-            next_proc_arc.lock().unwrap().process(filtered_chunk_head);
-        }
     }
 }

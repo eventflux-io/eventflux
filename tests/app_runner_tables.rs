@@ -384,17 +384,129 @@ async fn test_table_on_left_stream_on_right_join() {
     );
 
     let out = runner.shutdown();
-    assert_eq!(out.len(), 1, "Should have exactly one joined result");
-    // The runtime currently swaps field order when the table is on the left.
-    // SELECT T.id, T.label, S.data gives T.id, S.data, T.label.
+    // Columns come from the right side even with the table written first (#240).
     assert_eq!(
-        out[0],
+        out,
+        vec![vec![
+            AttributeValue::Int(42),
+            AttributeValue::String("test".into()),  // T.label
+            AttributeValue::String("hello".into()), // S.data
+        ]]
+    );
+}
+
+const TABLE_T_AND_STREAM_S: &str = "\
+    CREATE STREAM S (id INT, data STRING);\n\
+    CREATE TABLE T (id INT, label STRING) WITH ('extension' = 'cache', 'max_size' = '10');\n\
+    CREATE STREAM Out (id INT, label STRING, data STRING);\n";
+
+/// Start `query` on top of [`TABLE_T_AND_STREAM_S`], put `(42, 'tbl')` in T, send each
+/// id in `stream_ids` to S with data "strm", and return the output.
+async fn run_table_join(query: &str, stream_ids: &[i32]) -> Vec<Vec<AttributeValue>> {
+    let runner = AppRunner::new(&format!("{TABLE_T_AND_STREAM_S}{query}"), "Out").await;
+    let th = runner.runtime().get_table_input_handler("T").unwrap();
+    th.add(vec![eventflux::core::event::event::Event::new_with_data(
+        0,
         vec![
             AttributeValue::Int(42),
-            AttributeValue::String("hello".into()), // S.data (swapped)
-            AttributeValue::String("test".into()),  // T.label (swapped)
-        ]
+            AttributeValue::String("tbl".into()),
+        ],
+    )]);
+    for id in stream_ids {
+        runner.send(
+            "S",
+            vec![
+                AttributeValue::Int(*id),
+                AttributeValue::String("strm".into()),
+            ],
+        );
+    }
+    runner.shutdown()
+}
+
+fn row(id: i32, label: Option<&str>, data: &str) -> Vec<AttributeValue> {
+    vec![
+        AttributeValue::Int(id),
+        label.map_or(AttributeValue::Null, |l| AttributeValue::String(l.into())),
+        AttributeValue::String(data.into()),
+    ]
+}
+
+/// An ON condition that reads a table column works with the table written first (#240).
+#[tokio::test]
+async fn test_table_on_left_asymmetric_on_condition() {
+    let out = run_table_join(
+        "INSERT INTO Out SELECT T.id, T.label, S.data FROM T JOIN S \
+         ON T.id = S.id AND T.label = 'tbl';\n",
+        &[42],
+    )
+    .await;
+    assert_eq!(out, vec![row(42, Some("tbl"), "strm")]);
+}
+
+/// WHERE on a table first join reads the right columns, through aliases too.
+#[tokio::test]
+async fn test_table_on_left_where_with_aliases() {
+    let out = run_table_join(
+        "INSERT INTO Out SELECT t.id, t.label, s.data FROM T AS t JOIN S AS s \
+         ON t.id = s.id WHERE t.label = 'tbl' AND s.data = 'strm';\n",
+        &[42],
+    )
+    .await;
+    assert_eq!(out, vec![row(42, Some("tbl"), "strm")]);
+}
+
+/// An unqualified column in WHERE resolves when the sources have aliases. The id and
+/// the alias of one source are not two sources.
+#[tokio::test]
+async fn test_table_join_where_unqualified_column_with_aliases() {
+    let out = run_table_join(
+        "INSERT INTO Out SELECT t.id, t.label, s.data FROM S AS s JOIN T AS t \
+         ON s.id = t.id WHERE label = 'tbl';\n",
+        &[42],
+    )
+    .await;
+    assert_eq!(out, vec![row(42, Some("tbl"), "strm")]);
+}
+
+/// With the table first, RIGHT OUTER JOIN keeps the stream side, so an unmatched stream
+/// event comes out with Null table values.
+#[tokio::test]
+async fn test_table_on_left_right_outer_keeps_stream() {
+    let out = run_table_join(
+        "INSERT INTO Out SELECT S.id AS id, T.label AS label, S.data AS data \
+         FROM T RIGHT OUTER JOIN S ON T.id = S.id;\n",
+        &[42, 7],
+    )
+    .await;
+    assert_eq!(
+        out,
+        vec![row(42, Some("tbl"), "strm"), row(7, None, "strm")]
     );
+}
+
+/// An outer join that would keep unmatched table rows is rejected, not run as an inner
+/// join.
+#[tokio::test]
+async fn test_table_outer_join_keeping_table_rows_is_rejected() {
+    for join in [
+        "T LEFT OUTER JOIN S ON T.id = S.id",
+        "S RIGHT OUTER JOIN T ON S.id = T.id",
+        "S FULL OUTER JOIN T ON S.id = T.id",
+    ] {
+        let app = format!(
+            "{TABLE_T_AND_STREAM_S}INSERT INTO Out SELECT S.id AS id, T.label AS label, \
+             S.data AS data FROM {join};\n"
+        );
+        let err = match EventFluxManager::new()
+            .create_eventflux_app_runtime_from_string(&app)
+            .await
+        {
+            Ok(_) => panic!("{join} must be rejected"),
+            Err(e) => e,
+        };
+        assert!(err.contains("keep unmatched table rows"), "{join}: {err}");
+    }
 }
 
 #[tokio::test]

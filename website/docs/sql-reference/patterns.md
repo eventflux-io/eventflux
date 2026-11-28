@@ -340,11 +340,13 @@ SELECT e1.price AS buy_price, e2.price AS sell_price
 `WHERE` runs on each finished match and can use every alias. It only drops matches. It does not change which events the pattern picks:
 
 ```sql
-FROM PATTERN (e1=A -> e2=B)
-WHERE e1.v > 10
+FROM PATTERN (EVERY (e1=A -> e2=B))
+WHERE e1.v < e2.v
 ```
 
-Here the pattern still takes the first `A`. If that `A` has `v = 5`, the match is dropped, even if a later `A` has `v = 15`. To match only `A` events with `v > 10`, put the condition in a filter on the element: `e1=A[v > 10]`.
+Without `EVERY`, a pattern matches only once. If that one match fails the `WHERE`, nothing comes out, even when later events would pass. For example, `FROM PATTERN (e1=A -> e2=B) WHERE e1.v > 10` takes the first `A`. If that `A` has `v = 5`, the match is dropped, and a later `A` with `v = 15` does not start a new one. Use `EVERY` to keep matching.
+
+`WHERE` on a pattern cannot use indexed access such as `e1[0].v`. Use the alias directly, as in `e1.v`.
 
 ## Programmatic API
 

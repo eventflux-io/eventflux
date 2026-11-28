@@ -3382,3 +3382,59 @@ async fn pattern_where_does_not_change_picked_events() {
     let out = runner.shutdown();
     assert!(out.is_empty(), "got {out:?}");
 }
+
+/// An unqualified column in WHERE resolves when the pattern elements have aliases.
+#[tokio::test]
+async fn pattern_where_unqualified_column() {
+    let app = "\
+        CREATE STREAM A (x INT);\n\
+        CREATE STREAM B (v INT);\n\
+        INSERT INTO Out SELECT e1.x AS ax, e2.v AS bv\n\
+        FROM PATTERN (e1=A -> e2=B) WHERE x > 10;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    runner.send("A", vec![AttributeValue::Int(15)]);
+    runner.send("B", vec![AttributeValue::Int(1)]);
+    let out = runner.shutdown();
+    assert_eq!(
+        out,
+        vec![vec![AttributeValue::Int(15), AttributeValue::Int(1)]]
+    );
+}
+
+/// Indexed access in a pattern WHERE is rejected, since the filter sees one flat row
+/// per match and would drop every match.
+#[tokio::test]
+async fn pattern_where_indexed_access_is_rejected() {
+    let app = "\
+        CREATE STREAM A (v INT);\n\
+        CREATE STREAM B (v INT);\n\
+        INSERT INTO Out SELECT e1.v AS av, e2.v AS bv\n\
+        FROM PATTERN (EVERY (e1=A -> e2=B)) WHERE e1[0].v > 10;\n";
+    let err = match eventflux::core::eventflux_manager::EventFluxManager::new()
+        .create_eventflux_app_runtime_from_string(app)
+        .await
+    {
+        Ok(_) => panic!("indexed access in a pattern WHERE must be rejected"),
+        Err(e) => e,
+    };
+    assert!(err.contains("Indexed access"), "got: {err}");
+}
+
+/// The WHERE filter passes the shutdown flush on, so an output rate limit still sends
+/// its partial batch.
+#[tokio::test]
+async fn pattern_where_keeps_output_rate_flush() {
+    let app = "\
+        CREATE STREAM A (v INT);\n\
+        CREATE STREAM B (v INT);\n\
+        INSERT INTO Out SELECT e1.v AS av, e2.v AS bv\n\
+        FROM PATTERN (EVERY (e1=A -> e2=B)) WHERE e1.v > 0\n\
+        OUTPUT ALL EVERY 3 EVENTS;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    runner.send("A", vec![AttributeValue::Int(1)]);
+    runner.send("B", vec![AttributeValue::Int(1)]);
+    runner.send("A", vec![AttributeValue::Int(2)]);
+    runner.send("B", vec![AttributeValue::Int(2)]);
+    let out = runner.shutdown();
+    assert_eq!(out.len(), 2, "got {out:?}");
+}

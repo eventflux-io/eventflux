@@ -26,12 +26,17 @@ use crate::core::event::value::AttributeValue;
 use crate::core::executor::expression_executor::ExpressionExecutor;
 use crate::core::query::processor::{CommonProcessorMeta, ProcessingMode, Processor};
 use crate::core::table::{CompiledCondition, Table};
-use crate::query_api::execution::query::input::stream::join_input_stream::Type as JoinType;
 
+/// Joins each stream event with the matching table rows.
+///
+/// The joined row always has the stream attributes first and the table attributes
+/// after, whichever side of the JOIN the table is written on.
 #[derive(Debug)]
 pub struct TableJoinProcessor {
     meta: CommonProcessorMeta,
-    pub join_type: JoinType,
+    /// When true, a stream event with no matching row is still sent on, with Null table
+    /// values. This is the outer join that keeps the stream side.
+    pub keeps_unmatched_stream: bool,
     pub compiled_condition: Option<Arc<dyn CompiledCondition>>,
     pub condition_executor: Option<Box<dyn ExpressionExecutor>>,
     pub stream_attr_count: usize,
@@ -43,7 +48,7 @@ pub struct TableJoinProcessor {
 impl TableJoinProcessor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        join_type: JoinType,
+        keeps_unmatched_stream: bool,
         compiled_condition: Option<Arc<dyn CompiledCondition>>,
         condition_executor: Option<Box<dyn ExpressionExecutor>>,
         stream_attr_count: usize,
@@ -54,7 +59,7 @@ impl TableJoinProcessor {
     ) -> Self {
         Self {
             meta: CommonProcessorMeta::new(app_ctx, query_ctx),
-            join_type,
+            keeps_unmatched_stream,
             compiled_condition,
             condition_executor,
             stream_attr_count,
@@ -134,15 +139,15 @@ impl Processor for TableJoinProcessor {
                             let joined = self.build_joined_event(se, Some(row));
                             self.forward(joined);
                         }
-                        if !matched && matches!(self.join_type, JoinType::LeftOuterJoin) {
+                        if !matched && self.keeps_unmatched_stream {
                             let joined = self.build_joined_event(se, None);
                             self.forward(joined);
                         }
                     }
                     Err(e) => {
                         log::error!("Failed to find rows for join: {}", e);
-                        // A left outer join still emits the stream event, with Null table values
-                        if matches!(self.join_type, JoinType::LeftOuterJoin) {
+                        // An outer join still emits the stream event, with Null table values
+                        if self.keeps_unmatched_stream {
                             let joined = self.build_joined_event(se, None);
                             self.forward(joined);
                         }
@@ -162,7 +167,7 @@ impl Processor for TableJoinProcessor {
 
     fn clone_processor(&self, ctx: &Arc<EventFluxQueryContext>) -> Box<dyn Processor> {
         Box::new(TableJoinProcessor::new(
-            self.join_type,
+            self.keeps_unmatched_stream,
             self.compiled_condition.as_ref().map(Arc::clone),
             self.condition_executor
                 .as_ref()

@@ -220,13 +220,27 @@ pub fn parse_expression(
             let stream_id_opt = api_var.stream_id.as_deref();
 
             let mut found: Option<([i32; 4], ApiAttributeType)> = None;
-            let mut _found_id: Option<String> = None;
+            let mut found_id: Option<String> = None;
+
+            // A join or pattern registers each source under its stream id and under its
+            // alias. Both keys have the same position, so they are one source, not two.
+            // A self join gives its two aliases different positions, so they stay apart.
+            let same_source = |a: &str, b: &str| {
+                a == b
+                    || matches!(
+                        (context.stream_positions.get(a), context.stream_positions.get(b)),
+                        (Some(x), Some(y)) if x == y
+                    )
+            };
 
             // Looks the attribute up in one source and records it. Errors if a different
             // source already matched.
             let mut check_meta = |id: &str, meta: &MetaStreamEvent| {
                 if let Some((idx, t)) = meta.find_attribute_info(attribute_name) {
-                    if found.is_some() && _found_id.as_deref() != Some(id) {
+                    if found_id
+                        .as_deref()
+                        .is_some_and(|prev| !same_source(prev, id))
+                    {
                         return Err(ExpressionParseError::new(
                             format!("Attribute '{attribute_name}' found in multiple sources"),
                             &api_var.eventflux_element,
@@ -243,7 +257,7 @@ pub fn parse_expression(
                         ],
                         *t,
                     ));
-                    _found_id = Some(id.to_string());
+                    found_id = Some(id.to_string());
                 }
                 Ok(())
             };
@@ -270,7 +284,6 @@ pub fn parse_expression(
                                     ],
                                     *t,
                                 ));
-                                _found_id = Some(id.to_string());
                                 break;
                             }
                         }
@@ -281,7 +294,6 @@ pub fn parse_expression(
                 // is not in more than one source.
                 let default_id = &context.default_source;
                 let mut found_in_default = false;
-                let mut also_found_elsewhere = false;
 
                 // First pass. Is the column in default_source?
                 if !default_id.is_empty() {
@@ -300,24 +312,15 @@ pub fn parse_expression(
                 }
 
                 // Second pass. Is it also in another stream or table?
-                if found_in_default {
-                    for (id, meta) in &context.stream_meta_map {
-                        if id != default_id && meta.find_attribute_info(attribute_name).is_some() {
-                            also_found_elsewhere = true;
-                            break;
-                        }
-                    }
-                    if !also_found_elsewhere {
-                        for (id, meta) in &context.table_meta_map {
-                            if id != default_id
+                let also_found_elsewhere = found_in_default
+                    && context
+                        .stream_meta_map
+                        .iter()
+                        .chain(&context.table_meta_map)
+                        .any(|(id, meta)| {
+                            !same_source(id, default_id)
                                 && meta.find_attribute_info(attribute_name).is_some()
-                            {
-                                also_found_elsewhere = true;
-                                break;
-                            }
-                        }
-                    }
-                }
+                        });
 
                 // Found in default_source AND elsewhere is ambiguous, except in a mutation
                 if found_in_default && also_found_elsewhere {
