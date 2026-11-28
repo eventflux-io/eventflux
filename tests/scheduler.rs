@@ -202,3 +202,40 @@ fn test_running_flag_stops_a_periodic_timer() {
     assert!(after_stop > 0);
     assert_eq!(calls(&probe), after_stop);
 }
+
+/// Calls `pause` on its own scheduler from inside the callback.
+struct PausesItself {
+    scheduler: Mutex<Option<Arc<Scheduler>>>,
+    returned: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Schedulable for PausesItself {
+    fn on_time(&self, _timestamp: i64) {
+        let scheduler = self.scheduler.lock().unwrap().take();
+        if let Some(scheduler) = scheduler {
+            scheduler.pause();
+            self.returned
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+/// Pause called from inside a callback does not wait for that callback, so it returns
+/// instead of waiting for itself forever.
+#[test]
+fn test_pause_from_inside_a_callback_returns() {
+    let scheduler = Arc::new(Scheduler::new(Arc::new(ExecutorService::new("pool", 2))));
+    let returned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let target = Arc::new(PausesItself {
+        scheduler: Mutex::new(Some(Arc::clone(&scheduler))),
+        returned: Arc::clone(&returned),
+    });
+    scheduler.notify_at(0, target);
+
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        returned.load(std::sync::atomic::Ordering::SeqCst),
+        "pause inside a callback must return"
+    );
+    scheduler.shutdown();
+}

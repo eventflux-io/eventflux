@@ -45,6 +45,7 @@
 use crate::core::util::executor_service::ExecutorService;
 use chrono::{DateTime, Utc};
 use cron::Schedule;
+use std::cell::Cell;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::BinaryHeap;
 use std::fmt;
@@ -174,13 +175,15 @@ impl Scheduler {
     /// that come due while paused fire on resume.
     ///
     /// Waits for callbacks that are already running to return, so nothing fires after
-    /// this returns. Must not be called from inside a callback, which would wait for
-    /// itself forever.
+    /// this returns. Called from inside one of this scheduler's callbacks, as when a
+    /// timer tick reaches a stream callback that shuts the runtime down, it waits for
+    /// every other callback but not for the one it runs in.
     pub fn pause(&self) {
+        let own_callback = usize::from(self.shared.is_running_callback_on_this_thread());
         let mut state = self.shared.lock();
         state.paused = true;
         self.shared.changed.notify_all();
-        while state.in_flight > 0 {
+        while state.in_flight > own_callback {
             state = self.shared.idle.wait(state).unwrap();
         }
     }
@@ -227,7 +230,7 @@ struct Shared {
     /// Wakes the timer thread when a timer is added or the scheduler is paused,
     /// resumed or stopped.
     changed: Condvar,
-    /// Wakes `pause` when the last running callback returns.
+    /// Wakes `pause` each time a running callback returns.
     idle: Condvar,
 }
 
@@ -244,9 +247,24 @@ struct State {
     in_flight: usize,
 }
 
+thread_local! {
+    /// The `Shared::id` of the scheduler whose callback this thread is running, or 0.
+    static CALLBACK_SCHEDULER: Cell<usize> = const { Cell::new(0) };
+}
+
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap()
+    }
+
+    /// Tells schedulers apart. It is the address of this `Shared`, which stays the same
+    /// while any callback of it runs, because the callback holds an `Arc` to it.
+    fn id(&self) -> usize {
+        std::ptr::from_ref(self) as usize
+    }
+
+    fn is_running_callback_on_this_thread(&self) -> bool {
+        CALLBACK_SCHEDULER.with(|current| current.get() == self.id())
     }
 
     /// Queue `job` to run at `due` (epoch milliseconds). Does nothing once stopped, or
@@ -306,18 +324,26 @@ impl Shared {
 
     /// Run one due timer on a pool thread, then queue its next run if it repeats.
     fn fire(&self, timer: Timer) {
-        // Counts the callback as done even if it panics, so `pause` cannot hang.
-        struct InFlight<'a>(&'a Shared);
+        // Marks this thread as running a callback of this scheduler, and counts the
+        // callback as done even if it panics, so `pause` cannot hang.
+        struct InFlight<'a> {
+            shared: &'a Shared,
+            outer_callback: usize,
+        }
         impl Drop for InFlight<'_> {
             fn drop(&mut self) {
-                let mut state = self.0.lock();
+                CALLBACK_SCHEDULER.with(|current| current.set(self.outer_callback));
+                let mut state = self.shared.lock();
                 state.in_flight -= 1;
-                if state.in_flight == 0 {
-                    self.0.idle.notify_all();
-                }
+                // Every return wakes `pause`, which may be waiting for one callback
+                // to be left, the one it was called from.
+                self.shared.idle.notify_all();
             }
         }
-        let _in_flight = InFlight(self);
+        let _in_flight = InFlight {
+            shared: self,
+            outer_callback: CALLBACK_SCHEDULER.with(|current| current.replace(self.id())),
+        };
 
         let Timer { due, mut job, .. } = timer;
         job.target.on_time(due);
