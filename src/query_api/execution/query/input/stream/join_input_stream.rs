@@ -57,6 +57,10 @@ pub struct JoinInputStream {
     pub within: Option<Within>,
     /// Time unit to read at, used when one side is an aggregation.
     pub per: Option<Expression>,
+    /// The SQL WHERE condition, or `None` for no WHERE. Runs on each joined event,
+    /// after the join, so on an outer join a WHERE on the side with no match drops the
+    /// row.
+    pub filter: Option<Expression>,
 }
 
 impl JoinInputStream {
@@ -78,7 +82,14 @@ impl JoinInputStream {
             trigger,
             within,
             per,
+            filter: None,
         }
+    }
+
+    /// Set the WHERE condition that runs on each joined event.
+    pub fn with_filter(mut self, filter: Expression) -> Self {
+        self.filter = Some(filter);
+        self
     }
 }
 

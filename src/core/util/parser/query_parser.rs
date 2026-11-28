@@ -1473,6 +1473,28 @@ impl QueryParser {
             order_by_comparator,
             None,
         )));
+
+        // WHERE on a join or pattern runs on the joined or matched event, right before
+        // the selector. A single stream's WHERE is a Filter handler, added above. In every
+        // input shape this filter lands in the right spot: after the join processor, after
+        // the first side of a logical pattern, or as the chain head that the N element
+        // pattern terminal feeds.
+        let post_input_filter = match input_stream_api {
+            ApiInputStream::Join(join_stream) => join_stream.filter.as_ref(),
+            ApiInputStream::State(state_stream) => state_stream.filter.as_ref(),
+            ApiInputStream::Single(_) => None,
+        };
+        if let Some(filter_expr) = post_input_filter {
+            let condition_executor =
+                parse_expression(filter_expr, &expr_parser_context).map_err(|e| e.to_string())?;
+            let filter_processor = Arc::new(Mutex::new(FilterProcessor::new(
+                condition_executor,
+                Arc::clone(eventflux_app_context),
+                Arc::clone(&eventflux_query_context),
+            )?));
+            link_processor(filter_processor);
+        }
+
         link_processor(select_processor.clone());
 
         if let Some(rate) = api_query.get_output_rate() {

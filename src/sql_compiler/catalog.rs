@@ -173,6 +173,22 @@ impl SqlCatalog {
         self.aliases.insert(alias, stream_name);
     }
 
+    /// A copy of this catalog that also knows the join and pattern aliases of `query`,
+    /// so its columns resolve as `a.price` or `e1.price`.
+    pub(crate) fn with_query_aliases(
+        &self,
+        query: &crate::query_api::execution::query::Query,
+    ) -> SqlCatalog {
+        let mut catalog = self.clone();
+        for (alias, stream_id) in SqlApplication::extract_pattern_aliases_from_query(query)
+            .into_iter()
+            .chain(SqlApplication::extract_join_aliases_from_query(query))
+        {
+            catalog.register_alias(alias, stream_id);
+        }
+        catalog
+    }
+
     /// Look up a stream by its name, or else by an alias.
     ///
     /// # Errors
@@ -349,7 +365,7 @@ impl SqlApplication {
 
     /// The (alias, stream_id) pairs of a pattern query, such as ("e1", "Stream1") for
     /// `e1=Stream1`. Empty for any other kind of query.
-    fn extract_pattern_aliases_from_query(
+    pub(crate) fn extract_pattern_aliases_from_query(
         query: &crate::query_api::execution::query::Query,
     ) -> Vec<(String, String)> {
         use crate::query_api::execution::query::input::stream::input_stream::InputStream;
@@ -417,7 +433,7 @@ impl SqlApplication {
     ///
     /// For example `FROM Stream1 AS a JOIN Stream2 AS b` gives
     /// [("a", "Stream1"), ("b", "Stream2")].
-    fn extract_join_aliases_from_query(
+    pub(crate) fn extract_join_aliases_from_query(
         query: &crate::query_api::execution::query::Query,
     ) -> Vec<(String, String)> {
         use crate::query_api::execution::query::input::stream::input_stream::InputStream;

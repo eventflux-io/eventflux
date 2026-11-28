@@ -1051,11 +1051,12 @@ impl<'a> TypeInferenceEngine<'a> {
     /// Check the types in a whole query.
     ///
     /// Checks:
-    /// - WHERE filters give BOOL, but only on a single stream input
+    /// - WHERE gives BOOL, on a single stream, JOIN or pattern input
     /// - HAVING gives BOOL
     ///
-    /// JOIN ON conditions, pattern filters and the SELECT list are not checked here. The
-    /// select expressions are typed later, when output streams are built.
+    /// Join and pattern aliases of the query resolve. JOIN ON conditions, per element
+    /// pattern filters such as `e1=A[v > 10]` and the SELECT list are not checked here.
+    /// The select expressions are typed later, when output streams are built.
     ///
     /// # Errors
     ///
@@ -1067,19 +1068,41 @@ impl<'a> TypeInferenceEngine<'a> {
         use crate::query_api::execution::query::input::handler::StreamHandler;
         use crate::query_api::execution::query::input::stream::input_stream::InputStream;
 
-        let context = self.build_context_from_query(query);
+        // Join and pattern aliases (a.price, e1.price) must resolve, and callers pass a
+        // catalog that does not have them.
+        let aliased_catalog = self.catalog.with_query_aliases(query);
+        let engine = TypeInferenceEngine::new(&aliased_catalog);
+        let context = engine.build_context_from_query(query);
 
-        // WHERE is stored as Filter handlers on the input stream.
-        if let Some(InputStream::Single(single_stream)) = query.get_input_stream() {
-            for handler in single_stream.get_stream_handlers() {
-                if let StreamHandler::Filter(filter) = handler {
-                    self.validate_boolean_expression(&filter.filter_expression, &context, "WHERE")?;
+        // WHERE is stored as Filter handlers on a single input stream, and as the filter
+        // of a join or pattern input.
+        match query.get_input_stream() {
+            Some(InputStream::Single(single_stream)) => {
+                for handler in single_stream.get_stream_handlers() {
+                    if let StreamHandler::Filter(filter) = handler {
+                        engine.validate_boolean_expression(
+                            &filter.filter_expression,
+                            &context,
+                            "WHERE",
+                        )?;
+                    }
                 }
             }
+            Some(InputStream::Join(join)) => {
+                if let Some(filter) = &join.filter {
+                    engine.validate_boolean_expression(filter, &context, "WHERE")?;
+                }
+            }
+            Some(InputStream::State(state)) => {
+                if let Some(filter) = &state.filter {
+                    engine.validate_boolean_expression(filter, &context, "WHERE")?;
+                }
+            }
+            None => {}
         }
 
         if let Some(having) = query.get_selector().get_having_expression() {
-            self.validate_boolean_expression(having, &context, "HAVING")?;
+            engine.validate_boolean_expression(having, &context, "HAVING")?;
         }
 
         Ok(())

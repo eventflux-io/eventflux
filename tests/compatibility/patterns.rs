@@ -3286,3 +3286,99 @@ async fn pattern_test_addition_output() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][1], AttributeValue::Int(150)); // 100 + 50 = 150
 }
+
+// ============================================================================
+// WHERE ON PATTERNS (#224)
+// WHERE runs on each finished match. It drops matches, but does not change which
+// events the pattern picks.
+// ============================================================================
+
+const PATTERN_WHERE_E1: &str = "\
+    CREATE STREAM A (v INT);\n\
+    CREATE STREAM B (v INT);\n\
+    INSERT INTO Out SELECT e1.v AS av, e2.v AS bv\n\
+    FROM PATTERN (e1=A -> e2=B) WHERE e1.v > 10;\n";
+
+/// A match that fails the WHERE is dropped. The issue's repro.
+#[tokio::test]
+async fn pattern_where_drops_failing_match() {
+    let runner = AppRunner::new(PATTERN_WHERE_E1, "Out").await;
+    runner.send("A", vec![AttributeValue::Int(5)]);
+    runner.send("B", vec![AttributeValue::Int(1)]);
+    let out = runner.shutdown();
+    assert!(out.is_empty(), "got {out:?}");
+}
+
+/// A match that passes the WHERE comes out.
+#[tokio::test]
+async fn pattern_where_keeps_passing_match() {
+    let runner = AppRunner::new(PATTERN_WHERE_E1, "Out").await;
+    runner.send("A", vec![AttributeValue::Int(15)]);
+    runner.send("B", vec![AttributeValue::Int(1)]);
+    let out = runner.shutdown();
+    assert_eq!(
+        out,
+        vec![vec![AttributeValue::Int(15), AttributeValue::Int(1)]]
+    );
+}
+
+/// WHERE can compare values from different pattern elements.
+#[tokio::test]
+async fn pattern_where_across_aliases() {
+    let app = "\
+        CREATE STREAM A (v INT);\n\
+        CREATE STREAM B (v INT);\n\
+        INSERT INTO Out SELECT e1.v AS av, e2.v AS bv\n\
+        FROM PATTERN (EVERY (e1=A -> e2=B)) WHERE e1.v < e2.v;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    runner.send("A", vec![AttributeValue::Int(10)]);
+    runner.send("B", vec![AttributeValue::Int(5)]); // 10 < 5 fails
+    runner.send("A", vec![AttributeValue::Int(10)]);
+    runner.send("B", vec![AttributeValue::Int(20)]); // 10 < 20 passes
+    let out = runner.shutdown();
+    assert_eq!(
+        out,
+        vec![vec![AttributeValue::Int(10), AttributeValue::Int(20)]]
+    );
+}
+
+/// WHERE works on a SEQUENCE too.
+#[tokio::test]
+async fn sequence_where_filters_matches() {
+    let app = "\
+        CREATE STREAM P (v INT);\n\
+        INSERT INTO Out SELECT e1.v AS first, e2.v AS second\n\
+        FROM SEQUENCE (e1=P -> e2=P) WHERE e2.v > e1.v;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    runner.send("P", vec![AttributeValue::Int(10)]);
+    runner.send("P", vec![AttributeValue::Int(5)]);
+    let out = runner.shutdown();
+    assert!(out.is_empty(), "got {out:?}");
+}
+
+/// WHERE works on a logical pattern, which wires its processors differently.
+#[tokio::test]
+async fn logical_pattern_where_filters_matches() {
+    let app = "\
+        CREATE STREAM A (v INT);\n\
+        CREATE STREAM B (v INT);\n\
+        INSERT INTO Out SELECT e1.v AS av, e2.v AS bv\n\
+        FROM PATTERN (e1=A AND e2=B) WHERE e1.v > 10;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    runner.send("A", vec![AttributeValue::Int(5)]);
+    runner.send("B", vec![AttributeValue::Int(2)]);
+    let out = runner.shutdown();
+    assert!(out.is_empty(), "got {out:?}");
+}
+
+/// WHERE filters the finished match. It is not a filter on the element, so a later
+/// A that would pass does not replace the A the pattern already picked.
+#[tokio::test]
+async fn pattern_where_does_not_change_picked_events() {
+    let runner = AppRunner::new(PATTERN_WHERE_E1, "Out").await;
+    runner.send("A", vec![AttributeValue::Int(5)]);
+    runner.send("A", vec![AttributeValue::Int(15)]);
+    runner.send("B", vec![AttributeValue::Int(1)]);
+    let out = runner.shutdown();
+    assert!(out.is_empty(), "got {out:?}");
+}

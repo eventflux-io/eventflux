@@ -466,8 +466,8 @@ impl SqlConverter {
         let mut pattern_aliases: Vec<(String, String)> = Vec::new();
 
         // The selector stream name is empty for JOIN and pattern queries.
-        let (input_stream, stream_name_for_selector) = if has_join {
-            // The WHERE clause is passed in but not used for a JOIN.
+        let (mut input_stream, stream_name_for_selector) = if has_join {
+            // The JOIN takes the WHERE clause as a filter on the joined event.
             let join_input =
                 Self::convert_join_from_clause(&select.from, &select.selection, catalog)?;
             (join_input, String::new())
@@ -528,7 +528,7 @@ impl SqlConverter {
                 } => {
                     pattern_aliases = Self::extract_pattern_aliases(pattern);
 
-                    // A WHERE clause is not applied to a pattern query.
+                    // WHERE is added below, once the catalog knows the pattern aliases.
                     let state_input_stream =
                         Self::convert_pattern_input(mode, pattern, within, catalog)?;
                     (state_input_stream, String::new())
@@ -552,6 +552,13 @@ impl SqlConverter {
         } else {
             std::borrow::Cow::Borrowed(catalog)
         };
+
+        // A pattern's WHERE runs on each finished match, so it can use every alias.
+        if let (InputStream::State(state), Some(where_expr)) =
+            (&mut input_stream, &select.selection)
+        {
+            state.filter = Some(Self::convert_expression(where_expr, &effective_catalog)?);
+        }
 
         let mut selector = SelectExpander::expand_select_items(
             &select.projection,
@@ -724,15 +731,17 @@ impl SqlConverter {
     /// Convert a FROM clause with a JOIN into a JoinInputStream.
     ///
     /// Only the first JOIN is read. Any further JOINs are silently ignored. Plain JOIN
-    /// becomes an inner join. The trigger is always `All`, with no WITHIN or PER.
+    /// becomes an inner join. The trigger is always `All`, with no WITHIN or PER. The
+    /// WHERE clause, if any, becomes the join's filter on the joined event.
     ///
     /// # Errors
     ///
     /// Returns an error for an unknown stream or table, a pattern on either side, a join
-    /// kind other than inner or outer, or USING and NATURAL joins.
+    /// kind other than inner or outer, USING and NATURAL joins, or a WHERE expression
+    /// that cannot be converted.
     fn convert_join_from_clause(
         from: &[sqlparser::ast::TableWithJoins],
-        _where_clause: &Option<SqlExpr>, // not used yet, kept for a later filter change
+        where_clause: &Option<SqlExpr>,
         catalog: &SqlCatalog,
     ) -> Result<InputStream, ConverterError> {
         use crate::query_api::execution::query::input::stream::join_input_stream::{
@@ -880,7 +889,7 @@ impl SqlConverter {
             }
         };
 
-        let join_stream = JoinInputStream::new(
+        let mut join_stream = JoinInputStream::new(
             left_stream_name,
             join_type,
             right_stream_name,
@@ -889,6 +898,12 @@ impl SqlConverter {
             None,              // WITHIN is not supported in SQL joins yet
             None,              // PER is not supported in SQL joins yet
         );
+
+        // WHERE runs on the joined event, so it can use both sides and their aliases.
+        if let Some(where_expr) = where_clause {
+            join_stream =
+                join_stream.with_filter(Self::convert_expression(where_expr, &effective_catalog)?);
+        }
 
         Ok(InputStream::Join(Box::new(join_stream)))
     }
@@ -2188,6 +2203,72 @@ mod tests {
             result.is_ok(),
             "Valid WHERE clause should succeed: {:?}",
             result.unwrap_err()
+        );
+    }
+
+    /// StockStream plus a TradeStream, for JOIN and PATTERN WHERE tests.
+    fn setup_two_stream_catalog() -> SqlCatalog {
+        let mut catalog = setup_catalog();
+        let trades = StreamDefinition::new("TradeStream".to_string())
+            .attribute("symbol".to_string(), AttributeType::STRING)
+            .attribute("volume".to_string(), AttributeType::INT);
+        catalog
+            .register_stream("TradeStream".to_string(), trades)
+            .unwrap();
+        catalog
+    }
+
+    #[test]
+    fn test_join_where_becomes_join_filter() {
+        let catalog = setup_two_stream_catalog();
+        let sql = "SELECT s.symbol FROM StockStream AS s JOIN TradeStream AS t \
+                   ON s.symbol = t.symbol WHERE s.price > 10 AND t.volume > 0";
+        let query = SqlConverter::convert(sql, &catalog).unwrap();
+
+        match query.get_input_stream() {
+            Some(InputStream::Join(join)) => assert!(join.filter.is_some()),
+            other => panic!("expected a join input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_join_where_non_boolean_is_rejected() {
+        let catalog = setup_two_stream_catalog();
+        let sql = "SELECT s.symbol FROM StockStream AS s JOIN TradeStream AS t \
+                   ON s.symbol = t.symbol WHERE t.volume";
+        let err_msg = SqlConverter::convert(sql, &catalog)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err_msg.contains("Type validation failed") && err_msg.contains("WHERE"),
+            "got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_pattern_where_becomes_state_filter() {
+        let catalog = setup_two_stream_catalog();
+        let sql = "SELECT e1.symbol FROM PATTERN (e1=StockStream -> e2=TradeStream) \
+                   WHERE e1.price > 10";
+        let query = SqlConverter::convert(sql, &catalog).unwrap();
+
+        match query.get_input_stream() {
+            Some(InputStream::State(state)) => assert!(state.filter.is_some()),
+            other => panic!("expected a pattern input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_where_non_boolean_is_rejected() {
+        let catalog = setup_two_stream_catalog();
+        let sql = "SELECT e1.symbol FROM PATTERN (e1=StockStream -> e2=TradeStream) \
+                   WHERE e2.volume";
+        let err_msg = SqlConverter::convert(sql, &catalog)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err_msg.contains("Type validation failed") && err_msg.contains("WHERE"),
+            "got: {err_msg}"
         );
     }
 

@@ -337,13 +337,103 @@ async fn join_test11_with_filter() {
         ],
     );
     let out = runner.shutdown();
-    // Only IBM has price > 50. The test only checks that IBM is in the output,
-    // not that MSFT is missing.
-    let ibm_matches: Vec<_> = out
-        .iter()
-        .filter(|row| row[0] == AttributeValue::String("IBM".to_string()))
-        .collect();
-    assert!(!ibm_matches.is_empty());
+    // Only IBM has price > 50, so the MSFT join row must be filtered out.
+    assert_eq!(
+        out,
+        vec![vec![
+            AttributeValue::String("IBM".to_string()),
+            AttributeValue::Float(100.0),
+            AttributeValue::Int(1000),
+        ]]
+    );
+}
+
+// ============================================================================
+// WHERE ON JOINS (#224)
+// WHERE runs on each joined row, after the join.
+// ============================================================================
+
+/// A joined row that fails the WHERE is dropped. The issue's repro.
+#[tokio::test]
+async fn join_where_drops_failing_rows() {
+    let app = "\
+        CREATE STREAM L (id INT, v INT);\n\
+        CREATE STREAM R (id INT);\n\
+        INSERT INTO Out SELECT L.id AS id, L.v AS v\n\
+        FROM L JOIN R ON L.id = R.id WHERE L.v > 10;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    runner.send("L", vec![AttributeValue::Int(1), AttributeValue::Int(5)]);
+    runner.send("R", vec![AttributeValue::Int(1)]);
+    runner.send("L", vec![AttributeValue::Int(2), AttributeValue::Int(50)]);
+    runner.send("R", vec![AttributeValue::Int(2)]);
+    let out = runner.shutdown();
+    assert_eq!(
+        out,
+        vec![vec![AttributeValue::Int(2), AttributeValue::Int(50)]]
+    );
+}
+
+/// WHERE can use the aliases of both sides.
+#[tokio::test]
+async fn join_where_with_aliases_on_both_sides() {
+    let app = "\
+        CREATE STREAM Bids (sym STRING, price INT);\n\
+        CREATE STREAM Asks (sym STRING, price INT);\n\
+        INSERT INTO Out SELECT b.sym AS sym, b.price AS bid, a.price AS ask\n\
+        FROM Bids AS b JOIN Asks AS a ON b.sym = a.sym\n\
+        WHERE b.price >= a.price;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    let s = |v: &str| AttributeValue::String(v.to_string());
+    runner.send("Asks", vec![s("IBM"), AttributeValue::Int(100)]);
+    runner.send("Bids", vec![s("IBM"), AttributeValue::Int(90)]);
+    runner.send("Bids", vec![s("IBM"), AttributeValue::Int(110)]);
+    let out = runner.shutdown();
+    assert_eq!(
+        out,
+        vec![vec![
+            s("IBM"),
+            AttributeValue::Int(110),
+            AttributeValue::Int(100)
+        ]]
+    );
+}
+
+/// On a LEFT OUTER JOIN, a WHERE on the right side drops the unmatched row, because
+/// the right side is NULL there. This is standard SQL, not a filter before the join.
+#[tokio::test]
+async fn join_where_on_null_side_drops_unmatched_outer_row() {
+    let app = "\
+        CREATE STREAM L (id INT);\n\
+        CREATE STREAM R (id INT, v INT);\n\
+        INSERT INTO Out SELECT L.id AS l, R.v AS r\n\
+        FROM L LEFT OUTER JOIN R ON L.id = R.id\n\
+        WHERE R.v > 0;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    // No R row matches, so this L row has R.v = NULL and fails the WHERE.
+    runner.send("L", vec![AttributeValue::Int(1)]);
+    let out = runner.shutdown();
+    assert!(out.is_empty(), "got {out:?}");
+}
+
+/// WHERE also works on a stream to table join.
+#[tokio::test]
+async fn join_where_on_stream_table_join() {
+    let app = "\
+        CREATE TABLE Prices (sym STRING, price INT);\n\
+        CREATE STREAM PriceIn (sym STRING, price INT);\n\
+        CREATE STREAM Query (sym STRING);\n\
+        INSERT INTO Prices SELECT * FROM PriceIn;\n\
+        INSERT INTO Out SELECT Prices.sym AS sym, Prices.price AS price\n\
+        FROM Query JOIN Prices ON Query.sym = Prices.sym\n\
+        WHERE Prices.price > 50;\n";
+    let runner = AppRunner::new(app, "Out").await;
+    let s = |v: &str| AttributeValue::String(v.to_string());
+    runner.send("PriceIn", vec![s("IBM"), AttributeValue::Int(75)]);
+    runner.send("PriceIn", vec![s("MSFT"), AttributeValue::Int(30)]);
+    runner.send("Query", vec![s("IBM")]);
+    runner.send("Query", vec![s("MSFT")]);
+    let out = runner.shutdown();
+    assert_eq!(out, vec![vec![s("IBM"), AttributeValue::Int(75)]]);
 }
 
 // ============================================================================

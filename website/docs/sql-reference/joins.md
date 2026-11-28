@@ -350,12 +350,27 @@ FULL JOIN StreamB AS b
 INSERT INTO Combined;
 ```
 
+### WHERE on Joins
+
+`WHERE` runs on each joined row, after the join. It can use columns and aliases from both sides:
+
+```sql
+SELECT b.symbol, b.price AS bid, a.price AS ask
+FROM Bids AS b
+JOIN Asks AS a
+  ON b.symbol = a.symbol
+WHERE b.price >= a.price
+INSERT INTO Crossed;
+```
+
+On an outer join, this follows standard SQL. A `WHERE` condition on the side that has no match sees `NULL` there, so it drops the unmatched row. Put the condition in `ON` to keep the unmatched rows.
+
 ## Best Practices
 
 :::tip Join Optimization
 
 1. **Use appropriate window sizes** - Smaller windows reduce memory usage
-2. **Filter before joining** - Apply WHERE clauses early
+2. **Know where WHERE runs** - It filters joined rows after the join, so it does not shrink the join state
 3. **Index join keys** - For table joins, ensure keys are indexed
 4. **Monitor state size** - Joins maintain state for the window duration
 
