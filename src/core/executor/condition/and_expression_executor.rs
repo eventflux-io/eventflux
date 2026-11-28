@@ -19,14 +19,16 @@
 use crate::core::config::eventflux_app_context::EventFluxAppContext;
 use crate::core::event::complex_event::ComplexEvent;
 use crate::core::event::value::AttributeValue;
+use crate::core::executor::condition::{truth_result, truth_value};
 use crate::core::executor::expression_executor::ExpressionExecutor;
 use crate::query_api::definition::attribute::Type as ApiAttributeType;
 use std::sync::Arc;
 
-/// Logical AND of two BOOL conditions. Short circuits when the left side is not true.
+/// Logical AND of two BOOL conditions, with SQL three valued logic.
 ///
-/// NULL, no value, or a non BOOL result on either side counts as false, so the
-/// result is always a BOOL.
+/// False if either side is false, true if both are true, and NULL otherwise. NULL, no
+/// value and a non BOOL result all count as UNKNOWN. Short circuits when the left side
+/// is false.
 #[derive(Debug)] // No Clone or Default because of the Box<dyn ExpressionExecutor> fields
 pub struct AndExpressionExecutor {
     left_executor: Box<dyn ExpressionExecutor>,
@@ -60,32 +62,16 @@ impl AndExpressionExecutor {
 
 impl ExpressionExecutor for AndExpressionExecutor {
     fn execute(&self, event: Option<&dyn ComplexEvent>) -> Option<AttributeValue> {
-        let left_val = self.left_executor.execute(event);
-
-        match left_val {
-            Some(AttributeValue::Bool(true)) => {
-                // Left is true, so the right side decides
-                let right_val = self.right_executor.execute(event);
-                match right_val {
-                    Some(AttributeValue::Bool(b)) => Some(AttributeValue::Bool(b)),
-                    Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // NULL counts as false
-                    None => Some(AttributeValue::Bool(false)), // No value counts as false
-                    _ => {
-                        // Right side returned something other than BOOL or NULL. The
-                        // constructor checks the declared type, but a wrong runtime value
-                        // still counts as false here rather than raising an error.
-                        Some(AttributeValue::Bool(false))
-                    }
-                }
-            }
-            Some(AttributeValue::Bool(false)) => Some(AttributeValue::Bool(false)),
-            Some(AttributeValue::Null) => Some(AttributeValue::Bool(false)), // NULL AND anything is false
-            None => Some(AttributeValue::Bool(false)), // No value from the left counts as false
-            _ => {
-                // Left side returned something other than BOOL or NULL
-                Some(AttributeValue::Bool(false))
-            }
+        let left = truth_value(self.left_executor.execute(event));
+        if left == Some(false) {
+            return truth_result(Some(false));
         }
+        let right = truth_value(self.right_executor.execute(event));
+        truth_result(match (left, right) {
+            (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        })
     }
 
     fn get_return_type(&self) -> ApiAttributeType {

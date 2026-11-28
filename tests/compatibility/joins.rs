@@ -3107,3 +3107,21 @@ async fn join_aliases_are_per_query() {
     let out = runner.shutdown();
     assert_eq!(out, vec![vec![AttributeValue::String("ann".to_string())]]);
 }
+
+/// On an outer join, != and NOT over the NULL side are UNKNOWN, so the unmatched row is
+/// dropped, as in SQL (#241).
+#[tokio::test]
+async fn join_where_not_equal_on_null_side_drops_unmatched_row() {
+    for where_clause in ["R.v != 5", "NOT (R.v > 0)"] {
+        let app = format!(
+            "CREATE STREAM L (id INT);\n\
+             CREATE STREAM R (id INT, v INT);\n\
+             INSERT INTO Out SELECT L.id AS l, R.v AS r\n\
+             FROM L LEFT OUTER JOIN R ON L.id = R.id WHERE {where_clause};\n"
+        );
+        let runner = AppRunner::new(&app, "Out").await;
+        runner.send("L", vec![AttributeValue::Int(1)]);
+        let out = runner.shutdown();
+        assert!(out.is_empty(), "WHERE {where_clause}: got {out:?}");
+    }
+}
