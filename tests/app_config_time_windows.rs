@@ -101,3 +101,59 @@ async fn app_config_delay_window_delays_events() {
     let out = runner.shutdown();
     assert_eq!(out, vec![vec![AttributeValue::Int(1)]]);
 }
+
+const SUM_OVER_TIME_BATCH: &str = "\
+    CREATE STREAM In (v INT);\n\
+    CREATE STREAM Out (s LONG);\n\
+    INSERT INTO Out SELECT sum(v) AS s FROM In WINDOW('timeBatch', 100 MILLISECONDS);\n";
+
+/// Dropping the runtime frees its scheduler, even with a timeBatch timer that re-arms
+/// itself forever. Before, the pending timer kept the scheduler and its threads alive.
+#[tokio::test]
+async fn dropped_runtime_frees_its_scheduler() {
+    let manager = common::manager_with_app_config("DropApp", "{}");
+    let runner = AppRunner::new_with_manager(manager, SUM_OVER_TIME_BATCH, "Out").await;
+    runner.send_with_ts("In", now_ms(), vec![AttributeValue::Int(1)]);
+
+    let scheduler = Arc::downgrade(
+        &runner
+            .runtime()
+            .eventflux_app_context
+            .get_scheduler()
+            .expect("scheduler"),
+    );
+    runner.shutdown(); // also drops the runtime and the manager
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        scheduler.upgrade().is_none(),
+        "the scheduler must be freed once the runtime is dropped"
+    );
+}
+
+/// A timeBatch window keeps flushing on its timer after a shutdown and restart.
+#[tokio::test]
+async fn time_batch_flushes_after_restart() {
+    let manager = common::manager_with_app_config("RestartApp", "{}");
+    let runner = AppRunner::new_with_manager(manager, SUM_OVER_TIME_BATCH, "Out").await;
+    runner.send_with_ts("In", now_ms(), vec![AttributeValue::Int(1)]);
+    sleep(Duration::from_millis(250)).await;
+
+    let runtime = runner.runtime();
+    runtime.shutdown();
+    runtime.start().expect("restart");
+    runner.collected.lock().unwrap().clear();
+
+    runner.send_with_ts("In", now_ms(), vec![AttributeValue::Int(7)]);
+    sleep(Duration::from_millis(350)).await;
+    assert!(
+        runner
+            .collected
+            .lock()
+            .unwrap()
+            .contains(&vec![AttributeValue::Long(7)]),
+        "the batch with 7 must flush on its timer after the restart, got {:?}",
+        runner.collected.lock().unwrap()
+    );
+    drop(runtime);
+    runner.shutdown();
+}

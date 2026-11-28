@@ -126,6 +126,17 @@ pub struct EventFluxAppRuntime {
     pub(crate) lifecycle: Mutex<()>,
 }
 
+impl Drop for EventFluxAppRuntime {
+    /// Shuts the scheduler down for good. `shutdown()` only pauses it so a restart can
+    /// resume the window timers. A pending timer can hold the scheduler, its thread pool
+    /// and the query chain alive, so they would leak without this.
+    fn drop(&mut self) {
+        if let Some(scheduler) = &self.scheduler {
+            scheduler.shutdown();
+        }
+    }
+}
+
 impl EventFluxAppRuntime {
     // Builds the runtime from a parsed app. Plays the role of the Java
     // EventFluxManager.createEventFluxAppRuntime(api_eventflux_app).
@@ -233,14 +244,15 @@ impl EventFluxAppRuntime {
     /// Sets up the context services every runtime needs, before the app is parsed.
     ///
     /// Both constructors must call this. Windows and triggers read the scheduler from
-    /// the context while their queries are parsed, so a context without one makes
-    /// time, timeBatch, cron and delay windows silently stop doing time work (#223).
+    /// the context while their queries are parsed. Without one, time, timeBatch and
+    /// cron windows silently stop doing time work, and delay windows fail to build
+    /// (#223).
     ///
     /// - ThreadBarrier: input handlers pass through it, so incoming events can be held
     ///   back while state is restored.
-    /// - Scheduler: has its own thread pool, so its sleeps never block event processing
-    ///   threads. Reuses the context's scheduled executor if one is set, otherwise
-    ///   makes a pool of EVENTFLUX_EXECUTOR_THREADS threads, or the CPU count.
+    /// - Scheduler: runs timer callbacks on its own pool, apart from event processing.
+    ///   Uses the context's scheduled executor if one is set, otherwise makes a pool of
+    ///   EVENTFLUX_EXECUTOR_THREADS threads, or the CPU count.
     /// - SnapshotService: uses the persistence store of the EventFluxContext, if set.
     fn install_runtime_services(ctx: &mut EventFluxAppContext, name: &str) {
         ctx.set_thread_barrier(Arc::new(crate::core::util::ThreadBarrier::new()));
@@ -879,11 +891,10 @@ impl EventFluxAppRuntime {
             )));
         }
 
-        if self.scheduler.is_some() {
-            log::info!(
-                "Scheduler initialized for EventFluxAppRuntime '{}'",
-                self.name
-            );
+        // A no op on the first start. On a restart it fires the window timers that
+        // shutdown paused, including any that came due while stopped.
+        if let Some(scheduler) = &self.scheduler {
+            scheduler.resume();
         }
 
         for tr in &self.trigger_runtimes {
@@ -942,12 +953,13 @@ impl EventFluxAppRuntime {
         // Stop every producer before the drain. First triggers, then the scheduler,
         // then sources. Scheduler ticks (timer windows, rate limiters) publish into
         // junctions without being tracked. A tick during or after the drain would be
-        // missed by the quiescence check and left uncounted.
+        // missed by the quiescence check and left uncounted. Pausing waits for running
+        // ticks and keeps pending timers, so a restart resumes them.
         for tr in &self.trigger_runtimes {
             tr.shutdown();
         }
         if let Some(scheduler) = &self.scheduler {
-            scheduler.shutdown();
+            scheduler.pause();
         }
         self.stop_all_sources();
 
@@ -1047,7 +1059,7 @@ impl EventFluxAppRuntime {
 
         self.stop_all_sinks();
 
-        // The scheduler was already shut down before the drain, with the triggers.
+        // The scheduler was already paused before the drain, with the triggers.
         for pr in &self.partition_runtimes {
             pr.shutdown();
         }

@@ -52,8 +52,9 @@ impl TriggerParser {
 
         builder.add_stream_junction(definition.id.clone(), Arc::clone(&junction));
 
-        // Triggers share the app's scheduler. Its thread pool is the one the runtime
-        // shuts down, so a private scheduler here would leak a pool per trigger.
+        // Triggers share the app's scheduler, which the runtime pauses on shutdown,
+        // resumes on restart and stops when dropped. A private scheduler here would get
+        // none of that and would start its own timer thread and pool per trigger.
         let scheduler = eventflux_app_context.get_scheduler().ok_or_else(|| {
             format!(
                 "Trigger '{}' needs a scheduler, but the app context has none",

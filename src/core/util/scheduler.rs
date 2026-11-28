@@ -19,16 +19,20 @@
 //!
 //! # Threading Model
 //!
-//! The runtime gives the Scheduler its **own thread pool**, apart from event processing.
-//! Scheduled tasks wait with `std::thread::sleep`, which is fine because:
+//! Each Scheduler has one timer thread and a thread pool (its ExecutorService).
 //!
-//! - The Scheduler has its own ExecutorService (a rayon ThreadPool)
-//! - A sleeping scheduler thread does not slow event processing
-//! - Event processing uses lock free crossbeam queues and calls that do not block
+//! - The timer thread keeps every pending timer in a queue ordered by due time. It
+//!   sleeps until the earliest one is due, so a waiting timer holds no pool thread, and
+//!   any number of timers and triggers can wait at once.
+//! - When a timer is due, the timer thread hands its callback to the pool. Callbacks
+//!   can run at the same time as each other.
+//! - A periodic or cron timer schedules its next run only after its callback returns,
+//!   so the runs of one timer never overlap.
 //!
-//! Each scheduled task holds one pool thread for as long as it runs, and periodic and
-//! cron tasks run until stopped or their limit is reached. So more long running tasks
-//! than pool threads will delay the extra ones.
+//! The runtime pauses the scheduler on shutdown and resumes it on a restart, so window
+//! timers armed before a shutdown still fire after the restart. Dropping the runtime
+//! shuts the scheduler down for good, which drops every pending timer and stops the
+//! timer thread.
 //!
 //! # Configuration
 //!
@@ -39,11 +43,15 @@
 //! Default: `num_cpus::get()` threads
 
 use crate::core::util::executor_service::ExecutorService;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use cron::Schedule;
+use std::cmp::{Ordering as CmpOrdering, Reverse};
+use std::collections::BinaryHeap;
+use std::fmt;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Something the Scheduler calls back when its time comes.
@@ -53,40 +61,68 @@ pub trait Schedulable: Send + Sync {
     fn on_time(&self, timestamp: i64);
 }
 
-/// Scheduler for time based event triggering on its own thread pool
+/// Scheduler for time based callbacks. See the module docs for the threading model.
 ///
-/// **Important:** Give this scheduler its own ExecutorService so its sleeps never block
-/// event processing threads. See the module docs for threading details.
-#[derive(Debug, Clone)]
+/// Dropping the last handle shuts it down, like `shutdown`.
 pub struct Scheduler {
-    executor: Arc<ExecutorService>,
+    shared: Arc<Shared>,
+    timer_thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl fmt::Debug for Scheduler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = self.shared.lock();
+        f.debug_struct("Scheduler")
+            .field("pending", &state.timers.len())
+            .field("paused", &state.paused)
+            .field("stopped", &state.stopped)
+            .finish()
+    }
 }
 
 impl Scheduler {
+    /// A scheduler that runs callbacks on `executor`. Starts its timer thread.
+    ///
+    /// # Panics
+    /// Panics if the OS cannot start the timer thread.
     pub fn new(executor: Arc<ExecutorService>) -> Self {
-        Self { executor }
+        let shared = Arc::new(Shared {
+            executor,
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+            idle: Condvar::new(),
+        });
+        let timer_shared = Arc::clone(&shared);
+        let timer_thread = thread::Builder::new()
+            .name("eventflux-scheduler".to_string())
+            .spawn(move || timer_shared.run_timer_thread())
+            .expect("failed to start the scheduler timer thread");
+        Self {
+            shared,
+            timer_thread: Mutex::new(Some(timer_thread)),
+        }
     }
 
     /// Calls `target.on_time(timestamp)` once at `timestamp` (epoch milliseconds), or
     /// right away if that time has passed.
-    ///
-    /// # Panics
-    /// The task panics if the system clock is before the Unix epoch.
     pub fn notify_at(&self, timestamp: i64, target: Arc<dyn Schedulable>) {
-        self.executor.execute(move || {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("System clock before Unix epoch - check system time configuration")
-                .as_millis() as i64;
-            let delay = if timestamp > now { timestamp - now } else { 0 } as u64;
-            std::thread::sleep(Duration::from_millis(delay));
-            target.on_time(timestamp);
-        });
+        self.shared.add_timer(
+            timestamp,
+            Job {
+                target,
+                repeat: Repeat::Once,
+                remaining: None,
+                running: None,
+            },
+        );
     }
 
     /// Calls `target.on_time` every `period_ms` milliseconds, starting one period from
-    /// now. Stops after `limit` calls if given, or once `running` is false. `running` is
-    /// checked before each wait, so a call already waiting still runs after a stop.
+    /// now. Each run is due one period after the previous due time, so a late run does
+    /// not shift the ones after it.
+    ///
+    /// Stops after `limit` calls if given, or once `running` is false. `running` is
+    /// checked when a run is due, so a stopped timer makes no more calls.
     pub fn schedule_periodic(
         &self,
         period_ms: i64,
@@ -94,41 +130,21 @@ impl Scheduler {
         limit: Option<usize>,
         running: Option<Arc<AtomicBool>>,
     ) {
-        self.executor.execute(move || {
-            let mut next = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("System clock before Unix epoch - check system time configuration")
-                .as_millis() as i64
-                + period_ms;
-            let mut count = 0usize;
-            loop {
-                if let Some(ref flag) = running {
-                    if !flag.load(Ordering::Acquire) {
-                        break;
-                    }
-                }
-                if let Some(lim) = limit {
-                    if count >= lim {
-                        break;
-                    }
-                }
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("System clock before Unix epoch - check system time configuration")
-                    .as_millis() as i64;
-                if next > now {
-                    std::thread::sleep(Duration::from_millis((next - now) as u64));
-                }
-                target.on_time(next);
-                count += 1;
-                next += period_ms;
-            }
-        });
+        self.shared.add_timer(
+            now_ms() + period_ms,
+            Job {
+                target,
+                repeat: Repeat::Every(period_ms),
+                remaining: limit,
+                running,
+            },
+        );
     }
 
-    /// Calls `target.on_time` at each upcoming time of `cron_expr`, in UTC. Stops after
-    /// `limit` calls if given, or once `running` is false. `running` is checked before
-    /// each wait, so a call already waiting still runs after a stop.
+    /// Calls `target.on_time` at each upcoming time of `cron_expr`, in UTC.
+    ///
+    /// Stops after `limit` calls if given, or once `running` is false. `running` is
+    /// checked when a run is due, so a stopped timer makes no more calls.
     ///
     /// # Errors
     /// Returns an error if `cron_expr` does not parse.
@@ -140,35 +156,253 @@ impl Scheduler {
         running: Option<Arc<AtomicBool>>,
     ) -> Result<(), String> {
         let schedule = Schedule::from_str(cron_expr).map_err(|e| e.to_string())?;
-        self.executor.execute(move || {
-            let iter = schedule.upcoming(Utc);
-            let it: Box<dyn Iterator<Item = chrono::DateTime<Utc>>> = match limit {
-                Some(l) => Box::new(iter.take(l)),
-                None => Box::new(iter),
-            };
-            for datetime in it {
-                if let Some(ref flag) = running {
-                    if !flag.load(Ordering::Acquire) {
-                        break;
-                    }
-                }
-                let ts = datetime.timestamp_millis();
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("System clock before Unix epoch - check system time configuration")
-                    .as_millis() as i64;
-                if ts > now {
-                    std::thread::sleep(Duration::from_millis((ts - now) as u64));
-                }
-                target.on_time(ts);
-            }
-        });
+        if let Some(first) = schedule.upcoming(Utc).next() {
+            self.shared.add_timer(
+                first.timestamp_millis(),
+                Job {
+                    target,
+                    repeat: Repeat::Cron(Box::new(schedule)),
+                    remaining: limit,
+                    running,
+                },
+            );
+        }
         Ok(())
     }
 
-    /// Calls `ExecutorService::wait_all`, which does nothing today. Tasks already
-    /// scheduled keep running. Stop periodic and cron tasks through their `running` flag.
-    pub fn shutdown(&self) {
-        self.executor.wait_all();
+    /// Stop firing timers until `resume`. Pending and new timers are kept, and timers
+    /// that come due while paused fire on resume.
+    ///
+    /// Waits for callbacks that are already running to return, so nothing fires after
+    /// this returns. Must not be called from inside a callback, which would wait for
+    /// itself forever.
+    pub fn pause(&self) {
+        let mut state = self.shared.lock();
+        state.paused = true;
+        self.shared.changed.notify_all();
+        while state.in_flight > 0 {
+            state = self.shared.idle.wait(state).unwrap();
+        }
     }
+
+    /// Fire timers again after `pause`. Timers that came due while paused fire now.
+    pub fn resume(&self) {
+        self.shared.lock().paused = false;
+        self.shared.changed.notify_all();
+    }
+
+    /// Stop for good. Drops every pending timer, ignores timers added later and stops
+    /// the timer thread. Callbacks that are already running are not waited for.
+    /// Calling it again does nothing.
+    pub fn shutdown(&self) {
+        let dropped_timers = {
+            let mut state = self.shared.lock();
+            state.stopped = true;
+            std::mem::take(&mut state.timers)
+        };
+        self.shared.changed.notify_all();
+        // Dropped outside the lock. A timer's target can hold the last handle to a
+        // scheduler, and dropping that handle locks the state again.
+        drop(dropped_timers);
+
+        let timer_thread = self.timer_thread.lock().unwrap().take();
+        if let Some(handle) = timer_thread {
+            if handle.thread().id() != thread::current().id() {
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// State shared by the scheduler handle, its timer thread and running callbacks.
+struct Shared {
+    executor: Arc<ExecutorService>,
+    state: Mutex<State>,
+    /// Wakes the timer thread when a timer is added or the scheduler is paused,
+    /// resumed or stopped.
+    changed: Condvar,
+    /// Wakes `pause` when the last running callback returns.
+    idle: Condvar,
+}
+
+#[derive(Default)]
+struct State {
+    /// Pending timers, earliest first.
+    timers: BinaryHeap<Reverse<Timer>>,
+    /// Breaks ties between timers with the same due time, so they fire in the order
+    /// they were added.
+    next_seq: u64,
+    paused: bool,
+    stopped: bool,
+    /// Callbacks handed to the pool that have not returned yet.
+    in_flight: usize,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap()
+    }
+
+    /// Queue `job` to run at `due` (epoch milliseconds). Does nothing once stopped, or
+    /// when `job` has no runs left.
+    fn add_timer(&self, due: i64, job: Job) {
+        if job.remaining == Some(0) {
+            return;
+        }
+        let mut state = self.lock();
+        if state.stopped {
+            drop(state);
+            drop(job); // outside the lock, see `Scheduler::shutdown`
+            return;
+        }
+        let seq = state.next_seq;
+        state.next_seq += 1;
+        state.timers.push(Reverse(Timer { due, seq, job }));
+        drop(state);
+        self.changed.notify_all();
+    }
+
+    /// Body of the timer thread. Hands each due timer to the pool until stopped.
+    fn run_timer_thread(self: Arc<Self>) {
+        let mut state = self.lock();
+        loop {
+            if state.stopped {
+                return;
+            }
+            let next_due = if state.paused {
+                None
+            } else {
+                state.timers.peek().map(|Reverse(timer)| timer.due)
+            };
+            match next_due {
+                None => state = self.changed.wait(state).unwrap(),
+                Some(due) => {
+                    let now = now_ms();
+                    if due > now {
+                        let wait = Duration::from_millis((due - now) as u64);
+                        state = self.changed.wait_timeout(state, wait).unwrap().0;
+                        continue;
+                    }
+                    let Reverse(timer) = state.timers.pop().expect("peeked timer");
+                    if !timer.job.is_running() {
+                        drop(state);
+                        drop(timer); // outside the lock, see `Scheduler::shutdown`
+                        state = self.lock();
+                        continue;
+                    }
+                    state.in_flight += 1;
+                    let shared = Arc::clone(&self);
+                    self.executor.execute(move || shared.fire(timer));
+                }
+            }
+        }
+    }
+
+    /// Run one due timer on a pool thread, then queue its next run if it repeats.
+    fn fire(&self, timer: Timer) {
+        // Counts the callback as done even if it panics, so `pause` cannot hang.
+        struct InFlight<'a>(&'a Shared);
+        impl Drop for InFlight<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.lock();
+                state.in_flight -= 1;
+                if state.in_flight == 0 {
+                    self.0.idle.notify_all();
+                }
+            }
+        }
+        let _in_flight = InFlight(self);
+
+        let Timer { due, mut job, .. } = timer;
+        job.target.on_time(due);
+        if let Some(next_due) = job.next_due_after(due) {
+            self.add_timer(next_due, job);
+        }
+    }
+}
+
+struct Timer {
+    /// Epoch milliseconds.
+    due: i64,
+    seq: u64,
+    job: Job,
+}
+
+// Timers are ordered by due time, then by the order they were added.
+impl Ord for Timer {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        (self.due, self.seq).cmp(&(other.due, other.seq))
+    }
+}
+impl PartialOrd for Timer {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for Timer {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == CmpOrdering::Equal
+    }
+}
+impl Eq for Timer {}
+
+/// What to call and when to call it again.
+struct Job {
+    target: Arc<dyn Schedulable>,
+    repeat: Repeat,
+    /// Calls left, or `None` for no limit.
+    remaining: Option<usize>,
+    /// The timer stops once this is false.
+    running: Option<Arc<AtomicBool>>,
+}
+
+enum Repeat {
+    Once,
+    /// Period in milliseconds.
+    Every(i64),
+    Cron(Box<Schedule>),
+}
+
+impl Job {
+    fn is_running(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_none_or(|flag| flag.load(Ordering::Acquire))
+    }
+
+    /// Count the run that was due at `due` and return when the next run is due, or
+    /// `None` when the job is done.
+    fn next_due_after(&mut self, due: i64) -> Option<i64> {
+        if let Some(remaining) = self.remaining.as_mut() {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                return None;
+            }
+        }
+        match &self.repeat {
+            Repeat::Once => None,
+            Repeat::Every(period_ms) => Some(due + period_ms),
+            Repeat::Cron(schedule) => {
+                let after = DateTime::<Utc>::from_timestamp_millis(due)?;
+                schedule.after(&after).next().map(|t| t.timestamp_millis())
+            }
+        }
+    }
+}
+
+/// Wall clock time in epoch milliseconds.
+///
+/// # Panics
+/// Panics if the system clock is before the Unix epoch.
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("System clock before Unix epoch - check system time configuration")
+        .as_millis() as i64
 }
